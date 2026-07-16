@@ -1,0 +1,9 @@
+# Naive doubly-recursive Fibonacci (the classic benchmark probe):
+# fib(n) = n for n < 2, else fib(n-1) + fib(n-2); prints fib(27).
+
+let fib = fn(n: int): int {
+  if (n < 2) { n } else { fib(n - 1) + fib(n - 2) }
+};
+
+# time(fn() Println!(fib(27)));
+Println!(fib(27));

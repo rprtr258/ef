@@ -1,0 +1,47 @@
+# Nondeterministic search with effects (the classic "amb" operator):
+# find all Pythagorean triples (a, b, c) with 1 <= a < b < c <= n and
+# a^2 + b^2 == c^2.
+# Two effects: `Choose!(lo, hi)` asks the handler to nondeterministically
+# pick an int in [lo, hi]; `Emit!(t)` yields one solution outward. The
+# Choose handler resumes the continuation once per option, so the
+# computation branches into every path; each branch either emits a triple
+# or returns unit. Emit is *not* handled by the Choose handler — it
+# propagates outward (see `solutions`'s `! { Emit }` signature) to the
+# collector, which prepends each emitted triple to everything the rest of
+# that branch emits (`concat([t], k(unit))`).
+
+effect Choose(lo: int, hi: int): int;
+effect Emit(t: [int]): unit;
+
+let triple = fn(n: int): unit ! { Choose, Emit } {
+  let a = Choose!(1, n);
+  let b = Choose!(a + 1, n);
+  let c = Choose!(b + 1, n);
+  if (a * a + b * b == c * c) {
+    Emit!([a, b, c])                  # one solution
+  } else {
+    unit                              # dead branch
+  }
+};
+
+# Interprets nondeterminism only; emitted solutions propagate outward.
+let solutions = fn(n: int): unit ! { Emit } {
+  handle {
+    triple(n)
+  } case Choose(lo, hi) => k {
+    each(fn(x, _) { k(x) }, range(lo, hi + 1, 1))
+  }
+};
+
+# Gathers every value emitted across all branches (the original's scollect).
+let collect = fn(n: int): [[int]] {
+  handle {
+    solutions(n)
+  } case Emit(t) => k {
+    concat([t], k(unit))
+  } case Return(v) => k {
+    []                                # no emissions, no solutions
+  }
+};
+
+each(fn(t: [int], _) { Println!(t) }, collect(14));

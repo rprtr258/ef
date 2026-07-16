@@ -1,0 +1,11 @@
+# `id` used at two different types (int and bool) in the same program.
+# `let` with a lambda RHS is generalized (let-polymorphism), so each
+# call instantiates fresh type variables: id(5) is int, id(true) is
+# bool. Prints 5.
+
+let id = fn (x) { x };
+
+let foo = id(5);
+let bar = id(true);
+
+Println!(foo);
