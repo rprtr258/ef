@@ -75,7 +75,8 @@ paths — nondeterminism built from ordinary multi-shot resumption.
 - **Line comments** with `//` run to end of line.
 - **String literals** are `"..."` with `\\` escapes, parsed as JSON strings.
 - **Number literals** are non-negative integer/decimal digit runs (e.g. `42`,
-  `3.14`). Unary minus is parsed as the unary `-` operator in `parseUnary`.
+  `3.14`). A literal containing a `.` is typed `float`; otherwise `int`.
+  Unary minus is parsed as the unary `-` operator in `parseUnary`.
 - **Identifiers** start with a letter or `_`, continue with letters/digits/`_`.
 - **Keywords:** `let letrec fn if else perform handle case true false null effect`.
 - **Two-char tokens:** `== != <= >= && || =>`.
@@ -188,10 +189,13 @@ case        ::= "case" ("Return" | name) params "=>" name block
 ```
 type  ::= "[" type "]"
         | "(" type ("," type)* ")" "->" type ("!" "{" name ("," name)* "}")?
-        | "int" | "string" | "bool" | "null" | "any"
+        | "int" | "float" | "string" | "bool" | "null" | "any"
 ```
 
-- `int`, `string`, `bool`, `null` — primitives.
+- `int`, `float`, `string`, `bool`, `null` — primitives. `int` and `float`
+  are distinct but **numeric-widen** together: an `int` may be used where a
+  `float` is expected and vice versa, and any numeric op on two ints yields
+  `int`, while a mix of `int`/`float` (or two `float`s) yields `float`.
 - `[T]` — array of `T` (homogeneous).
 - `(T1, ..., Tn) -> R` — function type. The optional `! { E1, ..., En }` is
   its **effect set**: the effects the function may perform. Empty/omitted =
@@ -208,7 +212,8 @@ type  ::= "[" type "]"
 
 ### 3.3 Inference rules
 
-- `num : int`, `str : string`, `bool : bool`, `null : null`.
+- `num : int`/`float` (by whether the literal has a `.`), `str : string`,
+  `bool : bool`, `null : null`.
 - `name : Γ(name)` (or a fresh instantiation if `Γ(name)` is a polymorphic
   scheme).
 - `[a, b, c] : [T]` where all elements unify with a single fresh `T`
@@ -254,11 +259,12 @@ type  ::= "[" type "]"
 
 | Operator | Type                              |
 |----------|-----------------------------------|
-| `+ - * /` | `(int, int) -> int`              |
-| `< > <= >=` | `(int, int) -> bool`           |
+| `+ - * /` | `(int, int) -> int` / `(float, _) -> float` | numeric widening; unary `-` (neg) shares this rule. |
+| `< > <= >=` | `(_num, _num) -> bool`        | numeric widening on operands. |
 | `== !=`  | `(any, any) -> bool`              |
 
-Unary `-` (neg) : `(int) -> int`. Unary `!` (not) : `(bool) -> bool`.
+Unary `-` (neg) : numeric, shares the widening rule (`int` in → `int` out,
+`float` in → `float` out). Unary `!` (not) : `(bool) -> bool`.
 
 ### 4.2 Functions
 

@@ -54,13 +54,14 @@ type Cont = (v: Value) => Outcome;
 // --- Types ---
 
 type Type = Prim | ArrT | FunT | Var | AnyT;
-type Prim = { tag: "prim"; name: "int" | "string" | "bool" | "null" };
+type Prim = { tag: "prim"; name: "int" | "float" | "string" | "bool" | "null" };
 type ArrT = { tag: "arr"; elem: Type };
 type FunT = { tag: "fun"; params: Type[]; ret: Type; effs: Set<string> };
 type Var = { tag: "var"; id: number };
 type AnyT = { tag: "any" };
 
 const TINT: Prim = { tag: "prim", name: "int" };
+const TFLOAT: Prim = { tag: "prim", name: "float" };
 const TSTR: Prim = { tag: "prim", name: "string" };
 const TBOOL: Prim = { tag: "prim", name: "bool" };
 const TNULL: Prim = { tag: "prim", name: "null" };
@@ -94,7 +95,7 @@ type EffectSig = {
 // --- AST ---
 
 type Expr =
-  | { t: "num"; v: number }
+  | { t: "num"; v: number; isFloat: boolean }
   | { t: "str"; v: string }
   | { t: "bool"; v: boolean }
   | { t: "null" }
@@ -342,6 +343,7 @@ class Parser {
     const name = this.next();
     switch (name) {
       case "int": return TINT;
+      case "float": return TFLOAT;
       case "string": return TSTR;
       case "bool": return TBOOL;
       case "null": return TNULL;
@@ -396,7 +398,7 @@ class Parser {
     if (t === undefined) throw new Error("Unexpected EOF");
     if (/^-?\d/.test(t)) {
       this.next();
-      return { t: "num", v: Number(t) };
+      return { t: "num", v: Number(t), isFloat: t.includes(".") };
     }
     if (t.startsWith('"')) {
       this.next();
@@ -539,7 +541,11 @@ function unify(a: Type, b: Type): void {
   if (ra.tag === "var") { bindVar(ra.id, rb); return; }
   if (rb.tag === "var") { bindVar(rb.id, ra); return; }
   if (ra.tag === "prim" && rb.tag === "prim") {
-    if (ra.name !== rb.name) throw new TypeError_(`${showT(ra)} ≠ ${showT(rb)}`);
+    // int and float are compatible: numeric widening lets an int flow where a
+    // float is expected and vice versa (value kept at runtime either way).
+    const nums = new Set(["int", "float"]);
+    if (ra.name !== rb.name && !(nums.has(ra.name) && nums.has(rb.name)))
+      throw new TypeError_(`${showT(ra)} ≠ ${showT(rb)}`);
     return;
   }
   if (ra.tag === "arr" && rb.tag === "arr") { unify(ra.elem, rb.elem); return; }
@@ -571,16 +577,35 @@ function textend(parent: TEnv): TEnv {
   return new TEnv(parent);
 }
 
+// Operators handled by special-casing in `infer` (numeric widening), not BINOPS.
+const NUMOPS = new Set(["+", "-", "*", "/"]);
+const CMPOPS = new Set(["<", ">", "<=", ">="]);
+function isNum(t: Type): t is Prim {
+  return t.tag === "prim" && (t.name === "int" || t.name === "float");
+}
+// Unify two operand types under a numeric op and return the widened result
+// (float if either side is float, else int; `any` if either is `any`).
+function numeric(a: Type, b: Type, op: string): Type {
+  const ra = res(a), rb = res(b);
+  if (ra.tag === "any" || rb.tag === "any") return TANY;
+  if (isNum(ra) && isNum(rb))
+    return ra.name === "float" || rb.name === "float" ? TFLOAT : TINT;
+  if (isNum(ra) && rb.tag === "var") { unify(rb, ra); return ra; }
+  if (isNum(rb) && ra.tag === "var") { unify(ra, rb); return rb; }
+  if (ra.tag === "var" && rb.tag === "var") { unify(ra, rb); return res(ra); }
+  if (ra.tag === "var") { unify(ra, TINT); return TINT; }
+  if (rb.tag === "var") { unify(rb, TINT); return TINT; }
+  throw new TypeError_(`${op}: ${showT(ra)} and ${showT(rb)} are not numeric`);
+}
+
 const BINOPS: Record<string, [Type, Type, Type]> = {
-  "+": [TINT, TINT, TINT], "-": [TINT, TINT, TINT], "*": [TINT, TINT, TINT], "/": [TINT, TINT, TINT],
-  "<": [TINT, TINT, TBOOL], ">": [TINT, TINT, TBOOL], "<=": [TINT, TINT, TBOOL], ">=": [TINT, TINT, TBOOL],
   "==": [TANY, TANY, TBOOL], "!=": [TANY, TANY, TBOOL],
 };
 
 // infer: returns the type, side-effecting `effs` with performed effects.
 function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, EffectSig>): Type {
   switch (e.t) {
-    case "num": return TINT;
+    case "num": return e.isFloat ? TFLOAT : TINT;
     case "str": return TSTR;
     case "bool": return TBOOL;
     case "null": return TNULL;
@@ -683,6 +708,18 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
         for (const a of e.args) unify(elem, infer(a, env, effs, effects));
         return tArr(res(elem));
       }
+      // Numeric operators (+ - * /) and comparisons (< > <= >=) widen int/float;
+      // unary neg is handled below. Kept out of BINOPS so they get this logic.
+      if (e.fn.t === "sym" && (NUMOPS.has(e.fn.v) || CMPOPS.has(e.fn.v))) {
+        const at = infer(e.args[0]!, env, effs, effects);
+        const bt = infer(e.args[1]!, env, effs, effects);
+        const widened = numeric(at, bt, e.fn.v);
+        return CMPOPS.has(e.fn.v) ? TBOOL : widened;
+      }
+      if (e.fn.t === "sym" && e.fn.v === "neg") {
+        const at = infer(e.args[0]!, env, effs, effects);
+        return numeric(at, at, "neg");
+      }
       const ft = infer(e.fn, env, effs, effects);
       const argTs = e.args.map(a => infer(a, env, effs, effects));
       const ret = freshVar();
@@ -714,7 +751,6 @@ function checkProgram(items: Item[]): { effects: Map<string, EffectSig>; lastTyp
   for (const [op, [a, b, r]] of Object.entries(BINOPS)) {
     env.vars.set(op, tFun([a, b], r, new Set()));
   }
-  env.vars.set("neg", tFun([TINT], TINT, new Set()));
   env.vars.set("not", tFun([TBOOL], TBOOL, new Set()));
   env.vars.set("list", tFun([TANY], tArr(TANY), new Set()));
   env.vars.set("head", () => { const a = freshVar(); return tFun([tArr(a)], a, new Set()); });

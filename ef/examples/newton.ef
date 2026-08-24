@@ -1,0 +1,19 @@
+// Newton's method for square roots.
+// makeNewtonRoot(precision) returns a root finder that iterates until
+// |guess^2 - x| < precision (a real tolerance, not a step count):
+//   guess_{n+1} = (guess_n + x / guess_n) / 2
+
+fn makeNewtonRoot(precision: float): (float) -> float {
+  fn find(x: float): float {
+    fn step(guess: float): float {
+      let diff = guess * guess - x;
+      let adiff = if (diff < 0) { -diff } else { diff };
+      if (adiff < precision) { guess } else { step((guess + x / guess) / 2) }
+    }
+    step(1)
+  }
+  find
+}
+
+let sqrt = makeNewtonRoot(0.0001);
+println(sqrt(2))

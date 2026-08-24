@@ -155,3 +155,22 @@ fn firstRead(path: string): string ! { Read } { perform Read(path) }
 firstRead
 `)).toBe("(string) -> string ! { Read }");
 });
+
+test("Float literals and numeric widening", () => {
+  expect(typeOf(`2.5`)).toBe("float");
+  expect(typeOf(`2`)).toBe("int");
+  expect(typeOf(`1 + 2`)).toBe("int");
+  expect(typeOf(`1 + 2.5`)).toBe("float");
+  expect(typeOf(`1.5 * 2`)).toBe("float");
+  expect(typeOf(`2 < 3`)).toBe("bool");
+  expect(typeOf(`2.0 < 3`)).toBe("bool");
+  expect(typeOf(`2.0`)).toBe("float");
+});
+
+test("int flows into a float-typed parameter", () => {
+  // step(1) passes an int literal where a float param is expected.
+  expect(show(run(`
+fn f(x: float): float { x + 0.5 }
+f(1)
+`))).toBe("1.5");
+});
