@@ -536,11 +536,13 @@ function unify(a: Type, b: Type): void {
   throw new TypeError_(`${showT(ra)} ≠ ${showT(rb)}`);
 }
 
+type Scheme = () => Type; // polymorphic type scheme, instantiated fresh per use
+
 class TEnv {
-  vars = new Map<string, Type>();
+  vars = new Map<string, Type | Scheme>();
   constructor(public parent: TEnv | null) {}
 }
-function tlookup(env: TEnv, name: string): Type | undefined {
+function tlookup(env: TEnv, name: string): Type | Scheme | undefined {
   let e: TEnv | null = env;
   while (e) {
     if (e.vars.has(name)) return e.vars.get(name);
@@ -567,9 +569,9 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
     case "bool": return TBOOL;
     case "null": return TNULL;
     case "sym": {
-      const t = tlookup(env, e.v);
-      if (!t) throw new TypeError_("Unbound: " + e.v);
-      return t;
+      const s = tlookup(env, e.v);
+      if (s === undefined) throw new TypeError_("Unbound: " + e.v);
+      return typeof s === "function" ? s() : s;
     }
     case "lambda": {
       const n = textend(env);
@@ -688,13 +690,17 @@ function checkProgram(items: Item[]): Map<string, EffectSig> {
   env.vars.set("neg", tFun([TINT], TINT, new Set()));
   env.vars.set("not", tFun([TBOOL], TBOOL, new Set()));
   env.vars.set("list", tFun([TANY], tArr(TANY), new Set()));
-  env.vars.set("head", tFun([tArr(TANY)], TANY, new Set()));
-  env.vars.set("tail", tFun([tArr(TANY)], tArr(TANY), new Set()));
-  env.vars.set("concat", tFun([tArr(TANY), tArr(TANY)], tArr(TANY), new Set()));
-  env.vars.set("flat", tFun([tArr(tArr(TANY))], tArr(TANY), new Set()));
-  env.vars.set("len", tFun([tArr(TANY)], TINT, new Set()));
+  env.vars.set("head", () => { const a = freshVar(); return tFun([tArr(a)], a, new Set()); });
+  env.vars.set("tail", () => { const a = freshVar(); return tFun([tArr(a)], tArr(a), new Set()); });
+  env.vars.set("concat", () => { const a = freshVar(); return tFun([tArr(a), tArr(a)], tArr(a), new Set()); });
+  env.vars.set("flat", () => { const a = freshVar(); return tFun([tArr(tArr(a))], tArr(a), new Set()); });
+  env.vars.set("len", () => { const a = freshVar(); return tFun([tArr(a)], TINT, new Set()); });
   env.vars.set("println", tFun([TANY], TNULL, new Set()));
-  env.vars.set("map", tFun([tFun([TANY], TANY, new Set()), tArr(TANY)], tArr(TANY), new Set()));
+  // map : (A) -> B, [A] -> [B]  — polymorphic, fresh A/B per use
+  env.vars.set("map", () => {
+    const a = freshVar(), b = freshVar();
+    return tFun([tFun([a], b, new Set()), tArr(a)], tArr(b), new Set());
+  });
   for (const it of items) if ("e" in it) infer(it.e, env, new Set(), effects);
   return effects;
 }

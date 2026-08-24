@@ -28,14 +28,14 @@ handle {
 test("Deep handler threading a log across resumes", () => {
 expect(show(run(`
 effect Log(msg: string): null;
-effect Result(v: int): null;
+effect Result(v: string): null;
 handle {
   perform Log("a");
   perform Log("b");
-  perform Result(42)
+  perform Result("42")
 } case Log(msg) => k { concat([msg], k(null)) }
   case Result(v) => k { [v] }
-`))).toBe('["a", "b", 42]');
+`))).toBe('["a", "b", "42"]');
 });
 
 test("Effect propagation through an inner handler to an outer one", () => {
