@@ -97,7 +97,7 @@ type Expr =
   | { t: "bool"; v: boolean }
   | { t: "null" }
   | { t: "sym"; v: string }
-  | { t: "lambda"; params: Param[]; retTyp: Type | null; body: Expr }
+  | { t: "lambda"; params: Param[]; retTyp: Type | null; retEffs: Set<string> | null; body: Expr }
   | { t: "let"; name: string; typ: Type | null; val: Expr }
   | { t: "letrec"; name: string; typ: Type | null; val: Expr }
   | { t: "if"; c: Expr; a: Expr; b: Expr }
@@ -250,8 +250,9 @@ class Parser {
       const name = this.next();
       const params = this.parseParams();
       const ret = this.is(":") ? (this.next(), this.parseType()) : null;
+      const retEffs = this.parseEffAnnot();
       const body = this.parseBlock();
-      e = { t: "letrec", name, typ: null, val: { t: "lambda", params, retTyp: ret, body } };
+      e = { t: "letrec", name, typ: null, val: { t: "lambda", params, retTyp: ret, retEffs, body } };
       if (this.is(";")) this.i++;
     } else {
       e = this.parseExpr();
@@ -289,6 +290,20 @@ class Parser {
     while (!this.is("}")) stmts.push(this.parseStmt());
     this.eat("}");
     return { t: "block", stmts };
+  }
+
+  // optional `! { op, op, ... }` effect annotation on a fn return type
+  parseEffAnnot(): Set<string> | null {
+    if (!this.is("!")) return null;
+    this.next();
+    this.eat("{");
+    const effs = new Set<string>();
+    while (!this.is("}")) {
+      effs.add(this.next());
+      if (this.is(",")) this.i++;
+    }
+    this.eat("}");
+    return effs;
   }
 
   // types
@@ -417,7 +432,7 @@ class Parser {
       this.next();
       const params = this.parseParams();
       const body = this.parseBlock();
-      return { t: "lambda", params, retTyp: null, body };
+      return { t: "lambda", params, retTyp: null, retEffs: null, body };
     }
     if (this.isKw("if")) {
       this.next();
@@ -555,9 +570,8 @@ function textend(parent: TEnv): TEnv {
 }
 
 const BINOPS: Record<string, [Type, Type, Type]> = {
-  "+": [TINT, TINT, TINT], "-": [TINT, TINT, TINT], "*": [TINT, TINT, TINT],
-  "/": [TINT, TINT, TINT], "<": [TINT, TINT, TBOOL], ">": [TINT, TINT, TBOOL],
-  "<=": [TINT, TINT, TBOOL], ">=": [TINT, TINT, TBOOL],
+  "+": [TINT, TINT, TINT], "-": [TINT, TINT, TINT], "*": [TINT, TINT, TINT], "/": [TINT, TINT, TINT],
+  "<": [TINT, TINT, TBOOL], ">": [TINT, TINT, TBOOL], "<=": [TINT, TINT, TBOOL], ">=": [TINT, TINT, TBOOL],
   "==": [TANY, TANY, TBOOL], "!=": [TANY, TANY, TBOOL],
 };
 
@@ -584,7 +598,13 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
       const innerEffs = new Set<string>();
       const ret = infer(e.body, n, innerEffs, effects);
       if (e.retTyp) unify(e.retTyp, ret);
-      return tFun(ps, e.retTyp ?? ret, innerEffs);
+      if (e.retEffs) {
+        const decl = [...e.retEffs].join(", ") || "∅";
+        for (const op of innerEffs)
+          if (!e.retEffs.has(op))
+            throw new TypeError_(`effect ${op} not declared in signature (declared: ${decl})`);
+      }
+      return tFun(ps, e.retTyp ?? ret, e.retEffs ?? innerEffs);
     }
     case "let": {
       const vt = infer(e.val, env, effs, effects);
@@ -680,7 +700,7 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
   }
 }
 
-function checkProgram(items: Item[]): Map<string, EffectSig> {
+function checkProgram(items: Item[]): { effects: Map<string, EffectSig>; lastType: Type } {
   const effects = new Map<string, EffectSig>();
   for (const it of items) if ("effect" in it) effects.set(it.effect, it.sig);
   const env = new TEnv(null);
@@ -696,13 +716,14 @@ function checkProgram(items: Item[]): Map<string, EffectSig> {
   env.vars.set("flat", () => { const a = freshVar(); return tFun([tArr(tArr(a))], tArr(a), new Set()); });
   env.vars.set("len", () => { const a = freshVar(); return tFun([tArr(a)], TINT, new Set()); });
   env.vars.set("println", tFun([TANY], TNULL, new Set()));
-  // map : (A) -> B, [A] -> [B]  — polymorphic, fresh A/B per use
   env.vars.set("map", () => {
     const a = freshVar(), b = freshVar();
     return tFun([tFun([a], b, new Set()), tArr(a)], tArr(b), new Set());
   });
-  for (const it of items) if ("e" in it) infer(it.e, env, new Set(), effects);
-  return effects;
+  let lastType: Type = TNULL;
+  for (const it of items.filter(it => "e" in it))
+    lastType = infer(it.e, env, new Set(), effects);
+  return { effects, lastType };
 }
 
 // --- Evaluator (CPS) ---
@@ -879,4 +900,11 @@ export function run(src: string): Value {
     if ("e" in it) last = runTop(evalE(it.e, g, (v) => ({ tag: "done", value: v })));
   }
   return last;
+}
+
+// typeOf: return the inferred type of the last expression, as a string.
+// Surfaces effect sets in function signatures, e.g. `(int) -> int ! { Emit }`.
+export function typeOf(src: string): string {
+  const items = new Parser(src).parseProgram();
+  return showT(res(checkProgram(items).lastType));
 }

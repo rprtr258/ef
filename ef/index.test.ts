@@ -1,5 +1,5 @@
 import {test, expect, describe} from "bun:test";
-import {show, run} from "./index.ts";
+import {show, run, typeOf} from "./index.ts";
 
 test("Nondeterminism — multi-shot resume, declared effect + return type", () => {
 expect(show(run(`
@@ -98,4 +98,24 @@ describe("Negative tests (static type checker rejects)", () => {
   test("Using an undeclared effect", () => {
     assertTypeError(`perform Nope(1)`, "Unknown effect");
   });
+});
+
+test("Effectful function signature carries its effect set", () => {
+  // ask echoes its arg via the Emit effect and returns it; the signature
+  // declares `! { Emit }`, which the checker verifies against the body.
+  expect(typeOf(`
+effect Emit(m: int): int;
+fn ask(n: int): int ! { Emit } { perform Emit(n) }
+ask
+`)).toBe("(int) -> int ! { Emit }");
+});
+
+test("Declaring an effect set rejects effects not listed", () => {
+  // Body performs Emit but the signature only declares Log.
+  expect(() => run(`
+effect Emit(m: int): int;
+effect Log(m: int): int;
+fn f(n: int): int ! { Log } { perform Emit(n) }
+f(1)
+`)).toThrow("not declared");
 });
