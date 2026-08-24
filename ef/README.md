@@ -162,6 +162,14 @@ case        ::= "case" ("Return" | name) params "=>" name block
   with parameter types and a return type. `ret` is the type that
   `perform Op(...)` evaluates to — equivalently, the type the continuation
   `k` expects to be resumed with.
+- **Builtin effects.** Two effects are pre-declared and interpreted by the
+  runtime when they reach the top level unhandled:
+  - `Read(path: string): string` — reads a file, resumes with its contents.
+  - `Write(path: string, content: string): null` — writes a file, resumes
+    with `null`.
+  They are still ordinary algebraic effects: a user `handle` can intercept
+  either (e.g. to mock the filesystem) before the builtin interpretation
+  applies.
 - A **handler** has one body block and one or more `case` arms.
 - `case Return(params) => k { ... }` handles the body's normal result value.
   `k` is not used here (the body is already done); the case computes the
@@ -229,8 +237,9 @@ type  ::= "[" type "]"
     `bodyType` (handlers transform results). When `B` is empty, `R ~ bodyType`.
   - Handled ops are removed from the body's effect set; any remaining (unhandled)
     ops propagate to the caller.
-- **Top-level effect policy:** effects left over at the top level (performed
-  but not handled) are reported.
+- **Top-level effect policy:** effects left over at the top level are either
+  interpreted by a builtin handler (for `Read`/`Write`) or reported as
+  unhandled.
 
 ### 3.4 Polymorphism
 
@@ -364,4 +373,22 @@ effect Emit(m: int): int;
 fn ask(n: int): int ! { Emit } { perform Emit(n) }
 ask
 // typeOf → "(int) -> int ! { Emit }"
+```
+
+### Builtin file I/O (default handler does real I/O)
+
+```js
+// Write then read; with no user handler, the runtime performs real I/O.
+perform Write("hello.txt", "hello ef");
+perform Read("hello.txt")
+// → "hello ef"
+```
+
+```js
+// A user handler can intercept Read to mock the filesystem.
+handle {
+  perform Read("anything")
+} case Return(v) => k { [v] }
+  case Read(path) => k { ["mocked"] }
+// → ["mocked"]
 ```

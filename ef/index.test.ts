@@ -1,5 +1,10 @@
 import {test, expect, describe} from "bun:test";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {readFileSync, unlinkSync, existsSync} from "node:fs";
 import {show, run, typeOf} from "./index.ts";
+
+const tmpPath = (n: string) => join(tmpdir(), `ef-test-${process.pid}-${n}.txt`);
 
 test("Nondeterminism — multi-shot resume, declared effect + return type", () => {
 expect(show(run(`
@@ -118,4 +123,35 @@ effect Log(m: int): int;
 fn f(n: int): int ! { Log } { perform Emit(n) }
 f(1)
 `)).toThrow("not declared");
+});
+
+test("Builtin Read/Write round-trip through real files", () => {
+  const p = tmpPath("rw");
+  if (existsSync(p)) unlinkSync(p);
+  // Write then Read via the builtin default handler (no user handler).
+  expect(show(run(`
+perform Write(${JSON.stringify(p)}, "hello ef");
+perform Read(${JSON.stringify(p)})
+`))).toBe('"hello ef"');
+  // The file really exists on disk.
+  expect(readFileSync(p, "utf8")).toBe("hello ef");
+  unlinkSync(p);
+});
+
+test("A user handler can intercept builtin Read (effects stay abstract)", () => {
+  const p = tmpPath("mock");
+  // The handler mocks Read and never touches the filesystem.
+  expect(show(run(`
+handle {
+  perform Read(${JSON.stringify(p)})
+} case Return(v) => k { [v] }
+  case Read(path) => k { ["mocked"] }
+`))).toBe('["mocked"]');
+});
+
+test("Builtin effects appear in inferred signatures", () => {
+  expect(typeOf(`
+fn firstRead(path: string): string ! { Read } { perform Read(path) }
+firstRead
+`)).toBe("(string) -> string ! { Read }");
 });

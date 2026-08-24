@@ -3,6 +3,8 @@
 // with monomorphic effect tracking), then a CPS evaluator whose continuation
 // is a plain JS function — giving true multi-shot `resume`.
 
+import {readFileSync, writeFileSync} from "node:fs";
+
 // --- Values (runtime) ---
 
 type Value =
@@ -702,6 +704,11 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
 
 function checkProgram(items: Item[]): { effects: Map<string, EffectSig>; lastType: Type } {
   const effects = new Map<string, EffectSig>();
+  // Builtin effects, interpreted by the runtime when left unhandled.
+  // `Read(path): string` reads a file; `Write(path, content): null` writes one.
+  // User `effect` decls below may add or override these.
+  effects.set("Read", { params: [TSTR], ret: TSTR });
+  effects.set("Write", { params: [TSTR, TSTR], ret: TNULL });
   for (const it of items) if ("effect" in it) effects.set(it.effect, it.sig);
   const env = new TEnv(null);
   for (const [op, [a, b, r]] of Object.entries(BINOPS)) {
@@ -826,8 +833,14 @@ function handle(body: Expr, cases: HandlerCase[], env: Env, k: Cont): Outcome {
 }
 
 function runTop(out: Outcome): Value {
-  if (out.tag === "eff") throw new Error("Unhandled effect: " + out.op);
-  return out.value;
+  for (;;) {
+    if (out.tag === "done") return out.value;
+    // Builtin effect interpretation: when Read/Write reach the top unhandled,
+    // perform real I/O and resume the continuation.
+    if (out.op === "Read") { out = out.k(readFileSync(out.args[0] as string, "utf8")); continue; }
+    if (out.op === "Write") { writeFileSync(out.args[0] as string, out.args[1] as string); out = out.k(null); continue; }
+    throw new Error("Unhandled effect: " + out.op);
+  }
 }
 
 // --- Builtins ---
