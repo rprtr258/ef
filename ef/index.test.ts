@@ -236,3 +236,16 @@ handle {
   case Out(s) => k { concat([s], k(unit)) }
 `))).toBe('["a", "b"]');
 });
+
+test("effect annotations are mandatory for effectful fns", () => {
+  // Pure body, no annotation: fine.
+  expect(show(run(`fn f(): int { 1 + 2 }\nf`))).toBe("[fn]");
+  // Effectful body, annotation present and covering: fine.
+  expect(show(run(`fn g(): unit ! { Out } { perform Out("x") }\ng`))).toBe("[fn]");
+  // Effectful body, no annotation: rejected.
+  expect(() => run(`fn h(): unit { perform Out("x") }\nh`)).toThrow(/not declared in signature/);
+  // Anonymous lambda too: effectful without annotation is rejected.
+  expect(() => run(`let k = fn(): unit { perform Out("x") }; k`)).toThrow(/not declared in signature/);
+  // Anonymous lambda with annotation: accepted.
+  expect(show(run(`let k = fn(): unit ! { Out } { perform Out("x") }; k`))).toBe("[fn]");
+});

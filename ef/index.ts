@@ -473,8 +473,10 @@ class Parser {
     if (this.isKw("fn")) {
       this.next();
       const params = this.parseParams();
+      const retTyp = this.is(":") ? (this.next(), this.parseType()) : null;
+      const retEffs = this.parseEffAnnot();
       const body = this.parseBlock();
-      return { t: "lambda", params, retTyp: null, retEffs: null, body };
+      return { t: "lambda", params, retTyp, retEffs, body };
     }
     if (this.isKw("if")) {
       this.next();
@@ -671,6 +673,10 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
       const innerEffs = new Set<string>();
       const ret = infer(e.body, n, innerEffs, effects);
       if (e.retTyp) unify(e.retTyp, ret);
+      // Effect annotations are mandatory: a body with any effect must declare
+      // a superset of it. Omitting `! { ... }` is only allowed for pure bodies.
+      if (innerEffs.size > 0 && !e.retEffs)
+        throw new TypeError_(`effect ${[...innerEffs].join(", ")} not declared in signature (annotation required)`);
       if (e.retEffs) {
         const decl = [...e.retEffs].join(", ") || "∅";
         for (const op of innerEffs)

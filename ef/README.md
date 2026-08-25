@@ -116,7 +116,8 @@ block     ::= "{" stmt* "}"
 - `fn name(params): T ! { Effs } { body }` is sugar for a `letrec` whose value
   is a lambda carrying the return type and declared effect set. The checker
   verifies the body's performed effects ⊆ the declared set.
-- Anonymous lambdas: `fn (p: T) { body }` (no name, no annotations).
+- Anonymous lambdas: `fn (p: T) { body }` (no name); may carry optional `: R`
+  and `! { Effs }` annotations like named functions.
 
 ### 2.3 Expressions
 
@@ -226,9 +227,13 @@ type  ::= "[" type "]"
   (homogeneous arrays; `list` is special-cased in inference).
 - `fn (p1:T1,...): R ! {E} { body } : (T1,...) -> R ! {E}`. Untyped params get
   fresh vars; the body is inferred under their bindings; if a return type
-  annotation is present it unifies with the inferred body type; if an effect
-  annotation is present, the body's performed effects must be ⊆ it, and it
-  becomes the function's effect set (otherwise the inferred set is used).
+  annotation is present it unifies with the inferred body type. **Effect
+  annotations are mandatory for effectful bodies**: if the body performs any
+  effect, a `! { ... }` annotation listing a superset of those effects is
+  required (a pure body may omit it). When present, the body's performed
+  effects must be ⊆ the annotation, and the annotation becomes the function's
+  effect set (otherwise the inferred set is used). Anonymous lambdas may also
+  carry `: T` and `! { ... }` annotations: `fn(p): unit ! { Out } { ... }`.
 - `let x : T = e` — `T` (if present) unifies with `infer(e)`; `x : T`.
 - `if c { a } else { b } : T` where `c : bool` and `a, b : T` (branches must
   agree). `if` with no `else` has an implicit `unit` else branch.

@@ -66,9 +66,12 @@ typing rules.
 - **Effect declarations required for `perform`.** `effect Op(args): ret` — the
   checker rejects `perform` of an undeclared effect. `ret` is the type
   `perform Op(...)` evaluates to (i.e. what `resume` injects).
-- **Function effect signatures.** `fn f(p: T): R ! { Effs } { ... }` — the
-  declared set must cover what the body performs; it becomes the function
-  type's effect set, shown as `(T) -> R ! { Effs }`.
+- **Function effect signatures.** `fn f(p: T): R ! { Effs } { ... }` —
+  **mandatory for effectful bodies**: if the body performs any effect, a
+  `! { ... }` annotation listing a superset must be present (pure bodies may
+  omit it). The declared set must cover what the body performs; it becomes the
+  function type's effect set, shown as `(T) -> R ! { Effs }`. Anonymous
+  lambdas accept the same `: R` and `! { Effs }` annotations.
 - **No-Return handle rule.** When the handled body has effects, the result
   type `R` is NOT unified with the body type (handlers transform results).
   When the body is pure, `R ~ bodyType`.
