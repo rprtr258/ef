@@ -89,12 +89,12 @@ fn apply(p: [float], m: [[float]]): [float] {
 let argv = args();
 if (len(argv) != 4) {
   perform Out("Usage: ef run examples/star.ef <num_of_vertices> <draw_step>\n<draw_step> must be in range (0..<num_of_vertices> / 2)\n");
-  exit(1)
+  perform Exit(1)
 }
 let vertices = round(number(get(argv, 2)));
 let step = round(number(get(argv, 3)));
-if (vertices <= 0) { perform Out("Incorrect vertices value\n"); exit(1) }
-if (step < 0 || step > vertices / 2) { perform Out("Incorrect step value\n"); exit(1) }
+if (vertices <= 0) { perform Out("Incorrect vertices value\n"); perform Exit(1) }
+if (step < 0 || step > vertices / 2) { perform Out("Incorrect step value\n"); perform Exit(1) }
 
 let poly = flatmap(fn(i, _) {
   map(fn(t) {
@@ -136,5 +136,5 @@ while (true) {
   printGrid();
   clear();
   each(fn(_, _) ! { Out } { perform Out("\x1B[1A") }, range(0, radius * 2 + 1, 1));
-  // wait(0.001)
+  // perform Wait(0.001)
 }

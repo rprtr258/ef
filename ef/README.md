@@ -207,7 +207,12 @@ type  ::= "[" type "]"
 - `(T1, ..., Tn) -> R` — function type. The optional `! { E1, ..., En }` is
   its **effect set**: the effects the function may perform. Empty/omitted =
   pure.
-- `any` — absorbing type. Unifies with anything and stays `any`.
+- `any` — absorbing type. Unifies with anything and stays `any`. Because `any`
+  is an escape hatch, the checker **warns** when a `let`/`letrec` binding's
+  *inferred* type contains `any` (e.g. `let f = list` infers `(any) -> [any]`);
+  writing an explicit annotation (`let f: (any) -> [any] = list`) silences the
+  warning. Array literals like `[1,2,3]` are special-cased to `[int]` and do
+  not trigger it.
 
 ### 3.2 Type variables and unification
 
@@ -272,7 +277,7 @@ type  ::= "[" type "]"
 |----------|-----------------------------------|
 | `+ - * / %` | `(int, int) -> int` / `(float, _) -> float` | numeric widening; unary `-` (neg) shares this rule. |
 | `< > <= >=` | `(_num, _num) -> bool`        | numeric widening on operands. |
-| `== !=`  | `(any, any) -> bool`              |
+| `== !=`  | `(T, T) -> bool`                 | Both operands must share a type `T` (numeric widening still lets `int ~ float`); cross-type comparisons like `"a" == 1` are rejected. Not first-class — cannot be passed as a function value. |
 
 Unary `-` (neg) : numeric, shares the widening rule (`int` in → `int` out,
 `float` in → `float` out). Unary `!` (not) : `(bool) -> bool`.
@@ -296,9 +301,9 @@ The type checker stamps each `/` node as int or float division at check time
 
 ### 4.3 Math, I/O, and array helpers
 
-Added for the `star.ink` port (see `examples/star.ef`). All are pure except
-`exit`/`wait` (process control). Console output is via the `Println`/`Out`
-effects (§4.4), not functions.
+Added for the `star.ink` port (see `examples/star.ef`). All are pure.
+Console output is via the `Println`/`Out` effects (§4.4), not functions;
+process control is via the `Exit`/`Wait` effects (§4.4), not functions.
 
 | Name      | Type (schematic)                  | Notes |
 |-----------|-----------------------------------|-------|
@@ -315,10 +320,10 @@ effects (§4.4), not functions.
 | `char`    | `(int) -> string`                 | Code point → single-char string. |
 | `number`  | `(string) -> float`               | Parse a string to a number. |
 | `args`    | `() -> [string]`                  | CLI args after the source file. |
-| `exit`    | `(int) -> unit`                   | Exit the process with a code. |
-| `wait`    | `(int) -> unit`                   | Busy-wait `n` seconds (synchronous evaluator). |
 
 `each`/`flatmap`/`map` take the function **first**, matching `map`.
+(Formerly `exit`/`wait` builtins existed; they are now the `Exit`/`Wait`
+effects in §4.4.)
 
 ### 4.4 Builtin effects
 
@@ -332,6 +337,8 @@ user handler, the runtime interprets them at the top level (real I/O); a user
 | `Write`    | `(path: string, content: string): unit` | `writeFileSync` the path. |
 | `Println`  | `(v: any): unit`           | `console.log(show(v))` — print a value + newline. |
 | `Out`      | `(s: string): unit`        | `process.stdout.write(s)` — raw string, no newline. |
+| `Exit`     | `(code: int): unit`        | `process.exit(code)` — terminates without resuming. |
+| `Wait`     | `(secs: int): unit`        | Busy-wait `secs` seconds then resume with unit (synchronous evaluator). |
 
 ```js
 // Println is an ordinary effect: a handler can capture it instead of printing.
@@ -473,7 +480,8 @@ ef run <file> [args...]   # typecheck then evaluate; extra args reach `args()`
 ```
 
 The result of the last expression is printed via `show` unless the program
-calls `exit` itself. Programs that loop forever (animations) run until killed.
+calls `perform Exit(...)` itself. Programs that loop forever (animations) run
+until killed.
 
 ## 9. Examples on disk
 

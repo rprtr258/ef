@@ -79,6 +79,47 @@ y
 `))).toBe("8");
 });
 
+describe("Equality, Exit/Wait effects, inferred-any warning", () => {
+  test("== / != require same type (numeric widening lets int ~ float)", () => {
+    expect(show(run(`1 == 2`))).toBe("false");
+    expect(show(run(`1 != 2.5`))).toBe("true");
+    expect(show(run(`"a" == "b"`))).toBe("false");
+  });
+
+  test("Exit is an interceptable effect (handler can abort instead of resuming)", () => {
+    // The handler returns the exit code without resuming, so `perform Exit(42)`
+    // yields 42 and the code after it ("post") never runs — proving Exit is an
+    // ordinary effect, not a magic builtin that always kills the process.
+    expect(show(run(`
+handle {
+  perform Out("pre");
+  perform Exit(42);
+  perform Out("post")
+} case Exit(c) => k { c }
+  case Out(s) => k { perform Println(s); k(unit) }
+`))).toBe("42");
+  });
+
+  test("Wait is an effect with a pure-looking unit type", () => {
+    expect(typeOf("fn f(): unit ! { Wait } { perform Wait(0) }")).toBe("unit");
+  });
+
+  test("inferred `any` warns; an explicit `: any` annotation is silent", () => {
+    const warned: string[] = [];
+    const orig = console.warn;
+    console.warn = (s: string) => { warned.push(s); };
+    try {
+      typeOf("let f = list; f");            // inferred (any) -> [any]  -> warn
+      typeOf("let f: (any) -> [any] = list; f"); // explicit annotation -> silent
+      typeOf("let xs = [1, 2, 3]; xs");     // array literal -> [int]   -> silent
+    } finally {
+      console.warn = orig;
+    }
+    expect(warned.length).toBe(1);
+    expect(warned[0]).toMatch(/`f` inferred as .*\(any\) -> \[any\]/);
+  });
+});
+
 describe("Negative tests (static type checker rejects)", () => {
   function assertTypeError(src: string, needle: string) {
     expect(() => run(src)).toThrow(needle);
@@ -102,6 +143,16 @@ describe("Negative tests (static type checker rejects)", () => {
 
   test("Using an undeclared effect", () => {
     assertTypeError(`perform Nope(1)`, "Unknown effect");
+  });
+
+  test("== / != reject cross-type operands", () => {
+    assertTypeError(`"a" == 1`, "≠");
+    assertTypeError(`"x" != 1`, "≠");
+  });
+
+  test("exit/wait are no longer builtins (use perform Exit/Wait)", () => {
+    assertTypeError(`exit(1)`, "Unbound: exit");
+    assertTypeError(`wait(1)`, "Unbound: wait");
   });
 });
 

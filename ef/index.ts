@@ -95,6 +95,25 @@ function showT(t: Type): string {
   }
 }
 
+// True if `t` contains an `any` (the absorbing escape type). Used to warn when
+// `any` is *inferred* (e.g. from `list(...)` / `head` of an `[any]`) rather than
+// explicitly written, so silent escapes are visible. `res` is applied so bound
+// type variables are resolved before checking.
+function containsAny(t: Type): boolean {
+  const r = res(t);
+  if (r.tag === "any") return true;
+  if (r.tag === "arr") return containsAny(r.elem);
+  if (r.tag === "fun") return r.params.some(containsAny) || containsAny(r.ret);
+  return false;
+}
+
+function warnInferredAny(name: string, t: Type): void {
+  console.warn(
+    `warning: \`${name}\` inferred as \`${showT(res(t))}\` (contains \`any\`); ` +
+    `add an explicit annotation to silence`,
+  );
+}
+
 // Effect declaration: parameter types + the type the resumed continuation yields.
 type EffectSig = {
   params: Type[];
@@ -625,9 +644,13 @@ function textend(parent: TEnv): TEnv {
   return new TEnv(parent);
 }
 
-// Operators handled by special-casing in `infer` (numeric widening), not BINOPS.
+// Operators handled by special-casing in `infer` (numeric widening / same-type
+// equality), not via the generic function-application path.
 const NUMOPS = new Set(["+", "-", "*", "/", "%"]);
 const CMPOPS = new Set(["<", ">", "<=", ">="]);
+// Equality ops require both operands to share a type (numeric widening still
+// lets `int ~ float`); cross-type comparisons like `"a" == 1` are rejected.
+const EQOPS = new Set(["==", "!="]);
 function isNum(t: Type): t is Prim {
   return t.tag === "prim" && (t.name === "int" || t.name === "float");
 }
@@ -646,9 +669,9 @@ function numeric(a: Type, b: Type, op: string): Type {
   throw new TypeError_(`${op}: ${showT(ra)} and ${showT(rb)} are not numeric`);
 }
 
-const BINOPS: Record<string, [Type, Type, Type]> = {
-  "==": [TANY, TANY, TBOOL], "!=": [TANY, TANY, TBOOL],
-};
+// `==` / `!=` are special-cased in `infer` (see EQOPS): they are NOT installed
+// as ordinary `(any, any) -> bool` function bindings, so they can't be used as
+// first-class values and can't silently compare unrelated types.
 
 // infer: returns the type, side-effecting `effs` with performed effects.
 function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, EffectSig>): Type {
@@ -688,7 +711,7 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
     case "let": {
       const vt = infer(e.val, env, effs, effects);
       if (e.typ) { unify(e.typ, vt); env.vars.set(e.name, e.typ); }
-      else env.vars.set(e.name, vt);
+      else { env.vars.set(e.name, vt); if (containsAny(vt)) warnInferredAny(e.name, vt); }
       return TNULL;
     }
     case "letrec": {
@@ -696,7 +719,9 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
       env.vars.set(e.name, declared);
       const vt = infer(e.val, env, effs, effects);
       unify(declared, vt);
-      env.vars.set(e.name, res(declared));
+      const rt = res(declared);
+      env.vars.set(e.name, rt);
+      if (!e.typ && containsAny(rt)) warnInferredAny(e.name, rt);
       return TNULL;
     }
     case "if": {
@@ -792,6 +817,14 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
         const at = infer(e.args[0]!, env, effs, effects);
         return numeric(at, at, "neg");
       }
+      // Equality: both operands must share a type (numeric widening lets
+      // `int ~ float`). Cross-type (`"a" == 1`) is a type error.
+      if (e.fn.t === "sym" && EQOPS.has(e.fn.v)) {
+        const at = infer(e.args[0]!, env, effs, effects);
+        const bt = infer(e.args[1]!, env, effs, effects);
+        unify(at, bt);
+        return TBOOL;
+      }
       const ft = infer(e.fn, env, effs, effects);
       const argTs = e.args.map(a => infer(a, env, effs, effects));
       const ret = freshVar();
@@ -821,11 +854,13 @@ function checkProgram(items: Item[]): { effects: Map<string, EffectSig>; lastTyp
   effects.set("Write", { params: [TSTR, TSTR], ret: TNULL });
   effects.set("Println", { params: [TANY], ret: TNULL });
   effects.set("Out", { params: [TSTR], ret: TNULL });
+  // `Exit(code: int): unit` terminates the process by default (never resumes);
+  // `Wait(secs: int): unit` blocks for `secs` seconds then resumes with unit.
+  // Both are effects so a handler can intercept them.
+  effects.set("Exit", { params: [TINT], ret: TNULL });
+  effects.set("Wait", { params: [TINT], ret: TNULL });
   for (const it of items) if ("effect" in it) effects.set(it.effect, it.sig);
   const env = new TEnv(null);
-  for (const [op, [a, b, r]] of Object.entries(BINOPS)) {
-    env.vars.set(op, tFun([a, b], r, new Set()));
-  }
   env.vars.set("not", tFun([TBOOL], TBOOL, new Set()));
   env.vars.set("list", tFun([TANY], tArr(TANY), new Set()));
   env.vars.set("head", () => { const a = freshVar(); return tFun([tArr(a)], a, new Set()); });
@@ -847,8 +882,6 @@ function checkProgram(items: Item[]): { effects: Map<string, EffectSig>; lastTyp
   env.vars.set("char", tFun([TINT], TSTR, new Set()));
   env.vars.set("number", tFun([TSTR], TFLOAT, new Set()));
   env.vars.set("args", tFun([], tArr(TSTR), new Set()));
-  env.vars.set("exit", tFun([TINT], TNULL, new Set()));
-  env.vars.set("wait", tFun([TINT], TNULL, new Set()));
   env.vars.set("get", () => { const a = freshVar(); return tFun([tArr(a), TINT], a, new Set()); });
   env.vars.set("set", () => { const a = freshVar(); return tFun([tArr(a), TINT, a], TNULL, new Set()); });
   env.vars.set("each", () => {
@@ -996,6 +1029,15 @@ function runTop(out: Outcome): Value {
     if (out.op === "Write") { writeFileSync(out.args[0] as string, out.args[1] as string); out = out.k(null); continue; }
     if (out.op === "Println") { console.log(show(out.args[0] ?? null)); out = out.k(null); continue; }
     if (out.op === "Out") { process.stdout.write(out.args[0] as string); out = out.k(null); continue; }
+    // Exit terminates the process without resuming; Wait blocks then resumes
+    // with unit. Both are ordinary effects a handler can intercept.
+    if (out.op === "Exit") { process.exit(num(out.args[0]!)); }
+    if (out.op === "Wait") {
+      const end = Date.now() + num(out.args[0]!) * 1000;
+      while (Date.now() < end) { /* busy-wait: synchronous CPS evaluator */ }
+      out = out.k(null);
+      continue;
+    }
     throw new Error("Unhandled effect: " + out.op);
   }
 }
@@ -1095,12 +1137,6 @@ function globalEnv(): Env {
       return go(0);
     },
   });
-  g.vars.set("exit", { tag: "native", fn: (args) => { process.exit(num(args[0]!)); } });
-  g.vars.set("wait", lift((a) => {
-    const end = Date.now() + num(a) * 1000;
-    while (Date.now() < end) { /* busy-wait: synchronous CPS evaluator */ }
-    return null;
-  }));
   return g;
 }
 
