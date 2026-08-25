@@ -4,6 +4,7 @@
 // is a plain JS function — giving true multi-shot `resume`.
 
 import {readFileSync, writeFileSync} from "node:fs";
+import * as readline from "node:readline";
 
 // --- Values (runtime) ---
 
@@ -21,6 +22,7 @@ type Closure = {
   params: string[];
   body: Expr;
   env: Env;
+  typ?: FunT;
 };
 type Native = {
   tag: "native";
@@ -128,7 +130,7 @@ type Expr =
   | { t: "bool"; v: boolean }
   | { t: "unit" }
   | { t: "sym"; v: string }
-  | { t: "lambda"; params: Param[]; retTyp: Type | null; retEffs: Set<string> | null; body: Expr }
+  | { t: "lambda"; params: Param[]; retTyp: Type | null; retEffs: Set<string> | null; body: Expr; typ?: FunT }
   | { t: "let"; name: string; typ: Type | null; val: Expr }
   | { t: "letrec"; name: string; typ: Type | null; val: Expr }
   | { t: "if"; c: Expr; a: Expr; b: Expr }
@@ -706,7 +708,9 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
           if (!e.retEffs.has(op))
             throw new TypeError_(`effect ${op} not declared in signature (declared: ${decl})`);
       }
-      return tFun(ps, e.retTyp ?? ret, e.retEffs ?? innerEffs);
+      const ft = tFun(ps, e.retTyp ?? ret, e.retEffs ?? innerEffs);
+      e.typ = ft;
+      return ft;
     }
     case "let": {
       const vt = infer(e.val, env, effs, effects);
@@ -844,8 +848,17 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
   }
 }
 
-function checkProgram(items: Item[]): { effects: Map<string, EffectSig>; lastType: Type } {
-  const effects = new Map<string, EffectSig>();
+function checkProgram(
+  items: Item[],
+  acc?: { env: TEnv; effects: Map<string, EffectSig> },
+): { env: TEnv; effects: Map<string, EffectSig>; lastType: Type } {
+  let env: TEnv;
+  let effects: Map<string, EffectSig>;
+  if (acc) {
+    env = acc.env;
+    effects = acc.effects;
+  } else {
+  effects = new Map<string, EffectSig>();
   // Builtin effects, interpreted by the runtime when left unhandled.
   // `Read(path): string` reads a file; `Write(path, content): null` writes one.
   // `Println(v: any): null` and `Out(s: string): null` are the console effects.
@@ -859,8 +872,7 @@ function checkProgram(items: Item[]): { effects: Map<string, EffectSig>; lastTyp
   // Both are effects so a handler can intercept them.
   effects.set("Exit", { params: [TINT], ret: TNULL });
   effects.set("Wait", { params: [TINT], ret: TNULL });
-  for (const it of items) if ("effect" in it) effects.set(it.effect, it.sig);
-  const env = new TEnv(null);
+  env = new TEnv(null);
   env.vars.set("not", tFun([TBOOL], TBOOL, new Set()));
   env.vars.set("list", tFun([TANY], tArr(TANY), new Set()));
   env.vars.set("head", () => { const a = freshVar(); return tFun([tArr(a)], a, new Set()); });
@@ -892,10 +904,12 @@ function checkProgram(items: Item[]): { effects: Map<string, EffectSig>; lastTyp
     const a = freshVar(), b = freshVar();
     return tFun([tFun([a, TINT], tArr(b), new Set()), tArr(a)], tArr(b), new Set());
   });
+  }
+  for (const it of items) if ("effect" in it) effects.set(it.effect, it.sig);
   let lastType: Type = TNULL;
   for (const it of items.filter(it => "e" in it))
     lastType = infer(it.e, env, new Set(), effects);
-  return { effects, lastType };
+  return { env, effects, lastType };
 }
 
 // --- Evaluator (CPS) ---
@@ -911,7 +925,7 @@ function evalE(e: Expr, env: Env, k: Cont): Outcome {
     case "sym":
       return k(lookup(env, e.v));
     case "lambda":
-      return k({ tag: "fn", params: e.params.map(p => p.name), body: e.body, env });
+      return k({ tag: "fn", params: e.params.map(p => p.name), body: e.body, env, typ: e.typ });
     case "let":
       return evalE(e.val, env, (v) => {
         env.vars.set(e.name, v);
@@ -1147,6 +1161,8 @@ export function show(v: Value): string {
   if (typeof v === "number") return String(v);
   if (typeof v === "string") return '"' + v + '"';
   if (Array.isArray(v)) return "[" + v.map(show).join(", ") + "]";
+  if (typeof v === "object" && !Array.isArray(v) && v.tag === "fn")
+    return v.typ ? "[fn: " + showT(res(v.typ)) + "]" : "[fn]";
   return "[fn]";
 }
 
@@ -1167,4 +1183,36 @@ export function run(src: string): Value {
 export function typeOf(src: string): string {
   const items = new Parser(src).parseProgram();
   return showT(res(checkProgram(items).lastType));
+}
+
+// repl: an interactive read-eval-print loop. State (runtime env + type env +
+// effect signatures) persists across lines, so `let`/`fn`/`effect` bindings
+// accumulate. Each line is parsed and evaluated as a complete program; ef is
+// newline-insensitive so multi-statement blocks fit on one line. Echoes the
+// value and inferred type of a bare expression; declarations print nothing.
+export function repl(): void {
+  const g = globalEnv();
+  const acc = checkProgram([]); // seeded with builtins; extended incrementally
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "ef> " });
+  const evalLine = (src: string): void => {
+    const items = new Parser(src).parseProgram();
+    const { lastType } = checkProgram(items, acc);
+    let last: Value = null;
+    for (const it of items) if ("e" in it) last = runTop(evalE(it.e, g, (v) => ({ tag: "done", value: v })));
+    const tail = items[items.length - 1];
+    const isExpr = tail && "e" in tail && (tail as { e: Expr }).e.t !== "let" && (tail as { e: Expr }).e.t !== "letrec";
+    if (isExpr && last !== null) console.log(show(last) + " : " + showT(res(lastType)));
+  };
+  console.log("ef REPL — type :q to quit");
+  rl.prompt();
+  rl.on("line", (line) => {
+    const s = line.trimEnd();
+    if (s === ":q" || s === ":quit") { rl.close(); return; }
+    if (s === "") { rl.prompt(); return; }
+    const src = /[;{}]$/.test(s) ? s : s + ";";
+    try { evalLine(src); }
+    catch (e) { console.log(String((e as Error).message ?? e)); }
+    rl.prompt();
+  });
+  rl.on("close", () => { process.stdout.write("\n"); process.exit(0); });
 }

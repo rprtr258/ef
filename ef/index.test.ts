@@ -318,13 +318,29 @@ handle {
 
 test("effect annotations are mandatory for effectful fns", () => {
   // Pure body, no annotation: fine.
-  expect(show(run(`fn f(): int { 1 + 2 }\nf`))).toBe("[fn]");
+  expect(show(run(`fn f(): int { 1 + 2 }\nf`))).toBe("[fn: () -> int]");
   // Effectful body, annotation present and covering: fine.
-  expect(show(run(`fn g(): unit ! { Out } { perform Out("x") }\ng`))).toBe("[fn]");
+  expect(show(run(`fn g(): unit ! { Out } { perform Out("x") }\ng`))).toBe("[fn: () -> unit ! { Out }]");
   // Effectful body, no annotation: rejected.
   expect(() => run(`fn h(): unit { perform Out("x") }\nh`)).toThrow(/not declared in signature/);
   // Anonymous lambda too: effectful without annotation is rejected.
   expect(() => run(`let k = fn(): unit { perform Out("x") }; k`)).toThrow(/not declared in signature/);
   // Anonymous lambda with annotation: accepted.
-  expect(show(run(`let k = fn(): unit ! { Out } { perform Out("x") }; k`))).toBe("[fn]");
+  expect(show(run(`let k = fn(): unit ! { Out } { perform Out("x") }; k`))).toBe("[fn: () -> unit ! { Out }]");
+});
+
+test("show prints function arity and type, natives stay [fn]", () => {
+  expect(show(run(`fn add(a: int, b: int): int { a + b }\nadd`))).toBe("[fn: (int, int) -> int]");
+  expect(show(run(`fn id(x: int): int { x }\nid`))).toBe("[fn: (int) -> int]");
+  // Builtins (natives) carry no inferred type here: stay [fn].
+  expect(show(run(`head`))).toBe("[fn]");
+});
+
+test("REPL: bindings persist across lines", () => {
+  const { execSync } = require("node:child_process");
+  const out = execSync(
+    'bun run cli.ts repl',
+    { input: 'let a = 6\nlet b = 7\na * b\n:q\n', encoding: "utf8", timeout: 20000 },
+  );
+  expect(out).toContain("42 : int");
 });

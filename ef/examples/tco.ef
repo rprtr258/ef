@@ -1,11 +1,13 @@
 // Recursion limit probe.
 //
-// ef's evaluator is direct-style CPS: a *tail* call reuses the same
-// continuation (so it loops in constant stack — effectively TCO), while a
-// *non-tail* call grows the JS stack on every step. This example runs both
-// at a modest, safe depth to show the contrast; crank DEPTH up to find the
-// non-tail ceiling on your machine (it will throw a stack overflow before it
-// exhausts memory — tail calls will keep going).
+// ef's evaluator is CPS and every continuation call is in tail position, so
+// the JS engine's tail-call optimization (Bun/JSC) keeps the stack O(1) for
+// BOTH tail and non-tail recursion — neither overflows the stack. The cost of
+// a *non-tail* call is heap allocation: each step builds a continuation
+// closure, so depth N costs O(N) time and memory (~7ms / 1k calls), not stack.
+// A *tail* call reuses the continuation and is allocation-free, so it runs at
+// full speed to any depth. Crank DEPTH to see the contrast: tail stays fast,
+// non-tail slows linearly on allocation/GC but does not crash.
 
 let DEPTH = 100 * 1000 * 1000;
 

@@ -6,8 +6,8 @@ effects. Implemented in a single TypeScript file (~900 lines), evaluated with
 [Bun](https://bun.sh).
 
 ```bash
-bun test              # test suite (14 tests)
-bun run index.ts      # self-check demos
+bun test              # test suite (35 tests)
+bun run index.ts      # (no self-check block; demos live in the test suite)
 bunx tsc --noEmit     # host typecheck (stays clean)
 ```
 
@@ -373,8 +373,9 @@ handle {
 
 ```ts
 function run(src: string): Value;      // typecheck then evaluate; throws on type error
-function show(v: Value): string;       // pretty-print a value
+function show(v: Value): string;       // pretty-print a value; closures print as `[fn: <type>]`
 function typeOf(src: string): string;  // inferred type of the last expression, e.g. "(int) -> int ! { Emit }"
+function repl(): void;                 // interactive REPL with persistent bindings
 ```
 
 A type error is a thrown `Error` whose message contains the mismatch (e.g.
@@ -477,15 +478,24 @@ handle {
 
 ```
 ef run <file> [args...]   # typecheck then evaluate; extra args reach `args()`
+ef repl                   # interactive REPL; bindings persist across lines
 ```
 
 The result of the last expression is printed via `show` unless the program
 calls `perform Exit(...)` itself. Programs that loop forever (animations) run
 until killed.
 
+The REPL parses each line as a complete program; `let`/`fn`/`effect` bindings
+accumulate across lines (both the runtime env and the type env persist). A
+bare expression prints both value and inferred type, e.g. `1 + 2` → `3 : int`.
+Type `:q` to quit.
+
 ## 9. Examples on disk
 
 - `examples/newton.ef` — Newton's method square root (`while` + assignment).
-- `examples/tco.ef` — tail vs. non-tail recursion depth probe.
+- `examples/tco.ef` — recursion probe. The CPS evaluator is fully
+  tail-call-structured, so Bun/JSC's TCO keeps the stack O(1) for both tail
+  and non-tail calls; non-tail recursion costs heap allocation (linear time),
+  not stack overflow.
 - `examples/star.ef` — rotating 3D star polygon (port of `ink/samples/star.ink`).
   Run: `ef run examples/star.ef <vertices> <step>` where `0 < step < vertices/2`.
