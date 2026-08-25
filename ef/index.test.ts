@@ -208,6 +208,34 @@ test("math + string builtins: cos/sin/PI/round/abs/char", () => {
   expect(show(run(`round(2.7)`))).toBe("3");
   expect(show(run(`abs(-4.5)`))).toBe("4.5");
   expect(show(run(`char(65)`))).toBe('"A"');
+  // char uses code points, not UTF-16 code units: 0x1F600 is a supplementary char.
+  expect(show(run(`char(128512)`))).toBe('"\ud83d\ude00"');
+});
+
+test("division is type-preserving: int/int -> int, float/float -> float", () => {
+  // int/int is truncated; the checker stamps the node so the runtime knows.
+  expect(typeOf(`7 / 2`)).toBe("int");
+  expect(show(run(`7 / 2`))).toBe("3");
+  expect(typeOf(`4 / 2`)).toBe("int");
+  expect(show(run(`4 / 2`))).toBe("2");
+  // float/float stays exact.
+  expect(typeOf(`10.0 / 4.0`)).toBe("float");
+  expect(show(run(`10.0 / 4.0`))).toBe("2.5");
+  // mixed int/float widens to float (no truncation).
+  expect(typeOf(`7 / 2.0`)).toBe("float");
+  expect(show(run(`7 / 2.0`))).toBe("3.5");
+  // negative int division truncates toward zero (Math.trunc).
+  expect(show(run(`-7 / 2`))).toBe("-3");
+});
+
+test("head/get fail loudly on empty/out-of-bounds", () => {
+  // No silent null: empty array and OOB index raise instead of returning unit.
+  expect(() => run(`head([])`)).toThrow(/head of empty array/);
+  expect(() => run(`get([1, 2], 5)`)).toThrow(/out of bounds/);
+  expect(() => run(`get([1, 2], -1)`)).toThrow(/out of bounds/);
+  // In-bounds still works.
+  expect(show(run(`head([1, 2, 3])`))).toBe("1");
+  expect(show(run(`get([1, 2, 3], 2)`))).toBe("3");
 });
 
 test("string escapes: \\xHH and \\n", () => {

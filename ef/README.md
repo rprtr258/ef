@@ -277,6 +277,11 @@ type  ::= "[" type "]"
 Unary `-` (neg) : numeric, shares the widening rule (`int` in → `int` out,
 `float` in → `float` out). Unary `!` (not) : `(bool) -> bool`.
 
+`/` is **type-preserving and truncates toward zero** for `int / int`
+(`7 / 2 == 3`, `-7 / 2 == -3`); `float / float` is exact (`7.0 / 2.0 == 3.5`).
+The type checker stamps each `/` node as int or float division at check time
+(the runtime sees untyped JS numbers and cannot tell `7` from `7.0`).
+
 ### 4.2 Functions
 
 | Name       | Type (schematic)                                | Notes |

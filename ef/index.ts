@@ -118,7 +118,7 @@ type Expr =
   | { t: "block"; stmts: Expr[] }
   | { t: "perform"; op: string; args: Expr[] }
   | { t: "handle"; body: Expr; cases: HandlerCase[] }
-  | { t: "app"; fn: Expr; args: Expr[] };
+  | { t: "app"; fn: Expr; args: Expr[]; div?: "int" | "float" };
 
 type Param = { name: string; typ: Type | null };
 
@@ -780,7 +780,13 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
         const at = infer(e.args[0]!, env, effs, effects);
         const bt = infer(e.args[1]!, env, effs, effects);
         const widened = numeric(at, bt, e.fn.v);
-        return CMPOPS.has(e.fn.v) ? TBOOL : widened;
+        if (CMPOPS.has(e.fn.v)) return TBOOL;
+        // `/` is type-preserving: int/int -> int (truncated at runtime),
+        // float/float -> float, and any-operand -> float (don't truncate
+        // unknowns). The checker stamps which division this is on the node so
+        // the evaluator (which sees untyped JS numbers) knows whether to truncate.
+        if (e.fn.v === "/") { e.div = widened === TINT ? "int" : "float"; return widened; }
+        return widened;
       }
       if (e.fn.t === "sym" && e.fn.v === "neg") {
         const at = infer(e.args[0]!, env, effs, effects);
@@ -911,6 +917,15 @@ function evalE(e: Expr, env: Env, k: Cont): Outcome {
     case "handle":
       return handle(e.body, e.cases, env, k);
     case "app":
+      // `/` is stamped by the checker with int vs float division (the runtime
+      // can't tell, since JS erases 7 and 7.0 to the same value).
+      if (e.fn.t === "sym" && e.fn.v === "/") {
+        return evalArgs(e.args, env, [], (args) => {
+          const a = args[0]!, b = args[1]!;
+          const r = num(a) / num(b);
+          return k(e.div === "int" ? Math.trunc(r) : r);
+        });
+      }
       return evalE(e.fn, env, (f) =>
         evalArgs(e.args, env, [], (args) => apply(f, args, k)),
       );
@@ -1001,7 +1016,6 @@ function globalEnv(): Env {
   bin("+", (a, b) => num(a) + num(b));
   bin("-", (a, b) => num(a) - num(b));
   bin("*", (a, b) => num(a) * num(b));
-  bin("/", (a, b) => num(a) / num(b));
   bin("%", (a, b) => num(a) % num(b));
   bin("==", (a, b) => (a === b ? true : false));
   bin("!=", (a, b) => (a !== b ? true : false));
@@ -1012,7 +1026,11 @@ function globalEnv(): Env {
   g.vars.set("neg", lift((a) => -num(a)));
   g.vars.set("not", lift((a) => (a === false || a === null ? true : false)));
   g.vars.set("list", lift((...xs) => xs as Value[]));
-  g.vars.set("head", lift((xs) => (xs as Value[])[0] ?? null));
+  g.vars.set("head", lift((xs) => {
+    const a = xs as Value[];
+    if (a.length === 0) throw new Error("head of empty array");
+    return a[0]!;
+  }));
   g.vars.set("tail", lift((xs) => (xs as Value[]).slice(1)));
   g.vars.set("concat", lift((a, b) => (a as Value[]).concat(b as Value[])));
   g.vars.set("flat", lift((xs) => (xs as Value[]).flat() as Value[]));
@@ -1022,11 +1040,12 @@ function globalEnv(): Env {
     fn: (args, k) => {
       const f = args[0]!;
       const xs = args[1] as Value[];
-      function go(i: number, acc: Value[]): Outcome {
-        if (i >= xs.length) return k(acc);
-        return apply(f, [xs[i]!], (v) => go(i + 1, [...acc, v]));
+      const out: Value[] = new Array(xs.length);
+      function go(i: number): Outcome {
+        if (i >= xs.length) return k(out);
+        return apply(f, [xs[i]!], (v) => { out[i] = v; return go(i + 1); });
       }
-      return go(0, []);
+      return go(0);
     },
   });
   // --- builtins added for the star.ink port ---
@@ -1035,7 +1054,7 @@ function globalEnv(): Env {
   g.vars.set("sin", lift((a) => Math.sin(num(a))));
   g.vars.set("abs", lift((a) => Math.abs(num(a))));
   g.vars.set("round", lift((a) => Math.round(num(a))));
-  g.vars.set("char", lift((a) => String.fromCharCode(num(a) | 0)));
+  g.vars.set("char", lift((a) => String.fromCodePoint(num(a) | 0)));
   g.vars.set("number", lift((a) => parseFloat(a as string)));
   g.vars.set("args", lift(() => process.argv.slice(2) as Value[]));
   g.vars.set("range", lift((a, b, c) => {
@@ -1045,7 +1064,13 @@ function globalEnv(): Env {
     else if (st < 0) for (let i = s; i > e; i += st) r.push(i);
     return r;
   }));
-  g.vars.set("get", lift((xs, i) => (xs as Value[])[num(i)] ?? null));
+  g.vars.set("get", lift((xs, i) => {
+    const a = xs as Value[];
+    const idx = num(i);
+    if (idx < 0 || idx >= a.length || !Number.isInteger(idx))
+      throw new Error(`get: index ${idx} out of bounds [0, ${a.length})`);
+    return a[idx]!;
+  }));
   g.vars.set("set", lift((xs, i, v) => { (xs as Value[])[num(i)] = v; return null; }));
   g.vars.set("each", {
     tag: "native",
