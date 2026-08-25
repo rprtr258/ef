@@ -215,3 +215,24 @@ test("string escapes: \\xHH and \\n", () => {
   expect(show(run(`"\x1B["`))).toBe('"\u001b["');
   expect(show(run(`"a\nb"`))).toBe('"a\nb"');
 });
+
+test("Println/Out are interceptable algebraic effects", () => {
+  // A handler captures Println's argument instead of letting it print.
+  expect(show(run(`
+handle {
+  perform Println(42);
+  perform Println("hi");
+  0
+} case Return(v) => k { [v] }
+  case Println(x) => k { concat([x], k(null)) }
+`))).toBe("[42, \"hi\", 0]");
+  // Out is an effect too: collect written strings.
+  expect(show(run(`
+handle {
+  perform Out("a");
+  perform Out("b");
+  null
+} case Return(v) => k { [] }
+  case Out(s) => k { concat([s], k(null)) }
+`))).toBe('["a", "b"]');
+});

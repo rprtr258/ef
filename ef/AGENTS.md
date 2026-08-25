@@ -32,8 +32,9 @@ Hindley-Milner-flavoured type system with effect tracking.
    functions. `handle` installs a handler map; `perform` walks up to a matching
    handler and calls its `resume` (the captured continuation `k`).
 8. **Builtins** — arithmetic/comparison binops, `head`/`tail`/`concat`/`flat`/
-   `len`/`map`/`list`/`println`. `map` and the array ops are polymorphic (fresh
-   type vars per use via scheme thunks in the type env).
+   `len`/`map`/`list`. `map` and the array ops are polymorphic (fresh
+   type vars per use via scheme thunks in the type env). Console output is via
+   the `Println`/`Out` builtin effects, not functions.
 9. **`run` / `show` / `typeOf`** — `run` typechecks then evaluates; `show`
    pretty-prints a value; `typeOf` returns the inferred type of the last
    expression as a string (surfaces effect sets).
@@ -60,8 +61,8 @@ typing rules.
 - **CPS evaluator, not generators.** Generators are single-use; CPS gives
   genuine multi-shot resume via callable JS closures.
 - **`any` is absorbing.** Unifies with everything and stays `any`. Escape
-  hatch for effect demos without row polymorphism. `list` and `println` use it
-  intentionally.
+  hatch for effect demos without row polymorphism. `list` uses it
+  intentionally; `Println` takes `any` for the same reason.
 - **Effect declarations required for `perform`.** `effect Op(args): ret` — the
   checker rejects `perform` of an undeclared effect. `ret` is the type
   `perform Op(...)` evaluates to (i.e. what `resume` injects).

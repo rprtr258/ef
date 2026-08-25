@@ -803,9 +803,12 @@ function checkProgram(items: Item[]): { effects: Map<string, EffectSig>; lastTyp
   const effects = new Map<string, EffectSig>();
   // Builtin effects, interpreted by the runtime when left unhandled.
   // `Read(path): string` reads a file; `Write(path, content): null` writes one.
+  // `Println(v: any): null` and `Out(s: string): null` are the console effects.
   // User `effect` decls below may add or override these.
   effects.set("Read", { params: [TSTR], ret: TSTR });
   effects.set("Write", { params: [TSTR, TSTR], ret: TNULL });
+  effects.set("Println", { params: [TANY], ret: TNULL });
+  effects.set("Out", { params: [TSTR], ret: TNULL });
   for (const it of items) if ("effect" in it) effects.set(it.effect, it.sig);
   const env = new TEnv(null);
   for (const [op, [a, b, r]] of Object.entries(BINOPS)) {
@@ -818,7 +821,6 @@ function checkProgram(items: Item[]): { effects: Map<string, EffectSig>; lastTyp
   env.vars.set("concat", () => { const a = freshVar(); return tFun([tArr(a), tArr(a)], tArr(a), new Set()); });
   env.vars.set("flat", () => { const a = freshVar(); return tFun([tArr(tArr(a))], tArr(a), new Set()); });
   env.vars.set("len", () => { const a = freshVar(); return tFun([tArr(a)], TINT, new Set()); });
-  env.vars.set("println", tFun([TANY], TNULL, new Set()));
   env.vars.set("map", () => {
     const a = freshVar(), b = freshVar();
     return tFun([tFun([a], b, new Set()), tArr(a)], tArr(b), new Set());
@@ -831,7 +833,6 @@ function checkProgram(items: Item[]): { effects: Map<string, EffectSig>; lastTyp
   env.vars.set("round", tFun([TFLOAT], TINT, new Set()));
   env.vars.set("range", tFun([TINT, TINT, TINT], tArr(TINT), new Set()));
   env.vars.set("char", tFun([TINT], TSTR, new Set()));
-  env.vars.set("out", tFun([TSTR], TNULL, new Set()));
   env.vars.set("number", tFun([TSTR], TFLOAT, new Set()));
   env.vars.set("args", tFun([], tArr(TSTR), new Set()));
   env.vars.set("exit", tFun([TINT], TNULL, new Set()));
@@ -968,10 +969,12 @@ function handle(body: Expr, cases: HandlerCase[], env: Env, k: Cont): Outcome {
 function runTop(out: Outcome): Value {
   for (;;) {
     if (out.tag === "done") return out.value;
-    // Builtin effect interpretation: when Read/Write reach the top unhandled,
-    // perform real I/O and resume the continuation.
+    // Builtin effect interpretation: when Read/Write/Println/Out reach the
+    // top unhandled, perform real I/O and resume the continuation.
     if (out.op === "Read") { out = out.k(readFileSync(out.args[0] as string, "utf8")); continue; }
     if (out.op === "Write") { writeFileSync(out.args[0] as string, out.args[1] as string); out = out.k(null); continue; }
+    if (out.op === "Println") { console.log(show(out.args[0] ?? null)); out = out.k(null); continue; }
+    if (out.op === "Out") { process.stdout.write(out.args[0] as string); out = out.k(null); continue; }
     throw new Error("Unhandled effect: " + out.op);
   }
 }
@@ -1008,10 +1011,6 @@ function globalEnv(): Env {
   g.vars.set("concat", lift((a, b) => (a as Value[]).concat(b as Value[])));
   g.vars.set("flat", lift((xs) => (xs as Value[]).flat() as Value[]));
   g.vars.set("len", lift((xs) => (xs as Value[]).length));
-  g.vars.set("println", lift((x) => {
-    console.log(show(x));
-    return null;
-  }));
   g.vars.set("map", {
     tag: "native",
     fn: (args, k) => {
@@ -1032,7 +1031,6 @@ function globalEnv(): Env {
   g.vars.set("round", lift((a) => Math.round(num(a))));
   g.vars.set("char", lift((a) => String.fromCharCode(num(a) | 0)));
   g.vars.set("number", lift((a) => parseFloat(a as string)));
-  g.vars.set("out", lift((a) => { process.stdout.write(a as string); return null; }));
   g.vars.set("args", lift(() => process.argv.slice(2) as Value[]));
   g.vars.set("range", lift((a, b, c) => {
     const s = num(a), e = num(b), st = num(c);

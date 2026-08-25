@@ -249,8 +249,8 @@ type  ::= "[" type "]"
   - Handled ops are removed from the body's effect set; any remaining (unhandled)
     ops propagate to the caller.
 - **Top-level effect policy:** effects left over at the top level are either
-  interpreted by a builtin handler (for `Read`/`Write`) or reported as
-  unhandled.
+  interpreted by a builtin handler (for `Read`/`Write`/`Println`/`Out`) or
+  reported as unhandled.
 
 ### 3.4 Polymorphism
 
@@ -283,12 +283,12 @@ Unary `-` (neg) : numeric, shares the widening rule (`int` in → `int` out,
 | `flat`     | `([[A]]) -> [A]`                                | Flatten one level. |
 | `len`      | `([A]) -> int`                                  | Length. |
 | `map`      | `((A) -> B, [A]) -> [B]`                        | Apply; fresh `A`/`B` per use. |
-| `println`  | `(any) -> null`                                 | Print a value (with newline). |
 
 ### 4.3 Math, I/O, and array helpers
 
 Added for the `star.ink` port (see `examples/star.ef`). All are pure except
-`out` (writes to stdout) and `exit`/`wait` (process control).
+`exit`/`wait` (process control). Console output is via the `Println`/`Out`
+effects (§4.4), not functions.
 
 | Name      | Type (schematic)                  | Notes |
 |-----------|-----------------------------------|-------|
@@ -303,13 +303,36 @@ Added for the `star.ink` port (see `examples/star.ef`). All are pure except
 | `each`    | `((A, int) -> B, [A]) -> null`    | Iterate with index; result discarded. |
 | `flatmap` | `((A, int) -> [B], [A]) -> [B]`   | Map-then-concat. |
 | `char`    | `(int) -> string`                 | Code point → single-char string. |
-| `out`     | `(string) -> null`                | Write a string to stdout (no newline). |
 | `number`  | `(string) -> float`               | Parse a string to a number. |
 | `args`    | `() -> [string]`                  | CLI args after the source file. |
 | `exit`    | `(int) -> null`                   | Exit the process with a code. |
 | `wait`    | `(int) -> null`                   | Busy-wait `n` seconds (synchronous evaluator). |
 
 `each`/`flatmap`/`map` take the function **first**, matching `map`.
+
+### 4.4 Builtin effects
+
+These are pre-declared like user effects and invoked with `perform`. With no
+user handler, the runtime interprets them at the top level (real I/O); a user
+`handle` can intercept any of them.
+
+| Effect     | Signature                  | Default behaviour |
+|------------|----------------------------|--------------------|
+| `Read`     | `(path: string): string`   | `readFileSync` the path. |
+| `Write`    | `(path: string, content: string): null` | `writeFileSync` the path. |
+| `Println`  | `(v: any): null`           | `console.log(show(v))` — print a value + newline. |
+| `Out`      | `(s: string): null`        | `process.stdout.write(s)` — raw string, no newline. |
+
+```js
+// Println is an ordinary effect: a handler can capture it instead of printing.
+handle {
+  perform Println(42);
+  perform Println("hi");
+  0
+} case Return(v) => k { [v] }
+  case Println(x) => k { concat([x], k(null)) }
+// [42, "hi", 0]
+```
 
 ## 5. Semantics
 
@@ -413,7 +436,7 @@ ask
 // typeOf → "(int) -> int ! { Emit }"
 ```
 
-### Builtin file I/O (default handler does real I/O)
+### Builtin effects (default handler does real I/O)
 
 ```js
 // Write then read; with no user handler, the runtime performs real I/O.
