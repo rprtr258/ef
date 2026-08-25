@@ -1,0 +1,17 @@
+// Recursion limit probe.
+//
+// ef's evaluator is direct-style CPS: a *tail* call reuses the same
+// continuation (so it loops in constant stack — effectively TCO), while a
+// *non-tail* call grows the JS stack on every step. This example runs both
+// at a modest, safe depth to show the contrast; crank DEPTH up to find the
+// non-tail ceiling on your machine (it will throw a stack overflow before it
+// exhausts memory — tail calls will keep going).
+
+let DEPTH = 100 * 1000 * 1000;
+
+// Tail-recursive: the recursive call is the whole body. No stack growth.
+fn testTCO(n: int): int {
+  if (n <= 0) { 0 } else { testTCO(n - 1) }
+}
+
+println(testTCO(DEPTH));
