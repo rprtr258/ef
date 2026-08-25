@@ -39,6 +39,15 @@ function lookup(env: Env, name: string): Value {
   }
   throw new Error("Unbound symbol: " + name);
 }
+// Assign to the nearest enclosing scope that already binds `name`.
+function assignVar(env: Env, name: string, v: Value): void {
+  let e: Env | null = env;
+  while (e) {
+    if (e.vars.has(name)) { e.vars.set(name, v); return; }
+    e = e.parent;
+  }
+  throw new Error("Assignment to unbound symbol: " + name);
+}
 function extend(parent: Env): Env {
   return new Env(parent);
 }
@@ -104,6 +113,8 @@ type Expr =
   | { t: "let"; name: string; typ: Type | null; val: Expr }
   | { t: "letrec"; name: string; typ: Type | null; val: Expr }
   | { t: "if"; c: Expr; a: Expr; b: Expr }
+  | { t: "while"; c: Expr; body: Expr }
+  | { t: "assign"; name: string; val: Expr }
   | { t: "block"; stmts: Expr[] }
   | { t: "perform"; op: string; args: Expr[] }
   | { t: "handle"; body: Expr; cases: HandlerCase[] }
@@ -124,7 +135,7 @@ type Item = { e: Expr } | { effect: string; sig: EffectSig };
 // --- Lexer ---
 
 const KEYWORDS = new Set([
-  "let", "letrec", "fn", "if", "else", "perform", "handle", "case",
+  "let", "letrec", "fn", "if", "else", "while", "perform", "handle", "case",
   "true", "false", "null", "effect",
 ]);
 const TWO = ["==", "!=", "<=", ">=", "&&", "||", "=>"];
@@ -257,6 +268,12 @@ class Parser {
       const body = this.parseBlock();
       e = { t: "letrec", name, typ: null, val: { t: "lambda", params, retTyp: ret, retEffs, body } };
       if (this.is(";")) this.i++;
+    } else if (!KEYWORDS.has(this.peek() ?? "") && this.peek(1) === "=") {
+      const name = this.next();
+      this.next(); // =
+      const val = this.parseExpr();
+      if (this.is(";")) this.i++;
+      e = { t: "assign", name, val };
     } else {
       e = this.parseExpr();
       if (this.is(";")) this.i++;
@@ -453,6 +470,14 @@ class Parser {
       }
       return { t: "if", c, a, b };
     }
+    if (this.isKw("while")) {
+      this.next();
+      this.eat("(");
+      const c = this.parseExpr();
+      this.eat(")");
+      const body = this.parseBlock();
+      return { t: "while", c, body };
+    }
     if (this.isKw("perform")) {
       this.next();
       const op = this.next();
@@ -480,7 +505,7 @@ class Parser {
 }
 
 function isBlocky(e: Expr): boolean {
-  return e.t === "block" || e.t === "if" || e.t === "handle" || e.t === "lambda";
+  return e.t === "block" || e.t === "if" || e.t === "while" || e.t === "handle" || e.t === "lambda";
 }
 
 // --- Type checker ---
@@ -655,6 +680,20 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
       unify(a, b);
       return res(a);
     }
+    case "while": {
+      const c = infer(e.c, env, effs, effects);
+      unify(c, TBOOL);
+      infer(e.body, env, effs, effects);
+      return TNULL;
+    }
+    case "assign": {
+      const cur = tlookup(env, e.name);
+      if (cur === undefined) throw new TypeError_(`Assignment to unbound symbol: ${e.name}`);
+      const vt = infer(e.val, env, effs, effects);
+      // Unify against the declared type so `let guess: float` keeps its type.
+      unify(typeof cur === "function" ? cur() : cur, vt);
+      return TNULL;
+    }
     case "block": {
       const n = textend(env);
       let last: Type = TNULL;
@@ -798,6 +837,20 @@ function evalE(e: Expr, env: Env, k: Cont): Outcome {
       return evalE(e.c, env, (c) =>
         evalE(c !== false && c !== null ? e.a : e.b, env, k),
       );
+    case "while": {
+      const loop = (): Outcome =>
+        evalE(e.c, env, (c) =>
+          c !== false && c !== null
+            ? evalE(e.body, env, () => loop())
+            : k(null),
+        );
+      return loop();
+    }
+    case "assign":
+      return evalE(e.val, env, (v) => {
+        assignVar(env, e.name, v);
+        return k(null);
+      });
     case "block": {
       const n = extend(env);
       return evalSeq(e.stmts, 0, n, k);

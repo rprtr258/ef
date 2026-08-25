@@ -174,3 +174,13 @@ fn f(x: float): float { x + 0.5 }
 f(1)
 `))).toBe("1.5");
 });
+
+test("while loop with assignment", () => {
+  // Sum 1..5 with a mutable accumulator.
+  expect(show(run(`
+let i = 1;
+let acc = 0;
+while (i <= 5) { acc = acc + i; i = i + 1 }
+acc
+`))).toBe("15");
+});

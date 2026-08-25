@@ -153,6 +153,11 @@ args     ::= "(" (expr ("," expr)*)? ")"
 
 ### 2.4 Effects and handlers
 
+A **statement** is an expression used for its side effect. Inside a block, a
+bare `name = expr` is an **assignment**: it updates the nearest enclosing
+binding of `name` (which must already exist) and yields `null` — the mutation
+primitive that makes `while` useful.
+
 ```
 effect-decl ::= "effect" name "(" params ")" ":" type ";"
 handle      ::= "handle" block case+

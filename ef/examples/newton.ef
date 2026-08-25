@@ -5,12 +5,18 @@
 
 fn makeNewtonRoot(precision: float): (float) -> float {
   fn find(x: float): float {
-    fn step(guess: float): float {
+    let guess = x/2;
+    let done = false;
+    while (!done) {
       let diff = guess * guess - x;
       let adiff = if (diff < 0) { -diff } else { diff };
-      if (adiff < precision) { guess } else { step((guess + x / guess) / 2) }
+      if (adiff < precision) {
+        done = true
+      } else {
+        guess = (guess + x / guess) / 2
+      }
     }
-    step(1)
+    guess
   }
   find
 }
