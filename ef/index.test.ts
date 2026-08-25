@@ -184,3 +184,34 @@ while (i <= 5) { acc = acc + i; i = i + 1 }
 acc
 `))).toBe("15");
 });
+
+test("builtins added for the star port: range/get/set/each/flatmap/modulo", () => {
+  // range + each + set: build [0,1,2,3] via mutation, sum with each.
+  expect(show(run(`
+let a = [0, 0, 0, 0];
+let s = 0;
+each(fn(i, _) { set(a, i, i) }, range(0, 4, 1));
+each(fn(v, _) { s = s + v }, a);
+s
+`))).toBe("6");
+  // flatmap + modulo: [[0],[0,1],[0,1,2]] flattened.
+  expect(show(run(`
+flatmap(fn(i, _) { range(0, i + 1, 1) }, range(0, 3, 1))
+`))).toBe("[0, 0, 1, 0, 1, 2]");
+  // modulo.
+  expect(show(run(`7 % 3`))).toBe("1");
+});
+
+test("math + string builtins: cos/sin/PI/round/abs/char", () => {
+  // cos(0)=1, round(2.7)=3, abs(-4.5)=4.5, char(65)="A".
+  expect(show(run(`round(cos(0.0))`))).toBe("1");
+  expect(show(run(`round(2.7)`))).toBe("3");
+  expect(show(run(`abs(-4.5)`))).toBe("4.5");
+  expect(show(run(`char(65)`))).toBe('"A"');
+});
+
+test("string escapes: \\xHH and \\n", () => {
+  // \x1B (ESC, 27) then "[" — char code of first char is 27.
+  expect(show(run(`"\x1B["`))).toBe('"\u001b["');
+  expect(show(run(`"a\nb"`))).toBe('"a\nb"');
+});

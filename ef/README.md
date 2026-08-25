@@ -73,14 +73,15 @@ paths — nondeterminism built from ordinary multi-shot resumption.
 
 - **Whitespace** (space, tab, CR, LF) is insignificant.
 - **Line comments** with `//` run to end of line.
-- **String literals** are `"..."` with `\\` escapes, parsed as JSON strings.
+- **String literals** are `"..."` with `\` escapes: `\n \t \r \" \\ \xHH` (byte),
+  `\uHHHH` (code point). Unknown `\c` yields `c`.
 - **Number literals** are non-negative integer/decimal digit runs (e.g. `42`,
   `3.14`). A literal containing a `.` is typed `float`; otherwise `int`.
   Unary minus is parsed as the unary `-` operator in `parseUnary`.
 - **Identifiers** start with a letter or `_`, continue with letters/digits/`_`.
-- **Keywords:** `let letrec fn if else perform handle case true false null effect`.
+- **Keywords:** `let letrec fn if else while perform handle case true false null effect`.
 - **Two-char tokens:** `== != <= >= && || =>`.
-- **One-char tokens:** `( ) [ ] { } , ; < > + - * / ! = :`.
+- **One-char tokens:** `( ) [ ] { } , ; < > + - * / ! = : %`.
 - `->` is lexed as two tokens `-` `>` and reassembled by the type parser.
 
 ## 2. Syntax
@@ -147,7 +148,7 @@ args     ::= "(" (expr ("," expr)*)? ")"
   | 3    | `== !=`                  |
   | 4    | `< > <= >=`              |
   | 5    | `+ -`                    |
-  | 6    | `* /`                    |
+  | 6    | `* / %`                  |
 
   All operators are left-associative.
 
@@ -264,7 +265,7 @@ type  ::= "[" type "]"
 
 | Operator | Type                              |
 |----------|-----------------------------------|
-| `+ - * /` | `(int, int) -> int` / `(float, _) -> float` | numeric widening; unary `-` (neg) shares this rule. |
+| `+ - * / %` | `(int, int) -> int` / `(float, _) -> float` | numeric widening; unary `-` (neg) shares this rule. |
 | `< > <= >=` | `(_num, _num) -> bool`        | numeric widening on operands. |
 | `== !=`  | `(any, any) -> bool`              |
 
@@ -282,7 +283,33 @@ Unary `-` (neg) : numeric, shares the widening rule (`int` in → `int` out,
 | `flat`     | `([[A]]) -> [A]`                                | Flatten one level. |
 | `len`      | `([A]) -> int`                                  | Length. |
 | `map`      | `((A) -> B, [A]) -> [B]`                        | Apply; fresh `A`/`B` per use. |
-| `println`  | `(any) -> null`                                 | Print a value. |
+| `println`  | `(any) -> null`                                 | Print a value (with newline). |
+
+### 4.3 Math, I/O, and array helpers
+
+Added for the `star.ink` port (see `examples/star.ef`). All are pure except
+`out` (writes to stdout) and `exit`/`wait` (process control).
+
+| Name      | Type (schematic)                  | Notes |
+|-----------|-----------------------------------|-------|
+| `PI`      | `float`                           | `Math.PI`. |
+| `cos`     | `(float) -> float`                | Cosine (radians). |
+| `sin`     | `(float) -> float`                | Sine (radians). |
+| `abs`     | `(float) -> float`                | Absolute value. |
+| `round`   | `(float) -> int`                  | Round to nearest int. |
+| `range`   | `(int, int, int) -> [int]`        | `range(start, end, step)`: half-open; `step` may be negative. |
+| `get`     | `([A], int) -> A`                 | Array index. |
+| `set`     | `([A], int, A) -> null`           | Array index assignment (mutates). |
+| `each`    | `((A, int) -> B, [A]) -> null`    | Iterate with index; result discarded. |
+| `flatmap` | `((A, int) -> [B], [A]) -> [B]`   | Map-then-concat. |
+| `char`    | `(int) -> string`                 | Code point → single-char string. |
+| `out`     | `(string) -> null`                | Write a string to stdout (no newline). |
+| `number`  | `(string) -> float`               | Parse a string to a number. |
+| `args`    | `() -> [string]`                  | CLI args after the source file. |
+| `exit`    | `(int) -> null`                   | Exit the process with a code. |
+| `wait`    | `(int) -> null`                   | Busy-wait `n` seconds (synchronous evaluator). |
+
+`each`/`flatmap`/`map` take the function **first**, matching `map`.
 
 ## 5. Semantics
 
@@ -403,3 +430,21 @@ handle {
   case Read(path) => k { ["mocked"] }
 // → ["mocked"]
 ```
+
+## 8. CLI
+
+`cli.ts` is a thin runner:
+
+```
+ef run <file> [args...]   # typecheck then evaluate; extra args reach `args()`
+```
+
+The result of the last expression is printed via `show` unless the program
+calls `exit` itself. Programs that loop forever (animations) run until killed.
+
+## 9. Examples on disk
+
+- `examples/newton.ef` — Newton's method square root (`while` + assignment).
+- `examples/tco.ef` — tail vs. non-tail recursion depth probe.
+- `examples/star.ef` — rotating 3D star polygon (port of `ink/samples/star.ink`).
+  Run: `ef run examples/star.ef <vertices> <step>` where `0 < step < vertices/2`.

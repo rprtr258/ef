@@ -139,7 +139,7 @@ const KEYWORDS = new Set([
   "true", "false", "null", "effect",
 ]);
 const TWO = ["==", "!=", "<=", ">=", "&&", "||", "=>"];
-const ONE = "()[]{},;<>+-*/!=:";
+const ONE = "()[]{},;<>+-*/!=:%";
 
 function lex(src: string): string[] {
   const toks: string[] = [];
@@ -195,6 +195,27 @@ function lex(src: string): string[] {
 }
 
 // --- Parser (recursive descent + Pratt for infix) ---
+
+// Unescape a string literal token (with surrounding quotes).
+function parseStr(t: string): string {
+  const s = t.slice(1, -1);
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i]!;
+    if (c !== "\\") { out += c; i++; continue; }
+    const n = s[i + 1]!;
+    if (n === "n") { out += "\n"; i += 2; }
+    else if (n === "t") { out += "\t"; i += 2; }
+    else if (n === "r") { out += "\r"; i += 2; }
+    else if (n === "\\") { out += "\\"; i += 2; }
+    else if (n === "\"") { out += "\""; i += 2; }
+    else if (n === "x") { out += String.fromCharCode(parseInt(s.slice(i + 2, i + 4), 16)); i += 4; }
+    else if (n === "u") { out += String.fromCharCode(parseInt(s.slice(i + 2, i + 6), 16)); i += 6; }
+    else { out += n; i += 2; }
+  }
+  return out;
+}
 
 class Parser {
   toks: string[];
@@ -370,7 +391,7 @@ class Parser {
   }
 
   // --- Pratt ---
-  static PREC: Record<string, number> = { "||": 1, "&&": 2, "==": 3, "!=": 3, "<": 4, ">": 4, "<=": 4, ">=": 4, "+": 5, "-": 5, "*": 6, "/": 6 };
+  static PREC: Record<string, number> = { "||": 1, "&&": 2, "==": 3, "!=": 3, "<": 4, ">": 4, "<=": 4, ">=": 4, "+": 5, "-": 5, "*": 6, "/": 6, "%": 6 };
   binOps = new Set(Object.keys(Parser.PREC));
 
   parseExpr(): Expr {
@@ -419,7 +440,7 @@ class Parser {
     }
     if (t.startsWith('"')) {
       this.next();
-      return { t: "str", v: JSON.parse(t) };
+      return { t: "str", v: parseStr(t) };
     }
     if (t === "true") {
       this.next();
@@ -603,7 +624,7 @@ function textend(parent: TEnv): TEnv {
 }
 
 // Operators handled by special-casing in `infer` (numeric widening), not BINOPS.
-const NUMOPS = new Set(["+", "-", "*", "/"]);
+const NUMOPS = new Set(["+", "-", "*", "/", "%"]);
 const CMPOPS = new Set(["<", ">", "<=", ">="]);
 function isNum(t: Type): t is Prim {
   return t.tag === "prim" && (t.name === "int" || t.name === "float");
@@ -802,6 +823,29 @@ function checkProgram(items: Item[]): { effects: Map<string, EffectSig>; lastTyp
     const a = freshVar(), b = freshVar();
     return tFun([tFun([a], b, new Set()), tArr(a)], tArr(b), new Set());
   });
+  // --- builtins added for the star.ink port ---
+  env.vars.set("PI", TFLOAT);
+  env.vars.set("cos", tFun([TFLOAT], TFLOAT, new Set()));
+  env.vars.set("sin", tFun([TFLOAT], TFLOAT, new Set()));
+  env.vars.set("abs", tFun([TFLOAT], TFLOAT, new Set()));
+  env.vars.set("round", tFun([TFLOAT], TINT, new Set()));
+  env.vars.set("range", tFun([TINT, TINT, TINT], tArr(TINT), new Set()));
+  env.vars.set("char", tFun([TINT], TSTR, new Set()));
+  env.vars.set("out", tFun([TSTR], TNULL, new Set()));
+  env.vars.set("number", tFun([TSTR], TFLOAT, new Set()));
+  env.vars.set("args", tFun([], tArr(TSTR), new Set()));
+  env.vars.set("exit", tFun([TINT], TNULL, new Set()));
+  env.vars.set("wait", tFun([TINT], TNULL, new Set()));
+  env.vars.set("get", () => { const a = freshVar(); return tFun([tArr(a), TINT], a, new Set()); });
+  env.vars.set("set", () => { const a = freshVar(); return tFun([tArr(a), TINT, a], TNULL, new Set()); });
+  env.vars.set("each", () => {
+    const a = freshVar(), b = freshVar();
+    return tFun([tFun([a, TINT], b, new Set()), tArr(a)], TNULL, new Set());
+  });
+  env.vars.set("flatmap", () => {
+    const a = freshVar(), b = freshVar();
+    return tFun([tFun([a, TINT], tArr(b), new Set()), tArr(a)], tArr(b), new Set());
+  });
   let lastType: Type = TNULL;
   for (const it of items.filter(it => "e" in it))
     lastType = infer(it.e, env, new Set(), effects);
@@ -949,6 +993,7 @@ function globalEnv(): Env {
   bin("-", (a, b) => num(a) - num(b));
   bin("*", (a, b) => num(a) * num(b));
   bin("/", (a, b) => num(a) / num(b));
+  bin("%", (a, b) => num(a) % num(b));
   bin("==", (a, b) => (a === b ? true : false));
   bin("!=", (a, b) => (a !== b ? true : false));
   bin("<", (a, b) => (num(a) < num(b) ? true : false));
@@ -979,6 +1024,54 @@ function globalEnv(): Env {
       return go(0, []);
     },
   });
+  // --- builtins added for the star.ink port ---
+  g.vars.set("PI", Math.PI);
+  g.vars.set("cos", lift((a) => Math.cos(num(a))));
+  g.vars.set("sin", lift((a) => Math.sin(num(a))));
+  g.vars.set("abs", lift((a) => Math.abs(num(a))));
+  g.vars.set("round", lift((a) => Math.round(num(a))));
+  g.vars.set("char", lift((a) => String.fromCharCode(num(a) | 0)));
+  g.vars.set("number", lift((a) => parseFloat(a as string)));
+  g.vars.set("out", lift((a) => { process.stdout.write(a as string); return null; }));
+  g.vars.set("args", lift(() => process.argv.slice(2) as Value[]));
+  g.vars.set("range", lift((a, b, c) => {
+    const s = num(a), e = num(b), st = num(c);
+    const r: Value[] = [];
+    if (st > 0) for (let i = s; i < e; i += st) r.push(i);
+    else if (st < 0) for (let i = s; i > e; i += st) r.push(i);
+    return r;
+  }));
+  g.vars.set("get", lift((xs, i) => (xs as Value[])[num(i)] ?? null));
+  g.vars.set("set", lift((xs, i, v) => { (xs as Value[])[num(i)] = v; return null; }));
+  g.vars.set("each", {
+    tag: "native",
+    fn: (args, k) => {
+      const f = args[0]!, xs = args[1] as Value[];
+      function go(i: number): Outcome {
+        if (i >= xs.length) return k(null);
+        return apply(f, [xs[i]!, i], () => go(i + 1));
+      }
+      return go(0);
+    },
+  });
+  g.vars.set("flatmap", {
+    tag: "native",
+    fn: (args, k) => {
+      const f = args[0]!, xs = args[1] as Value[];
+      const acc: Value[] = [];
+      function go(i: number): Outcome {
+        if (i >= xs.length) return k(acc);
+        return apply(f, [xs[i]!, i], (v) => { acc.push(...(v as Value[])); return go(i + 1); });
+      }
+      return go(0);
+    },
+  });
+  g.vars.set("exit", { tag: "native", fn: (args) => { process.exit(num(args[0]!)); } });
+  g.vars.set("wait", lift((a) => {
+    const end = Date.now() + num(a) * 1000;
+    while (Date.now() < end) { /* busy-wait: synchronous CPS evaluator */ }
+    return null;
+  }));
   return g;
 }
 
