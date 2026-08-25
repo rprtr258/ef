@@ -134,7 +134,7 @@ describe("Negative tests (static type checker rejects)", () => {
   });
 
   test("Heterogeneous array literal", () => {
-    assertTypeError(`[1, "a", true]`, "≠");
+    assertTypeError(`[1, "a", true]`, "Type mismatch");
   });
 
   test("If branches with mismatched types", () => {
@@ -146,8 +146,8 @@ describe("Negative tests (static type checker rejects)", () => {
   });
 
   test("== / != reject cross-type operands", () => {
-    assertTypeError(`"a" == 1`, "≠");
-    assertTypeError(`"x" != 1`, "≠");
+    assertTypeError(`"a" == 1`, "Type mismatch");
+    assertTypeError(`"x" != 1`, "Type mismatch");
   });
 
   test("exit/wait are no longer builtins (use perform Exit/Wait)", () => {
@@ -234,6 +234,27 @@ let acc = 0;
 while (i <= 5) { acc = acc + i; i = i + 1 }
 acc
 `))).toBe("15");
+});
+
+test("+ is overloaded: numeric widening or string concatenation", () => {
+  // numeric still works.
+  expect(typeOf(`1 + 2`)).toBe("int");
+  expect(typeOf(`1 + 2.5`)).toBe("float");
+  expect(show(run(`1 + 2`))).toBe("3");
+  // string + string.
+  expect(typeOf(`"a" + "b"`)).toBe("string");
+  expect(show(run(`"foo" + "bar"`))).toBe('"foobar"');
+  expect(show(run(`"" + "x"`))).toBe('"x"');
+  expect(show(run(`"" + ""`))).toBe('""');
+  // three-way chaining is left-associative string concat.
+  expect(show(run(`"a" + "b" + "c"`))).toBe('"abc"');
+  // string concat with values via let bindings.
+  expect(show(run(`let s = "x"; s + s`))).toBe('"xx"');
+  // mixed string/number is a type error in either order.
+  expect(() => run(`"a" + 1`)).toThrow(/string/);
+  expect(() => run(`1 + "a"`)).toThrow(/string/);
+  // mixed string/bool is a type error.
+  expect(() => run(`"a" + true`)).toThrow(/string/);
 });
 
 test("builtins added for the star port: range/get/set/each/flatmap/modulo", () => {

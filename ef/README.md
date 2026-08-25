@@ -1,25 +1,16 @@
 # ef
 
-A tiny statically-typed language with **algebraic effects and effect handlers**,
-C/Go-flavored syntax, and a Hindley-Milner-flavoured type system that tracks
-effects. Implemented in a single TypeScript file (~900 lines), evaluated with
-[Bun](https://bun.sh).
+A tiny statically-typed language with **algebraic effects and effect handlers**, C/Go-flavored syntax, and a Hindley-Milner-flavoured type system that tracks effects. Implemented in a single TypeScript file (~900 lines).
 
 ```bash
-bun test              # test suite (35 tests)
+bun test              # test suite
 bun run index.ts      # (no self-check block; demos live in the test suite)
 bunx tsc --noEmit     # host typecheck (stays clean)
 ```
 
 ## In one paragraph
 
-`ef` is a small expression language. You write `let`, `fn`, `if`, and blocks
-like in C/Go. Functions can **perform** abstract *effects* instead of throwing
-or returning, and `handle` blocks install *handlers* that catch those effects
-and receive the suspended computation as a resumable continuation `k` — which
-can be called zero, one, or many times. A static type checker rejects
-ill-typed programs before evaluation and infers the effect set of every
-function (shown as `(int) -> int ! { Emit }`).
+`ef` is a small expression language. You write `let`, `fn`, `if`, and blocks like in C/Go. Functions can **perform** abstract *effects* instead of throwing or returning, and `handle` blocks install *handlers* that catch those effects and receive the suspended computation as a resumable continuation `k` — which can be called zero, one, or many times. A static type checker rejects ill-typed programs before evaluation and infers the effect set of every function (shown as `(int) -> int ! { Emit }`).
 
 A taste:
 
@@ -34,21 +25,16 @@ handle {
 // → [[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]
 ```
 
-The handler calls `k` once per option, so the computation branches into all
-paths — nondeterminism built from ordinary multi-shot resumption.
+The handler calls `k` once per option, so the computation branches into all paths — nondeterminism built from ordinary multi-shot resumption.
 
 ## Highlights
 
 - **Algebraic effects** as first-class, statically-tracked operations.
 - **Deep handlers** with a `Return` case for the body's result value.
-- **Multi-shot resume** — the continuation `k` is a plain callable, so it can
-  run zero, one, or many times (nondeterminism, backtracking, etc.).
-- **Effect propagation** through nested handlers: an unhandled effect walks
-  outward to the nearest matching handler.
-- **Static typing** with type inference, union-find unification, and an
-  absorbing `any` escape hatch.
-- **Function effect signatures** `fn f(p: T): R ! { Effs } { ... }` the
-  checker verifies against the body.
+- **Multi-shot resume** — the continuation `k` is a plain callable, so it can run zero, one, or many times (nondeterminism, backtracking, etc.).
+- **Effect propagation** through nested handlers: an unhandled effect walks outward to the nearest matching handler.
+- **Static typing** with type inference, union-find unification, and an absorbing `any` escape hatch.
+- **Function effect signatures** `fn f(p: T): R ! { Effs } { ... }` the checker verifies against the body.
 - **Polymorphic builtins** (`map : (A)->B, [A] -> [B]`, etc.).
 
 ## Layout
@@ -138,8 +124,7 @@ args     ::= "(" (expr ("," expr)*)? ")"
 ```
 
 - **Array literals** `[a, b, c]` desugar to `list(a, b, c)`.
-- **`&&` / `||`** desugar to `if`: `a && b` → `if a { b } else { false }`,
-  `a || b` → `if a { true } else { b }`. Short-circuit falls out for free.
+- **`&&` / `||`** desugar to `if`: `a && b` → `if a { b } else { false }`, `a || b` → `if a { true } else { b }`. Short-circuit falls out for free.
 - **Binary operators** and precedence (lowest → highest):
 
   | Prec | Operators                |
@@ -216,20 +201,20 @@ type  ::= "[" type "]"
 
 ### 3.2 Type variables and unification
 
-- Type variables use **union-find** equivalence with a side-map of
-  substitutions. `res(t)` resolves a type; occurs-check prevents recursive
-  types.
-- `unify(a, b)` either makes the two types equal or throws a `TypeError` of
-  the form `X ≠ Y` (or `arity m ≠ n`).
+- Type variables use **union-find** equivalence with a side-map of substitutions. `res(t)` resolves a type; occurs-check prevents recursive types.
+- `unify(a, b)` either makes the two types equal or throws a `TypeError` of the form:
+  ```
+  Type mismatch:
+  got      : <actual>
+  expected : <expected>
+  ```
+  (a non-function call names the callee instead of `got`). Arity mismatches are reported as `arity m ≠ n`.
 
 ### 3.3 Inference rules
 
-- `num : int`/`float` (by whether the literal has a `.`), `str : string`,
-  `bool : bool`, `unit : unit`.
-- `name : Γ(name)` (or a fresh instantiation if `Γ(name)` is a polymorphic
-  scheme).
-- `[a, b, c] : [T]` where all elements unify with a single fresh `T`
-  (homogeneous arrays; `list` is special-cased in inference).
+- `num : int`/`float` (by whether the literal has a `.`), `str : string`, `bool : bool`, `unit : unit`.
+- `name : Γ(name)` (or a fresh instantiation if `Γ(name)` is a polymorphic scheme).
+- `[a, b, c] : [T]` where all elements unify with a single fresh `T` (homogeneous arrays; `list` is special-cased in inference).
 - `fn (p1:T1,...): R ! {E} { body } : (T1,...) -> R ! {E}`. Untyped params get
   fresh vars; the body is inferred under their bindings; if a return type
   annotation is present it unifies with the inferred body type. **Effect
@@ -242,25 +227,15 @@ type  ::= "[" type "]"
 - `let x : T = e` — `T` (if present) unifies with `infer(e)`; `x : T`.
 - `if c { a } else { b } : T` where `c : bool` and `a, b : T` (branches must
   agree). `if` with no `else` has an implicit `unit` else branch.
-- `f(a1, ..., an)` — `f : (T1,...,Tn) -> R ! {E}`, each `ai : Ti`, the call
-  has type `R` and adds `E` to the caller's effects. Mismatched arity or
-  argument types are errors.
-- `perform Op(a1, ..., an)` — requires a declared `effect Op(p1,...): ret`;
-  each `ai : pi`; the expression has type `ret` and adds `Op` to the effects.
+- `f(a1, ..., an)` — `f : (T1,...,Tn) -> R ! {E}`, each `ai : Ti`, the call has type `R` and adds `E` to the caller's effects. Mismatched arity or argument types are errors.
+- `perform Op(a1, ..., an)` — requires a declared `effect Op(p1,...): ret`; each `ai : pi`; the expression has type `ret` and adds `Op` to the effects.
 - `handle { body } case Return(v) => k { rb } case Op(pi) => k { ob } ...`
   - The body is inferred with its own effect set `B`.
-  - `Return(v)`: `v : bodyType`; the result type `R` unifies with
-    `infer(rb)` (no `k` used).
-  - `Op(pi) => k`: `pi` are the effect's declared param types, `k : (ret) -> R`
-    where `ret` is `Op`'s declared return type and `R` is the handle result
-    type; `infer(ob)` unifies with `R`.
-  - **No-Return rule:** when `B` is non-empty, `R` is *not* unified with
-    `bodyType` (handlers transform results). When `B` is empty, `R ~ bodyType`.
-  - Handled ops are removed from the body's effect set; any remaining (unhandled)
-    ops propagate to the caller.
-- **Top-level effect policy:** effects left over at the top level are either
-  interpreted by a builtin handler (for `Read`/`Write`/`Println`/`Out`) or
-  reported as unhandled.
+  - `Return(v)`: `v : bodyType`; the result type `R` unifies with `infer(rb)` (no `k` used).
+  - `Op(pi) => k`: `pi` are the effect's declared param types, `k : (ret) -> R` where `ret` is `Op`'s declared return type and `R` is the handle result type; `infer(ob)` unifies with `R`.
+  - **No-Return rule:** when `B` is non-empty, `R` is *not* unified with `bodyType` (handlers transform results). When `B` is empty, `R ~ bodyType`.
+  - Handled ops are removed from the body's effect set; any remaining (unhandled) ops propagate to the caller.
+- **Top-level effect policy:** effects left over at the top level are either interpreted by a builtin handler (for `Read`/`Write`/`Println`/`Out`) or reported as unhandled.
 
 ### 3.4 Polymorphism
 
@@ -273,31 +248,29 @@ type  ::= "[" type "]"
 
 ### 4.1 Operators (binary)
 
-| Operator | Type                              |
-|----------|-----------------------------------|
-| `+ - * / %` | `(int, int) -> int` / `(float, _) -> float` | numeric widening; unary `-` (neg) shares this rule. |
+| Operator    | Type                              |
+|-------------|-----------------------------------|
+| `- * / %`   | `(int, int) -> int` / `(float, _) -> float` | numeric widening. |
+| `+`         | `(int, int) -> int` / `(float, _) -> float` / `(string, string) -> string` | overloaded: numeric widening, or string concatenation. Mixed `"a" + 1` is a type error. |
 | `< > <= >=` | `(_num, _num) -> bool`        | numeric widening on operands. |
-| `== !=`  | `(T, T) -> bool`                 | Both operands must share a type `T` (numeric widening still lets `int ~ float`); cross-type comparisons like `"a" == 1` are rejected. Not first-class — cannot be passed as a function value. |
+| `== !=`     | `(T, T) -> bool`              | Both operands must share a type `T` (numeric widening still lets `int ~ float`); cross-type comparisons like `"a" == 1` are rejected. Not first-class — cannot be passed as a function value. |
 
-Unary `-` (neg) : numeric, shares the widening rule (`int` in → `int` out,
-`float` in → `float` out). Unary `!` (not) : `(bool) -> bool`.
+Unary `-` (neg) : numeric, shares the widening rule (`int` in → `int` out, `float` in → `float` out). Unary `!` (not) : `(bool) -> bool`.
 
-`/` is **type-preserving and truncates toward zero** for `int / int`
-(`7 / 2 == 3`, `-7 / 2 == -3`); `float / float` is exact (`7.0 / 2.0 == 3.5`).
-The type checker stamps each `/` node as int or float division at check time
-(the runtime sees untyped JS numbers and cannot tell `7` from `7.0`).
+`/` is **type-preserving and truncates toward zero** for `int / int` (`7 / 2 == 3`, `-7 / 2 == -3`); `float / float` is exact (`7.0 / 2.0 == 3.5`).
+The type checker stamps each `/` node as int or float division at check time (the runtime sees untyped JS numbers and cannot tell `7` from `7.0`).
 
 ### 4.2 Functions
 
-| Name       | Type (schematic)                                | Notes |
-|------------|-------------------------------------------------|-------|
-| `list`     | `(any) -> [any]`                                | Variadic array constructor; special-cased in inference so `[1,2,3]` is `[int]`. |
-| `head`     | `([A]) -> A`                                    | First element. |
-| `tail`     | `([A]) -> [A]`                                  | All but first. |
-| `concat`   | `([A], [A]) -> [A]`                             | Append; both arrays share element type `A`. |
-| `flat`     | `([[A]]) -> [A]`                                | Flatten one level. |
-| `len`      | `([A]) -> int`                                  | Length. |
-| `map`      | `((A) -> B, [A]) -> [B]`                        | Apply; fresh `A`/`B` per use. |
+| Name     | Type (schematic)         | Notes |
+|----------|--------------------------|-------|
+| `list`   | `(any) -> [any]`         | Variadic array constructor; special-cased in inference so `[1,2,3]` is `[int]`. |
+| `head`   | `([A]) -> A`             | First element. |
+| `tail`   | `([A]) -> [A]`           | All but first. |
+| `concat` | `([A], [A]) -> [A]`      | Append; both arrays share element type `A`. |
+| `flat`   | `([[A]]) -> [A]`         | Flatten one level. |
+| `len`    | `([A]) -> int`           | Length. |
+| `map`    | `((A) -> B, [A]) -> [B]` | Apply; fresh `A`/`B` per use. |
 
 ### 4.3 Math, I/O, and array helpers
 
@@ -305,40 +278,37 @@ Added for the `star.ink` port (see `examples/star.ef`). All are pure.
 Console output is via the `Println`/`Out` effects (§4.4), not functions;
 process control is via the `Exit`/`Wait` effects (§4.4), not functions.
 
-| Name      | Type (schematic)                  | Notes |
-|-----------|-----------------------------------|-------|
-| `PI`      | `float`                           | `Math.PI`. |
-| `cos`     | `(float) -> float`                | Cosine (radians). |
-| `sin`     | `(float) -> float`                | Sine (radians). |
-| `abs`     | `(float) -> float`                | Absolute value. |
-| `round`   | `(float) -> int`                  | Round to nearest int. |
-| `range`   | `(int, int, int) -> [int]`        | `range(start, end, step)`: half-open; `step` may be negative. |
-| `get`     | `([A], int) -> A`                 | Array index. |
-| `set`     | `([A], int, A) -> unit`           | Array index assignment (mutates). |
-| `each`    | `((A, int) -> B, [A]) -> unit`    | Iterate with index; result discarded. |
-| `flatmap` | `((A, int) -> [B], [A]) -> [B]`   | Map-then-concat. |
-| `char`    | `(int) -> string`                 | Code point → single-char string. |
-| `number`  | `(string) -> float`               | Parse a string to a number. |
-| `args`    | `() -> [string]`                  | CLI args after the source file. |
+| Name      | Type (schematic)                | Notes |
+|-----------|---------------------------------|-------|
+| `PI`      | `float`                         | `Math.PI`. |
+| `cos`     | `(float) -> float`              | Cosine (radians). |
+| `sin`     | `(float) -> float`              | Sine (radians). |
+| `abs`     | `(float) -> float`              | Absolute value. |
+| `round`   | `(float) -> int`                | Round to nearest int. |
+| `range`   | `(int, int, int) -> [int]`      | `range(start, end, step)`: half-open; `step` may be negative. |
+| `get`     | `([A], int) -> A`               | Array index. |
+| `set`     | `([A], int, A) -> unit`         | Array index assignment (mutates). |
+| `each`    | `((A, int) -> B, [A]) -> unit`  | Iterate with index; result discarded. |
+| `flatmap` | `((A, int) -> [B], [A]) -> [B]` | Map-then-concat. |
+| `char`    | `(int) -> string`               | Code point → single-char string. |
+| `number`  | `(string) -> float`             | Parse a string to a number. |
+| `args`    | `() -> [string]`                | CLI args after the source file. |
 
 `each`/`flatmap`/`map` take the function **first**, matching `map`.
-(Formerly `exit`/`wait` builtins existed; they are now the `Exit`/`Wait`
-effects in §4.4.)
+(Formerly `exit`/`wait` builtins existed; they are now the `Exit`/`Wait` effects in §4.4.)
 
 ### 4.4 Builtin effects
 
-These are pre-declared like user effects and invoked with `perform`. With no
-user handler, the runtime interprets them at the top level (real I/O); a user
-`handle` can intercept any of them.
+These are pre-declared like user effects and invoked with `perform`. With no user handler, the runtime interprets them at the top level (real I/O); a user `handle` can intercept any of them.
 
-| Effect     | Signature                  | Default behaviour |
-|------------|----------------------------|--------------------|
-| `Read`     | `(path: string): string`   | `readFileSync` the path. |
-| `Write`    | `(path: string, content: string): unit` | `writeFileSync` the path. |
-| `Println`  | `(v: any): unit`           | `console.log(show(v))` — print a value + newline. |
-| `Out`      | `(s: string): unit`        | `process.stdout.write(s)` — raw string, no newline. |
-| `Exit`     | `(code: int): unit`        | `process.exit(code)` — terminates without resuming. |
-| `Wait`     | `(secs: int): unit`        | Busy-wait `secs` seconds then resume with unit (synchronous evaluator). |
+| Effect    | Signature                  | Default behaviour |
+|-----------|----------------------------|--------------------|
+| `Read`    | `(path: string): string`   | `readFileSync` the path. |
+| `Write`   | `(path: string, content: string): unit` | `writeFileSync` the path. |
+| `Println` | `(v: any): unit`           | `console.log(show(v))` — print a value + newline. |
+| `Out`     | `(s: string): unit`        | `process.stdout.write(s)` — raw string, no newline. |
+| `Exit`    | `(code: int): unit`        | `process.exit(code)` — terminates without resuming. |
+| `Wait`    | `(secs: int): unit`        | Busy-wait `secs` seconds then resume with unit (synchronous evaluator). |
 
 ```js
 // Println is an ordinary effect: a handler can capture it instead of printing.
@@ -353,19 +323,10 @@ handle {
 
 ## 5. Semantics
 
-- **Evaluation is in continuation-passing style.** `evalE(e, env, k)` either
-  calls `k(v)` with a value or produces an `Outcome` describing a trapped
-  effect.
-- **Effects.** `perform Op(args)` searches outward for a handler whose cases
-  include `Op`. On a match, the handler runs with the effect's arguments bound
-  and `k` set to a closure capturing the suspended computation; calling
-  `k(v)` resumes the body with `v`. On no match, evaluation fails.
-- **Multi-shot resume.** `k` is an ordinary JS function, so it can be invoked
-  many times — each call re-runs the continuation from the perform point.
-  This enables nondeterminism, backtracking, etc.
-- **Deep handlers.** The `Return` case sees the body's final value; effect
-  cases see the perform site and can resume or not. Effects performed inside a
-  handler case propagate outward to the next handler.
+- **Evaluation is in continuation-passing style.** `evalE(e, env, k)` either calls `k(v)` with a value or produces an `Outcome` describing a trapped effect.
+- **Effects.** `perform Op(args)` searches outward for a handler whose cases include `Op`. On a match, the handler runs with the effect's arguments bound and `k` set to a closure capturing the suspended computation; calling `k(v)` resumes the body with `v`. On no match, evaluation fails.
+- **Multi-shot resume.** `k` is an ordinary JS function, so it can be invoked many times — each call re-runs the continuation from the perform point.  This enables nondeterminism, backtracking, etc.
+- **Deep handlers.** The `Return` case sees the body's final value; effect cases see the perform site and can resume or not. Effects performed inside a handler case propagate outward to the next handler.
 
 ## 6. The `run` / `show` / `typeOf` API
 
@@ -378,9 +339,7 @@ function typeOf(src: string): string;  // inferred type of the last expression, 
 function repl(): void;                 // interactive REPL with persistent bindings
 ```
 
-A type error is a thrown `Error` whose message contains the mismatch (e.g.
-`int ≠ string`, `arity 1 ≠ 2`, `Unknown effect Nope`, `effect Emit not
-declared in signature`).
+A type error is a thrown `Error` whose message contains the mismatch (e.g.  `Type mismatch:\ngot : int\nexpected : string`, `arity 1 ≠ 2`, `Unknown effect Nope`, `effect Emit not declared in signature`).
 
 ## 7. Examples
 
@@ -481,21 +440,14 @@ ef run <file> [args...]   # typecheck then evaluate; extra args reach `args()`
 ef repl                   # interactive REPL; bindings persist across lines
 ```
 
-The result of the last expression is printed via `show` unless the program
-calls `perform Exit(...)` itself. Programs that loop forever (animations) run
-until killed.
+The result of the last expression is printed via `show` unless the program calls `perform Exit(...)` itself. Programs that loop forever (animations) run until killed.
 
-The REPL parses each line as a complete program; `let`/`fn`/`effect` bindings
-accumulate across lines (both the runtime env and the type env persist). A
-bare expression prints both value and inferred type, e.g. `1 + 2` → `3 : int`.
+The REPL parses each line as a complete program; `let`/`fn`/`effect` bindings accumulate across lines (both the runtime env and the type env persist). A bare expression prints both value and inferred type, e.g. `1 + 2` → `3 : int`.
 Type `:q` to quit.
 
 ## 9. Examples on disk
 
 - `examples/newton.ef` — Newton's method square root (`while` + assignment).
-- `examples/tco.ef` — recursion probe. The CPS evaluator is fully
-  tail-call-structured, so Bun/JSC's TCO keeps the stack O(1) for both tail
-  and non-tail calls; non-tail recursion costs heap allocation (linear time),
-  not stack overflow.
+- `examples/tco.ef` — recursion probe. The CPS evaluator is fully tail-call-structured, so Bun/JSC's TCO keeps the stack O(1) for both tail and non-tail calls; non-tail recursion costs heap allocation (linear time), not stack overflow.
 - `examples/star.ef` — rotating 3D star polygon (port of `ink/samples/star.ink`).
   Run: `ef run examples/star.ef <vertices> <step>` where `0 < step < vertices/2`.

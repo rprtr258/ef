@@ -600,6 +600,15 @@ function res(t: Type): Type {
 
 class TypeError_ extends Error {}
 
+// Format a unification failure as a multi-line "Type mismatch" report. When
+// `name` is supplied (e.g. the callee in a non-function call) the actual type
+// is labelled with it, otherwise it is shown as `got`.
+function typeMismatch(actual: Type, expected: Type, name?: string): TypeError_ {
+  const a = showT(res(actual)), e = showT(res(expected));
+  const lhs = name ? `${name} : ${a}` : `got      : ${a}`;
+  return new TypeError_(`Type mismatch:\n${lhs}\nexpected : ${e}`);
+}
+
 function unify(a: Type, b: Type): void {
   const ra = res(a), rb = res(b);
   if (ra.tag === "any" || rb.tag === "any") return;
@@ -614,7 +623,7 @@ function unify(a: Type, b: Type): void {
     // float is expected and vice versa (value kept at runtime either way).
     const nums = new Set(["int", "float"]);
     if (ra.name !== rb.name && !(nums.has(ra.name) && nums.has(rb.name)))
-      throw new TypeError_(`${showT(ra)} ≠ ${showT(rb)}`);
+      throw typeMismatch(ra, rb);
     return;
   }
   if (ra.tag === "arr" && rb.tag === "arr") { unify(ra.elem, rb.elem); return; }
@@ -625,7 +634,7 @@ function unify(a: Type, b: Type): void {
     unify(ra.ret, rb.ret);
     return;
   }
-  throw new TypeError_(`${showT(ra)} ≠ ${showT(rb)}`);
+  throw typeMismatch(ra, rb);
 }
 
 type Scheme = () => Type; // polymorphic type scheme, instantiated fresh per use
@@ -647,8 +656,9 @@ function textend(parent: TEnv): TEnv {
 }
 
 // Operators handled by special-casing in `infer` (numeric widening / same-type
-// equality), not via the generic function-application path.
-const NUMOPS = new Set(["+", "-", "*", "/", "%"]);
+// equality), not via the generic function-application path. `+` is NOT here —
+// it is overloaded with string concatenation (see `plusType`).
+const NUMOPS = new Set(["-", "*", "/", "%"]);
 const CMPOPS = new Set(["<", ">", "<=", ">="]);
 // Equality ops require both operands to share a type (numeric widening still
 // lets `int ~ float`); cross-type comparisons like `"a" == 1` are rejected.
@@ -669,6 +679,25 @@ function numeric(a: Type, b: Type, op: string): Type {
   if (ra.tag === "var") { unify(ra, TINT); return TINT; }
   if (rb.tag === "var") { unify(rb, TINT); return TINT; }
   throw new TypeError_(`${op}: ${showT(ra)} and ${showT(rb)} are not numeric`);
+}
+
+// `+` is overloaded: num+num (numeric widening) or string+string -> string.
+// Mixed (`"a" + 1`) is a type error. `any` on either side stays `any`.
+function plusType(a: Type, b: Type): Type {
+  const ra = res(a), rb = res(b);
+  if (ra.tag === "any" || rb.tag === "any") return TANY;
+  const sa = isNum(ra), sb = isNum(rb);
+  if (sa && sb)
+    return ra.name === "float" || rb.name === "float" ? TFLOAT : TINT;
+  const stra = ra.tag === "prim" && ra.name === "string";
+  const strb = rb.tag === "prim" && rb.name === "string";
+  if (stra && strb) return TSTR;
+  if (sa && rb.tag === "var") { unify(rb, ra); return ra; }
+  if (sb && ra.tag === "var") { unify(ra, rb); return rb; }
+  if (stra && rb.tag === "var") { unify(rb, ra); return ra; }
+  if (strb && ra.tag === "var") { unify(ra, rb); return rb; }
+  if (ra.tag === "var" && rb.tag === "var") { unify(ra, rb); return res(ra); }
+  throw new TypeError_(`+: ${showT(ra)} and ${showT(rb)} are not both numeric or both string`);
 }
 
 // `==` / `!=` are special-cased in `infer` (see EQOPS): they are NOT installed
@@ -803,7 +832,13 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
         for (const a of e.args) unify(elem, infer(a, env, effs, effects));
         return tArr(res(elem));
       }
-      // Numeric operators (+ - * /) and comparisons (< > <= >=) widen int/float;
+      // `+` is overloaded: numeric widening or string concatenation.
+      if (e.fn.t === "sym" && e.fn.v === "+") {
+        const at = infer(e.args[0]!, env, effs, effects);
+        const bt = infer(e.args[1]!, env, effs, effects);
+        return plusType(at, bt);
+      }
+      // Numeric operators (- * / %) and comparisons (< > <= >=) widen int/float;
       // unary neg is handled below. Kept out of BINOPS so they get this logic.
       if (e.fn.t === "sym" && (NUMOPS.has(e.fn.v) || CMPOPS.has(e.fn.v))) {
         const at = infer(e.args[0]!, env, effs, effects);
@@ -842,7 +877,13 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
         return res(ret);
       }
       if (fr.tag === "any") return TANY;
-      unify(ft, tFun(argTs, ret, new Set()));
+      const expected = tFun(argTs, ret, new Set());
+      try { unify(ft, expected); }
+      catch (err) {
+        if (err instanceof TypeError_ && e.fn.t === "sym")
+          throw typeMismatch(ft, expected, e.fn.v);
+        throw err;
+      }
       return res(ret);
     }
   }
@@ -1069,7 +1110,8 @@ const num = (v: Value): number => {
 function globalEnv(): Env {
   const g = new Env(null);
   const bin = (s: string, f: (a: Value, b: Value) => Value) => g.vars.set(s, lift(f));
-  bin("+", (a, b) => num(a) + num(b));
+  bin("+", (a, b) =>
+    typeof a === "string" || typeof b === "string" ? String(a) + String(b) : num(a) + num(b));
   bin("-", (a, b) => num(a) - num(b));
   bin("*", (a, b) => num(a) * num(b));
   bin("%", (a, b) => num(a) % num(b));
