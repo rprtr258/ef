@@ -79,7 +79,7 @@ paths — nondeterminism built from ordinary multi-shot resumption.
   `3.14`). A literal containing a `.` is typed `float`; otherwise `int`.
   Unary minus is parsed as the unary `-` operator in `parseUnary`.
 - **Identifiers** start with a letter or `_`, continue with letters/digits/`_`.
-- **Keywords:** `let letrec fn if else while perform handle case true false null effect`.
+- **Keywords:** `let letrec fn if else while perform handle case true false unit effect`.
 - **Two-char tokens:** `== != <= >= && || =>`.
 - **One-char tokens:** `( ) [ ] { } , ; < > + - * / ! = : %`.
 - `->` is lexed as two tokens `-` `>` and reassembled by the type parser.
@@ -125,7 +125,7 @@ expr     ::= binary
 binary   ::= unary (binop unary)*        -- Pratt, see precedence below
 unary    ::= ("-" | "!") unary | postfix
 postfix  ::= primary ("(" args ")")*     -- call
-primary  ::= num | str | "true" | "false" | "null"
+primary  ::= num | str | "true" | "false" | "unit"
            | name | "(" expr ")" | array | lambda | if | perform | handle
 array    ::= "[" (expr ("," expr)*)? "]"
 lambda   ::= "fn" params block
@@ -156,7 +156,7 @@ args     ::= "(" (expr ("," expr)*)? ")"
 
 A **statement** is an expression used for its side effect. Inside a block, a
 bare `name = expr` is an **assignment**: it updates the nearest enclosing
-binding of `name` (which must already exist) and yields `null` — the mutation
+binding of `name` (which must already exist) and yields `unit` — the mutation
 primitive that makes `while` useful.
 
 ```
@@ -172,8 +172,8 @@ case        ::= "case" ("Return" | name) params "=>" name block
 - **Builtin effects.** Two effects are pre-declared and interpreted by the
   runtime when they reach the top level unhandled:
   - `Read(path: string): string` — reads a file, resumes with its contents.
-  - `Write(path: string, content: string): null` — writes a file, resumes
-    with `null`.
+  - `Write(path: string, content: string): unit` — writes a file, resumes
+    with `unit`.
   They are still ordinary algebraic effects: a user `handle` can intercept
   either (e.g. to mock the filesystem) before the builtin interpretation
   applies.
@@ -195,10 +195,10 @@ case        ::= "case" ("Return" | name) params "=>" name block
 ```
 type  ::= "[" type "]"
         | "(" type ("," type)* ")" "->" type ("!" "{" name ("," name)* "}")?
-        | "int" | "float" | "string" | "bool" | "null" | "any"
+        | "int" | "float" | "string" | "bool" | "unit" | "any"
 ```
 
-- `int`, `float`, `string`, `bool`, `null` — primitives. `int` and `float`
+- `int`, `float`, `string`, `bool`, `unit` — primitives. `int` and `float`
   are distinct but **numeric-widen** together: an `int` may be used where a
   `float` is expected and vice versa, and any numeric op on two ints yields
   `int`, while a mix of `int`/`float` (or two `float`s) yields `float`.
@@ -219,7 +219,7 @@ type  ::= "[" type "]"
 ### 3.3 Inference rules
 
 - `num : int`/`float` (by whether the literal has a `.`), `str : string`,
-  `bool : bool`, `null : null`.
+  `bool : bool`, `unit : unit`.
 - `name : Γ(name)` (or a fresh instantiation if `Γ(name)` is a polymorphic
   scheme).
 - `[a, b, c] : [T]` where all elements unify with a single fresh `T`
@@ -231,7 +231,7 @@ type  ::= "[" type "]"
   becomes the function's effect set (otherwise the inferred set is used).
 - `let x : T = e` — `T` (if present) unifies with `infer(e)`; `x : T`.
 - `if c { a } else { b } : T` where `c : bool` and `a, b : T` (branches must
-  agree). `if` with no `else` has an implicit `null` else branch.
+  agree). `if` with no `else` has an implicit `unit` else branch.
 - `f(a1, ..., an)` — `f : (T1,...,Tn) -> R ! {E}`, each `ai : Ti`, the call
   has type `R` and adds `E` to the caller's effects. Mismatched arity or
   argument types are errors.
@@ -299,14 +299,14 @@ effects (§4.4), not functions.
 | `round`   | `(float) -> int`                  | Round to nearest int. |
 | `range`   | `(int, int, int) -> [int]`        | `range(start, end, step)`: half-open; `step` may be negative. |
 | `get`     | `([A], int) -> A`                 | Array index. |
-| `set`     | `([A], int, A) -> null`           | Array index assignment (mutates). |
-| `each`    | `((A, int) -> B, [A]) -> null`    | Iterate with index; result discarded. |
+| `set`     | `([A], int, A) -> unit`           | Array index assignment (mutates). |
+| `each`    | `((A, int) -> B, [A]) -> unit`    | Iterate with index; result discarded. |
 | `flatmap` | `((A, int) -> [B], [A]) -> [B]`   | Map-then-concat. |
 | `char`    | `(int) -> string`                 | Code point → single-char string. |
 | `number`  | `(string) -> float`               | Parse a string to a number. |
 | `args`    | `() -> [string]`                  | CLI args after the source file. |
-| `exit`    | `(int) -> null`                   | Exit the process with a code. |
-| `wait`    | `(int) -> null`                   | Busy-wait `n` seconds (synchronous evaluator). |
+| `exit`    | `(int) -> unit`                   | Exit the process with a code. |
+| `wait`    | `(int) -> unit`                   | Busy-wait `n` seconds (synchronous evaluator). |
 
 `each`/`flatmap`/`map` take the function **first**, matching `map`.
 
@@ -319,9 +319,9 @@ user handler, the runtime interprets them at the top level (real I/O); a user
 | Effect     | Signature                  | Default behaviour |
 |------------|----------------------------|--------------------|
 | `Read`     | `(path: string): string`   | `readFileSync` the path. |
-| `Write`    | `(path: string, content: string): null` | `writeFileSync` the path. |
-| `Println`  | `(v: any): null`           | `console.log(show(v))` — print a value + newline. |
-| `Out`      | `(s: string): null`        | `process.stdout.write(s)` — raw string, no newline. |
+| `Write`    | `(path: string, content: string): unit` | `writeFileSync` the path. |
+| `Println`  | `(v: any): unit`           | `console.log(show(v))` — print a value + newline. |
+| `Out`      | `(s: string): unit`        | `process.stdout.write(s)` — raw string, no newline. |
 
 ```js
 // Println is an ordinary effect: a handler can capture it instead of printing.
@@ -330,7 +330,7 @@ handle {
   perform Println("hi");
   0
 } case Return(v) => k { [v] }
-  case Println(x) => k { concat([x], k(null)) }
+  case Println(x) => k { concat([x], k(unit)) }
 // [42, "hi", 0]
 ```
 
@@ -395,13 +395,13 @@ handle {
 ### Threading a log across resumes
 
 ```js
-effect Log(msg: int): null;
-effect Result(v: int): null;
+effect Log(msg: int): unit;
+effect Result(v: int): unit;
 handle {
   perform Log(1);
   perform Log(2);
   perform Result(42)
-} case Log(msg) => k { concat([msg], k(null)) }
+} case Log(msg) => k { concat([msg], k(unit)) }
   case Result(v) => k { [v] }
 // [1, 2, 42]
 ```
@@ -409,8 +409,8 @@ handle {
 ### Effect propagation through nested handlers
 
 ```js
-effect Emit(m: string): null;
-effect Other(m: string): null;
+effect Emit(m: string): unit;
+effect Other(m: string): unit;
 handle {
   handle { perform Emit("hi") } case Other(m) => k { ["should-not-match"] }
 } case Emit(m) => k { [m] }

@@ -63,7 +63,7 @@ type Cont = (v: Value) => Outcome;
 // --- Types ---
 
 type Type = Prim | ArrT | FunT | Var | AnyT;
-type Prim = { tag: "prim"; name: "int" | "float" | "string" | "bool" | "null" };
+type Prim = { tag: "prim"; name: "int" | "float" | "string" | "bool" | "unit" };
 type ArrT = { tag: "arr"; elem: Type };
 type FunT = { tag: "fun"; params: Type[]; ret: Type; effs: Set<string> };
 type Var = { tag: "var"; id: number };
@@ -73,7 +73,7 @@ const TINT: Prim = { tag: "prim", name: "int" };
 const TFLOAT: Prim = { tag: "prim", name: "float" };
 const TSTR: Prim = { tag: "prim", name: "string" };
 const TBOOL: Prim = { tag: "prim", name: "bool" };
-const TNULL: Prim = { tag: "prim", name: "null" };
+const TNULL: Prim = { tag: "prim", name: "unit" };
 const TANY: AnyT = { tag: "any" };
 
 function tArr(elem: Type): ArrT { return { tag: "arr", elem }; }
@@ -107,7 +107,7 @@ type Expr =
   | { t: "num"; v: number; isFloat: boolean }
   | { t: "str"; v: string }
   | { t: "bool"; v: boolean }
-  | { t: "null" }
+  | { t: "unit" }
   | { t: "sym"; v: string }
   | { t: "lambda"; params: Param[]; retTyp: Type | null; retEffs: Set<string> | null; body: Expr }
   | { t: "let"; name: string; typ: Type | null; val: Expr }
@@ -136,7 +136,7 @@ type Item = { e: Expr } | { effect: string; sig: EffectSig };
 
 const KEYWORDS = new Set([
   "let", "letrec", "fn", "if", "else", "while", "perform", "handle", "case",
-  "true", "false", "null", "effect",
+  "true", "false", "unit", "effect",
 ]);
 const TWO = ["==", "!=", "<=", ">=", "&&", "||", "=>"];
 const ONE = "()[]{},;<>+-*/!=:%";
@@ -384,7 +384,7 @@ class Parser {
       case "float": return TFLOAT;
       case "string": return TSTR;
       case "bool": return TBOOL;
-      case "null": return TNULL;
+      case "unit": return TNULL;
       case "any": return TANY;
       default: throw new Error("Unknown type: " + name);
     }
@@ -450,9 +450,9 @@ class Parser {
       this.next();
       return { t: "bool", v: false };
     }
-    if (t === "null") {
+    if (t === "unit") {
       this.next();
-      return { t: "null" };
+      return { t: "unit" };
     }
     if (t === "(") {
       this.next();
@@ -482,7 +482,7 @@ class Parser {
       const c = this.parseExpr();
       this.eat(")");
       const a = this.parseBlock();
-      let b: Expr = { t: "null" };
+      let b: Expr = { t: "unit" };
       if (this.isKw("else")) {
         this.next();
         b = this.isKw("if") ? this.parsePrimary() : this.parseBlock();
@@ -654,7 +654,7 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
     case "num": return e.isFloat ? TFLOAT : TINT;
     case "str": return TSTR;
     case "bool": return TBOOL;
-    case "null": return TNULL;
+    case "unit": return TNULL;
     case "sym": {
       const s = tlookup(env, e.v);
       if (s === undefined) throw new TypeError_("Unbound: " + e.v);
@@ -861,7 +861,7 @@ function evalE(e: Expr, env: Env, k: Cont): Outcome {
     case "str":
     case "bool":
       return k(e.v);
-    case "null":
+    case "unit":
       return k(null);
     case "sym":
       return k(lookup(env, e.v));
@@ -1074,7 +1074,7 @@ function globalEnv(): Env {
 }
 
 export function show(v: Value): string {
-  if (v === null) return "null";
+  if (v === null) return "unit";
   if (v === true) return "true";
   if (v === false) return "false";
   if (typeof v === "number") return String(v);

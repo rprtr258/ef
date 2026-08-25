@@ -32,21 +32,21 @@ handle {
 
 test("Deep handler threading a log across resumes", () => {
 expect(show(run(`
-effect Log(msg: string): null;
-effect Result(v: string): null;
+effect Log(msg: string): unit;
+effect Result(v: string): unit;
 handle {
   perform Log("a");
   perform Log("b");
   perform Result("42")
-} case Log(msg) => k { concat([msg], k(null)) }
+} case Log(msg) => k { concat([msg], k(unit)) }
   case Result(v) => k { [v] }
 `))).toBe('["a", "b", "42"]');
 });
 
 test("Effect propagation through an inner handler to an outer one", () => {
 expect(show(run(`
-effect Emit(m: string): null;
-effect Other(m: string): null;
+effect Emit(m: string): unit;
+effect Other(m: string): unit;
 handle {
   handle { perform Emit("hi") } case Other(m) => k { ["should-not-match"] }
 } case Emit(m) => k { [m] }
@@ -224,15 +224,15 @@ handle {
   perform Println("hi");
   0
 } case Return(v) => k { [v] }
-  case Println(x) => k { concat([x], k(null)) }
+  case Println(x) => k { concat([x], k(unit)) }
 `))).toBe("[42, \"hi\", 0]");
   // Out is an effect too: collect written strings.
   expect(show(run(`
 handle {
   perform Out("a");
   perform Out("b");
-  null
+  unit
 } case Return(v) => k { [] }
-  case Out(s) => k { concat([s], k(null)) }
+  case Out(s) => k { concat([s], k(unit)) }
 `))).toBe('["a", "b"]');
 });

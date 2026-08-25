@@ -14,7 +14,7 @@ Hindley-Milner-flavoured type system with effect tracking.
 
 ## Architecture (top to bottom of `index.ts`)
 
-1. **Values** — runtime values: `null`, `boolean`, `number`, `string`, arrays,
+1. **Values** — runtime values: `null` (the `unit` value), `boolean`, `number`, `string`, arrays,
    `{ tag: "fn", params, body, env }` closures.
 2. **Types** — `Prim | ArrT | FunT | Var | AnyT`. Union-find (`Uni`) for type
    variables, side-map (`binds`) for substitutions. `any` is absorbing.
