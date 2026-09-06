@@ -88,7 +88,10 @@ function showT(t: Type): string {
     case "prim": return t.name;
     case "arr": return "[" + showT(t.elem) + "]";
     case "any": return "any";
-    case "var": return "t" + t.id;
+    case "var": {
+      const r = res(t);
+      return r.tag === "var" ? "t" + r.id : showT(r);
+    }
     case "fun": {
       const ps = t.params.map(showT).join(", ");
       const e = t.effs.size ? " ! { " + [...t.effs].join(", ") + " }" : "";
@@ -1226,6 +1229,20 @@ export function run(src: string): Value {
 export function typeOf(src: string): string {
   const items = new Parser(src).parseProgram();
   return showT(res(checkProgram(items).lastType));
+}
+
+// types: typecheck a source file and print every top-level symbol (let / fn)
+// along with its inferred type, one per line as `name : type`.
+export function types(src: string): string {
+  const items = new Parser(src).parseProgram();
+  const { env } = checkProgram(items);
+  const names: string[] = [];
+  for (const it of items)
+    if ("e" in it && (it.e.t === "let" || it.e.t === "letrec")) names.push(it.e.name);
+  return names.map(n => {
+    const t = tlookup(env, n);
+    return n + " : " + showT(res(typeof t === "function" ? t() : t!));
+  }).join("\n");
 }
 
 // repl: an interactive read-eval-print loop. State (runtime env + type env +

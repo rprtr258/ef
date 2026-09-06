@@ -262,19 +262,22 @@ The type checker stamps each `/` node as int or float division at check time (th
 
 ### 4.2 Functions
 
-| Name     | Type (schematic)         | Notes |
-|----------|--------------------------|-------|
-| `list`   | `(any) -> [any]`         | Variadic array constructor; special-cased in inference so `[1,2,3]` is `[int]`. |
-| `head`   | `([A]) -> A`             | First element. |
-| `tail`   | `([A]) -> [A]`           | All but first. |
-| `concat` | `([A], [A]) -> [A]`      | Append; both arrays share element type `A`. |
-| `flat`   | `([[A]]) -> [A]`         | Flatten one level. |
-| `len`    | `([A]) -> int`           | Length. |
-| `map`    | `((A) -> B, [A]) -> [B]` | Apply; fresh `A`/`B` per use. |
+| Name      | Type (schematic)                | Notes |
+|-----------|---------------------------------|-------|
+| `list`    | `(any) -> [any]`                | Variadic array constructor; special-cased in inference so `[1,2,3]` is `[int]`. |
+| `head`    | `([A]) -> A`                    | First element. |
+| `tail`    | `([A]) -> [A]`                  | All but first. |
+| `concat`  | `([A], [A]) -> [A]`             | Append; both arrays share element type `A`. |
+| `flat`    | `([[A]]) -> [A]`                | Flatten one level. |
+| `len`     | `([A]) -> int`                  | Length. |
+| `map`     | `((A) -> B, [A]) -> [B]`        | Apply; fresh `A`/`B` per use. |
+| `get`     | `([A], int) -> A`               | Array index. |
+| `set`     | `([A], int, A) -> unit`         | Array index assignment (mutates). |
+| `each`    | `((A, int) -> B, [A]) -> unit`  | Iterate with index; result discarded. |
+| `flatmap` | `((A, int) -> [B], [A]) -> [B]` | Map-then-concat. |
 
-### 4.3 Math, I/O, and array helpers
+### 4.3 Math, I/O
 
-Added for the `star.ink` port (see `examples/star.ef`). All are pure.
 Console output is via the `Println`/`Out` effects (§4.4), not functions;
 process control is via the `Exit`/`Wait` effects (§4.4), not functions.
 
@@ -286,10 +289,6 @@ process control is via the `Exit`/`Wait` effects (§4.4), not functions.
 | `abs`     | `(float) -> float`              | Absolute value. |
 | `round`   | `(float) -> int`                | Round to nearest int. |
 | `range`   | `(int, int, int) -> [int]`      | `range(start, end, step)`: half-open; `step` may be negative. |
-| `get`     | `([A], int) -> A`               | Array index. |
-| `set`     | `([A], int, A) -> unit`         | Array index assignment (mutates). |
-| `each`    | `((A, int) -> B, [A]) -> unit`  | Iterate with index; result discarded. |
-| `flatmap` | `((A, int) -> [B], [A]) -> [B]` | Map-then-concat. |
 | `char`    | `(int) -> string`               | Code point → single-char string. |
 | `number`  | `(string) -> float`             | Parse a string to a number. |
 | `args`    | `() -> [string]`                | CLI args after the source file. |
