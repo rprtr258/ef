@@ -3,7 +3,26 @@
 // `ef repl` starts an interactive REPL with persistent bindings.
 import {readFileSync} from "fs";
 import {styleText} from "util";
-import {show, run, types, repl, showT, lint} from "./index.ts";
+import {run} from "./eval.ts";
+import {type Type, showT, checkProgram, res} from "./types.ts";
+import {lint} from "./lint.ts";
+import {repl} from "./repl.ts";
+import {show} from "./env.ts";
+import {Parser, type Expr} from "./parser.ts";
+
+// types: typecheck a source file and print every top-level symbol (let)
+// along with its inferred type, one per line as `name : type`.
+export function types(src: string): {name: string, type: Type}[] {
+  const items = new Parser(src).parseProgram();
+  const {env} = checkProgram(items);
+  const names: string[] = items
+    .filter((it): it is {e: Expr & {t: "let"}} => "e" in it && it.e.t === "let")
+    .map(it => it.e.name);
+  return names.map(n => {
+    const t = env.lookup(n);
+    return {name: n, type: res(typeof t === "function" ? t() : t!)};
+  });
+}
 
 function main(cmd: string, args: string[]) {
   switch (cmd) {
