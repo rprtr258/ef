@@ -30,35 +30,35 @@ function main(cmd: string, args: string[]) {
     repl();
     return;
   case "run": {
-    if (args.length == 0) {
+    if (args.length === 0) {
       break;
     }
 
-    const src = readFileSync(args[0]!).toString();
+    const src = readFileSync(args[0]).toString();
     const result = run(src);
-    if (result !== undefined) console.log(show(result));
+    console.log(show(result));
     return;
   }
   case "types": {
-    if (args.length == 0) {
+    if (args.length === 0) {
       break;
     }
-    const src = readFileSync(args[0]!).toString();
+    const src = readFileSync(args[0]).toString();
     console.log(types(src).map(({name, type}) => styleText("gray", name) + " : " + showT(type)).join("\n"));
     return;
   }
   case "lint": {
-    if (args.length == 0) {
+    if (args.length === 0) {
       break;
     }
-    const src = readFileSync(args[0]!).toString();
+    const src = readFileSync(args[0]).toString();
     const issues = lint(src);
-    if (issues.length == 0) {
+    if (issues.length === 0) {
       console.log("no issues");
       return;
     }
     for (const i of issues) {
-      const loc = i.pos ? `${args[0]}:${i.pos.line}:${i.pos.col}: ` : "";
+      const loc = i.pos !== undefined ? `${args[0]}:${i.pos.line}:${i.pos.col}: ` : "";
       console.log(`${loc}${styleText("yellow", i.rule)}: ${i.who} has unused argument ${styleText("red", i.argname)}`);
     }
     process.exit(1);
@@ -69,4 +69,4 @@ function main(cmd: string, args: string[]) {
 }
 
 const [, , cmd, ...rest] = process.argv;
-main(cmd!, rest);
+main(cmd, rest);

@@ -2,6 +2,7 @@ import {test, expect, describe} from "bun:test";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {readFileSync, unlinkSync, existsSync} from "node:fs";
+import {execSync} from "node:child_process";
 import {run} from "./eval.ts";
 import {checkProgram, res, showT} from "./types.ts";
 import {show} from "./env.ts";
@@ -37,7 +38,7 @@ handle {
 } case Div(a, b) => k {
   if (b == 0) { ["div by zero"] } else { k(a / b) }
 }
-`))).toBe('["div by zero"]');
+`))).toBe("[\"div by zero\"]");
 });
 
 test("Deep handler threading a log across resumes", () => {
@@ -50,7 +51,7 @@ handle {
   Result!("42")
 } case Log(msg) => k { concat([msg], k(unit)) }
   case Result(v) => k { [v] }
-`))).toBe('["a", "b", "42"]');
+`))).toBe("[\"a\", \"b\", \"42\"]");
 });
 
 test("Effect propagation through an inner handler to an outer one", () => {
@@ -60,7 +61,7 @@ effect Other(m: string): unit;
 handle {
   handle { Emit!("hi") } case Other(m) => k { ["should-not-match"] }
 } case Emit(m) => k { [m] }
-`))).toBe('["hi"]');
+`))).toBe("[\"hi\"]");
 });
 
 test("Typed recursive function with annotation", () => {
@@ -78,7 +79,7 @@ let guard = fn(x: int): string {
   if (x > 0 && x < 10) { "in" } else { "out" }
 };
 [guard(5), guard(50)]
-`))).toBe('["in", "out"]');
+`))).toBe("[\"in\", \"out\"]");
 });
 
 test("Type annotations on let", () => {
@@ -144,13 +145,13 @@ describe("Tuples, aliases, and field access", () => {
     expect(show(run(`let p: [x: float, y: float] = [1.0, 2.0]; p.x`))).toBe("1");
   });
   test("dot access on a tuple by index", () => {
-    expect(show(run(`let p: [int, string] = [1, "a"]; p.1`))).toBe('"a"');
+    expect(show(run(`let p: [int, string] = [1, "a"]; p.1`))).toBe("\"a\"");
   });
   test("dot access on an array by index", () => {
     expect(show(run(`let xs = [10, 20, 30]; xs.0`))).toBe("10");
   });
   test("destructuring let binds tuple fields", () => {
-    expect(show(run(`let p: [int, string] = [1, "a"]; let [n, s] = p; s`))).toBe('"a"');
+    expect(show(run(`let p: [int, string] = [1, "a"]; let [n, s] = p; s`))).toBe("\"a\"");
   });
   test("destructuring let on an array", () => {
     expect(show(run(`let xs = [10, 20]; let [a, b] = xs; a + b`))).toBe("30");
@@ -230,7 +231,7 @@ test("Builtin Read/Write round-trip through real files", () => {
   expect(show(run(`
 Write!(${JSON.stringify(p)}, "hello ef");
 Read!(${JSON.stringify(p)})
-`))).toBe('"hello ef"');
+`))).toBe("\"hello ef\"");
   // The file really exists on disk.
   expect(readFileSync(p, "utf8")).toBe("hello ef");
   unlinkSync(p);
@@ -244,7 +245,7 @@ handle {
   Read!(${JSON.stringify(p)})
 } case Return(v) => k { [v] }
   case Read(path) => k { ["mocked"] }
-`))).toBe('["mocked"]');
+`))).toBe("[\"mocked\"]");
 });
 
 test("Builtin effects appear in inferred signatures", () => {
@@ -290,13 +291,13 @@ test("+ is overloaded: numeric widening or string concatenation", () => {
   expect(show(run(`1 + 2`))).toBe("3");
   // string + string.
   expect(typeOf(`"a" + "b"`)).toBe("string");
-  expect(show(run(`"foo" + "bar"`))).toBe('"foobar"');
-  expect(show(run(`"" + "x"`))).toBe('"x"');
-  expect(show(run(`"" + ""`))).toBe('""');
+  expect(show(run(`"foo" + "bar"`))).toBe("\"foobar\"");
+  expect(show(run(`"" + "x"`))).toBe("\"x\"");
+  expect(show(run(`"" + ""`))).toBe("\"\"");
   // three-way chaining is left-associative string concat.
-  expect(show(run(`"a" + "b" + "c"`))).toBe('"abc"');
+  expect(show(run(`"a" + "b" + "c"`))).toBe("\"abc\"");
   // string concat with values via let bindings.
-  expect(show(run(`let s = "x"; s + s`))).toBe('"xx"');
+  expect(show(run(`let s = "x"; s + s`))).toBe("\"xx\"");
   // mixed string/number is a type error in either order.
   expect(() => run(`"a" + 1`)).toThrow(/string/);
   expect(() => run(`1 + "a"`)).toThrow(/string/);
@@ -326,9 +327,9 @@ test("math + string builtins: cos/sin/PI/round/abs/char", () => {
   expect(show(run(`round(cos(0.0))`))).toBe("1");
   expect(show(run(`round(2.7)`))).toBe("3");
   expect(show(run(`abs(-4.5)`))).toBe("4.5");
-  expect(show(run(`char(65)`))).toBe('"A"');
+  expect(show(run(`char(65)`))).toBe("\"A\"");
   // char uses code points, not UTF-16 code units: 0x1F600 is a supplementary char.
-  expect(show(run(`char(128512)`))).toBe('"\ud83d\ude00"');
+  expect(show(run(`char(128512)`))).toBe("\"\ud83d\ude00\"");
 });
 
 test("division is type-preserving: int/int -> int, float/float -> float", () => {
@@ -359,8 +360,8 @@ test("head/get fail loudly on empty/out-of-bounds", () => {
 
 test("string escapes: \\xHH and \\n", () => {
   // \x1B (ESC, 27) then "[" — char code of first char is 27.
-  expect(show(run(`"\x1B["`))).toBe('"\u001b["');
-  expect(show(run(`"a\nb"`))).toBe('"a\nb"');
+  expect(show(run(`"\x1B["`))).toBe("\"\u001b[\"");
+  expect(show(run(`"a\nb"`))).toBe("\"a\nb\"");
 });
 
 test("Println/Out are interceptable algebraic effects", () => {
@@ -381,7 +382,7 @@ handle {
   unit
 } case Return(v) => k { [] }
   case Out(s) => k { concat([s], k(unit)) }
-`))).toBe('["a", "b"]');
+`))).toBe("[\"a\", \"b\"]");
 });
 
 test("effect annotations are optional and derived if missing", () => {
@@ -428,7 +429,7 @@ let b = apply(fn (n: int) { "n=" + char(48 + n) }, 7);
 a`))).toBe("42");
   expect(show(run(`let apply = fn (f, x) { f(x) };
 let b = apply(fn (n: int) { "n=" + char(48 + n) }, 7);
-b`))).toBe('"n=7"');
+b`))).toBe("\"n=7\"");
   // Value restriction: a non-lambda RHS is NOT generalized, so a returned
   // function used at two types is a type error (stays monomorphic).
   // (Sanity: a lambda-typed `let` with an explicit annotation is monomorphic.)
@@ -460,10 +461,9 @@ test("array literal infers as tuple against a tuple-typed context", () => {
 });
 
 test("REPL: bindings persist across lines", () => {
-  const { execSync } = require("node:child_process");
   const out = execSync(
-    'bun run cli.ts repl',
-    { input: 'let a = 6\nlet b = 7\na * b\n:q\n', encoding: "utf8", timeout: 20000 },
+    "bun run cli.ts repl",
+    {input: "let a = 6\nlet b = 7\na * b\n:q\n", encoding: "utf8", timeout: 20000},
   );
   expect(out).toContain("42 : int");
 });

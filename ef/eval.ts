@@ -21,7 +21,7 @@ export function apply(f: Value, args: Value[], k: Cont): Outcome {
   if (isClosure(f)) {
     const n = f.env.extend();
     for (let i = 0; i < f.params.length; i++)
-      n.vars.set(f.params[i]!, args[i] ?? null);
+      n.vars.set(f.params[i], args[i] ?? null);
     return evalE(f.body, n, k);
   }
   throw new Error("Not callable: " + show(f));
@@ -39,7 +39,7 @@ export function evalE(e: Expr, env: Env, k: Cont): Outcome {
     case "sym":
       return k(env.lookup(e.v));
     case "lambda":
-      return k({ tag: "fn", params: e.params.map(p => p.name), body: e.body, env, typ: e.typ });
+      return k({tag: "fn", params: e.params.map(p => p.name), body: e.body, env, typ: e.typ});
     case "let":
       env.vars.set(e.name, null);
       return evalE(e.val, env, (v) => {
@@ -69,7 +69,7 @@ export function evalE(e: Expr, env: Env, k: Cont): Outcome {
       return evalSeq(e.stmts, 0, n, k);
     }
     case "perform":
-      return evalArgs(e.args, env, [], (args) => ({ tag: "eff", op: e.op, args, k }));
+      return evalArgs(e.args, env, [], (args) => ({tag: "eff", op: e.op, args, k}));
     case "handle":
       return handle(e.body, e.cases, env, k);
     case "arr":
@@ -80,12 +80,12 @@ export function evalE(e: Expr, env: Env, k: Cont): Outcome {
         const idx = e.idx!;
         if (idx < 0 || idx >= a.length || !Number.isInteger(idx))
           throw new Error(`.${e.name}: index ${idx} out of bounds [0, ${a.length})`);
-        return k(a[idx]!);
+        return k(a[idx]);
       });
     case "dlet":
       return evalE(e.val, env, (v) => {
         const a = v as Value[];
-        for (let i = 0; i < e.fields.length; i++) env.vars.set(e.fields[i]!.name, a[i]!);
+        for (let i = 0; i < e.fields.length; i++) env.vars.set(e.fields[i].name, a[i]);
         return k(null);
       });
     case "app":
@@ -107,7 +107,7 @@ export function evalE(e: Expr, env: Env, k: Cont): Outcome {
 function evalArgs(args: Expr[], env: Env, acc: Value[], k: (vals: Value[]) => Outcome): Outcome {
   if (acc.length === args.length)
     return k(acc);
-  return evalE(args[acc.length]!, env, (v) => evalArgs(args, env, [...acc, v], k));
+  return evalE(args[acc.length], env, (v) => evalArgs(args, env, [...acc, v], k));
 }
 
 function evalSeq(stmts: Expr[], i: number, env: Env, k: Cont): Outcome {
@@ -123,17 +123,17 @@ function handle(body: Expr, cases: HandlerCase[], env: Env, k: Cont): Outcome {
   const ret = handlers.get("Return");
   function run(out: Outcome, kOuter: Cont): Outcome {
     if (out.tag === "done") {
-      if (ret) {
+      if (ret !== undefined) {
         const n = env.extend();
-        n.vars.set(ret.params[0]!.name, out.value);
-        n.vars.set(ret.resume, { tag: "native", fn: (_a, k2) => k2(out.value) });
+        n.vars.set(ret.params[0].name, out.value);
+        n.vars.set(ret.resume, {tag: "native", fn: (_a, k2) => k2(out.value)});
         return evalE(ret.body, n, kOuter);
       }
       return kOuter(out.value);
     }
     const h = handlers.get(out.op);
-    if (!h) {
-      return { tag: "eff", op: out.op, args: out.args, k: (v) => run(out.k(v), kOuter) };
+    if (h === undefined) {
+      return {tag: "eff", op: out.op, args: out.args, k: (v) => run(out.k(v), kOuter)};
     }
     const resume: Native = {
       tag: "native",
@@ -141,10 +141,10 @@ function handle(body: Expr, cases: HandlerCase[], env: Env, k: Cont): Outcome {
     };
     const n = env.extend();
     n.vars.set(h.resume, resume);
-    for (let i = 0; i < h.params.length; i++) n.vars.set(h.params[i]!.name, out.args[i] ?? null);
+    for (let i = 0; i < h.params.length; i++) n.vars.set(h.params[i].name, out.args[i] ?? null);
     return evalE(h.body, n, kOuter);
   }
-  return run(evalE(body, env, (v) => ({ tag: "done", value: v })), k);
+  return run(evalE(body, env, (v) => ({tag: "done", value: v})), k);
 }
 
 export function runTop(out: Outcome): Value {
@@ -160,9 +160,9 @@ export function runTop(out: Outcome): Value {
       case "Out": process.stdout.write(out.args[0] as string); out = out.k(null); break;
       // Exit terminates the process without resuming; Wait blocks then resumes
       // with unit. Both are ordinary effects a handler can intercept.
-      case "Exit": { process.exit(num(out.args[0]!)); }
+      case "Exit": { process.exit(num(out.args[0])); }
       case "Wait": {
-        const end = Date.now() + num(out.args[0]!) * 1000;
+        const end = Date.now() + num(out.args[0]) * 1000;
         while (Date.now() < end) { /* busy-wait: synchronous CPS evaluator */ }
         out = out.k(null);
         break;
@@ -180,7 +180,8 @@ export function run(src: string): Value {
   let last: Value = null;
   const g = globalEnv();
   for (const it of items) {
-    if ("e" in it) last = runTop(evalE(it.e, g, (v) => ({ tag: "done", value: v })));
+    if ("e" in it)
+      last = runTop(evalE(it.e, g, (v) => ({tag: "done", value: v})));
   }
   return last;
 }

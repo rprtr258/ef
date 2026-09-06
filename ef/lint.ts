@@ -5,7 +5,7 @@ import {Parser, type Expr, type Item} from "./parser.ts";
 
 // Each pass is an (items) => LintIssue[]; add more passes to LINT_PASSES.
 export type LintIssue =
-  {rule: "unused-arg"; who: string, argname: string, pos?: Pos};
+  {rule: "unused-arg", who: string, argname: string, pos?: Pos};
 
 const LINT_PASSES: ((items: Item[]) => LintIssue[])[] = [lintUnusedArgs];
 
@@ -136,7 +136,7 @@ function lintUnusedArgs(items: Item[]): LintIssue[] {
         seen.add(p.name);
         const used = freeUses(lam.body, new Set([p.name]));
         if (used.size === 0) {
-          const who = fname ? `function \`${fname}\`` : "anonymous function";
+          const who = fname !== null ? `function \`${fname}\`` : "anonymous function";
           issues.push({rule: "unused-arg", who, argname: p.name, pos: p.pos});
         }
       }

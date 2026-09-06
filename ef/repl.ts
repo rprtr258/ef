@@ -12,25 +12,34 @@ import {Parser, type Expr} from "./parser.ts";
 export function repl(): void {
   const g = globalEnv();
   const acc = checkProgram([]); // seeded with builtins; extended incrementally
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "ef> " });
+  const rl = readline.createInterface({input: process.stdin, output: process.stdout, prompt: "ef> "});
   const evalLine = (src: string): void => {
     const items = new Parser(src).parseProgram();
-    const { lastType } = checkProgram(items, acc);
+    const {lastType} = checkProgram(items, acc);
     let last: Value = null;
-    for (const it of items) if ("e" in it) last = runTop(evalE(it.e, g, (v) => ({ tag: "done", value: v })));
+    for (const it of items)
+      if ("e" in it)
+        last = runTop(evalE(it.e, g, (v) => ({tag: "done", value: v})));
     const tail = items[items.length - 1];
-    const isExpr = tail && "e" in tail && (tail as {e: Expr}).e.t !== "let";
-    if (isExpr && last !== null) console.log(show(last) + " : " + showT(res(lastType)));
+    const isExpr = tail && "e" in tail && tail.e.t !== "let";
+    if (isExpr && last !== null)
+      console.log(show(last) + " : " + showT(res(lastType)));
   };
   console.log("ef REPL — type :q to quit");
   rl.prompt();
   rl.on("line", (line) => {
     const s = line.trimEnd();
-    if (s === ":q" || s === ":quit") { rl.close(); return; }
-    if (s === "") { rl.prompt(); return; }
+    if (s === ":q" || s === ":quit") {
+      rl.close();
+      return;
+    }
+    if (s === "") {
+      rl.prompt();
+      return;
+    }
     const src = /[;{}]$/.test(s) ? s : s + ";";
     try { evalLine(src); }
-    catch (e) { console.log(String((e as Error).message ?? e)); }
+    catch (e) { console.log(String((e as {message?: string}).message ?? e)); }
     rl.prompt();
   });
   rl.on("close", () => { process.stdout.write("\n"); process.exit(0); });

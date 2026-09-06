@@ -1,41 +1,41 @@
 import type {Expr, Item} from "./parser";
 
 export type Type = Prim | ArrT | TupT | FunT | Var | AnyT;
-export type Prim = { tag: "prim"; name: "int" | "float" | "string" | "bool" | "unit" };
-export type ArrT = { tag: "arr"; elem: Type };
+export type Prim = { tag: "prim", name: "int" | "float" | "string" | "bool" | "unit" };
+export type ArrT = { tag: "arr", elem: Type };
 // Tuples: a fixed-arity record. `name` is null for unnamed fields (`[int, float]`)
 // or a label for named fields (`[x: float, y: float]`). Names are structural only
 // for field access; unification compares arity + positional types, not names.
-export type TupField = { name: string | null; type: Type };
-export type TupT = { tag: "tup"; fields: TupField[] };
+export type TupField = { name: string | null, type: Type };
+export type TupT = { tag: "tup", fields: TupField[] };
 // Effect rows: a concrete `Set<string>` of performed effects, or an
 // unbound effect variable (row polymorphism). Effect variables unify by
 // union-find; a variable unifies with a concrete set by binding to it; two
 // concrete sets unify by equality. This lets higher-order builtins be
 // effect-polymorphic: `map : ((a) -> b ! e, [a]) -> [b] ! e` for a fresh `e`.
-export type EffVar = { tag: "effvar"; id: number };
+export type EffVar = { tag: "effvar", id: number };
 export type Effs = Set<string> | EffVar;
-export type FunT = { tag: "fun"; params: Type[]; ret: Type; effs: Effs };
-export type Var = { tag: "var"; id: number };
+export type FunT = { tag: "fun", params: Type[], ret: Type, effs: Effs };
+export type Var = { tag: "var", id: number };
 export type AnyT = { tag: "any" };
 
-export const TINT: Prim = { tag: "prim", name: "int" };
-export const TFLOAT: Prim = { tag: "prim", name: "float" };
-export const TSTR: Prim = { tag: "prim", name: "string" };
-export const TBOOL: Prim = { tag: "prim", name: "bool" };
-export const TNULL: Prim = { tag: "prim", name: "unit" };
-export const TANY: AnyT = { tag: "any" };
+export const TINT: Prim = {tag: "prim", name: "int"};
+export const TFLOAT: Prim = {tag: "prim", name: "float"};
+export const TSTR: Prim = {tag: "prim", name: "string"};
+export const TBOOL: Prim = {tag: "prim", name: "bool"};
+export const TNULL: Prim = {tag: "prim", name: "unit"};
+export const TANY: AnyT = {tag: "any"};
 
-export function tArr(elem: Type): ArrT { return { tag: "arr", elem }; }
-export function tTup(fields: TupField[]): TupT { return { tag: "tup", fields }; }
+export function tArr(elem: Type): ArrT { return {tag: "arr", elem}; }
+export function tTup(fields: TupField[]): TupT { return {tag: "tup", fields}; }
 export function tFun(params: Type[], ret: Type, effs: Effs): FunT {
-  return { tag: "fun", params, ret, effs };
+  return {tag: "fun", params, ret, effs};
 }
 
 // Effect declaration: parameter types + the type the resumed continuation yields.
 export type EffectSig = {
-  params: Type[];
-  ret: Type;
+  params: Type[],
+  ret: Type,
 };
 
 // Union-find over type variables; substitution stored in `binds`.
@@ -45,7 +45,7 @@ class Uni {
   fresh(): Var {
     const id = this.n++;
     this.parent.set(id, id);
-    return { tag: "var", id };
+    return {tag: "var", id};
   }
   find(id: number): number {
     let r = id;
@@ -66,7 +66,7 @@ export function res(t: Type): Type {
     return t;
   const r = uni.find(t.id);
   const b = binds.get(r);
-  return b ? res(b) : { tag: "var", id: r };
+  return b !== undefined ? res(b) : {tag: "var", id: r};
 }
 
 export function showT(t: Type): string {
@@ -85,7 +85,7 @@ export function showT(t: Type): string {
       const ps = t.params.map(showT).join(", ");
       const er = resEff(t.effs);
       const e = er instanceof Set
-        ? (er.size ? " ! { " + [...er].join(", ") + " }" : "")
+        ? (er.size > 0 ? " ! { " + [...er].join(", ") + " }" : "")
         : " ! { e" + er.id + " }";
       return "(" + ps + ") -> " + showT(t.ret) + e;
     }
@@ -101,7 +101,7 @@ const effBinds = new Map<number, Set<string>>();
 function freshEff(): EffVar {
   const id = effCounter++;
   effParent.set(id, id);
-  return { tag: "effvar", id };
+  return {tag: "effvar", id};
 }
 function effFind(id: number): number {
   let r = id;
@@ -121,7 +121,7 @@ function resEff(e: Effs): Effs {
   if (e instanceof Set) return e;
   const r = effFind(e.id);
   const b = effBinds.get(r);
-  return b ?? { tag: "effvar", id: r };
+  return b ?? {tag: "effvar", id: r};
 }
 
 export function freshVar(): Var { return uni.fresh(); }
@@ -131,10 +131,10 @@ export function freshVar(): Var { return uni.fresh(); }
 // failure without corrupting the types inferred for the elements themselves.
 // ponytail: O(n) per snapshot; fine for literal-sized element lists, not loops.
 type Snapshot = {
-  parent: Map<number, number>; n: number;
-  binds: Map<number, Type>;
-  effParent: Map<number, number>; effBinds: Map<number, Set<string>>;
-  effCounter: number;
+  parent: Map<number, number>, n: number,
+  binds: Map<number, Type>,
+  effParent: Map<number, number>, effBinds: Map<number, Set<string>>,
+  effCounter: number,
 };
 function checkpoint(): Snapshot {
   return {
@@ -164,7 +164,7 @@ function unifyEff(a: Effs, b: Effs): void {
     return;
   }
   if (!(ra instanceof Set)) { effBinds.set(effFind(ra.id), rb as Set<string>); return; }
-  if (!(rb instanceof Set)) { effBinds.set(effFind(rb.id), ra as Set<string>); return; }
+  if (!(rb instanceof Set)) { effBinds.set(effFind(rb.id), ra); return; }
   if (ra.size === 0) return; // ∅ unifies with anything (refine to rb)
   if (rb.size === 0) return;
   if (ra.size !== rb.size || ![...ra].every(op => rb.has(op)))
@@ -218,7 +218,7 @@ class TypeMismatch extends TypeError_ {
   located = false;
   constructor(msg: string) {
     super(msg);
-    Object.defineProperty(this, "located", { value: false, enumerable: false, writable: true });
+    Object.defineProperty(this, "located", {value: false, enumerable: false, writable: true});
   }
 }
 
@@ -252,13 +252,13 @@ export function unify(a: Type, b: Type): void {
   if (ra.tag === "tup" && rb.tag === "tup") {
     if (ra.fields.length !== rb.fields.length)
       throw new TypeError_(`tuple arity ${ra.fields.length} ≠ ${rb.fields.length}`);
-    for (let i = 0; i < ra.fields.length; i++) unify(ra.fields[i]!.type, rb.fields[i]!.type);
+    for (let i = 0; i < ra.fields.length; i++) unify(ra.fields[i].type, rb.fields[i].type);
     return;
   }
   if (ra.tag === "fun" && rb.tag === "fun") {
     if (ra.params.length !== rb.params.length)
       throw new TypeError_(`arity ${ra.params.length} ≠ ${rb.params.length}`);
-    for (let i = 0; i < ra.params.length; i++) unify(ra.params[i]!, rb.params[i]!);
+    for (let i = 0; i < ra.params.length; i++) unify(ra.params[i], rb.params[i]);
     unify(ra.ret, rb.ret);
     unifyEff(ra.effs, rb.effs);
     return;
@@ -288,7 +288,7 @@ function copyScheme(t: Type, tm: Map<number, Type>, em: Map<number, Effs>): Type
   switch (r.tag) {
     case "var": return tm.get(uni.find(r.id)) ?? r;
     case "arr": return tArr(copyScheme(r.elem, tm, em));
-    case "tup": return tTup(r.fields.map(f => ({ name: f.name, type: copyScheme(f.type, tm, em) })));
+    case "tup": return tTup(r.fields.map(f => ({name: f.name, type: copyScheme(f.type, tm, em)})));
     case "fun":
       return tFun(
         r.params.map(p => copyScheme(p, tm, em)),
@@ -307,7 +307,7 @@ function copyEff(e: Effs, em: Map<number, Effs>): Effs {
 // A top-level program item: an expression, an effect declaration, or a
 // parametric type alias (`type Pair(a, b) = [a, b];`). Aliases are resolved at
 // parse time by substituting type args into the body.
-export type Alias = { name: string; tparams: Map<string, Var>; body: Type };
+export type Alias = { name: string, tparams: Map<string, Var>, body: Type };
 
 // Instantiate a parametric type alias by substituting its type-parameter vars
 // with the given argument types (fresh vars for any missing/trailing args).
@@ -327,7 +327,7 @@ export function instantiateAlias(al: Alias, args: Type[]): Type {
 function generalize(env: Env, t: Type): Type | Scheme {
   const envTvs = new Set<number>();
   const envEvs = new Set<number>();
-  for (let e: Env | null = env; e; e = e.parent)
+  for (let e: Env | null = env; e !== null; e = e.parent)
     for (const v of e.vars.values())
       if (typeof v !== "function")
         collectVars(v, envTvs, envEvs);
@@ -353,7 +353,7 @@ export class Env {
   constructor(public parent: Env | null) {}
   lookup(name: string): Type | Scheme | undefined {
     let e: Env | null = this;
-    while (e) {
+    while (e !== null) {
       if (e.vars.has(name))
         return e.vars.get(name);
       e = e.parent;
@@ -376,12 +376,12 @@ function inferArr(
   effs: Set<string>,
   effects: Map<string, EffectSig>,
 ): Type {
-  if (expected) {
+  if (expected !== null) {
     if (e.elems.length !== expected.fields.length)
       throw new TypeError_(`literal arity ${e.elems.length} ≠ tuple ${expected.fields.length}`);
     for (let i = 0; i < e.elems.length; i++) {
-      const ft = expected.fields[i]!.type;
-      const el = e.elems[i]!;
+      const ft = expected.fields[i].type;
+      const el = e.elems[i];
       // Propagate the tuple expectation into a nested `[...]` literal so that
       // `let m: [[f,f,f],...] = [[1,2,3],...]` builds inner tuples, not arrays.
       const et = (el.t === "arr" && res(ft).tag === "tup")
@@ -400,7 +400,7 @@ function inferArr(
     return tArr(res(elem));
   } catch (_) {
     restore(snap);
-    return tTup(elemTs.map(t => ({ name: null, type: res(t) })));
+    return tTup(elemTs.map(t => ({name: null, type: res(t)})));
   }
 }
 
@@ -413,19 +413,19 @@ function inferWith(e: Expr, expected: Type, env: Env, effs: Set<string>, effects
   if (rt.tag !== "tup")
     return infer(e, env, effs, effects);
   if (e.t === "arr")
-    return inferArr(e, rt as TupT, env, effs, effects);
+    return inferArr(e, rt, env, effs, effects);
   if (e.t === "block") {
     const n = env.extend();
     let last: Type = TNULL;
     for (let i = 0; i < e.stmts.length; i++)
       last = i === e.stmts.length - 1
-        ? inferWith(e.stmts[i]!, rt, n, effs, effects)
-        : infer(e.stmts[i]!, n, effs, effects);
+        ? inferWith(e.stmts[i], rt, n, effs, effects)
+        : infer(e.stmts[i], n, effs, effects);
     return last;
   }
-  if (e.t === "lambda" && e.retTyp) {
+  if (e.t === "lambda" && e.retTyp !== null) {
     const saved = e.retTyp;
-    e.retTyp = rt as TupT;
+    e.retTyp = rt;
     try { return infer(e, env, effs, effects); }
     finally { e.retTyp = saved; }
   }
@@ -515,16 +515,16 @@ function infer(
         ps.push(pt);
       }
       const innerEffs = new Set<string>();
-      const ret = e.retTyp && res(e.retTyp).tag === "tup"
+      const ret = e.retTyp !== null && res(e.retTyp).tag === "tup"
         ? inferWith(e.body, e.retTyp, n, innerEffs, effects)
         : infer(e.body, n, innerEffs, effects);
-      if (e.retTyp)
+      if (e.retTyp !== null)
         unify(e.retTyp, ret);
       // Effect annotation is optional: if `! { ... }` is omitted, the
       // function's effect set is derived from the body's performed effects.
       // If present, it must be a superset of the body's effects.
-      if (e.retEffs) {
-        const decl = [...e.retEffs].join(", ") || "∅";
+      if (e.retEffs !== null) {
+        const decl = e.retEffs.size > 0 ? [...e.retEffs].join(", ") : "∅";
         for (const op of innerEffs)
           if (!e.retEffs.has(op))
             throw new TypeError_(`effect ${op} not declared in signature (declared: ${decl})`);
@@ -540,7 +540,7 @@ function infer(
       env.vars.set(e.name, declared);
       // A tuple annotation on an `[...]` literal makes it a tuple even when its
       // elements would otherwise unify homogeneously (e.g. `let p: [float, float] = [1.0, 2.0]`).
-      const vt = (e.typ && res(e.typ).tag === "tup" && e.val.t === "arr")
+      const vt = (e.typ !== null && res(e.typ).tag === "tup" && e.val.t === "arr")
         ? inferArr(e.val, res(e.typ) as TupT, env, effs, effects)
         : infer(e.val, env, effs, effects);
       unify(declared, vt);
@@ -551,8 +551,8 @@ function infer(
       // Value restriction: generalize only lambda values (literals carry no
       // type vars; `arr` literals are typed directly, not via `list`).
       // This keeps mutable-array/assign soundness (no `let x = []` : [a]).
-      env.vars.set(e.name, e.typ ? rt : (e.val.t === "lambda" ? generalize(env, rt) : rt));
-      if (!e.typ && containsAny(rt))
+      env.vars.set(e.name, e.typ !== null ? rt : (e.val.t === "lambda" ? generalize(env, rt) : rt));
+      if (e.typ === null && containsAny(rt))
         warnInferredAny(e.name, rt);
       return TNULL;
     }
@@ -583,7 +583,7 @@ function infer(
             throw new TypeError_(`tuple has no field .${e.name}`);
         }
         e.idx = idx;
-        return ot.fields[idx]!.type;
+        return ot.fields[idx].type;
       }
       throw new TypeError_(`field access on non-record type: ${showT(ot)}`);
     }
@@ -595,13 +595,13 @@ function infer(
           throw new TypeError_(`destructure arity ${e.fields.length} ≠ tuple ${vt.fields.length}`);
         for (let i = 0; i < e.fields.length; i++) {
           const ft = e.fields[i].typ;
-          if (ft)
+          if (ft !== null)
             unify(ft, vt.fields[i].type);
           env.vars.set(e.fields[i].name, ft ?? vt.fields[i].type);
         }
       } else if (vt.tag === "arr") {
         for (const f of e.fields) {
-          if (f.typ)
+          if (f.typ !== null)
             unify(f.typ, vt.elem);
           env.vars.set(f.name, f.typ ?? vt.elem);
         }
@@ -640,11 +640,12 @@ function infer(
     }
     case "perform": {
       const sig = effects.get(e.op);
-      if (!sig) throw new TypeError_(`Unknown effect: ${e.op} (declare with: effect ${e.op}(...);)`);
+      if (sig === undefined)
+        throw new TypeError_(`Unknown effect: ${e.op} (declare with: effect ${e.op}(...);)`);
       if (e.args.length !== sig.params.length)
         throw new TypeError_(`effect ${e.op}: ${sig.params.length} args, got ${e.args.length}`);
       const argTs = e.args.map(a => infer(a, env, effs, effects));
-      for (let i = 0; i < sig.params.length; i++) unify(sig.params[i]!, argTs[i]!);
+      for (let i = 0; i < sig.params.length; i++) unify(sig.params[i], argTs[i]);
       effs.add(e.op);
       return sig.ret;
     }
@@ -655,13 +656,13 @@ function infer(
       for (const c of e.cases) {
         const n = env.extend();
         const sig = effects.get(c.op);
-        if (!sig && c.op !== "Return")
+        if (sig === undefined && c.op !== "Return")
           throw new TypeError_(`Handler for unknown effect: ${c.op}`);
         if (c.op === "Return") {
-          n.vars.set(c.params[0]!.name, res(bodyT));
+          n.vars.set(c.params[0].name, res(bodyT));
         } else {
           for (let i = 0; i < c.params.length; i++) {
-            n.vars.set(c.params[i]!.name, sig!.params[i] ?? TANY);
+            n.vars.set(c.params[i].name, sig!.params[i] ?? TANY);
           }
         }
         // resume: (sig.ret) -> resultT ; Return's resume is identity over bodyT
@@ -670,8 +671,10 @@ function infer(
           : tFun([sig!.ret], freshVar(), new Set());
         n.vars.set(c.resume, resumeT);
         const ct = infer(c.body, n, new Set<string>(), effects);
-        if (resultT === null) resultT = ct;
-        else unify(resultT, ct);
+        if (resultT === null)
+          resultT = ct;
+        else
+          unify(resultT, ct);
         unify(resumeT.ret, ct);
       }
       for (const c of e.cases) bodyEffs.delete(c.op);
@@ -687,15 +690,15 @@ function infer(
       }
       // `+` is overloaded: numeric widening or string concatenation.
       if (e.fn.t === "sym" && e.fn.v === "+") {
-        const at = infer(e.args[0]!, env, effs, effects);
-        const bt = infer(e.args[1]!, env, effs, effects);
+        const at = infer(e.args[0], env, effs, effects);
+        const bt = infer(e.args[1], env, effs, effects);
         return plusType(at, bt);
       }
       // Numeric operators (- * / %) and comparisons (< > <= >=) widen int/float;
       // unary neg is handled below. Kept out of BINOPS so they get this logic.
       if (e.fn.t === "sym" && (NUMOPS.has(e.fn.v) || CMPOPS.has(e.fn.v))) {
-        const at = infer(e.args[0]!, env, effs, effects);
-        const bt = infer(e.args[1]!, env, effs, effects);
+        const at = infer(e.args[0], env, effs, effects);
+        const bt = infer(e.args[1], env, effs, effects);
         const widened = numeric(at, bt, e.fn.v);
         if (CMPOPS.has(e.fn.v)) return TBOOL;
         // `/` is type-preserving: int/int -> int (truncated at runtime),
@@ -706,14 +709,14 @@ function infer(
         return widened;
       }
       if (e.fn.t === "sym" && e.fn.v === "neg") {
-        const at = infer(e.args[0]!, env, effs, effects);
+        const at = infer(e.args[0], env, effs, effects);
         return numeric(at, at, "neg");
       }
       // Equality: both operands must share a type (numeric widening lets
       // `int ~ float`). Cross-type (`"a" == 1`) is a type error.
       if (e.fn.t === "sym" && EQOPS.has(e.fn.v)) {
-        const at = infer(e.args[0]!, env, effs, effects);
-        const bt = infer(e.args[1]!, env, effs, effects);
+        const at = infer(e.args[0], env, effs, effects);
+        const bt = infer(e.args[1], env, effs, effects);
         unify(at, bt);
         return TBOOL;
       }
@@ -723,15 +726,15 @@ function infer(
       // passed against a tuple parameter type is inferred as that tuple
       // (mirroring the `let : [..] = [...]` special case).
       const argTs = e.args.map((a, i) => {
-        if (a.t === "arr" && fr.tag === "fun" && fr.params[i] && res(fr.params[i]!).tag === "tup")
-          return inferArr(a, res(fr.params[i]!) as TupT, env, effs, effects);
+        if (a.t === "arr" && fr.tag === "fun" && fr.params[i] && res(fr.params[i]).tag === "tup")
+          return inferArr(a, res(fr.params[i]) as TupT, env, effs, effects);
         return infer(a, env, effs, effects);
       });
       const ret = freshVar();
       if (fr.tag === "fun") {
         if (fr.params.length !== argTs.length)
           throw new TypeError_(`arity ${fr.params.length} ≠ ${argTs.length}`);
-        for (let i = 0; i < argTs.length; i++) unify(fr.params[i]!, argTs[i]!);
+        for (let i = 0; i < argTs.length; i++) unify(fr.params[i], argTs[i]);
         unify(fr.ret, ret);
         // The callee's effect row is unified with each callback argument's
         // effect row via the param unification above (polymorphic builtins
@@ -756,7 +759,7 @@ function infer(
     // Annotate the innermost type mismatch with the position of the
     // expression being inferred when unification failed. The first (deepest)
     // frame to catch wins; outer frames see `located` set and skip.
-    if (err instanceof TypeMismatch && !err.located && e.pos) {
+    if (err instanceof TypeMismatch && !err.located && e.pos !== undefined) {
       err.located = true;
       err.message = `at line ${e.pos.line}, col ${e.pos.col}: ` + err.message;
     }
@@ -766,69 +769,72 @@ function infer(
 
 export function checkProgram(
   items: Item[],
-  acc?: { env: Env; effects: Map<string, EffectSig> },
-): { env: Env; effects: Map<string, EffectSig>; lastType: Type } {
+  acc?: { env: Env, effects: Map<string, EffectSig> },
+): { env: Env, effects: Map<string, EffectSig>, lastType: Type } {
   let env: Env;
   let effects: Map<string, EffectSig>;
-  if (acc) {
+  if (acc !== undefined) {
     env = acc.env;
     effects = acc.effects;
   } else {
-  effects = new Map<string, EffectSig>();
-  // Builtin effects, interpreted by the runtime when left unhandled.
-  // `Read(path): string` reads a file; `Write(path, content): null` writes one.
-  // `Println(v: any): null` and `Out(s: string): null` are the console effects.
-  // User `effect` decls below may add or override these.
-  effects.set("Read", { params: [TSTR], ret: TSTR });
-  effects.set("Write", { params: [TSTR, TSTR], ret: TNULL });
-  effects.set("Println", { params: [TANY], ret: TNULL });
-  effects.set("Out", { params: [TSTR], ret: TNULL });
-  // `Exit(code: int): unit` terminates the process by default (never resumes);
-  // `Wait(secs: int): unit` blocks for `secs` seconds then resumes with unit.
-  // Both are effects so a handler can intercept them.
-  effects.set("Exit", { params: [TINT], ret: TNULL });
-  effects.set("Wait", { params: [TINT], ret: TNULL });
-  // `Random(): float` resumes with a random number in [0, 1).
-  effects.set("Random", { params: [], ret: TFLOAT });
-  env = new Env(null);
-  env.vars.set("not", tFun([TBOOL], TBOOL, new Set()));
-  env.vars.set("list", tFun([TANY], tArr(TANY), new Set()));
-  env.vars.set("head", () => { const a = freshVar(); return tFun([tArr(a)], a, new Set()); });
-  env.vars.set("tail", () => { const a = freshVar(); return tFun([tArr(a)], tArr(a), new Set()); });
-  env.vars.set("concat", () => { const a = freshVar(); return tFun([tArr(a), tArr(a)], tArr(a), new Set()); });
-  env.vars.set("flat", () => { const a = freshVar(); return tFun([tArr(tArr(a))], tArr(a), new Set()); });
-  env.vars.set("len", () => { const a = freshVar(); return tFun([tArr(a)], TINT, new Set()); });
-  env.vars.set("strlen", tFun([TSTR], TINT, new Set()));
-  env.vars.set("map", () => {
-    const a = freshVar(), b = freshVar(), e = freshEff();
-    return tFun([tFun([a], b, e), tArr(a)], tArr(b), e);
-  });
-  // --- builtins added for the star.ink port ---
-  env.vars.set("PI", TFLOAT);
-  env.vars.set("cos", tFun([TFLOAT], TFLOAT, new Set()));
-  env.vars.set("sin", tFun([TFLOAT], TFLOAT, new Set()));
-  env.vars.set("abs", tFun([TFLOAT], TFLOAT, new Set()));
-  env.vars.set("round", tFun([TFLOAT], TINT, new Set()));
-  env.vars.set("sqrt", tFun([TFLOAT], TFLOAT, new Set()));
-  env.vars.set("range", tFun([TINT, TINT, TINT], tArr(TINT), new Set()));
-  env.vars.set("char", tFun([TINT], TSTR, new Set()));
-  env.vars.set("number", tFun([TSTR], TFLOAT, new Set()));
-  env.vars.set("args", tFun([], tArr(TSTR), new Set()));
-  env.vars.set("get", () => { const a = freshVar(); return tFun([tArr(a), TINT], a, new Set()); });
-  env.vars.set("set", () => { const a = freshVar(); return tFun([tArr(a), TINT, a], TNULL, new Set()); });
-  env.vars.set("each", () => {
-    const a = freshVar(), b = freshVar(), e = freshEff();
-    return tFun([tFun([a, TINT], b, e), tArr(a)], TNULL, e);
-  });
-  env.vars.set("flatmap", () => {
-    const a = freshVar(), b = freshVar(), e = freshEff();
-    return tFun([tFun([a, TINT], tArr(b), e), tArr(a)], tArr(b), e);
-  });
+    effects = new Map<string, EffectSig>();
+    // Builtin effects, interpreted by the runtime when left unhandled.
+    // `Read(path): string` reads a file; `Write(path, content): null` writes one.
+    // `Println(v: any): null` and `Out(s: string): null` are the console effects.
+    // User `effect` decls below may add or override these.
+    effects.set("Read", {params: [TSTR], ret: TSTR});
+    effects.set("Write", {params: [TSTR, TSTR], ret: TNULL});
+    effects.set("Println", {params: [TANY], ret: TNULL});
+    effects.set("Out", {params: [TSTR], ret: TNULL});
+    // `Exit(code: int): unit` terminates the process by default (never resumes);
+    // `Wait(secs: int): unit` blocks for `secs` seconds then resumes with unit.
+    // Both are effects so a handler can intercept them.
+    effects.set("Exit", {params: [TINT], ret: TNULL});
+    effects.set("Wait", {params: [TINT], ret: TNULL});
+    // `Random(): float` resumes with a random number in [0, 1).
+    effects.set("Random", {params: [], ret: TFLOAT});
+    env = new Env(null);
+    env.vars.set("not", tFun([TBOOL], TBOOL, new Set()));
+    env.vars.set("list", tFun([TANY], tArr(TANY), new Set()));
+    env.vars.set("head", () => { const a = freshVar(); return tFun([tArr(a)], a, new Set()); });
+    env.vars.set("tail", () => { const a = freshVar(); return tFun([tArr(a)], tArr(a), new Set()); });
+    env.vars.set("concat", () => { const a = freshVar(); return tFun([tArr(a), tArr(a)], tArr(a), new Set()); });
+    env.vars.set("flat", () => { const a = freshVar(); return tFun([tArr(tArr(a))], tArr(a), new Set()); });
+    env.vars.set("len", () => { const a = freshVar(); return tFun([tArr(a)], TINT, new Set()); });
+    env.vars.set("strlen", tFun([TSTR], TINT, new Set()));
+    env.vars.set("map", () => {
+      const a = freshVar(), b = freshVar(), e = freshEff();
+      return tFun([tFun([a], b, e), tArr(a)], tArr(b), e);
+    });
+    // --- builtins added for the star.ink port ---
+    env.vars.set("PI", TFLOAT);
+    env.vars.set("cos", tFun([TFLOAT], TFLOAT, new Set()));
+    env.vars.set("sin", tFun([TFLOAT], TFLOAT, new Set()));
+    env.vars.set("abs", tFun([TFLOAT], TFLOAT, new Set()));
+    env.vars.set("round", tFun([TFLOAT], TINT, new Set()));
+    env.vars.set("sqrt", tFun([TFLOAT], TFLOAT, new Set()));
+    env.vars.set("range", tFun([TINT, TINT, TINT], tArr(TINT), new Set()));
+    env.vars.set("char", tFun([TINT], TSTR, new Set()));
+    env.vars.set("number", tFun([TSTR], TFLOAT, new Set()));
+    env.vars.set("args", tFun([], tArr(TSTR), new Set()));
+    env.vars.set("get", () => { const a = freshVar(); return tFun([tArr(a), TINT], a, new Set()); });
+    env.vars.set("set", () => { const a = freshVar(); return tFun([tArr(a), TINT, a], TNULL, new Set()); });
+    env.vars.set("each", () => {
+      const a = freshVar(), b = freshVar(), e = freshEff();
+      return tFun([tFun([a, TINT], b, e), tArr(a)], TNULL, e);
+    });
+    env.vars.set("flatmap", () => {
+      const a = freshVar(), b = freshVar(), e = freshEff();
+      return tFun([tFun([a, TINT], tArr(b), e), tArr(a)], tArr(b), e);
+    });
   }
+
   for (const it of items.filter(it => "effect" in it))
     effects.set(it.effect, it.sig);
+
   let lastType: Type = TNULL;
   for (const it of items.filter(it => "e" in it))
     lastType = infer(it.e, env, new Set(), effects);
-  return { env, effects, lastType };
+
+  return {env, effects, lastType};
 }
