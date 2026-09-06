@@ -925,6 +925,7 @@ function checkProgram(
   env.vars.set("concat", () => { const a = freshVar(); return tFun([tArr(a), tArr(a)], tArr(a), new Set()); });
   env.vars.set("flat", () => { const a = freshVar(); return tFun([tArr(tArr(a))], tArr(a), new Set()); });
   env.vars.set("len", () => { const a = freshVar(); return tFun([tArr(a)], TINT, new Set()); });
+  env.vars.set("strlen", tFun([TSTR], TINT, new Set()));
   env.vars.set("map", () => {
     const a = freshVar(), b = freshVar();
     return tFun([tFun([a], b, new Set()), tArr(a)], tArr(b), new Set());
@@ -1137,6 +1138,7 @@ function globalEnv(): Env {
   g.vars.set("concat", lift((a, b) => (a as Value[]).concat(b as Value[])));
   g.vars.set("flat", lift((xs) => (xs as Value[]).flat() as Value[]));
   g.vars.set("len", lift((xs) => (xs as Value[]).length));
+  g.vars.set("strlen", lift((s) => (s as string).length));
   g.vars.set("map", {
     tag: "native",
     fn: (args, k) => {

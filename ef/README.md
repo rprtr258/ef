@@ -269,7 +269,8 @@ The type checker stamps each `/` node as int or float division at check time (th
 | `tail`    | `([A]) -> [A]`                  | All but first. |
 | `concat`  | `([A], [A]) -> [A]`             | Append; both arrays share element type `A`. |
 | `flat`    | `([[A]]) -> [A]`                | Flatten one level. |
-| `len`     | `([A]) -> int`                  | Length. |
+| `len`     | `([A]) -> int`                  | Array length. |
+| `strlen` | `(string) -> int`               | String length. |
 | `map`     | `((A) -> B, [A]) -> [B]`        | Apply; fresh `A`/`B` per use. |
 | `get`     | `([A], int) -> A`               | Array index. |
 | `set`     | `([A], int, A) -> unit`         | Array index assignment (mutates). |
