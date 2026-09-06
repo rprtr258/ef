@@ -120,6 +120,39 @@ handle {
   });
 });
 
+describe("Tuples, aliases, and field access", () => {
+  test("homogeneous literal is still an array", () => {
+    expect(typeOf(`[1, 2, 3]`)).toBe("[int]");
+  });
+  test("heterogeneous literal is a tuple", () => {
+    expect(typeOf(`[1, "a", true]`)).toBe("[int, string, bool]");
+  });
+  test("named tuple via annotation", () => {
+    expect(typeOf(`let p: [x: float, y: float] = [1.0, 2.0]; p`)).toBe("[x: float, y: float]");
+  });
+  test("dot access on a tuple by name", () => {
+    expect(show(run(`let p: [x: float, y: float] = [1.0, 2.0]; p.x`))).toBe("1");
+  });
+  test("dot access on a tuple by index", () => {
+    expect(show(run(`let p: [int, string] = [1, "a"]; p.1`))).toBe('"a"');
+  });
+  test("dot access on an array by index", () => {
+    expect(show(run(`let xs = [10, 20, 30]; xs.0`))).toBe("10");
+  });
+  test("destructuring let binds tuple fields", () => {
+    expect(show(run(`let p: [int, string] = [1, "a"]; let [n, s] = p; s`))).toBe('"a"');
+  });
+  test("destructuring let on an array", () => {
+    expect(show(run(`let xs = [10, 20]; let [a, b] = xs; a + b`))).toBe("30");
+  });
+  test("parametric type alias instantiates", () => {
+    expect(typeOf(`type Pair(a, b) = [a, b]; let p: Pair[int, string] = [1, "a"]; p`)).toBe("[int, string]");
+  });
+  test("alias used in a function signature", () => {
+    expect(typeOf(`type Pair(a, b) = [a, b]; let fst = fn(p: Pair[int, string]): int { p.0 }; fst`)).toBe("([int, string]) -> int");
+  });
+});
+
 describe("Negative tests (static type checker rejects)", () => {
   function assertTypeError(src: string, needle: string) {
     expect(() => run(src)).toThrow(needle);
@@ -133,8 +166,12 @@ describe("Negative tests (static type checker rejects)", () => {
     assertTypeError(`let f = fn(n: int): int { n + 1 }; f("x")`, "int");
   });
 
-  test("Heterogeneous array literal", () => {
-    assertTypeError(`[1, "a", true]`, "Type mismatch");
+  test("Heterogeneous array literal is now a tuple", () => {
+    expect(typeOf(`[1, "a", true]`)).toBe("[int, string, bool]");
+  });
+
+  test("Tuple arity mismatch is rejected", () => {
+    assertTypeError(`let p: [int, string] = [1, "a", true];`, "arity");
   });
 
   test("If branches with mismatched types", () => {
@@ -394,6 +431,22 @@ test("show prints function arity and type, natives stay [fn]", () => {
   expect(show(run(`let id = fn(x: int): int { x };\nid`))).toBe("[fn: (int) -> int]");
   // Builtins (natives) carry no inferred type here: stay [fn].
   expect(show(run(`head`))).toBe("[fn]");
+});
+
+test("nested tuple field access chains (m.0.0)", () => {
+  // The lexer reads `0.0` as one float token; the parser splits it so
+  // `m.0.0` is two field accesses, not one.
+  expect(run(`let m: [[int,int,int],[int,int,int],[int,int,int]] = [[1,2,3],[4,5,6],[7,8,9]]; m.0.0`)).toBe(1);
+  expect(run(`let m: [[int,int,int],[int,int,int],[int,int,int]] = [[1,2,3],[4,5,6],[7,8,9]]; m.2.1`)).toBe(8);
+});
+
+test("array literal infers as tuple against a tuple-typed context", () => {
+  // Return type: a `[x, y, z]` body literal conforms to `[int,int,int]`.
+  expect(run(`let f = fn(): [int,int,int] { [1, 2, 3] }; f().1`)).toBe(2);
+  // Argument: an `[...]` literal passed to a tuple parameter becomes a tuple.
+  expect(run(`let f = fn(p: [int,int,int]): int { p.2 }; f([1,2,3])`)).toBe(3);
+  // Nested: `[[...],[...]]` argument against a tuple-of-tuples parameter.
+  expect(run(`let f = fn(m: [[int,int,int],[int,int,int]]): int { m.1.0 }; f([[1,2,3],[4,5,6]])`)).toBe(4);
 });
 
 test("REPL: bindings persist across lines", () => {

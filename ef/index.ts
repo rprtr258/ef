@@ -64,9 +64,14 @@ type Cont = (v: Value) => Outcome;
 
 // --- Types ---
 
-type Type = Prim | ArrT | FunT | Var | AnyT;
+type Type = Prim | ArrT | TupT | FunT | Var | AnyT;
 type Prim = { tag: "prim"; name: "int" | "float" | "string" | "bool" | "unit" };
 type ArrT = { tag: "arr"; elem: Type };
+// Tuples: a fixed-arity record. `name` is null for unnamed fields (`[int, float]`)
+// or a label for named fields (`[x: float, y: float]`). Names are structural only
+// for field access; unification compares arity + positional types, not names.
+type TupField = { name: string | null; type: Type };
+type TupT = { tag: "tup"; fields: TupField[] };
 // Effect rows: a concrete `Set<string>` of performed effects, or an
 // unbound effect variable (row polymorphism). Effect variables unify by
 // union-find; a variable unifies with a concrete set by binding to it; two
@@ -86,6 +91,7 @@ const TNULL: Prim = { tag: "prim", name: "unit" };
 const TANY: AnyT = { tag: "any" };
 
 function tArr(elem: Type): ArrT { return { tag: "arr", elem }; }
+function tTup(fields: TupField[]): TupT { return { tag: "tup", fields }; }
 function tFun(params: Type[], ret: Type, effs: Effs): FunT {
   return { tag: "fun", params, ret, effs };
 }
@@ -94,6 +100,9 @@ export function showT(t: Type): string {
   switch (t.tag) {
     case "prim": return t.name;
     case "arr": return "[" + showT(t.elem) + "]";
+    case "tup":
+      return "[" + t.fields.map(f =>
+        f.name === null ? showT(f.type) : f.name + ": " + showT(f.type)).join(", ") + "]";
     case "any": return "any";
     case "var": {
       const r = res(t);
@@ -118,6 +127,7 @@ function containsAny(t: Type): boolean {
   const r = res(t);
   if (r.tag === "any") return true;
   if (r.tag === "arr") return containsAny(r.elem);
+  if (r.tag === "tup") return r.fields.some(f => containsAny(f.type));
   if (r.tag === "fun") return r.params.some(containsAny) || containsAny(r.ret);
   return false;
 }
@@ -138,20 +148,26 @@ type EffectSig = {
 // --- AST ---
 
 type Expr =
-  | { t: "num"; v: number; isFloat: boolean }
-  | { t: "str"; v: string }
-  | { t: "bool"; v: boolean }
-  | { t: "unit" }
-  | { t: "sym"; v: string }
-  | { t: "lambda"; params: Param[]; retTyp: Type | null; retEffs: Set<string> | null; body: Expr; typ?: FunT }
-  | { t: "let"; name: string; typ: Type | null; val: Expr }
-  | { t: "if"; c: Expr; a: Expr; b: Expr }
-  | { t: "while"; c: Expr; body: Expr }
-  | { t: "assign"; name: string; val: Expr }
-  | { t: "block"; stmts: Expr[] }
-  | { t: "perform"; op: string; args: Expr[] }
-  | { t: "handle"; body: Expr; cases: HandlerCase[] }
-  | { t: "app"; fn: Expr; args: Expr[]; div?: "int" | "float" };
+  | { t: "num"; v: number; isFloat: boolean; pos?: Pos }
+  | { t: "str"; v: string; pos?: Pos }
+  | { t: "bool"; v: boolean; pos?: Pos }
+  | { t: "unit"; pos?: Pos }
+  | { t: "sym"; v: string; pos?: Pos }
+  | { t: "lambda"; params: Param[]; retTyp: Type | null; retEffs: Set<string> | null; body: Expr; typ?: FunT; pos?: Pos }
+  | { t: "let"; name: string; typ: Type | null; val: Expr; pos?: Pos }
+  | { t: "if"; c: Expr; a: Expr; b: Expr; pos?: Pos }
+  | { t: "while"; c: Expr; body: Expr; pos?: Pos }
+  | { t: "assign"; name: string; val: Expr; pos?: Pos }
+  | { t: "block"; stmts: Expr[]; pos?: Pos }
+  | { t: "perform"; op: string; args: Expr[]; pos?: Pos }
+  | { t: "handle"; body: Expr; cases: HandlerCase[]; pos?: Pos }
+  | { t: "app"; fn: Expr; args: Expr[]; div?: "int" | "float"; pos?: Pos }
+  // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous.
+  | { t: "arr"; elems: Expr[]; pos?: Pos }
+  // `obj.x` / `obj.0` field access; `idx` is resolved by the checker.
+  | { t: "field"; obj: Expr; name: string; idx?: number; pos?: Pos }
+  // `let [a, b] = val;` tuple/array destructuring bind.
+  | { t: "dlet"; fields: { name: string; typ: Type | null }[]; val: Expr; pos?: Pos };
 
 type Param = { name: string; typ: Type | null; pos?: Pos };
 
@@ -162,17 +178,20 @@ type HandlerCase = {
   body: Expr;
 };
 
-// A top-level program item: an expression or an effect declaration.
-type Item = { e: Expr } | { effect: string; sig: EffectSig };
+// A top-level program item: an expression, an effect declaration, or a
+// parametric type alias (`type Pair(a, b) = [a, b];`). Aliases are resolved at
+// parse time by substituting type args into the body.
+type Alias = { name: string; tparams: Map<string, Var>; body: Type };
+type Item = { e: Expr } | { effect: string; sig: EffectSig } | { alias: Alias };
 
 // --- Lexer ---
 
 const KEYWORDS = new Set([
   "let", "fn", "if", "else", "while", "handle", "case",
-  "true", "false", "unit", "effect",
+  "true", "false", "unit", "effect", "type",
 ]);
 const TWO = ["==", "!=", "<=", ">=", "&&", "||", "=>"];
-const ONE = "()[]{},;<>+-*/!=:%";
+const ONE = "()[]{},;<>+-*/!=:%.";
 
 // A source position: 1-indexed line and column.
 export type Pos = { line: number; col: number };
@@ -269,6 +288,11 @@ function parseStr(t: string): string {
 class Parser {
   toks: Tok[];
   i = 0;
+  // Parametric type aliases, registered top-down as `type` items are parsed.
+  // `typeParamStack` lets an alias body reference its own type params as type
+  // variables (e.g. `type Pair(a, b) = [a, b]`).
+  aliases = new Map<string, Alias>();
+  typeParamStack: Map<string, Var>[] = [];
   constructor(src: string) {
     this.toks = lex(src);
   }
@@ -300,6 +324,7 @@ class Parser {
     const out: Item[] = [];
     while (!this.atEnd()) {
       if (this.isKw("effect")) out.push(this.parseEffect());
+      else if (this.isKw("type")) out.push(this.parseAlias());
       else out.push({ e: this.parseStmt() });
     }
     return out;
@@ -314,22 +339,65 @@ class Parser {
     return { effect: name, sig: { params: params.map(p => p.typ ?? freshVar()), ret } };
   }
 
+  // `type Name(p1, p2) = <body>;` — params are type variables scoped to body.
+  // Nullary aliases `type V = ...;` (no param list) are also allowed.
+  parseAlias(): Item {
+    this.next(); // type
+    const name = this.next();
+    const tparams = new Map<string, Var>();
+    if (this.is("(")) {
+      this.next();
+      while (!this.is(")")) {
+        const p = this.next();
+        tparams.set(p, freshVar());
+        if (this.is(",")) this.i++;
+      }
+      this.eat(")");
+    }
+    this.eat("=");
+    this.typeParamStack.push(tparams);
+    const body = this.parseType();
+    this.typeParamStack.pop();
+    this.eat(";");
+    const alias = { name, tparams, body };
+    this.aliases.set(name, alias);
+    return { alias };
+  }
+
   parseStmt(): Expr {
+    const p = this.pos();
     let e: Expr;
     if (this.isKw("let")) {
       this.next();
-      const name = this.next();
-      const typ = this.is(":") ? (this.next(), this.parseType()) : null;
-      this.eat("=");
-      const val = this.parseExpr();
-      this.eat(";");
-      e = { t: "let", name, typ, val };
+      if (this.is("[")) {
+        // destructuring let: `let [a: T, b] = val;`
+        this.next();
+        const fields: { name: string; typ: Type | null }[] = [];
+        while (!this.is("]")) {
+          const name = this.next();
+          const typ = this.is(":") ? (this.next(), this.parseType()) : null;
+          fields.push({ name, typ });
+          if (this.is(",")) this.i++;
+        }
+        this.eat("]");
+        this.eat("=");
+        const val = this.parseExpr();
+        this.eat(";");
+        e = { t: "dlet", fields, val, pos: p };
+      } else {
+        const name = this.next();
+        const typ = this.is(":") ? (this.next(), this.parseType()) : null;
+        this.eat("=");
+        const val = this.parseExpr();
+        this.eat(";");
+        e = { t: "let", name, typ, val, pos: p };
+      }
     } else if (!KEYWORDS.has(this.peek() ?? "") && this.peek(1) === "=") {
       const name = this.next();
       this.next(); // =
       const val = this.parseExpr();
       if (this.is(";")) this.i++;
-      e = { t: "assign", name, val };
+      e = { t: "assign", name, val, pos: p };
     } else {
       e = this.parseExpr();
       if (this.is(";")) this.i++;
@@ -362,11 +430,12 @@ class Parser {
     return args;
   }
   parseBlock(): Expr {
+    const p = this.pos();
     this.eat("{");
     const stmts: Expr[] = [];
     while (!this.is("}")) stmts.push(this.parseStmt());
     this.eat("}");
-    return { t: "block", stmts };
+    return { t: "block", stmts, pos: p };
   }
 
   // optional `! { op, op, ... }` effect annotation on a fn return type
@@ -384,12 +453,34 @@ class Parser {
   }
 
   // types
+  // Parse a single tuple field: `name: T` (named) or `T` (unnamed).
+  parseTupField(): TupField {
+    if (this.peek() && /[A-Za-z_]/.test(this.peek()![0]!) && this.peek(1) === ":") {
+      const name = this.next();
+      this.next(); // :
+      return { name, type: this.parseType() };
+    }
+    return { name: null, type: this.parseType() };
+  }
   parseType(): Type {
     if (this.is("[")) {
       this.next();
-      const e = this.parseType();
+      const first = this.parseTupField();
+      if (this.is(",")) {
+        // tuple: `[T1, T2, ...]` (named or unnamed)
+        const fields = [first];
+        while (this.is(",")) {
+          this.i++;
+          if (this.is("]")) break; // trailing comma tolerance
+          fields.push(this.parseTupField());
+        }
+        this.eat("]");
+        return tTup(fields);
+      }
       this.eat("]");
-      return tArr(e);
+      if (first.name !== null)
+        throw new Error("array type cannot have a named element");
+      return tArr(first.type);
     }
     if (this.is("(")) {
       this.next();
@@ -415,6 +506,22 @@ class Parser {
       return tFun(ps, ret, effs);
     }
     const name = this.next();
+    // type parameter of an enclosing alias body → a type variable.
+    for (const m of this.typeParamStack) if (m.has(name)) return m.get(name)!;
+    // alias instantiation: `Name[T1, T2]` (or nullary `Name`).
+    const al = this.aliases.get(name);
+    if (al) {
+      const args: Type[] = [];
+      if (this.is("[")) {
+        this.next();
+        while (!this.is("]")) {
+          args.push(this.parseType());
+          if (this.is(",")) this.i++;
+        }
+        this.eat("]");
+      }
+      return instantiateAlias(al, args);
+    }
     switch (name) {
       case "int": return TINT;
       case "float": return TFLOAT;
@@ -442,20 +549,21 @@ class Parser {
       if (prec < min) break;
       this.next();
       const right = this.parseBinary(prec + 1);
-      if (op === "&&") left = { t: "if", c: left, a: right, b: { t: "bool", v: false } };
-      else if (op === "||") left = { t: "if", c: left, a: { t: "bool", v: true }, b: right };
-      else left = { t: "app", fn: { t: "sym", v: op }, args: [left, right] };
+      if (op === "&&") left = { t: "if", c: left, a: right, b: { t: "bool", v: false }, pos: left.pos };
+      else if (op === "||") left = { t: "if", c: left, a: { t: "bool", v: true }, b: right, pos: left.pos };
+      else left = { t: "app", fn: { t: "sym", v: op }, args: [left, right], pos: left.pos };
     }
     return left;
   }
   parseUnary(): Expr {
+    const p = this.pos();
     if (this.is("-")) {
       this.next();
-      return { t: "app", fn: { t: "sym", v: "neg" }, args: [this.parseUnary()] };
+      return { t: "app", fn: { t: "sym", v: "neg" }, args: [this.parseUnary()], pos: p };
     }
     if (this.is("!")) {
       this.next();
-      return { t: "app", fn: { t: "sym", v: "not" }, args: [this.parseUnary()] };
+      return { t: "app", fn: { t: "sym", v: "not" }, args: [this.parseUnary()], pos: p };
     }
     return this.parsePostfix();
   }
@@ -466,36 +574,45 @@ class Parser {
       const op = e.v;
       this.next(); // !
       const args = this.parseArgs();
-      e = { t: "perform", op, args };
+      e = { t: "perform", op, args, pos: e.pos };
     }
     while (this.is("(")) {
       const args = this.parseArgs();
-      e = { t: "app", fn: e, args };
+      e = { t: "app", fn: e, args, pos: e.pos };
+    }
+    // field access: `obj.x` (named) or `obj.0` (positional). The lexer
+    // reads `0.0` as a single float token, so a chained `m.0.0` arrives as
+    // one field name; split it into successive accesses.
+    while (this.is(".")) {
+      this.next();
+      const name = this.next();
+      for (const part of name.split(".")) e = { t: "field", obj: e, name: part, pos: e.pos };
     }
     return e;
   }
   parsePrimary(): Expr {
     const t = this.peek();
     if (t === undefined) throw new Error("Unexpected EOF");
+    const p = this.pos();
     if (/^-?\d/.test(t)) {
       this.next();
-      return { t: "num", v: Number(t), isFloat: t.includes(".") };
+      return { t: "num", v: Number(t), isFloat: t.includes("."), pos: p };
     }
     if (t.startsWith('"')) {
       this.next();
-      return { t: "str", v: parseStr(t) };
+      return { t: "str", v: parseStr(t), pos: p };
     }
     if (t === "true") {
       this.next();
-      return { t: "bool", v: true };
+      return { t: "bool", v: true, pos: p };
     }
     if (t === "false") {
       this.next();
-      return { t: "bool", v: false };
+      return { t: "bool", v: false, pos: p };
     }
     if (t === "unit") {
       this.next();
-      return { t: "unit" };
+      return { t: "unit", pos: p };
     }
     if (t === "(") {
       this.next();
@@ -511,7 +628,7 @@ class Parser {
         if (this.is(",")) this.i++;
       }
       this.eat("]");
-      return { t: "app", fn: { t: "sym", v: "list" }, args: els };
+      return { t: "arr", elems: els, pos: p };
     }
     if (this.isKw("fn")) {
       this.next();
@@ -519,7 +636,7 @@ class Parser {
       const retTyp = this.is(":") ? (this.next(), this.parseType()) : null;
       const retEffs = this.parseEffAnnot();
       const body = this.parseBlock();
-      return { t: "lambda", params, retTyp, retEffs, body };
+      return { t: "lambda", params, retTyp, retEffs, body, pos: p };
     }
     if (this.isKw("if")) {
       this.next();
@@ -527,14 +644,14 @@ class Parser {
       const c = this.parseExpr();
       this.eat(")");
       const a = this.parseBlock();
-      let b: Expr = { t: "unit" };
+      let b: Expr = { t: "unit", pos: p };
       if (this.isKw("else")) {
         this.next();
         b = this.isKw("if") ? this.parsePrimary() : this.parseBlock();
       } else if (this.is(";")) {
         this.i++;
       }
-      return { t: "if", c, a, b };
+      return { t: "if", c, a, b, pos: p };
     }
     if (this.isKw("while")) {
       this.next();
@@ -542,7 +659,7 @@ class Parser {
       const c = this.parseExpr();
       this.eat(")");
       const body = this.parseBlock();
-      return { t: "while", c, body };
+      return { t: "while", c, body, pos: p };
     }
     if (this.isKw("handle")) {
       this.next();
@@ -557,10 +674,10 @@ class Parser {
         const cbody = this.parseBlock();
         cases.push({ op, params, resume, body: cbody });
       }
-      return { t: "handle", body, cases };
+      return { t: "handle", body, cases, pos: p };
     }
     this.next();
-    return { t: "sym", v: t };
+    return { t: "sym", v: t, pos: p };
   }
 }
 
@@ -593,6 +710,32 @@ class Uni {
 const uni = new Uni();
 function freshVar(): Var { return uni.fresh(); }
 const binds = new Map<number, Type>();
+
+// Speculative-unification checkpoint: snapshot the union-find + effect state so
+// a homogenization attempt (`[a, b]` as array vs tuple) can be rolled back on
+// failure without corrupting the types inferred for the elements themselves.
+// ponytail: O(n) per snapshot; fine for literal-sized element lists, not loops.
+type Snapshot = {
+  parent: Map<number, number>; n: number;
+  binds: Map<number, Type>;
+  effParent: Map<number, number>; effBinds: Map<number, Set<string>>;
+  effCounter: number;
+};
+function checkpoint(): Snapshot {
+  return {
+    parent: new Map(uni.parent), n: uni.n,
+    binds: new Map(binds),
+    effParent: new Map(effParent), effBinds: new Map(effBinds),
+    effCounter,
+  };
+}
+function restore(s: Snapshot): void {
+  uni.parent = s.parent; uni.n = s.n;
+  binds.clear(); for (const [k, v] of s.binds) binds.set(k, v);
+  effParent.clear(); for (const [k, v] of s.effParent) effParent.set(k, v);
+  effBinds.clear(); for (const [k, v] of s.effBinds) effBinds.set(k, v);
+  effCounter = s.effCounter;
+}
 
 // --- Effect variables (row polymorphism) ---
 // Separate union-find from type variables: effect rows resolve to `Set<string>`
@@ -649,6 +792,7 @@ function occurs(id: number, t: Type): boolean {
   switch (t.tag) {
     case "var": return uni.find(t.id) === id;
     case "arr": return occurs(id, t.elem);
+    case "tup": return t.fields.some(f => occurs(id, f.type));
     case "fun": return t.params.some(p => occurs(id, p)) || occurs(id, t.ret);
     default: return false;
   }
@@ -666,14 +810,25 @@ function res(t: Type): Type {
 }
 
 class TypeError_ extends Error {}
+// A unification failure reported as "Type mismatch". Subclassed so `infer`
+// can attach the source position of the innermost expression being checked
+// when the mismatch surfaced.
+class TypeMismatch extends TypeError_ {
+  // Non-enumerable so it doesn't leak into error stringification.
+  located = false;
+  constructor(msg: string) {
+    super(msg);
+    Object.defineProperty(this, "located", { value: false, enumerable: false, writable: true });
+  }
+}
 
 // Format a unification failure as a multi-line "Type mismatch" report. When
 // `name` is supplied (e.g. the callee in a non-function call) the actual type
 // is labelled with it, otherwise it is shown as `got`.
-function typeMismatch(actual: Type, expected: Type, name?: string): TypeError_ {
+function typeMismatch(actual: Type, expected: Type, name?: string): TypeMismatch {
   const a = showT(res(actual)), e = showT(res(expected));
   const lhs = name ? `${name} : ${a}` : `got      : ${a}`;
-  return new TypeError_(`Type mismatch:\n${lhs}\nexpected : ${e}`);
+  return new TypeMismatch(`Type mismatch:\n${lhs}\nexpected : ${e}`);
 }
 
 function unify(a: Type, b: Type): void {
@@ -694,6 +849,12 @@ function unify(a: Type, b: Type): void {
     return;
   }
   if (ra.tag === "arr" && rb.tag === "arr") { unify(ra.elem, rb.elem); return; }
+  if (ra.tag === "tup" && rb.tag === "tup") {
+    if (ra.fields.length !== rb.fields.length)
+      throw new TypeError_(`tuple arity ${ra.fields.length} ≠ ${rb.fields.length}`);
+    for (let i = 0; i < ra.fields.length; i++) unify(ra.fields[i]!.type, rb.fields[i]!.type);
+    return;
+  }
   if (ra.tag === "fun" && rb.tag === "fun") {
     if (ra.params.length !== rb.params.length)
       throw new TypeError_(`arity ${ra.params.length} ≠ ${rb.params.length}`);
@@ -712,6 +873,7 @@ function collectVars(t: Type, tvs: Set<number>, evs: Set<number>): void {
   const r = res(t);
   if (r.tag === "var") tvs.add(uni.find(r.id));
   else if (r.tag === "arr") collectVars(r.elem, tvs, evs);
+  else if (r.tag === "tup") for (const f of r.fields) collectVars(f.type, tvs, evs);
   else if (r.tag === "fun") {
     for (const p of r.params) collectVars(p, tvs, evs);
     collectVars(r.ret, tvs, evs);
@@ -726,6 +888,7 @@ function copyScheme(t: Type, tm: Map<number, Type>, em: Map<number, Effs>): Type
   switch (r.tag) {
     case "var": return tm.get(uni.find(r.id)) ?? r;
     case "arr": return tArr(copyScheme(r.elem, tm, em));
+    case "tup": return tTup(r.fields.map(f => ({ name: f.name, type: copyScheme(f.type, tm, em) })));
     case "fun":
       return tFun(
         r.params.map(p => copyScheme(p, tm, em)),
@@ -738,6 +901,17 @@ function copyScheme(t: Type, tm: Map<number, Type>, em: Map<number, Effs>): Type
 function copyEff(e: Effs, em: Map<number, Effs>): Effs {
   const r = resEff(e);
   return r instanceof Set ? r : (em.get(effFind(r.id)) ?? r);
+}
+
+// Instantiate a parametric type alias by substituting its type-parameter vars
+// with the given argument types (fresh vars for any missing/trailing args).
+// ponytail: no recursion guard — recursive aliases (`type T = [T]`) stack-loop;
+// add a depth cap if recursive aliases become needed.
+function instantiateAlias(al: Alias, args: Type[]): Type {
+  const tm = new Map<number, Type>();
+  let i = 0;
+  for (const [, v] of al.tparams) tm.set(uni.find(v.id), args[i++] ?? freshVar());
+  return copyScheme(al.body, tm, new Map());
 }
 
 // HM let-generalization: abstract the type/effect vars of `t` that are not
@@ -830,8 +1004,72 @@ function plusType(a: Type, b: Type): Type {
 // as ordinary `(any, any) -> bool` function bindings, so they can't be used as
 // first-class values and can't silently compare unrelated types.
 
+// Parse a `.N` numeric field name into an index, or null if `name` isn't numeric.
+function fieldIndex(name: string): number | null {
+  return /^[0-9]+$/.test(name) ? Number(name) : null;
+}
+
+// Infer an `[...]` literal. With an `expected` tuple, elements are checked
+// against the tuple's field types (named-tuple construction). Without one,
+// attempt homogeneous unification behind a checkpoint; on failure build a
+// tuple from the (preserved) element types.
+function inferArr(e: Expr & { t: "arr" }, expected: TupT | null, env: TEnv, effs: Set<string>, effects: Map<string, EffectSig>): Type {
+  if (expected) {
+    if (e.elems.length !== expected.fields.length)
+      throw new TypeError_(`literal arity ${e.elems.length} ≠ tuple ${expected.fields.length}`);
+    for (let i = 0; i < e.elems.length; i++) {
+      const ft = expected.fields[i]!.type;
+      const el = e.elems[i]!;
+      // Propagate the tuple expectation into a nested `[...]` literal so that
+      // `let m: [[f,f,f],...] = [[1,2,3],...]` builds inner tuples, not arrays.
+      const et = (el.t === "arr" && res(ft).tag === "tup")
+        ? inferArr(el, res(ft) as TupT, env, effs, effects)
+        : infer(el, env, effs, effects);
+      unify(et, ft);
+    }
+    return expected;
+  }
+  const elemTs = e.elems.map(a => infer(a, env, effs, effects));
+  const snap = checkpoint();
+  try {
+    const elem = freshVar();
+    for (const et of elemTs) unify(elem, et);
+    return tArr(res(elem));
+  } catch (_) {
+    restore(snap);
+    return tTup(elemTs.map(t => ({ name: null, type: res(t) })));
+  }
+}
+
+// Infer `e` expecting a tuple type. Propagates the expectation into array
+// literals (so `[1,2,3]` becomes a tuple), blocks (last statement), and
+// lambda bodies (return type), so a declared `[f,f,f]` return flows into a
+// `[x, y, z]` body literal. Falls back to plain `infer` otherwise.
+function inferWith(e: Expr, expected: Type, env: TEnv, effs: Set<string>, effects: Map<string, EffectSig>): Type {
+  const rt = res(expected);
+  if (rt.tag !== "tup") return infer(e, env, effs, effects);
+  if (e.t === "arr") return inferArr(e, rt as TupT, env, effs, effects);
+  if (e.t === "block") {
+    const n = textend(env);
+    let last: Type = TNULL;
+    for (let i = 0; i < e.stmts.length; i++)
+      last = i === e.stmts.length - 1
+        ? inferWith(e.stmts[i]!, rt, n, effs, effects)
+        : infer(e.stmts[i]!, n, effs, effects);
+    return last;
+  }
+  if (e.t === "lambda" && e.retTyp) {
+    const saved = e.retTyp;
+    e.retTyp = rt as TupT;
+    try { return infer(e, env, effs, effects); }
+    finally { e.retTyp = saved; }
+  }
+  return infer(e, env, effs, effects);
+}
+
 // infer: returns the type, side-effecting `effs` with performed effects.
 function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, EffectSig>): Type {
+  try {
   switch (e.t) {
     case "num": return e.isFloat ? TFLOAT : TINT;
     case "str": return TSTR;
@@ -851,7 +1089,9 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
         ps.push(pt);
       }
       const innerEffs = new Set<string>();
-      const ret = infer(e.body, n, innerEffs, effects);
+      const ret = e.retTyp && res(e.retTyp).tag === "tup"
+        ? inferWith(e.body, e.retTyp, n, innerEffs, effects)
+        : infer(e.body, n, innerEffs, effects);
       if (e.retTyp) unify(e.retTyp, ret);
       // Effect annotation is optional: if `! { ... }` is omitted, the
       // function's effect set is derived from the body's performed effects.
@@ -871,17 +1111,71 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
       // `let f = fn(...){...}` can call itself.
       const declared = e.typ ?? freshVar();
       env.vars.set(e.name, declared);
-      const vt = infer(e.val, env, effs, effects);
+      // A tuple annotation on an `[...]` literal makes it a tuple even when its
+      // elements would otherwise unify homogeneously (e.g. `let p: [float, float] = [1.0, 2.0]`).
+      const vt = (e.typ && res(e.typ).tag === "tup" && e.val.t === "arr")
+        ? inferArr(e.val, res(e.typ) as TupT, env, effs, effects)
+        : infer(e.val, env, effs, effects);
       unify(declared, vt);
       const rt = res(declared);
       // Exclude the self-binding from the free-var context before
       // generalizing (otherwise its own vars read as free-in-env → no-op).
       env.vars.delete(e.name);
       // Value restriction: generalize only lambda values (literals carry no
-      // type vars; array literals desugar to `list(...)` calls = non-values).
+      // type vars; `arr` literals are typed directly, not via `list`).
       // This keeps mutable-array/assign soundness (no `let x = []` : [a]).
       env.vars.set(e.name, e.typ ? rt : (e.val.t === "lambda" ? generalize(env, rt) : rt));
       if (!e.typ && containsAny(rt)) warnInferredAny(e.name, rt);
+      return TNULL;
+    }
+    // `[a, b, c]` literal: array `[T]` if all element types unify, else a
+    // tuple `[T1, ..., Tn]`. `expected` (a tuple) forces tuple-ness.
+    case "arr":
+      return inferArr(e, null, env, effs, effects);
+    // `obj.x` / `obj.0`: resolve the field index from the (tuple or array)
+    // element type and stamp it on the node for the evaluator.
+    case "field": {
+      const ot = res(infer(e.obj, env, effs, effects));
+      if (ot.tag === "arr") {
+        const idx = fieldIndex(e.name);
+        if (idx === null) throw new TypeError_(`arrays use .N indexing, not .${e.name}`);
+        e.idx = idx;
+        return ot.elem;
+      }
+      if (ot.tag === "tup") {
+        let idx: number | null = null;
+        if (/^[0-9]+$/.test(e.name)) {
+          idx = Number(e.name);
+          if (idx < 0 || idx >= ot.fields.length)
+            throw new TypeError_(`.${e.name} out of range for tuple of ${ot.fields.length}`);
+        } else {
+          idx = ot.fields.findIndex(f => f.name === e.name);
+          if (idx < 0) throw new TypeError_(`tuple has no field .${e.name}`);
+        }
+        e.idx = idx;
+        return ot.fields[idx]!.type;
+      }
+      throw new TypeError_(`field access on non-record type: ${showT(ot)}`);
+    }
+    // `let [a, b] = val;` — destructure a tuple (or array) into bindings.
+    case "dlet": {
+      const vt = res(infer(e.val, env, effs, effects));
+      if (vt.tag === "tup") {
+        if (vt.fields.length !== e.fields.length)
+          throw new TypeError_(`destructure arity ${e.fields.length} ≠ tuple ${vt.fields.length}`);
+        for (let i = 0; i < e.fields.length; i++) {
+          const ft = e.fields[i]!.typ;
+          if (ft) unify(ft, vt.fields[i]!.type);
+          env.vars.set(e.fields[i]!.name, ft ?? vt.fields[i]!.type);
+        }
+      } else if (vt.tag === "arr") {
+        for (const f of e.fields) {
+          if (f.typ) unify(f.typ, vt.elem);
+          env.vars.set(f.name, f.typ ?? vt.elem);
+        }
+      } else {
+        throw new TypeError_(`cannot destructure non-record type: ${showT(vt)}`);
+      }
       return TNULL;
     }
     case "if": {
@@ -992,9 +1286,16 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
         return TBOOL;
       }
       const ft = infer(e.fn, env, effs, effects);
-      const argTs = e.args.map(a => infer(a, env, effs, effects));
-      const ret = freshVar();
       const fr = res(ft);
+      // When the callee is a known function, an `[...]` literal argument
+      // passed against a tuple parameter type is inferred as that tuple
+      // (mirroring the `let : [..] = [...]` special case).
+      const argTs = e.args.map((a, i) => {
+        if (a.t === "arr" && fr.tag === "fun" && fr.params[i] && res(fr.params[i]!).tag === "tup")
+          return inferArr(a, res(fr.params[i]!) as TupT, env, effs, effects);
+        return infer(a, env, effs, effects);
+      });
+      const ret = freshVar();
       if (fr.tag === "fun") {
         if (fr.params.length !== argTs.length)
           throw new TypeError_(`arity ${fr.params.length} ≠ ${argTs.length}`);
@@ -1018,6 +1319,16 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
       }
       return res(ret);
     }
+  }
+  } catch (err) {
+    // Annotate the innermost type mismatch with the position of the
+    // expression being inferred when unification failed. The first (deepest)
+    // frame to catch wins; outer frames see `located` set and skip.
+    if (err instanceof TypeMismatch && !err.located && e.pos) {
+      err.located = true;
+      err.message = `at line ${e.pos.line}, col ${e.pos.col}: ` + err.message;
+    }
+    throw err;
   }
 }
 
@@ -1135,6 +1446,22 @@ function evalE(e: Expr, env: Env, k: Cont): Outcome {
       return evalArgs(e.args, env, [], (args) => ({ tag: "eff", op: e.op, args, k }));
     case "handle":
       return handle(e.body, e.cases, env, k);
+    case "arr":
+      return evalArgs(e.elems, env, [], (vals) => k(vals));
+    case "field":
+      return evalE(e.obj, env, (o) => {
+        const a = o as Value[];
+        const idx = e.idx!;
+        if (idx < 0 || idx >= a.length || !Number.isInteger(idx))
+          throw new Error(`.${e.name}: index ${idx} out of bounds [0, ${a.length})`);
+        return k(a[idx]!);
+      });
+    case "dlet":
+      return evalE(e.val, env, (v) => {
+        const a = v as Value[];
+        for (let i = 0; i < e.fields.length; i++) env.vars.set(e.fields[i]!.name, a[i]!);
+        return k(null);
+      });
     case "app":
       // `/` is stamped by the checker with int vs float division (the runtime
       // can't tell, since JS erases 7 and 7.0 to the same value).
@@ -1453,6 +1780,16 @@ function* visitLambdas(
     for (const s of e.stmts)
       yield* visitLambdas(s, null);
     return;
+  case "arr":
+    for (const el of e.elems)
+      yield* visitLambdas(el, null);
+    return;
+  case "field":
+    yield* visitLambdas(e.obj, null);
+    return;
+  case "dlet":
+    yield* visitLambdas(e.val, null);
+    return;
   }
 }
 
@@ -1471,11 +1808,19 @@ function freeUses(e: Expr, watch: Set<string>): Set<string> {
       return;
     }
     case "let": { const w2 = new Set(w); w2.add(e.name); go(e.val, w2); return; }
+    case "dlet": {
+      const w2 = new Set(w);
+      for (const f of e.fields) w2.delete(f.name);
+      go(e.val, w2);
+      return;
+    }
     case "assign": go(e.val, w); return;
     case "if": go(e.c, w); go(e.a, w); go(e.b, w); return;
     case "while": go(e.c, w); go(e.body, w); return;
     case "perform": for (const a of e.args) go(a, w); return;
     case "app": go(e.fn, w); for (const a of e.args) go(a, w); return;
+    case "arr": for (const el of e.elems) go(el, w); return;
+    case "field": go(e.obj, w); return;
     case "handle":
       go(e.body, w);
       for (const c of e.cases) {

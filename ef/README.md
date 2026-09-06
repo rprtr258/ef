@@ -34,6 +34,8 @@ The handler calls `k` once per option, so the computation branches into all path
 - **Multi-shot resume** — the continuation `k` is a plain callable, so it can run zero, one, or many times (nondeterminism, backtracking, etc.).
 - **Effect propagation** through nested handlers: an unhandled effect walks outward to the nearest matching handler.
 - **Static typing** with type inference, union-find unification, and an absorbing `any` escape hatch.
+- **Tuples** — named `[x: float, y: float]` and unnamed `[int, string]`, with `.x`/`.0` field access and `let [a, b] = p` destructuring. Bracket literals are arrays when homogeneous, tuples when not.
+- **Parametric type aliases** — `type Pair(a, b) = [a, b];`, instantiated as `Pair[int, string]`.
 - **Function effect signatures** `let f = fn(p: T): R ! { Effs } { ... }` the checker verifies against the body.
 - **Polymorphic builtins** (`map : (A)->B, [A] -> [B]`, etc.).
 
@@ -74,22 +76,25 @@ The handler calls `k` once per option, so the computation branches into all path
 
 ### 2.1 Programs
 
-A program is a sequence of **items**, each either an expression statement or
-an effect declaration:
+A program is a sequence of **items**, each an expression statement, an
+effect declaration, or a type alias:
 
 ```
-program ::= item*
-item    ::= effect-decl | stmt
+program  ::= item*
+item     ::= effect-decl | type-alias | stmt
 effect-decl ::= "effect" name params ":" type ";"
-stmt    ::= let | expr (";" | blocky)
+type-alias ::= "type" name ("(" name ("," name)* ")")? "=" type ";"
+stmt     ::= let | expr (";" | blocky)
 ```
 
-The value of a program is the value of its last expression statement.
+The value of a program is the value of its last expression statement. Type
+aliases and effect declarations are not expressions and produce no value.
 
 ### 2.2 Declarations
 
 ```
-let       ::= "let" name (":" type)? "=" expr ";"
+let       ::= "let" (name (":" type)? "=" expr | tuple-pattern "=" expr) ";"
+tuple-pattern ::= "[" (name (":" type)? ("," name (":" type)?)*)? "]"
 params    ::= "(" (name (":" type)? ("," name (":" type)?)* )? ")"
 eff-annot ::= "!" "{" name ("," name)* "}"
 block     ::= "{" stmt* "}"
@@ -97,6 +102,9 @@ block     ::= "{" stmt* "}"
 
 - `let` binds recursively: the name is in scope in its own value, so
   `let f = fn(...) { ... }` can call itself.
+- `let [a, b] = e;` **destructures** a tuple (or array): each name is bound
+  to the corresponding element. Optional per-field `: type` annotations
+  constrain the element type.
 - Lambdas `fn (p: T): R ! { Effs } { body }` may carry optional `: R` and
   `! { Effs }` annotations; the checker verifies the body's performed effects
   ⊆ the declared set (or derives the set when `! { ... }` is omitted).
@@ -107,7 +115,7 @@ block     ::= "{" stmt* "}"
 expr     ::= binary
 binary   ::= unary (binop unary)*        -- Pratt, see precedence below
 unary    ::= ("-" | "!") unary | postfix
-postfix  ::= primary ("(" args ")")*     -- call
+postfix  ::= primary ("(" args ")")* ("." name)*   -- call, then field access
 primary  ::= num | str | "true" | "false" | "unit"
            | name | "(" expr ")" | array | lambda | if | handle
 array    ::= "[" (expr ("," expr)*)? "]"
@@ -119,8 +127,20 @@ case     ::= "case" name params "=>" name block
 args     ::= "(" (expr ("," expr)*)? ")"
 ```
 
-- **Array literals** `[a, b, c]` desugar to `list(a, b, c)`.
+- **Bracket literals** `[a, b, c]` are **arrays if all element types unify**
+  (homogeneous → `[T]`), otherwise **tuples** (`[T1, ..., Tn]`). A tuple
+  **type annotation** on the binding (`let p: [float, float] = [1.0, 2.0]`)
+  forces a tuple even when the elements would unify. The same expectation
+  flows from a tuple **return type** into a `[...]` body literal, and from a
+  tuple **parameter type** into an `[...]` argument literal (including
+  nested tuples, e.g. `[[f,f,f],...]`). Explicit `list(...)` always builds
+  an array.
 - **`&&` / `||`** desugar to `if`: `a && b` → `if a { b } else { false }`, `a || b` → `if a { true } else { b }`. Short-circuit falls out for free.
+- **Field access** `e.x` / `e.0`: reads a tuple field by name or position, or
+  an array element by position (`xs.0`). The index is resolved at check time
+  and the runtime indexes the underlying array. Chained access like `m.0.0`
+  is parsed as successive accesses (the lexer would otherwise read `0.0` as
+  one float token).
 - **Binary operators** and precedence (lowest → highest):
 
   | Prec | Operators                |
@@ -175,9 +195,12 @@ case        ::= "case" ("Return" | name) params "=>" name block
 ### 3.1 Type grammar
 
 ```
-type  ::= "[" type "]"
-        | "(" type ("," type)* ")" "->" type ("!" "{" name ("," name)* "}")?
-        | "int" | "float" | "string" | "bool" | "unit" | "any"
+type   ::= "[" type "]"                      -- array
+         | "[" tup-field ("," tup-field)* "]"  -- tuple
+         | "(" type ("," type)* ")" "->" type ("!" "{" name ("," name)* "}")?
+         | name ("[" type ("," type)* "]")?    -- alias instantiation
+         | "int" | "float" | "string" | "bool" | "unit" | "any"
+tup-field ::= (name ":")? type               -- named (`x: float`) or unnamed
 ```
 
 - `int`, `float`, `string`, `bool`, `unit` — primitives. `int` and `float`
@@ -185,6 +208,14 @@ type  ::= "[" type "]"
   `float` is expected and vice versa, and any numeric op on two ints yields
   `int`, while a mix of `int`/`float` (or two `float`s) yields `float`.
 - `[T]` — array of `T` (homogeneous).
+- `[T1, ..., Tn]` — **tuple**: fixed arity, positional field types. Fields
+  may be named (`[x: float, y: float]`) or unnamed (`[int, string]`); names
+  are for access only and ignored by unification, which compares arity and
+  positional types. `[T]` (one element, no comma) is an array, not a 1-tuple.
+- `type Name(p1, ..., pn) = T;` declares a **parametric type alias**. Use it
+  as `Name[A1, ..., An]`; the body `T` is substituted with the arguments at
+  parse time (nullary `type V = ...;` needs no `[...]`). Alias params are
+  type variables scoped to the body. Recursive aliases are not supported.
 - `(T1, ..., Tn) -> R` — function type. The optional `! { E1, ..., En }` is
   its **effect set**: the effects the function may perform. Empty/omitted =
   pure.
@@ -200,17 +231,23 @@ type  ::= "[" type "]"
 - Type variables use **union-find** equivalence with a side-map of substitutions. `res(t)` resolves a type; occurs-check prevents recursive types.
 - `unify(a, b)` either makes the two types equal or throws a `TypeError` of the form:
   ```
-  Type mismatch:
+  at line L, col C: Type mismatch:
   got      : <actual>
   expected : <expected>
   ```
-  (a non-function call names the callee instead of `got`). Arity mismatches are reported as `arity m ≠ n`.
+  The `at line L, col C:` prefix is the source position of the innermost
+  expression being inferred when the mismatch surfaced (omitted when no
+  position is available). A non-function call names the callee instead of
+  `got`. Arity mismatches are reported as `arity m ≠ n`.
 
 ### 3.3 Inference rules
 
 - `num : int`/`float` (by whether the literal has a `.`), `str : string`, `bool : bool`, `unit : unit`.
 - `name : Γ(name)` (or a fresh instantiation if `Γ(name)` is a polymorphic scheme).
-- `[a, b, c] : [T]` where all elements unify with a single fresh `T` (homogeneous arrays; `list` is special-cased in inference).
+- `[a, b, c]` : `[T]` where all element types unify with a single fresh `T`
+  (homogeneous → array). If they do **not** unify, the literal is a tuple
+  `[Ta, Tb, Tc]` of the element types. Under a tuple type annotation it is
+  checked against the declared field types directly.
 - `fn (p1:T1,...): R ! {E} { body } : (T1,...) -> R ! {E}`. Untyped params get
   fresh vars; the body is inferred under their bindings; if a return type
   annotation is present it unifies with the inferred body type. **Effect
@@ -220,7 +257,14 @@ type  ::= "[" type "]"
   effects (the body's performed effects must be ⊆ the annotation), and the
   annotation becomes the function's effect set. Anonymous lambdas may also
   carry `: T` and `! { ... }` annotations: `fn(p): unit ! { Out } { ... }`.
-- `let x : T = e` — `T` (if present) unifies with `infer(e)`; `x : T`.
+- `let x : T = e` — `T` (if present) unifies with `infer(e)`; `x : T`. When
+  `T` is a tuple and `e` is a bracket literal, the literal is typed as that
+  tuple.
+- `let [a, b] = e` — `e : [Ta, Tb]` (tuple) or `[T]` (array, each field `: T`);
+  binds `a, b` to the element types.
+- `e.x` / `e.0` — `e` must be a tuple (`[x: T, ...]` or `[T, ...]`) or an array.
+  For a named tuple field, `.name` resolves to its position; `.N` indexes by
+  position. For an array, `.N` indexes element `N`.
 - `if c { a } else { b } : T` where `c : bool` and `a, b : T` (branches must
   agree). `if` with no `else` has an implicit `unit` else branch.
 - `f(a1, ..., an)` — `f : (T1,...,Tn) -> R ! {E}`, each `ai : Ti`, the call has type `R` and adds `E` to the caller's effects. Mismatched arity or argument types are errors.
@@ -243,10 +287,11 @@ type  ::= "[" type "]"
   copies. So `let apply = fn (f, x) { f(x) }` gets `apply : ((a) -> b ! e, a) -> b ! e`
   and one definition works at many types in the same program.
 - **Value restriction:** only lambda RHS are generalized. Literals carry no
-  type variables (generalization is a no-op), and array literals desugar to
-  `list(...)` calls (non-values), so they stay monomorphic — this keeps
-  mutable arrays (`set`) and mutable variables (`assign`) sound (no
-  `let xs = [] : [a]` that any element type could flow into).
+  type variables (generalization is a no-op), and bracket literals are typed
+  directly (arrays via homogenization, tuples positionally — non-values), so
+  they stay monomorphic — this keeps mutable arrays (`set`) and mutable
+  variables (`assign`) sound (no `let xs = [] : [a]` that any element type
+  could flow into).
 - Bindings with an explicit `: type` annotation are monomorphic (the
   annotation fixes the type).
 - Builtins `map`, `head`, `tail`, `concat`, `flat`, `len` are polymorphic via
@@ -273,7 +318,7 @@ The type checker stamps each `/` node as int or float division at check time (th
 
 | Name      | Type (schematic)                | Notes |
 |-----------|---------------------------------|-------|
-| `list`    | `(any) -> [any]`                | Variadic array constructor; special-cased in inference so `[1,2,3]` is `[int]`. |
+| `list`    | `(any) -> [any]`                | Variadic array constructor. Explicit `list(1,2,3)` is `[int]`; bracket literals `[1,2,3]` are typed directly (array if homogeneous, else tuple). |
 | `head`    | `([A]) -> A`                    | First element. |
 | `tail`    | `([A]) -> [A]`                  | All but first. |
 | `concat`  | `([A], [A]) -> [A]`             | Append; both arrays share element type `A`. |
@@ -350,7 +395,7 @@ function typeOf(src: string): string;  // inferred type of the last expression, 
 function repl(): void;                 // interactive REPL with persistent bindings
 ```
 
-A type error is a thrown `Error` whose message contains the mismatch (e.g.  `Type mismatch:\ngot : int\nexpected : string`, `arity 1 ≠ 2`, `Unknown effect Nope`, `effect Emit not declared in signature`).
+A type error is a thrown `Error` whose message contains the mismatch (e.g.  `at line 1, col 1: Type mismatch:\ngot : int\nexpected : string`, `arity 1 ≠ 2`, `Unknown effect Nope`, `effect Emit not declared in signature`).
 
 ## 7. Examples
 
@@ -366,6 +411,20 @@ handle {
   case Choose(opts) => k { flat(map(k, opts)) }
 // [[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]
 ```
+
+### Tuples, aliases, and field access
+
+```js
+type Point(a) = [x: a, y: a];
+let p: Point[float] = [1.0, 2.0];
+let [x, y] = p;
+[x, p.x + p.y]
+// [1, 3]
+```
+
+`type Point(a) = [x: a, y: a];` declares a parametric alias; `Point[float]`
+substitutes `a = float`. The literal `[1.0, 2.0]` is typed against the
+annotated tuple `[x: float, y: float]`, so `p.x` and `p.y` are `float`.
 
 ### Exceptions (non-resuming handler)
 
