@@ -337,17 +337,19 @@ handle {
 `))).toBe('["a", "b"]');
 });
 
-test("effect annotations are mandatory for effectful fns", () => {
+test("effect annotations are optional and derived if missing", () => {
   // Pure body, no annotation: fine.
   expect(show(run(`fn f(): int { 1 + 2 }\nf`))).toBe("[fn: () -> int]");
   // Effectful body, annotation present and covering: fine.
   expect(show(run(`fn g(): unit ! { Out } { Out!("x") }\ng`))).toBe("[fn: () -> unit ! { Out }]");
-  // Effectful body, no annotation: rejected.
-  expect(() => run(`fn h(): unit { Out!("x") }\nh`)).toThrow(/not declared in signature/);
-  // Anonymous lambda too: effectful without annotation is rejected.
-  expect(() => run(`let k = fn(): unit { Out!("x") }; k`)).toThrow(/not declared in signature/);
+  // Effectful body, no annotation: derived from body, accepted.
+  expect(show(run(`fn h(): unit { Out!("x") }\nh`))).toBe("[fn: () -> unit ! { Out }]");
+  // Anonymous lambda too: effectful without annotation is derived.
+  expect(show(run(`let k = fn(): unit { Out!("x") }; k`))).toBe("[fn: () -> unit ! { Out }]");
   // Anonymous lambda with annotation: accepted.
   expect(show(run(`let k = fn(): unit ! { Out } { Out!("x") }; k`))).toBe("[fn: () -> unit ! { Out }]");
+  // Annotation that underspecifies is still rejected.
+  expect(() => run(`fn p(): unit ! { } { Out!("x") }\np`)).toThrow(/not declared in signature/);
 });
 
 test("show prints function arity and type, natives stay [fn]", () => {

@@ -218,11 +218,11 @@ type  ::= "[" type "]"
 - `fn (p1:T1,...): R ! {E} { body } : (T1,...) -> R ! {E}`. Untyped params get
   fresh vars; the body is inferred under their bindings; if a return type
   annotation is present it unifies with the inferred body type. **Effect
-  annotations are mandatory for effectful bodies**: if the body performs any
-  effect, a `! { ... }` annotation listing a superset of those effects is
-  required (a pure body may omit it). When present, the body's performed
-  effects must be ⊆ the annotation, and the annotation becomes the function's
-  effect set (otherwise the inferred set is used). Anonymous lambdas may also
+  annotations are optional and derived when missing**: if `! { ... }` is
+  omitted, the function's effect set is inferred from the body's performed
+  effects. When present, the annotation must be a superset of the body's
+  effects (the body's performed effects must be ⊆ the annotation), and the
+  annotation becomes the function's effect set. Anonymous lambdas may also
   carry `: T` and `! { ... }` annotations: `fn(p): unit ! { Out } { ... }`.
 - `let x : T = e` — `T` (if present) unifies with `infer(e)`; `x : T`.
 - `if c { a } else { b } : T` where `c : bool` and `a, b : T` (branches must

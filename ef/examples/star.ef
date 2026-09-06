@@ -66,9 +66,9 @@ fn drawPolygon(points: [[float]]): unit {
   }, range(0, n, 1))
 }
 
-fn printGrid(): unit ! { Out } {
-  each(fn(y, _) ! { Out } {
-    each(fn(x, _) ! { Out } {
+fn printGrid(): unit {
+  each(fn(y, _) {
+    each(fn(x, _) {
       Out!(get(get(m_grid, x + GRID_SIZE), GRID_SIZE - y))
     }, range(0 - GRID_SIZE, GRID_SIZE + 1, 1));
     Out!("\n")
@@ -135,6 +135,6 @@ while (true) {
   drawPolygon(poly);
   printGrid();
   clear();
-  each(fn(_, _) ! { Out } { Out!("\x1B[1A") }, range(0, radius * 2 + 1, 1));
+  each(fn(_, _) { Out!("\x1B[1A") }, range(0, radius * 2 + 1, 1));
   // Wait!(0.001)
 }
