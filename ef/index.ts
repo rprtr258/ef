@@ -154,7 +154,7 @@ type Expr =
   | { t: "handle"; body: Expr; cases: HandlerCase[] }
   | { t: "app"; fn: Expr; args: Expr[]; div?: "int" | "float" };
 
-type Param = { name: string; typ: Type | null };
+type Param = { name: string; typ: Type | null; pos?: Pos };
 
 type HandlerCase = {
   op: string;
@@ -175,8 +175,21 @@ const KEYWORDS = new Set([
 const TWO = ["==", "!=", "<=", ">=", "&&", "||", "=>"];
 const ONE = "()[]{},;<>+-*/!=:%";
 
-function lex(src: string): string[] {
-  const toks: string[] = [];
+// A source position: 1-indexed line and column.
+export type Pos = { line: number; col: number };
+type Tok = { v: string; pos: Pos };
+
+function lex(src: string): Tok[] {
+  const toks: Tok[] = [];
+  // Indices where each line begins (line 1 at 0); lets us map a char index to
+  // {line, col} without threading counters through the scanner.
+  const lineStarts = [0];
+  for (let k = 0; k < src.length; k++) if (src[k] === "\n") lineStarts.push(k + 1);
+  const posAt = (i: number): Pos => {
+    let lo = 0, hi = lineStarts.length - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if ((lineStarts[mid] ?? 0) <= i) lo = mid; else hi = mid - 1; }
+    return { line: lo + 1, col: i - lineStarts[lo]! + 1 };
+  };
   let i = 0;
   while (i < src.length) {
     const c = src[i]!;
@@ -189,37 +202,40 @@ function lex(src: string): string[] {
       continue;
     }
     if (c === '"') {
+      const start = i;
       let j = i + 1;
       while (j < src.length && src[j] !== '"') {
         if (src[j] === "\\") j++;
         j++;
       }
-      toks.push(src.slice(i, j + 1));
+      toks.push({ v: src.slice(start, j + 1), pos: posAt(start) });
       i = j + 1;
       continue;
     }
     const two = src.slice(i, i + 2);
     if (TWO.includes(two)) {
-      toks.push(two);
+      toks.push({ v: two, pos: posAt(i) });
       i += 2;
       continue;
     }
     if (ONE.includes(c)) {
-      toks.push(c);
+      toks.push({ v: c, pos: posAt(i) });
       i++;
       continue;
     }
     if (/[0-9]/.test(c)) {
+      const start = i;
       let j = i;
       while (j < src.length && /[0-9.]/.test(src[j]!)) j++;
-      toks.push(src.slice(i, j));
+      toks.push({ v: src.slice(start, j), pos: posAt(start) });
       i = j;
       continue;
     }
     if (/[A-Za-z_]/.test(c)) {
+      const start = i;
       let j = i;
       while (j < src.length && /[A-Za-z0-9_]/.test(src[j]!)) j++;
-      toks.push(src.slice(i, j));
+      toks.push({ v: src.slice(start, j), pos: posAt(start) });
       i = j;
       continue;
     }
@@ -252,16 +268,20 @@ function parseStr(t: string): string {
 }
 
 class Parser {
-  toks: string[];
+  toks: Tok[];
   i = 0;
   constructor(src: string) {
     this.toks = lex(src);
   }
   peek(o = 0): string | undefined {
-    return this.toks[this.i + o];
+    return this.toks[this.i + o]?.v;
   }
   next(): string {
-    return this.toks[this.i++]!;
+    return this.toks[this.i++]!.v;
+  }
+  // Position of the token at offset `o` from the cursor (undefined past EOF).
+  pos(o = 0): Pos | undefined {
+    return this.toks[this.i + o]?.pos;
   }
   eat(s: string): void {
     if (this.peek() !== s) throw new Error(`Expected "${s}", got "${this.peek()}"`);
@@ -331,9 +351,10 @@ class Parser {
     this.eat("(");
     const params: Param[] = [];
     while (!this.is(")")) {
+      const pos = this.pos();
       const name = this.next();
       const typ = this.is(":") ? (this.next(), this.parseType()) : null;
-      params.push({ name, typ });
+      params.push({ name, typ, pos });
       if (this.is(",")) this.i++;
     }
     this.eat(")");
@@ -1371,6 +1392,131 @@ export function types(src: string): {name: string, type: Type}[] {
     const t = tlookup(env, n);
     return {name: n, type: res(typeof t === "function" ? t() : t!)};
   });
+}
+
+// lint: run a sequence of lint passes over a parsed program and report issues.
+// Each pass is an (items) => LintIssue[]; add more passes to LINT_PASSES.
+export type LintIssue =
+  {rule: "unused-arg"; who: string, argname: string, pos?: Pos};
+
+const LINT_PASSES: ((items: Item[]) => LintIssue[])[] = [lintUnusedArgs];
+
+export function lint(src: string): LintIssue[] {
+  const items = new Parser(src).parseProgram();
+  return LINT_PASSES.flatMap(pass => pass(items));
+}
+
+// unused-arg: a function parameter never referenced in the body (scope-aware:
+// inner lambda params, let/letrec bindings, and handler-case params/resume
+// shadow the outer name and don't count as a use).
+function lintUnusedArgs(items: Item[]): LintIssue[] {
+  const issues: LintIssue[] = [];
+  for (const it of items.filter(it => "e" in it))
+    for (const [lam, fname] of visitLambdas(it.e, null)) {
+      const seen = new Set<string>();
+      for (const p of lam.params) {
+        if (seen.has(p.name) || p.name === "_")
+          continue;
+        seen.add(p.name);
+        const used = freeUses(lam.body, new Set([p.name]));
+        if (used.size === 0) {
+          const who = fname ? `function \`${fname}\`` : "anonymous function";
+          issues.push({rule: "unused-arg", who, argname: p.name, pos: p.pos});
+        }
+      }
+    }
+  return issues;
+}
+
+// Visit every lambda in an expression. `fname` is the name of the enclosing
+// binding when the lambda is the value of a `let`/`letrec`, else null.
+function* visitLambdas(
+  e: Expr,
+  fname: string | null,
+): Generator<[lam: Expr & {t: "lambda"}, fname: string | null]> {
+  switch (e.t) {
+  case "lambda":
+    yield [e, fname];
+    yield* visitLambdas(e.body, null);
+    return;
+  case "let": case "letrec":
+    yield* visitLambdas(e.val, e.val.t === "lambda" ? e.name : null);
+    return;
+  case "assign":
+    yield* visitLambdas(e.val, null);
+    return;
+  case "if":
+    yield* visitLambdas(e.c, null);
+    yield* visitLambdas(e.a, null);
+    yield* visitLambdas(e.b, null);
+    return;
+  case "while":
+    yield* visitLambdas(e.c, null);
+    yield* visitLambdas(e.body, null);
+    return;
+  case "perform":
+    for (const a of e.args)
+      yield* visitLambdas(a, null);
+    return;
+  case "app":
+    yield* visitLambdas(e.fn, null);
+    for (const a of e.args)
+      yield* visitLambdas(a, null);
+    return;
+  case "handle":
+    yield* visitLambdas(e.body, null);
+    for (const c of e.cases)
+      yield* visitLambdas(c.body, null);
+    return;
+  case "block":
+    for (const s of e.stmts)
+      yield* visitLambdas(s, null);
+    return;
+  }
+}
+
+// Which of `watch` names are referenced (free) in `e`, accounting for shadowing
+// by inner binders. `let`/`letrec` names bind only for following block siblings.
+function freeUses(e: Expr, watch: Set<string>): Set<string> {
+  const out = new Set<string>();
+  const go = (e: Expr, w: Set<string>): void => {
+    switch (e.t) {
+    case "sym": if (w.has(e.v)) out.add(e.v); return;
+    case "num": case "str": case "bool": case "unit": return;
+    case "lambda": {
+      const w2 = new Set(w);
+      for (const p of e.params) w2.delete(p.name);
+      go(e.body, w2);
+      return;
+    }
+    case "let": go(e.val, w); return;
+    case "letrec": { const w2 = new Set(w); w2.add(e.name); go(e.val, w2); return; }
+    case "assign": go(e.val, w); return;
+    case "if": go(e.c, w); go(e.a, w); go(e.b, w); return;
+    case "while": go(e.c, w); go(e.body, w); return;
+    case "perform": for (const a of e.args) go(a, w); return;
+    case "app": go(e.fn, w); for (const a of e.args) go(a, w); return;
+    case "handle":
+      go(e.body, w);
+      for (const c of e.cases) {
+        const w2 = new Set(w);
+        for (const p of c.params) w2.delete(p.name);
+        w2.delete(c.resume);
+        go(c.body, w2);
+      }
+      return;
+    case "block": {
+      const w2 = new Set(w);
+      for (const s of e.stmts) {
+        go(s, w2);
+        if (s.t === "let" || s.t === "letrec") w2.delete(s.name);
+      }
+      return;
+    }
+    }
+  };
+  go(e, watch);
+  return out;
 }
 
 // repl: an interactive read-eval-print loop. State (runtime env + type env +

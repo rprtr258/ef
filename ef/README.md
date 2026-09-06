@@ -449,10 +449,16 @@ handle {
 
 ```
 ef run <file> [args...]   # typecheck then evaluate; extra args reach `args()`
+ef types <file>           # print every top-level symbol and its inferred type
+ef lint <file>            # run lint passes and report issues (exits 1 on findings)
 ef repl                   # interactive REPL; bindings persist across lines
 ```
 
 The result of the last expression is printed via `show` unless the program calls `Exit!(...)` itself. Programs that loop forever (animations) run until killed.
+
+`ef lint <file>` runs a sequence of lint passes over the parsed program and prints each finding as `rule: message`. The current passes are:
+
+- `unused-arg` — a function parameter never referenced in the body. Scope-aware: a name shadowed by an inner lambda parameter or a `let`/`letrec` binding (or a handler-case parameter / `resume`) does not count as a use of the outer argument. Named functions (`let`/`letrec` of a `fn`) are reported as `function \`name\``; bare lambdas as `anonymous function`.
 
 The REPL parses each line as a complete program; `let`/`letrec`/`effect` bindings accumulate across lines (both the runtime env and the type env persist). A bare expression prints both value and inferred type, e.g. `1 + 2` → `3 : int`.
 Type `:q` to quit.
