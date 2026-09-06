@@ -3,8 +3,8 @@
 // |guess^2 - x| < precision (a real tolerance, not a step count):
 //   guess_{n+1} = (guess_n + x / guess_n) / 2
 
-fn makeNewtonRoot(precision: float): (float) -> float {
-  fn find(x: float): float {
+let makeNewtonRoot = fn(precision: float): (float) -> float {
+  let find = fn(x: float): float {
     let guess = x/2;
     let done = false;
     while (!done) {
@@ -17,9 +17,9 @@ fn makeNewtonRoot(precision: float): (float) -> float {
       }
     }
     guess
-  }
+  };
   find
-}
+};
 
 let sqrt = makeNewtonRoot(0.0001);
 Println!(sqrt(2))

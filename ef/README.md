@@ -34,7 +34,7 @@ The handler calls `k` once per option, so the computation branches into all path
 - **Multi-shot resume** — the continuation `k` is a plain callable, so it can run zero, one, or many times (nondeterminism, backtracking, etc.).
 - **Effect propagation** through nested handlers: an unhandled effect walks outward to the nearest matching handler.
 - **Static typing** with type inference, union-find unification, and an absorbing `any` escape hatch.
-- **Function effect signatures** `fn f(p: T): R ! { Effs } { ... }` the checker verifies against the body.
+- **Function effect signatures** `let f = fn(p: T): R ! { Effs } { ... }` the checker verifies against the body.
 - **Polymorphic builtins** (`map : (A)->B, [A] -> [B]`, etc.).
 
 ## Layout
@@ -81,7 +81,7 @@ an effect declaration:
 program ::= item*
 item    ::= effect-decl | stmt
 effect-decl ::= "effect" name params ":" type ";"
-stmt    ::= let | letrec | fn-decl | expr (";" | blocky)
+stmt    ::= let | letrec | expr (";" | blocky)
 ```
 
 The value of a program is the value of its last expression statement.
@@ -91,19 +91,17 @@ The value of a program is the value of its last expression statement.
 ```
 let       ::= "let" name (":" type)? "=" expr ";"
 letrec    ::= "letrec" name (":" type)? "=" expr ";"
-fn-decl   ::= "fn" name params (":" type)? eff-annot? block
 params    ::= "(" (name (":" type)? ("," name (":" type)?)* )? ")"
 eff-annot ::= "!" "{" name ("," name)* "}"
 block     ::= "{" stmt* "}"
 ```
 
 - `let` binds non-recursively; `letrec` binds recursively (the name is in scope
-  in its own value).
-- `fn name(params): T ! { Effs } { body }` is sugar for a `letrec` whose value
-  is a lambda carrying the return type and declared effect set. The checker
-  verifies the body's performed effects ⊆ the declared set.
-- Anonymous lambdas: `fn (p: T) { body }` (no name); may carry optional `: R`
-  and `! { Effs }` annotations like named functions.
+  in its own value). Functions are defined as `let f = fn(...) { ... }` (or
+  `letrec f = fn(...) { ... }` for recursion).
+- Lambdas `fn (p: T): R ! { Effs } { body }` may carry optional `: R` and
+  `! { Effs }` annotations; the checker verifies the body's performed effects
+  ⊆ the declared set (or derives the set when `! { ... }` is omitted).
 
 ### 2.3 Expressions
 
@@ -411,9 +409,9 @@ handle {
 ### Recursion with a typed signature
 
 ```js
-fn fact(n: int): int {
+letrec fact = fn(n: int): int {
   if (n == 0) { 1 } else { n * fact(n - 1) }
-}
+};
 fact(5)
 // 120
 ```
@@ -422,7 +420,7 @@ fact(5)
 
 ```js
 effect Emit(m: int): int;
-fn ask(n: int): int ! { Emit } { Emit!(n) }
+let ask = fn(n: int): int ! { Emit } { Emit!(n) };
 ask
 // typeOf → "(int) -> int ! { Emit }"
 ```
@@ -456,7 +454,7 @@ ef repl                   # interactive REPL; bindings persist across lines
 
 The result of the last expression is printed via `show` unless the program calls `Exit!(...)` itself. Programs that loop forever (animations) run until killed.
 
-The REPL parses each line as a complete program; `let`/`fn`/`effect` bindings accumulate across lines (both the runtime env and the type env persist). A bare expression prints both value and inferred type, e.g. `1 + 2` → `3 : int`.
+The REPL parses each line as a complete program; `let`/`letrec`/`effect` bindings accumulate across lines (both the runtime env and the type env persist). A bare expression prints both value and inferred type, e.g. `1 + 2` → `3 : int`.
 Type `:q` to quit.
 
 ## 9. Examples on disk

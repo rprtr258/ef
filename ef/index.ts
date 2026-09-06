@@ -313,16 +313,6 @@ class Parser {
       const val = this.parseExpr();
       this.eat(";");
       e = { t: "letrec", name, typ, val };
-    } else if (this.isKw("fn") && this.peek(1) !== "(") {
-      // named declaration: `fn name(params): T { body }` (recursive)
-      this.next();
-      const name = this.next();
-      const params = this.parseParams();
-      const ret = this.is(":") ? (this.next(), this.parseType()) : null;
-      const retEffs = this.parseEffAnnot();
-      const body = this.parseBlock();
-      e = { t: "letrec", name, typ: null, val: { t: "lambda", params, retTyp: ret, retEffs, body } };
-      if (this.is(";")) this.i++;
     } else if (!KEYWORDS.has(this.peek() ?? "") && this.peek(1) === "=") {
       const name = this.next();
       this.next(); // =
@@ -1369,7 +1359,7 @@ export function typeOf(src: string): string {
   return showT(res(checkProgram(items).lastType));
 }
 
-// types: typecheck a source file and print every top-level symbol (let / fn)
+// types: typecheck a source file and print every top-level symbol (let / letrec)
 // along with its inferred type, one per line as `name : type`.
 export function types(src: string): {name: string, type: Type}[] {
   const items = new Parser(src).parseProgram();
@@ -1384,7 +1374,7 @@ export function types(src: string): {name: string, type: Type}[] {
 }
 
 // repl: an interactive read-eval-print loop. State (runtime env + type env +
-// effect signatures) persists across lines, so `let`/`fn`/`effect` bindings
+// effect signatures) persists across lines, so `let`/`letrec`/`effect` bindings
 // accumulate. Each line is parsed and evaluated as a complete program; ef is
 // newline-insensitive so multi-statement blocks fit on one line. Echoes the
 // value and inferred type of a bare expression; declarations print nothing.

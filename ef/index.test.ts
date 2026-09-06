@@ -55,18 +55,18 @@ handle {
 
 test("Typed recursive function with annotation", () => {
 expect(show(run(`
-fn fact(n: int): int {
+letrec fact = fn(n: int): int {
   if (n == 0) { 1 } else { n * fact(n - 1) }
-}
+};
 fact(5)
 `))).toBe("120");
 });
 
 test("Short-circuit && / || and infix arithmetic", () => {
 expect(show(run(`
-fn guard(x: int): string {
+let guard = fn(x: int): string {
   if (x > 0 && x < 10) { "in" } else { "out" }
-}
+};
 [guard(5), guard(50)]
 `))).toBe('["in", "out"]');
 });
@@ -101,7 +101,7 @@ handle {
   });
 
   test("Wait is an effect with a pure-looking unit type", () => {
-    expect(typeOf("fn f(): unit ! { Wait } { Wait!(0) }")).toBe("unit");
+    expect(typeOf("let f = fn(): unit ! { Wait } { Wait!(0) };")).toBe("unit");
   });
 
   test("inferred `any` warns; an explicit `: any` annotation is silent", () => {
@@ -130,7 +130,7 @@ describe("Negative tests (static type checker rejects)", () => {
   });
 
   test("Calling a function with the wrong argument type", () => {
-    assertTypeError(`fn f(n: int): int { n + 1 } f("x")`, "int");
+    assertTypeError(`let f = fn(n: int): int { n + 1 }; f("x")`, "int");
   });
 
   test("Heterogeneous array literal", () => {
@@ -161,7 +161,7 @@ test("Effectful function signature carries its effect set", () => {
   // declares `! { Emit }`, which the checker verifies against the body.
   expect(typeOf(`
 effect Emit(m: int): int;
-fn ask(n: int): int ! { Emit } { Emit!(n) }
+let ask = fn(n: int): int ! { Emit } { Emit!(n) };
 ask
 `)).toBe("(int) -> int ! { Emit }");
 });
@@ -171,7 +171,7 @@ test("Declaring an effect set rejects effects not listed", () => {
   expect(() => run(`
 effect Emit(m: int): int;
 effect Log(m: int): int;
-fn f(n: int): int ! { Log } { Emit!(n) }
+let f = fn(n: int): int ! { Log } { Emit!(n) };
 f(1)
 `)).toThrow("not declared");
 });
@@ -202,7 +202,7 @@ handle {
 
 test("Builtin effects appear in inferred signatures", () => {
   expect(typeOf(`
-fn firstRead(path: string): string ! { Read } { Read!(path) }
+let firstRead = fn(path: string): string ! { Read } { Read!(path) };
 firstRead
 `)).toBe("(string) -> string ! { Read }");
 });
@@ -221,7 +221,7 @@ test("Float literals and numeric widening", () => {
 test("int flows into a float-typed parameter", () => {
   // step(1) passes an int literal where a float param is expected.
   expect(show(run(`
-fn f(x: float): float { x + 0.5 }
+let f = fn(x: float): float { x + 0.5 };
 f(1)
 `))).toBe("1.5");
 });
@@ -339,31 +339,31 @@ handle {
 
 test("effect annotations are optional and derived if missing", () => {
   // Pure body, no annotation: fine.
-  expect(show(run(`fn f(): int { 1 + 2 }\nf`))).toBe("[fn: () -> int]");
+  expect(show(run(`let f = fn(): int { 1 + 2 };\nf`))).toBe("[fn: () -> int]");
   // Effectful body, annotation present and covering: fine.
-  expect(show(run(`fn g(): unit ! { Out } { Out!("x") }\ng`))).toBe("[fn: () -> unit ! { Out }]");
+  expect(show(run(`let g = fn(): unit ! { Out } { Out!("x") };\ng`))).toBe("[fn: () -> unit ! { Out }]");
   // Effectful body, no annotation: derived from body, accepted.
-  expect(show(run(`fn h(): unit { Out!("x") }\nh`))).toBe("[fn: () -> unit ! { Out }]");
+  expect(show(run(`let h = fn(): unit { Out!("x") };\nh`))).toBe("[fn: () -> unit ! { Out }]");
   // Anonymous lambda too: effectful without annotation is derived.
   expect(show(run(`let k = fn(): unit { Out!("x") }; k`))).toBe("[fn: () -> unit ! { Out }]");
   // Anonymous lambda with annotation: accepted.
   expect(show(run(`let k = fn(): unit ! { Out } { Out!("x") }; k`))).toBe("[fn: () -> unit ! { Out }]");
   // Annotation that underspecifies is still rejected.
-  expect(() => run(`fn p(): unit ! { } { Out!("x") }\np`)).toThrow(/not declared in signature/);
+  expect(() => run(`let p = fn(): unit ! { } { Out!("x") };\np`)).toThrow(/not declared in signature/);
 });
 
 test("higher-order builtins are effect-polymorphic", () => {
   // Pure callback: the map call performs no effects.
-  expect(typeOf(`fn usePure(): [int] { map(fn(x: int): int { x + 1 }, [1, 2, 3]) }
+  expect(typeOf(`let usePure = fn(): [int] { map(fn(x: int): int { x + 1 }, [1, 2, 3]) };
 usePure`)).toBe("() -> [int]");
   // Effectful callback: exactly { Out } propagates, not over-approximated.
-  expect(typeOf(`fn useEffectful(): [int] { map(fn(x: int): int { Out!("x"); x }, [1, 2, 3]) }
+  expect(typeOf(`let useEffectful = fn(): [int] { map(fn(x: int): int { Out!("x"); x }, [1, 2, 3]) };
 useEffectful`)).toBe("() -> [int] ! { Out }");
   // each with an effectful body callback propagates too.
-  expect(typeOf(`fn eachOut(): unit { each(fn(x: int, _: int) { Out!("x") }, [1, 2, 3]) }
+  expect(typeOf(`let eachOut = fn(): unit { each(fn(x: int, _: int) { Out!("x") }, [1, 2, 3]) };
 eachOut`)).toBe("() -> unit ! { Out }");
   // Pure each stays pure.
-  expect(typeOf(`fn eachPure(): unit { each(fn(x: int, _: int) { unit }, [1, 2, 3]) }
+  expect(typeOf(`let eachPure = fn(): unit { each(fn(x: int, _: int) { unit }, [1, 2, 3]) };
 eachPure`)).toBe("() -> unit");
 });
 
@@ -390,8 +390,8 @@ let s = id("hi")`)).toThrow();
 });
 
 test("show prints function arity and type, natives stay [fn]", () => {
-  expect(show(run(`fn add(a: int, b: int): int { a + b }\nadd`))).toBe("[fn: (int, int) -> int]");
-  expect(show(run(`fn id(x: int): int { x }\nid`))).toBe("[fn: (int) -> int]");
+  expect(show(run(`let add = fn(a: int, b: int): int { a + b };\nadd`))).toBe("[fn: (int, int) -> int]");
+  expect(show(run(`let id = fn(x: int): int { x };\nid`))).toBe("[fn: (int) -> int]");
   // Builtins (natives) carry no inferred type here: stay [fn].
   expect(show(run(`head`))).toBe("[fn]");
 });
