@@ -367,6 +367,28 @@ eachOut`)).toBe("() -> unit ! { Out }");
 eachPure`)).toBe("() -> unit");
 });
 
+test("user-defined polymorphic functions via let-generalization", () => {
+  // `apply` is a lambda RHS, so it's generalized: one definition instantiates
+  // fresh type vars per call and works at int and string in the same program.
+  expect(typeOf(`let apply = fn (f, x) { f(x) };
+apply(fn (n: int) { n + 1 }, 41)`)).toBe("int");
+  expect(typeOf(`let apply = fn (f, x) { f(x) };
+apply(fn (n: int) { "n=" + char(48 + n) }, 7)`)).toBe("string");
+  // Both instantiations coexist in one program.
+  expect(show(run(`let apply = fn (f, x) { f(x) };
+let a = apply(fn (n: int) { n + 1 }, 41);
+let b = apply(fn (n: int) { "n=" + char(48 + n) }, 7);
+a`))).toBe("42");
+  expect(show(run(`let apply = fn (f, x) { f(x) };
+let b = apply(fn (n: int) { "n=" + char(48 + n) }, 7);
+b`))).toBe('"n=7"');
+  // Value restriction: a non-lambda RHS is NOT generalized, so a returned
+  // function used at two types is a type error (stays monomorphic).
+  // (Sanity: a lambda-typed `let` with an explicit annotation is monomorphic.)
+  expect(() => run(`let id: (int) -> int = fn (x) { x };
+let s = id("hi")`)).toThrow();
+});
+
 test("show prints function arity and type, natives stay [fn]", () => {
   expect(show(run(`fn add(a: int, b: int): int { a + b }\nadd`))).toBe("[fn: (int, int) -> int]");
   expect(show(run(`fn id(x: int): int { x }\nid`))).toBe("[fn: (int) -> int]");

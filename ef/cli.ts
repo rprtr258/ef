@@ -2,8 +2,8 @@
 // `ef types <file>` prints every top-level symbol and its inferred type.
 // `ef repl` starts an interactive REPL with persistent bindings.
 import {readFileSync} from "fs";
+import {styleText} from "util";
 import {show, run, types, repl, showT} from "./index.ts";
-import { styleText } from "util";
 
 function main(cmd: string, args: string[]) {
   switch (cmd) {

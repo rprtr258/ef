@@ -1,0 +1,19 @@
+// User-defined polymorphic `apply`. The language now does HM
+// let-generalization for lambda bindings, so `apply` is polymorphic:
+// each call instantiates fresh type variables, letting one definition work
+// at many types in the same program.
+//
+//   apply : ((a) -> b ! e, a) -> b ! e
+
+let apply = fn (f, x) { f(x) };
+
+let inc = fn (n) { n + 1 };
+let quote = fn (n) { "n=" + char(48 + n) }; // '0'+n as a 1-char string
+
+let a = apply(inc, 41);                            // (int  )->int    applied to int   => int
+let b = apply(quote, 7);                           // (int  )->string applied to int   => string
+let c = apply(fn (xs: [int]) { head(xs) }, [99]);  // ([int])->int    applied to [int] => int
+
+Println!(a);                       // 42
+Println!(b);                       // n=7
+Println!(c);                       // 99

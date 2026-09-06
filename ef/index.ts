@@ -705,6 +705,64 @@ function unify(a: Type, b: Type): void {
 
 type Scheme = () => Type; // polymorphic type scheme, instantiated fresh per use
 
+// Collect the free type- and effect-variable roots of a type into `tvs`/`evs`.
+function collectVars(t: Type, tvs: Set<number>, evs: Set<number>): void {
+  const r = res(t);
+  if (r.tag === "var") tvs.add(uni.find(r.id));
+  else if (r.tag === "arr") collectVars(r.elem, tvs, evs);
+  else if (r.tag === "fun") {
+    for (const p of r.params) collectVars(p, tvs, evs);
+    collectVars(r.ret, tvs, evs);
+    const er = resEff(r.effs);
+    if (!(er instanceof Set)) evs.add(effFind(er.id));
+  }
+}
+
+// Rebuild `t` substituting the given type/effect var roots with fresh copies.
+function copyScheme(t: Type, tm: Map<number, Type>, em: Map<number, Effs>): Type {
+  const r = res(t);
+  switch (r.tag) {
+    case "var": return tm.get(uni.find(r.id)) ?? r;
+    case "arr": return tArr(copyScheme(r.elem, tm, em));
+    case "fun":
+      return tFun(
+        r.params.map(p => copyScheme(p, tm, em)),
+        copyScheme(r.ret, tm, em),
+        copyEff(r.effs, em),
+      );
+    default: return r;
+  }
+}
+function copyEff(e: Effs, em: Map<number, Effs>): Effs {
+  const r = resEff(e);
+  return r instanceof Set ? r : (em.get(effFind(r.id)) ?? r);
+}
+
+// HM let-generalization: abstract the type/effect vars of `t` that are not
+// free in the environment. Returns a concrete `Type` (nothing to generalize)
+// or a `Scheme` thunk that instantiates fresh copies per use. Builtins are
+// already stored as such thunks; user `let`/`letrec` now get the same treatment.
+function generalize(env: TEnv, t: Type): Type | Scheme {
+  const envTvs = new Set<number>();
+  const envEvs = new Set<number>();
+  for (let e: TEnv | null = env; e; e = e.parent)
+    for (const v of e.vars.values())
+      if (typeof v !== "function") collectVars(v, envTvs, envEvs);
+  const tvs = new Set<number>();
+  const evs = new Set<number>();
+  collectVars(t, tvs, evs);
+  const gtvs = [...tvs].filter(id => !envTvs.has(id));
+  const gevs = [...evs].filter(id => !envEvs.has(id));
+  if (gtvs.length === 0 && gevs.length === 0) return res(t);
+  return () => {
+    const tm = new Map<number, Type>();
+    const em = new Map<number, Effs>();
+    for (const id of gtvs) tm.set(id, freshVar());
+    for (const id of gevs) em.set(id, freshEff());
+    return copyScheme(t, tm, em);
+  };
+}
+
 class TEnv {
   vars = new Map<string, Type | Scheme>();
   constructor(public parent: TEnv | null) {}
@@ -809,7 +867,13 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
     case "let": {
       const vt = infer(e.val, env, effs, effects);
       if (e.typ) { unify(e.typ, vt); env.vars.set(e.name, e.typ); }
-      else { env.vars.set(e.name, vt); if (containsAny(vt)) warnInferredAny(e.name, vt); }
+      else {
+        // Value restriction: generalize only lambda values (literals carry no
+        // type vars; array literals desugar to `list(...)` calls = non-values).
+        // This keeps mutable-array/assign soundness (no `let x = []` : [a]).
+        env.vars.set(e.name, e.val.t === "lambda" ? generalize(env, vt) : res(vt));
+        if (containsAny(vt)) warnInferredAny(e.name, vt);
+      }
       return TNULL;
     }
     case "letrec": {
@@ -818,7 +882,10 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
       const vt = infer(e.val, env, effs, effects);
       unify(declared, vt);
       const rt = res(declared);
-      env.vars.set(e.name, rt);
+      // Exclude the self-binding from the free-var context before
+      // generalizing (otherwise its own vars read as free-in-env → no-op).
+      env.vars.delete(e.name);
+      env.vars.set(e.name, e.typ ? rt : (e.val.t === "lambda" ? generalize(env, rt) : rt));
       if (!e.typ && containsAny(rt)) warnInferredAny(e.name, rt);
       return TNULL;
     }

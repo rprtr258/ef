@@ -241,7 +241,18 @@ type  ::= "[" type "]"
 
 ### 3.4 Polymorphism
 
-- User `let`/`letrec` bindings are **monomorphic** (no let-generalization).
+- User `let`/`letrec` bindings of a **lambda value** are **generalized** (HM
+  let-generalization, value-restricted): type/effect variables not free in the
+  surrounding environment are abstracted, and each use instantiates fresh
+  copies. So `let apply = fn (f, x) { f(x) }` gets `apply : ((a) -> b ! e, a) -> b ! e`
+  and one definition works at many types in the same program.
+- **Value restriction:** only lambda RHS are generalized. Literals carry no
+  type variables (generalization is a no-op), and array literals desugar to
+  `list(...)` calls (non-values), so they stay monomorphic — this keeps
+  mutable arrays (`set`) and mutable variables (`assign`) sound (no
+  `let xs = [] : [a]` that any element type could flow into).
+- Bindings with an explicit `: type` annotation are monomorphic (the
+  annotation fixes the type).
 - Builtins `map`, `head`, `tail`, `concat`, `flat`, `len` are polymorphic via
   **scheme thunks** in the type environment: each lookup produces a fresh copy
   with fresh type variables.
