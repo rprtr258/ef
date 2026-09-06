@@ -29,7 +29,7 @@ Hindley-Milner-flavoured type system with effect tracking.
    side-effects a `Set<string>` of performed effects. `unify` does the
    union-find thing. `checkProgram` wires builtins + effect decls.
 7. **Evaluator** — CPS (`evalE(e, env, k)`), multi-shot resume via plain JS
-   functions. `handle` installs a handler map; `perform` walks up to a matching
+   functions. `handle` installs a handler map; an effect `Op!(...)` walks up to a matching
    handler and calls its `resume` (the captured continuation `k`).
 8. **Builtins** — arithmetic/comparison binops, `head`/`tail`/`concat`/`flat`/
    `len`/`map`/`list`. `map` and the array ops are polymorphic (fresh
@@ -63,9 +63,9 @@ typing rules.
 - **`any` is absorbing.** Unifies with everything and stays `any`. Escape
   hatch for effect demos without row polymorphism. `list` uses it
   intentionally; `Println` takes `any` for the same reason.
-- **Effect declarations required for `perform`.** `effect Op(args): ret` — the
-  checker rejects `perform` of an undeclared effect. `ret` is the type
-  `perform Op(...)` evaluates to (i.e. what `resume` injects).
+- **Effect declarations required for `Op!`.** `effect Op(args): ret` — the
+  checker rejects `Op!` of an undeclared effect. `ret` is the type
+  `Op!(...)` evaluates to (i.e. what `resume` injects).
 - **Function effect signatures.** `fn f(p: T): R ! { Effs } { ... }` —
   **mandatory for effectful bodies**: if the body performs any effect, a
   `! { ... }` annotation listing a superset must be present (pure bodies may

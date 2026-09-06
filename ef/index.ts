@@ -156,7 +156,7 @@ type Item = { e: Expr } | { effect: string; sig: EffectSig };
 // --- Lexer ---
 
 const KEYWORDS = new Set([
-  "let", "letrec", "fn", "if", "else", "while", "perform", "handle", "case",
+  "let", "letrec", "fn", "if", "else", "while", "handle", "case",
   "true", "false", "unit", "effect",
 ]);
 const TWO = ["==", "!=", "<=", ">=", "&&", "||", "=>"];
@@ -446,6 +446,13 @@ class Parser {
   }
   parsePostfix(): Expr {
     let e = this.parsePrimary();
+    // perform: `Op!(args)` (postfix `!` after an effect name).
+    if (e.t === "sym" && this.is("!") && this.peek(1) === "(") {
+      const op = e.v;
+      this.next(); // !
+      const args = this.parseArgs();
+      e = { t: "perform", op, args };
+    }
     while (this.is("(")) {
       const args = this.parseArgs();
       e = { t: "app", fn: e, args };
@@ -521,12 +528,6 @@ class Parser {
       this.eat(")");
       const body = this.parseBlock();
       return { t: "while", c, body };
-    }
-    if (this.isKw("perform")) {
-      this.next();
-      const op = this.next();
-      const args = this.parseArgs();
-      return { t: "perform", op, args };
     }
     if (this.isKw("handle")) {
       this.next();

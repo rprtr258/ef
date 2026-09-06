@@ -10,8 +10,8 @@ test("Nondeterminism — multi-shot resume, declared effect + return type", () =
 expect(show(run(`
 effect Choose(opts: [int]): int;
 handle {
-  let x = perform Choose([1, 2, 3]);
-  let y = perform Choose([10, 20]);
+  let x = Choose!([1, 2, 3]);
+  let y = Choose!([10, 20]);
   [x, y]
 } case Return(v) => k { [v] }
   case Choose(opts) => k { flat(map(k, opts)) }
@@ -22,7 +22,7 @@ test("Exception — non-resuming handler aborts", () => {
 expect(show(run(`
 effect Div(a: int, b: int): int;
 handle {
-  let r = perform Div(10, 0);
+  let r = Div!(10, 0);
   [r]
 } case Div(a, b) => k {
   if (b == 0) { ["div by zero"] } else { k(a / b) }
@@ -35,9 +35,9 @@ expect(show(run(`
 effect Log(msg: string): unit;
 effect Result(v: string): unit;
 handle {
-  perform Log("a");
-  perform Log("b");
-  perform Result("42")
+  Log!("a");
+  Log!("b");
+  Result!("42")
 } case Log(msg) => k { concat([msg], k(unit)) }
   case Result(v) => k { [v] }
 `))).toBe('["a", "b", "42"]');
@@ -48,7 +48,7 @@ expect(show(run(`
 effect Emit(m: string): unit;
 effect Other(m: string): unit;
 handle {
-  handle { perform Emit("hi") } case Other(m) => k { ["should-not-match"] }
+  handle { Emit!("hi") } case Other(m) => k { ["should-not-match"] }
 } case Emit(m) => k { [m] }
 `))).toBe('["hi"]');
 });
@@ -87,21 +87,21 @@ describe("Equality, Exit/Wait effects, inferred-any warning", () => {
   });
 
   test("Exit is an interceptable effect (handler can abort instead of resuming)", () => {
-    // The handler returns the exit code without resuming, so `perform Exit(42)`
+    // The handler returns the exit code without resuming, so `Exit!(42)`
     // yields 42 and the code after it ("post") never runs — proving Exit is an
     // ordinary effect, not a magic builtin that always kills the process.
     expect(show(run(`
 handle {
-  perform Out("pre");
-  perform Exit(42);
-  perform Out("post")
+  Out!("pre");
+  Exit!(42);
+  Out!("post")
 } case Exit(c) => k { c }
-  case Out(s) => k { perform Println(s); k(unit) }
+  case Out(s) => k { Println!(s); k(unit) }
 `))).toBe("42");
   });
 
   test("Wait is an effect with a pure-looking unit type", () => {
-    expect(typeOf("fn f(): unit ! { Wait } { perform Wait(0) }")).toBe("unit");
+    expect(typeOf("fn f(): unit ! { Wait } { Wait!(0) }")).toBe("unit");
   });
 
   test("inferred `any` warns; an explicit `: any` annotation is silent", () => {
@@ -142,7 +142,7 @@ describe("Negative tests (static type checker rejects)", () => {
   });
 
   test("Using an undeclared effect", () => {
-    assertTypeError(`perform Nope(1)`, "Unknown effect");
+    assertTypeError(`Nope!(1)`, "Unknown effect");
   });
 
   test("== / != reject cross-type operands", () => {
@@ -150,7 +150,7 @@ describe("Negative tests (static type checker rejects)", () => {
     assertTypeError(`"x" != 1`, "Type mismatch");
   });
 
-  test("exit/wait are no longer builtins (use perform Exit/Wait)", () => {
+  test("exit/wait are no longer builtins (use Exit!/Wait)", () => {
     assertTypeError(`exit(1)`, "Unbound: exit");
     assertTypeError(`wait(1)`, "Unbound: wait");
   });
@@ -161,7 +161,7 @@ test("Effectful function signature carries its effect set", () => {
   // declares `! { Emit }`, which the checker verifies against the body.
   expect(typeOf(`
 effect Emit(m: int): int;
-fn ask(n: int): int ! { Emit } { perform Emit(n) }
+fn ask(n: int): int ! { Emit } { Emit!(n) }
 ask
 `)).toBe("(int) -> int ! { Emit }");
 });
@@ -171,7 +171,7 @@ test("Declaring an effect set rejects effects not listed", () => {
   expect(() => run(`
 effect Emit(m: int): int;
 effect Log(m: int): int;
-fn f(n: int): int ! { Log } { perform Emit(n) }
+fn f(n: int): int ! { Log } { Emit!(n) }
 f(1)
 `)).toThrow("not declared");
 });
@@ -181,8 +181,8 @@ test("Builtin Read/Write round-trip through real files", () => {
   if (existsSync(p)) unlinkSync(p);
   // Write then Read via the builtin default handler (no user handler).
   expect(show(run(`
-perform Write(${JSON.stringify(p)}, "hello ef");
-perform Read(${JSON.stringify(p)})
+Write!(${JSON.stringify(p)}, "hello ef");
+Read!(${JSON.stringify(p)})
 `))).toBe('"hello ef"');
   // The file really exists on disk.
   expect(readFileSync(p, "utf8")).toBe("hello ef");
@@ -194,7 +194,7 @@ test("A user handler can intercept builtin Read (effects stay abstract)", () => 
   // The handler mocks Read and never touches the filesystem.
   expect(show(run(`
 handle {
-  perform Read(${JSON.stringify(p)})
+  Read!(${JSON.stringify(p)})
 } case Return(v) => k { [v] }
   case Read(path) => k { ["mocked"] }
 `))).toBe('["mocked"]');
@@ -202,7 +202,7 @@ handle {
 
 test("Builtin effects appear in inferred signatures", () => {
   expect(typeOf(`
-fn firstRead(path: string): string ! { Read } { perform Read(path) }
+fn firstRead(path: string): string ! { Read } { Read!(path) }
 firstRead
 `)).toBe("(string) -> string ! { Read }");
 });
@@ -320,8 +320,8 @@ test("Println/Out are interceptable algebraic effects", () => {
   // A handler captures Println's argument instead of letting it print.
   expect(show(run(`
 handle {
-  perform Println(42);
-  perform Println("hi");
+  Println!(42);
+  Println!("hi");
   0
 } case Return(v) => k { [v] }
   case Println(x) => k { concat([x], k(unit)) }
@@ -329,8 +329,8 @@ handle {
   // Out is an effect too: collect written strings.
   expect(show(run(`
 handle {
-  perform Out("a");
-  perform Out("b");
+  Out!("a");
+  Out!("b");
   unit
 } case Return(v) => k { [] }
   case Out(s) => k { concat([s], k(unit)) }
@@ -341,13 +341,13 @@ test("effect annotations are mandatory for effectful fns", () => {
   // Pure body, no annotation: fine.
   expect(show(run(`fn f(): int { 1 + 2 }\nf`))).toBe("[fn: () -> int]");
   // Effectful body, annotation present and covering: fine.
-  expect(show(run(`fn g(): unit ! { Out } { perform Out("x") }\ng`))).toBe("[fn: () -> unit ! { Out }]");
+  expect(show(run(`fn g(): unit ! { Out } { Out!("x") }\ng`))).toBe("[fn: () -> unit ! { Out }]");
   // Effectful body, no annotation: rejected.
-  expect(() => run(`fn h(): unit { perform Out("x") }\nh`)).toThrow(/not declared in signature/);
+  expect(() => run(`fn h(): unit { Out!("x") }\nh`)).toThrow(/not declared in signature/);
   // Anonymous lambda too: effectful without annotation is rejected.
-  expect(() => run(`let k = fn(): unit { perform Out("x") }; k`)).toThrow(/not declared in signature/);
+  expect(() => run(`let k = fn(): unit { Out!("x") }; k`)).toThrow(/not declared in signature/);
   // Anonymous lambda with annotation: accepted.
-  expect(show(run(`let k = fn(): unit ! { Out } { perform Out("x") }; k`))).toBe("[fn: () -> unit ! { Out }]");
+  expect(show(run(`let k = fn(): unit ! { Out } { Out!("x") }; k`))).toBe("[fn: () -> unit ! { Out }]");
 });
 
 test("show prints function arity and type, natives stay [fn]", () => {

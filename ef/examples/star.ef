@@ -69,9 +69,9 @@ fn drawPolygon(points: [[float]]): unit {
 fn printGrid(): unit ! { Out } {
   each(fn(y, _) ! { Out } {
     each(fn(x, _) ! { Out } {
-      perform Out(get(get(m_grid, x + GRID_SIZE), GRID_SIZE - y))
+      Out!(get(get(m_grid, x + GRID_SIZE), GRID_SIZE - y))
     }, range(0 - GRID_SIZE, GRID_SIZE + 1, 1));
-    perform Out("\n")
+    Out!("\n")
   }, range(radius, 0 - radius - 1, 0 - 1))
 }
 
@@ -88,13 +88,13 @@ fn apply(p: [float], m: [[float]]): [float] {
 
 let argv = args();
 if (len(argv) != 4) {
-  perform Out("Usage: ef run examples/star.ef <num_of_vertices> <draw_step>\n<draw_step> must be in range (0..<num_of_vertices> / 2)\n");
-  perform Exit(1)
+  Out!("Usage: ef run examples/star.ef <num_of_vertices> <draw_step>\n<draw_step> must be in range (0..<num_of_vertices> / 2)\n");
+  Exit!(1)
 }
 let vertices = round(number(get(argv, 2)));
 let step = round(number(get(argv, 3)));
-if (vertices <= 0) { perform Out("Incorrect vertices value\n"); perform Exit(1) }
-if (step < 0 || step > vertices / 2) { perform Out("Incorrect step value\n"); perform Exit(1) }
+if (vertices <= 0) { Out!("Incorrect vertices value\n"); Exit!(1) }
+if (step < 0 || step > vertices / 2) { Out!("Incorrect step value\n"); Exit!(1) }
 
 let poly = flatmap(fn(i, _) {
   map(fn(t) {
@@ -110,7 +110,7 @@ let poly = flatmap(fn(i, _) {
 let rotAroundZOrY = false;
 let rotateSpeed = 0.05;
 
-perform Out("\x1B[?25l");
+Out!("\x1B[?25l");
 while (true) {
   poly = if (rotAroundZOrY) {
     map(fn(p) { apply(p, [
@@ -135,6 +135,6 @@ while (true) {
   drawPolygon(poly);
   printGrid();
   clear();
-  each(fn(_, _) ! { Out } { perform Out("\x1B[1A") }, range(0, radius * 2 + 1, 1));
-  // perform Wait(0.001)
+  each(fn(_, _) ! { Out } { Out!("\x1B[1A") }, range(0, radius * 2 + 1, 1));
+  // Wait!(0.001)
 }

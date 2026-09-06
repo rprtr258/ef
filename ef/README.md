@@ -17,8 +17,8 @@ A taste:
 ```js
 effect Choose(opts: [int]): int;            // Choose yields an int
 handle {
-  let x = perform Choose([1, 2, 3]);        // pause, ask the handler
-  let y = perform Choose([10, 20]);
+  let x = Choose!([1, 2, 3]);        // pause, ask the handler
+  let y = Choose!([10, 20]);
   [x, y]
 } case Return(v) => k { [v] }               // what to do with the final value
   case Choose(opts) => k { flat(map(k, opts)) }  // try every option, resume each
@@ -65,7 +65,7 @@ The handler calls `k` once per option, so the computation branches into all path
   `3.14`). A literal containing a `.` is typed `float`; otherwise `int`.
   Unary minus is parsed as the unary `-` operator in `parseUnary`.
 - **Identifiers** start with a letter or `_`, continue with letters/digits/`_`.
-- **Keywords:** `let letrec fn if else while perform handle case true false unit effect`.
+- **Keywords:** `let letrec fn if else while handle case true false unit effect`.
 - **Two-char tokens:** `== != <= >= && || =>`.
 - **One-char tokens:** `( ) [ ] { } , ; < > + - * / ! = : %`.
 - `->` is lexed as two tokens `-` `>` and reassembled by the type parser.
@@ -113,11 +113,11 @@ binary   ::= unary (binop unary)*        -- Pratt, see precedence below
 unary    ::= ("-" | "!") unary | postfix
 postfix  ::= primary ("(" args ")")*     -- call
 primary  ::= num | str | "true" | "false" | "unit"
-           | name | "(" expr ")" | array | lambda | if | perform | handle
+           | name | "(" expr ")" | array | lambda | if | handle
 array    ::= "[" (expr ("," expr)*)? "]"
 lambda   ::= "fn" params block
 if       ::= "if" "(" expr ")" block ("else" (if | block))?
-perform  ::= "perform" name "(" args ")"
+perform  ::= name "!" "(" args ")"        // `Op!(args)`
 handle   ::= "handle" block case+
 case     ::= "case" name params "=>" name block
 args     ::= "(" (expr ("," expr)*)? ")"
@@ -153,7 +153,7 @@ case        ::= "case" ("Return" | name) params "=>" name block
 
 - An **effect declaration** `effect Op(args): ret` introduces a named operation
   with parameter types and a return type. `ret` is the type that
-  `perform Op(...)` evaluates to — equivalently, the type the continuation
+  `Op!(...)` evaluates to — equivalently, the type the continuation
   `k` expects to be resumed with.
 - **Builtin effects.** Two effects are pre-declared and interpreted by the
   runtime when they reach the top level unhandled:
@@ -228,7 +228,7 @@ type  ::= "[" type "]"
 - `if c { a } else { b } : T` where `c : bool` and `a, b : T` (branches must
   agree). `if` with no `else` has an implicit `unit` else branch.
 - `f(a1, ..., an)` — `f : (T1,...,Tn) -> R ! {E}`, each `ai : Ti`, the call has type `R` and adds `E` to the caller's effects. Mismatched arity or argument types are errors.
-- `perform Op(a1, ..., an)` — requires a declared `effect Op(p1,...): ret`; each `ai : pi`; the expression has type `ret` and adds `Op` to the effects.
+- `Op!(a1, ..., an)` — requires a declared `effect Op(p1,...): ret`; each `ai : pi`; the expression has type `ret` and adds `Op` to the effects.
 - `handle { body } case Return(v) => k { rb } case Op(pi) => k { ob } ...`
   - The body is inferred with its own effect set `B`.
   - `Return(v)`: `v : bodyType`; the result type `R` unifies with `infer(rb)` (no `k` used).
@@ -299,7 +299,7 @@ process control is via the `Exit`/`Wait` effects (§4.4), not functions.
 
 ### 4.4 Builtin effects
 
-These are pre-declared like user effects and invoked with `perform`. With no user handler, the runtime interprets them at the top level (real I/O); a user `handle` can intercept any of them.
+These are pre-declared like user effects and invoked with the `!` postfix. With no user handler, the runtime interprets them at the top level (real I/O); a user `handle` can intercept any of them.
 
 | Effect    | Signature                  | Default behaviour |
 |-----------|----------------------------|--------------------|
@@ -313,8 +313,8 @@ These are pre-declared like user effects and invoked with `perform`. With no use
 ```js
 // Println is an ordinary effect: a handler can capture it instead of printing.
 handle {
-  perform Println(42);
-  perform Println("hi");
+  Println!(42);
+  Println!("hi");
   0
 } case Return(v) => k { [v] }
   case Println(x) => k { concat([x], k(unit)) }
@@ -324,9 +324,9 @@ handle {
 ## 5. Semantics
 
 - **Evaluation is in continuation-passing style.** `evalE(e, env, k)` either calls `k(v)` with a value or produces an `Outcome` describing a trapped effect.
-- **Effects.** `perform Op(args)` searches outward for a handler whose cases include `Op`. On a match, the handler runs with the effect's arguments bound and `k` set to a closure capturing the suspended computation; calling `k(v)` resumes the body with `v`. On no match, evaluation fails.
-- **Multi-shot resume.** `k` is an ordinary JS function, so it can be invoked many times — each call re-runs the continuation from the perform point.  This enables nondeterminism, backtracking, etc.
-- **Deep handlers.** The `Return` case sees the body's final value; effect cases see the perform site and can resume or not. Effects performed inside a handler case propagate outward to the next handler.
+- **Effects.** `Op!(args)` searches outward for a handler whose cases include `Op`. On a match, the handler runs with the effect's arguments bound and `k` set to a closure capturing the suspended computation; calling `k(v)` resumes the body with `v`. On no match, evaluation fails.
+- **Multi-shot resume.** `k` is an ordinary JS function, so it can be invoked many times — each call re-runs the continuation from the point!.  This enables nondeterminism, backtracking, etc.
+- **Deep handlers.** The `Return` case sees the body's final value; effect cases see the site! and can resume or not. Effects performed inside a handler case propagate outward to the next handler.
 
 ## 6. The `run` / `show` / `typeOf` API
 
@@ -348,8 +348,8 @@ A type error is a thrown `Error` whose message contains the mismatch (e.g.  `Typ
 ```js
 effect Choose(opts: [int]): int;
 handle {
-  let x = perform Choose([1, 2, 3]);
-  let y = perform Choose([10, 20]);
+  let x = Choose!([1, 2, 3]);
+  let y = Choose!([10, 20]);
   [x, y]
 } case Return(v) => k { [v] }
   case Choose(opts) => k { flat(map(k, opts)) }
@@ -361,7 +361,7 @@ handle {
 ```js
 effect Div(a: int, b: int): int;
 handle {
-  let r = perform Div(10, 0);
+  let r = Div!(10, 0);
   [r]
 } case Div(a, b) => k {
   if (b == 0) { ["div by zero"] } else { k(a / b) }
@@ -375,9 +375,9 @@ handle {
 effect Log(msg: int): unit;
 effect Result(v: int): unit;
 handle {
-  perform Log(1);
-  perform Log(2);
-  perform Result(42)
+  Log!(1);
+  Log!(2);
+  Result!(42)
 } case Log(msg) => k { concat([msg], k(unit)) }
   case Result(v) => k { [v] }
 // [1, 2, 42]
@@ -389,7 +389,7 @@ handle {
 effect Emit(m: string): unit;
 effect Other(m: string): unit;
 handle {
-  handle { perform Emit("hi") } case Other(m) => k { ["should-not-match"] }
+  handle { Emit!("hi") } case Other(m) => k { ["should-not-match"] }
 } case Emit(m) => k { [m] }
 // ["hi"]
 ```
@@ -408,7 +408,7 @@ fact(5)
 
 ```js
 effect Emit(m: int): int;
-fn ask(n: int): int ! { Emit } { perform Emit(n) }
+fn ask(n: int): int ! { Emit } { Emit!(n) }
 ask
 // typeOf → "(int) -> int ! { Emit }"
 ```
@@ -417,15 +417,15 @@ ask
 
 ```js
 // Write then read; with no user handler, the runtime performs real I/O.
-perform Write("hello.txt", "hello ef");
-perform Read("hello.txt")
+Write!("hello.txt", "hello ef");
+Read!("hello.txt")
 // → "hello ef"
 ```
 
 ```js
 // A user handler can intercept Read to mock the filesystem.
 handle {
-  perform Read("anything")
+  Read!("anything")
 } case Return(v) => k { [v] }
   case Read(path) => k { ["mocked"] }
 // → ["mocked"]
@@ -440,7 +440,7 @@ ef run <file> [args...]   # typecheck then evaluate; extra args reach `args()`
 ef repl                   # interactive REPL; bindings persist across lines
 ```
 
-The result of the last expression is printed via `show` unless the program calls `perform Exit(...)` itself. Programs that loop forever (animations) run until killed.
+The result of the last expression is printed via `show` unless the program calls `Exit!(...)` itself. Programs that loop forever (animations) run until killed.
 
 The REPL parses each line as a complete program; `let`/`fn`/`effect` bindings accumulate across lines (both the runtime env and the type env persist). A bare expression prints both value and inferred type, e.g. `1 + 2` → `3 : int`.
 Type `:q` to quit.

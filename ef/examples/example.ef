@@ -1,7 +1,7 @@
 effect Choose(opts: [int]): int;            // Choose yields an int
 handle {
-  let x = perform Choose([1, 2, 3]);        // pause, ask the handler
-  let y = perform Choose([10, 20]);
+  let x = Choose!([1, 2, 3]);        // pause, ask the handler
+  let y = Choose!([10, 20]);
   [x, y]
 } case Return(v) => k { [v] }               // what to do with the final value
   case Choose(opts) => k { flat(map(k, opts)) }  // try every option, resume each

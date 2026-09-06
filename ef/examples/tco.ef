@@ -16,4 +16,4 @@ fn testTCO(n: int): int {
   if (n <= 0) { 0 } else { testTCO(n - 1) }
 }
 
-perform Println(testTCO(DEPTH));
+Println!(testTCO(DEPTH));
