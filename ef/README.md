@@ -15,14 +15,14 @@ bunx tsc --noEmit     # host typecheck (stays clean)
 A taste:
 
 ```js
-effect Choose(opts: [int]): int;            // Choose yields an int
+effect Choose(opts: [int]): int;            # Choose yields an int
 handle {
-  let x = Choose!([1, 2, 3]);        // pause, ask the handler
+  let x = Choose!([1, 2, 3]);        # pause, ask the handler
   let y = Choose!([10, 20]);
   [x, y]
-} case Return(v) => k { [v] }               // what to do with the final value
-  case Choose(opts) => k { flat(map(k, opts)) }  // try every option, resume each
-// → [[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]
+} case Return(v) => k { [v] }               # what to do with the final value
+  case Choose(opts) => k { flat(map(k, opts)) }  # try every option, resume each
+# → [[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]
 ```
 
 The handler calls `k` once per option, so the computation branches into all paths — nondeterminism built from ordinary multi-shot resumption.
@@ -60,7 +60,7 @@ The handler calls `k` once per option, so the computation branches into all path
 ## 1. Lexical structure
 
 - **Whitespace** (space, tab, CR, LF) is insignificant.
-- **Line comments** with `//` run to end of line.
+- **Line comments** with `#` run to end of line.
 - **String literals** are `"..."` with `\` escapes: `\n \t \r \" \\ \xHH` (byte),
   `\uHHHH` (code point). Unknown `\c` yields `c`.
 - **Number literals** are non-negative integer/decimal digit runs (e.g. `42`,
@@ -121,7 +121,7 @@ primary  ::= num | str | "true" | "false" | "unit"
 array    ::= "[" (expr ("," expr)*)? "]"
 lambda   ::= "fn" params block
 if       ::= "if" "(" expr ")" block ("else" (if | block))?
-perform  ::= name "!" "(" args ")"        // `Op!(args)`
+perform  ::= name "!" "(" args ")"        # `Op!(args)`
 handle   ::= "handle" block case+
 case     ::= "case" name params "=>" name block
 args     ::= "(" (expr ("," expr)*)? ")"
@@ -367,14 +367,14 @@ These are pre-declared like user effects and invoked with the `!` postfix. With 
 | `Random`  | `(): float`                | Resume with a random number in [0, 1) (`Math.random()`). |
 
 ```js
-// Println is an ordinary effect: a handler can capture it instead of printing.
+# Println is an ordinary effect: a handler can capture it instead of printing.
 handle {
   Println!(42);
   Println!("hi");
   0
 } case Return(v) => k { [v] }
   case Println(x) => k { concat([x], k(unit)) }
-// [42, "hi", 0]
+# [42, "hi", 0]
 ```
 
 ## 5. Semantics
@@ -409,7 +409,7 @@ handle {
   [x, y]
 } case Return(v) => k { [v] }
   case Choose(opts) => k { flat(map(k, opts)) }
-// [[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]
+# [[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]
 ```
 
 ### Tuples, aliases, and field access
@@ -419,7 +419,7 @@ type Point(a) = [x: a, y: a];
 let p: Point[float] = [1.0, 2.0];
 let [x, y] = p;
 [x, p.x + p.y]
-// [1, 3]
+# [1, 3]
 ```
 
 `type Point(a) = [x: a, y: a];` declares a parametric alias; `Point[float]`
@@ -436,7 +436,7 @@ handle {
 } case Div(a, b) => k {
   if (b == 0) { ["div by zero"] } else { k(a / b) }
 }
-// ["div by zero"]
+# ["div by zero"]
 ```
 
 ### Threading a log across resumes
@@ -450,7 +450,7 @@ handle {
   Result!(42)
 } case Log(msg) => k { concat([msg], k(unit)) }
   case Result(v) => k { [v] }
-// [1, 2, 42]
+# [1, 2, 42]
 ```
 
 ### Effect propagation through nested handlers
@@ -461,7 +461,7 @@ effect Other(m: string): unit;
 handle {
   handle { Emit!("hi") } case Other(m) => k { ["should-not-match"] }
 } case Emit(m) => k { [m] }
-// ["hi"]
+# ["hi"]
 ```
 
 ### Recursion with a typed signature
@@ -471,7 +471,7 @@ let fact = fn(n: int): int {
   if (n == 0) { 1 } else { n * fact(n - 1) }
 };
 fact(5)
-// 120
+# 120
 ```
 
 ### Short-circuit and an effectful signature
@@ -480,25 +480,25 @@ fact(5)
 effect Emit(m: int): int;
 let ask = fn(n: int): int ! { Emit } { Emit!(n) };
 ask
-// typeOf → "(int) -> int ! { Emit }"
+# typeOf → "(int) -> int ! { Emit }"
 ```
 
 ### Builtin effects (default handler does real I/O)
 
 ```js
-// Write then read; with no user handler, the runtime performs real I/O.
+# Write then read; with no user handler, the runtime performs real I/O.
 Write!("hello.txt", "hello ef");
 Read!("hello.txt")
-// → "hello ef"
+# → "hello ef"
 ```
 
 ```js
-// A user handler can intercept Read to mock the filesystem.
+# A user handler can intercept Read to mock the filesystem.
 handle {
   Read!("anything")
 } case Return(v) => k { [v] }
   case Read(path) => k { ["mocked"] }
-// → ["mocked"]
+# → ["mocked"]
 ```
 
 ## 8. CLI

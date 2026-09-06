@@ -1,17 +1,17 @@
-// Recursion limit probe.
-//
-// ef's evaluator is CPS and every continuation call is in tail position, so
-// the JS engine's tail-call optimization (Bun/JSC) keeps the stack O(1) for
-// BOTH tail and non-tail recursion — neither overflows the stack. The cost of
-// a *non-tail* call is heap allocation: each step builds a continuation
-// closure, so depth N costs O(N) time and memory (~7ms / 1k calls), not stack.
-// A *tail* call reuses the continuation and is allocation-free, so it runs at
-// full speed to any depth. Crank DEPTH to see the contrast: tail stays fast,
-// non-tail slows linearly on allocation/GC but does not crash.
+# Recursion limit probe.
+#
+# ef's evaluator is CPS and every continuation call is in tail position, so
+# the JS engine's tail-call optimization (Bun/JSC) keeps the stack O(1) for
+# BOTH tail and non-tail recursion — neither overflows the stack. The cost of
+# a *non-tail* call is heap allocation: each step builds a continuation
+# closure, so depth N costs O(N) time and memory (~7ms / 1k calls), not stack.
+# A *tail* call reuses the continuation and is allocation-free, so it runs at
+# full speed to any depth. Crank DEPTH to see the contrast: tail stays fast,
+# non-tail slows linearly on allocation/GC but does not crash.
 
 let DEPTH = 100 * 1000 * 1000;
 
-// Tail-recursive: the recursive call is the whole body. No stack growth.
+# Tail-recursive: the recursive call is the whole body. No stack growth.
 let testTCO = fn(n: int): int {
   if (n <= 0) { 0 } else { testTCO(n - 1) }
 };

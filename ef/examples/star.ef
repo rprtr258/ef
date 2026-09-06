@@ -1,11 +1,11 @@
-// Port of ink/samples/star.ink to ef.
-// Renders a rotating 3D star polygon to the terminal with ANSI cursor control.
-//
-//   ef run examples/star.ef <num_of_vertices> <draw_step>
-//   <draw_step> must be in range (0 .. <num_of_vertices> / 2)
-//
-// Records are represented as homogeneous arrays: a Point is [x, y, z] : [float],
-// a matrix is [[float]]. The grid is a mutable [[string]] indexed via get/set.
+# Port of ink/samples/star.ink to ef.
+# Renders a rotating 3D star polygon to the terminal with ANSI cursor control.
+#
+#   ef run examples/star.ef <num_of_vertices> <draw_step>
+#   <draw_step> must be in range (0 .. <num_of_vertices> / 2)
+#
+# Records are represented as homogeneous arrays: a Point is [x, y, z] : [float],
+# a matrix is [[float]]. The grid is a mutable [[string]] indexed via get/set.
 
 let GRID_SIZE = 50;
 let radius = 20;
@@ -65,7 +65,7 @@ let printGrid = fn(): unit {
   }, range(radius, 0 - radius - 1, 0 - 1))
 };
 
-// --- 3x3 matrix * point ---
+# --- 3x3 matrix * point ---
 let apply = fn(p: V3, m: M3x3): V3 {
   let x = p.0 * m.0.0 + p.1 * m.0.1 + p.2 * m.0.2;
   let y = p.0 * m.1.0 + p.1 * m.1.1 + p.2 * m.1.2;
@@ -122,5 +122,5 @@ while (true) {
   printGrid();
   clear();
   each(fn(_, _) { Out!("\x1B[1A") }, range(0, radius * 2 + 1, 1));
-  // Wait!(0.001)
+  # Wait!(0.001)
 }

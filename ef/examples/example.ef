@@ -1,8 +1,8 @@
-effect Choose(opts: [int]): int;            // Choose yields an int
+effect Choose(opts: [int]): int;            # Choose yields an int
 handle {
-  let x = Choose!([1, 2, 3]);        // pause, ask the handler
+  let x = Choose!([1, 2, 3]);        # pause, ask the handler
   let y = Choose!([10, 20]);
   [x, y]
-} case Return(v) => k { [v] }               // what to do with the final value
-  case Choose(opts) => k { flat(map(k, opts)) }  // try every option, resume each
-// → [[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]
+} case Return(v) => k { [v] }               # what to do with the final value
+  case Choose(opts) => k { flat(map(k, opts)) }  # try every option, resume each
+# → [[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]

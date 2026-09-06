@@ -215,7 +215,7 @@ function lex(src: string): Tok[] {
       i++;
       continue;
     }
-    if (c === "/" && src[i + 1] === "/") {
+    if (c === "#") {
       while (i < src.length && src[i] !== "\n") i++;
       continue;
     }
