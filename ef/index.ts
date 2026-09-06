@@ -917,6 +917,8 @@ function checkProgram(
   // Both are effects so a handler can intercept them.
   effects.set("Exit", { params: [TINT], ret: TNULL });
   effects.set("Wait", { params: [TINT], ret: TNULL });
+  // `Random(): float` resumes with a random number in [0, 1).
+  effects.set("Random", { params: [], ret: TFLOAT });
   env = new TEnv(null);
   env.vars.set("not", tFun([TBOOL], TBOOL, new Set()));
   env.vars.set("list", tFun([TANY], tArr(TANY), new Set()));
@@ -1098,6 +1100,7 @@ function runTop(out: Outcome): Value {
       out = out.k(null);
       continue;
     }
+    if (out.op === "Random") { out = out.k(Math.random()); continue; }
     throw new Error("Unhandled effect: " + out.op);
   }
 }

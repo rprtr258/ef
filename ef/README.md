@@ -309,6 +309,7 @@ These are pre-declared like user effects and invoked with the `!` postfix. With 
 | `Out`     | `(s: string): unit`        | `process.stdout.write(s)` — raw string, no newline. |
 | `Exit`    | `(code: int): unit`        | `process.exit(code)` — terminates without resuming. |
 | `Wait`    | `(secs: int): unit`        | Busy-wait `secs` seconds then resume with unit (synchronous evaluator). |
+| `Random`  | `(): float`                | Resume with a random number in [0, 1) (`Math.random()`). |
 
 ```js
 // Println is an ordinary effect: a handler can capture it instead of printing.
