@@ -12,7 +12,7 @@
 let DEPTH = 100 * 1000 * 1000;
 
 // Tail-recursive: the recursive call is the whole body. No stack growth.
-letrec testTCO = fn(n: int): int {
+let testTCO = fn(n: int): int {
   if (n <= 0) { 0 } else { testTCO(n - 1) }
 };
 

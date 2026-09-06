@@ -145,7 +145,6 @@ type Expr =
   | { t: "sym"; v: string }
   | { t: "lambda"; params: Param[]; retTyp: Type | null; retEffs: Set<string> | null; body: Expr; typ?: FunT }
   | { t: "let"; name: string; typ: Type | null; val: Expr }
-  | { t: "letrec"; name: string; typ: Type | null; val: Expr }
   | { t: "if"; c: Expr; a: Expr; b: Expr }
   | { t: "while"; c: Expr; body: Expr }
   | { t: "assign"; name: string; val: Expr }
@@ -169,7 +168,7 @@ type Item = { e: Expr } | { effect: string; sig: EffectSig };
 // --- Lexer ---
 
 const KEYWORDS = new Set([
-  "let", "letrec", "fn", "if", "else", "while", "handle", "case",
+  "let", "fn", "if", "else", "while", "handle", "case",
   "true", "false", "unit", "effect",
 ]);
 const TWO = ["==", "!=", "<=", ">=", "&&", "||", "=>"];
@@ -325,14 +324,6 @@ class Parser {
       const val = this.parseExpr();
       this.eat(";");
       e = { t: "let", name, typ, val };
-    } else if (this.isKw("letrec")) {
-      this.next();
-      const name = this.next();
-      const typ = this.is(":") ? (this.next(), this.parseType()) : null;
-      this.eat("=");
-      const val = this.parseExpr();
-      this.eat(";");
-      e = { t: "letrec", name, typ, val };
     } else if (!KEYWORDS.has(this.peek() ?? "") && this.peek(1) === "=") {
       const name = this.next();
       this.next(); // =
@@ -752,7 +743,7 @@ function copyEff(e: Effs, em: Map<number, Effs>): Effs {
 // HM let-generalization: abstract the type/effect vars of `t` that are not
 // free in the environment. Returns a concrete `Type` (nothing to generalize)
 // or a `Scheme` thunk that instantiates fresh copies per use. Builtins are
-// already stored as such thunks; user `let`/`letrec` now get the same treatment.
+// already stored as such thunks; user `let` now gets the same treatment.
 function generalize(env: TEnv, t: Type): Type | Scheme {
   const envTvs = new Set<number>();
   const envEvs = new Set<number>();
@@ -876,18 +867,8 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
       return ft;
     }
     case "let": {
-      const vt = infer(e.val, env, effs, effects);
-      if (e.typ) { unify(e.typ, vt); env.vars.set(e.name, e.typ); }
-      else {
-        // Value restriction: generalize only lambda values (literals carry no
-        // type vars; array literals desugar to `list(...)` calls = non-values).
-        // This keeps mutable-array/assign soundness (no `let x = []` : [a]).
-        env.vars.set(e.name, e.val.t === "lambda" ? generalize(env, vt) : res(vt));
-        if (containsAny(vt)) warnInferredAny(e.name, vt);
-      }
-      return TNULL;
-    }
-    case "letrec": {
+      // Recursive binding: the name is in scope in its own value, so
+      // `let f = fn(...){...}` can call itself.
       const declared = e.typ ?? freshVar();
       env.vars.set(e.name, declared);
       const vt = infer(e.val, env, effs, effects);
@@ -896,6 +877,9 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
       // Exclude the self-binding from the free-var context before
       // generalizing (otherwise its own vars read as free-in-env → no-op).
       env.vars.delete(e.name);
+      // Value restriction: generalize only lambda values (literals carry no
+      // type vars; array literals desugar to `list(...)` calls = non-values).
+      // This keeps mutable-array/assign soundness (no `let x = []` : [a]).
       env.vars.set(e.name, e.typ ? rt : (e.val.t === "lambda" ? generalize(env, rt) : rt));
       if (!e.typ && containsAny(rt)) warnInferredAny(e.name, rt);
       return TNULL;
@@ -1119,11 +1103,6 @@ function evalE(e: Expr, env: Env, k: Cont): Outcome {
     case "lambda":
       return k({ tag: "fn", params: e.params.map(p => p.name), body: e.body, env, typ: e.typ });
     case "let":
-      return evalE(e.val, env, (v) => {
-        env.vars.set(e.name, v);
-        return k(null);
-      });
-    case "letrec":
       env.vars.set(e.name, null);
       return evalE(e.val, env, (v) => {
         env.vars.set(e.name, v);
@@ -1380,13 +1359,13 @@ export function typeOf(src: string): string {
   return showT(res(checkProgram(items).lastType));
 }
 
-// types: typecheck a source file and print every top-level symbol (let / letrec)
+// types: typecheck a source file and print every top-level symbol (let)
 // along with its inferred type, one per line as `name : type`.
 export function types(src: string): {name: string, type: Type}[] {
   const items = new Parser(src).parseProgram();
   const {env} = checkProgram(items);
   const names: string[] = items
-    .filter((it): it is {e: Expr & {t: "let" | "letrec"}} => "e" in it && (it.e.t === "let" || it.e.t === "letrec"))
+    .filter((it): it is {e: Expr & {t: "let"}} => "e" in it && it.e.t === "let")
     .map(it => it.e.name);
   return names.map(n => {
     const t = tlookup(env, n);
@@ -1407,7 +1386,7 @@ export function lint(src: string): LintIssue[] {
 }
 
 // unused-arg: a function parameter never referenced in the body (scope-aware:
-// inner lambda params, let/letrec bindings, and handler-case params/resume
+// inner lambda params, let bindings, and handler-case params/resume
 // shadow the outer name and don't count as a use).
 function lintUnusedArgs(items: Item[]): LintIssue[] {
   const issues: LintIssue[] = [];
@@ -1429,7 +1408,7 @@ function lintUnusedArgs(items: Item[]): LintIssue[] {
 }
 
 // Visit every lambda in an expression. `fname` is the name of the enclosing
-// binding when the lambda is the value of a `let`/`letrec`, else null.
+// binding when the lambda is the value of a `let`, else null.
 function* visitLambdas(
   e: Expr,
   fname: string | null,
@@ -1439,7 +1418,7 @@ function* visitLambdas(
     yield [e, fname];
     yield* visitLambdas(e.body, null);
     return;
-  case "let": case "letrec":
+  case "let":
     yield* visitLambdas(e.val, e.val.t === "lambda" ? e.name : null);
     return;
   case "assign":
@@ -1476,7 +1455,7 @@ function* visitLambdas(
 }
 
 // Which of `watch` names are referenced (free) in `e`, accounting for shadowing
-// by inner binders. `let`/`letrec` names bind only for following block siblings.
+// by inner binders. `let` names bind only for following block siblings.
 function freeUses(e: Expr, watch: Set<string>): Set<string> {
   const out = new Set<string>();
   const go = (e: Expr, w: Set<string>): void => {
@@ -1489,8 +1468,7 @@ function freeUses(e: Expr, watch: Set<string>): Set<string> {
       go(e.body, w2);
       return;
     }
-    case "let": go(e.val, w); return;
-    case "letrec": { const w2 = new Set(w); w2.add(e.name); go(e.val, w2); return; }
+    case "let": { const w2 = new Set(w); w2.add(e.name); go(e.val, w2); return; }
     case "assign": go(e.val, w); return;
     case "if": go(e.c, w); go(e.a, w); go(e.b, w); return;
     case "while": go(e.c, w); go(e.body, w); return;
@@ -1509,7 +1487,7 @@ function freeUses(e: Expr, watch: Set<string>): Set<string> {
       const w2 = new Set(w);
       for (const s of e.stmts) {
         go(s, w2);
-        if (s.t === "let" || s.t === "letrec") w2.delete(s.name);
+        if (s.t === "let") w2.delete(s.name);
       }
       return;
     }
@@ -1520,7 +1498,7 @@ function freeUses(e: Expr, watch: Set<string>): Set<string> {
 }
 
 // repl: an interactive read-eval-print loop. State (runtime env + type env +
-// effect signatures) persists across lines, so `let`/`letrec`/`effect` bindings
+// effect signatures) persists across lines, so `let`/`effect` bindings
 // accumulate. Each line is parsed and evaluated as a complete program; ef is
 // newline-insensitive so multi-statement blocks fit on one line. Echoes the
 // value and inferred type of a bare expression; declarations print nothing.
@@ -1534,7 +1512,7 @@ export function repl(): void {
     let last: Value = null;
     for (const it of items) if ("e" in it) last = runTop(evalE(it.e, g, (v) => ({ tag: "done", value: v })));
     const tail = items[items.length - 1];
-    const isExpr = tail && "e" in tail && (tail as { e: Expr }).e.t !== "let" && (tail as { e: Expr }).e.t !== "letrec";
+    const isExpr = tail && "e" in tail && (tail as { e: Expr }).e.t !== "let";
     if (isExpr && last !== null) console.log(show(last) + " : " + showT(res(lastType)));
   };
   console.log("ef REPL — type :q to quit");

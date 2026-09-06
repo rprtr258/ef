@@ -55,7 +55,7 @@ handle {
 
 test("Typed recursive function with annotation", () => {
 expect(show(run(`
-letrec fact = fn(n: int): int {
+let fact = fn(n: int): int {
   if (n == 0) { 1 } else { n * fact(n - 1) }
 };
 fact(5)

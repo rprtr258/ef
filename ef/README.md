@@ -65,7 +65,7 @@ The handler calls `k` once per option, so the computation branches into all path
   `3.14`). A literal containing a `.` is typed `float`; otherwise `int`.
   Unary minus is parsed as the unary `-` operator in `parseUnary`.
 - **Identifiers** start with a letter or `_`, continue with letters/digits/`_`.
-- **Keywords:** `let letrec fn if else while handle case true false unit effect`.
+- **Keywords:** `let fn if else while handle case true false unit effect`.
 - **Two-char tokens:** `== != <= >= && || =>`.
 - **One-char tokens:** `( ) [ ] { } , ; < > + - * / ! = : %`.
 - `->` is lexed as two tokens `-` `>` and reassembled by the type parser.
@@ -81,7 +81,7 @@ an effect declaration:
 program ::= item*
 item    ::= effect-decl | stmt
 effect-decl ::= "effect" name params ":" type ";"
-stmt    ::= let | letrec | expr (";" | blocky)
+stmt    ::= let | expr (";" | blocky)
 ```
 
 The value of a program is the value of its last expression statement.
@@ -90,15 +90,13 @@ The value of a program is the value of its last expression statement.
 
 ```
 let       ::= "let" name (":" type)? "=" expr ";"
-letrec    ::= "letrec" name (":" type)? "=" expr ";"
 params    ::= "(" (name (":" type)? ("," name (":" type)?)* )? ")"
 eff-annot ::= "!" "{" name ("," name)* "}"
 block     ::= "{" stmt* "}"
 ```
 
-- `let` binds non-recursively; `letrec` binds recursively (the name is in scope
-  in its own value). Functions are defined as `let f = fn(...) { ... }` (or
-  `letrec f = fn(...) { ... }` for recursion).
+- `let` binds recursively: the name is in scope in its own value, so
+  `let f = fn(...) { ... }` can call itself.
 - Lambdas `fn (p: T): R ! { Effs } { body }` may carry optional `: R` and
   `! { Effs }` annotations; the checker verifies the body's performed effects
   ⊆ the declared set (or derives the set when `! { ... }` is omitted).
@@ -191,7 +189,7 @@ type  ::= "[" type "]"
   its **effect set**: the effects the function may perform. Empty/omitted =
   pure.
 - `any` — absorbing type. Unifies with anything and stays `any`. Because `any`
-  is an escape hatch, the checker **warns** when a `let`/`letrec` binding's
+  is an escape hatch, the checker **warns** when a `let` binding's
   *inferred* type contains `any` (e.g. `let f = list` infers `(any) -> [any]`);
   writing an explicit annotation (`let f: (any) -> [any] = list`) silences the
   warning. Array literals like `[1,2,3]` are special-cased to `[int]` and do
@@ -239,7 +237,7 @@ type  ::= "[" type "]"
 
 ### 3.4 Polymorphism
 
-- User `let`/`letrec` bindings of a **lambda value** are **generalized** (HM
+- User `let` bindings of a **lambda value** are **generalized** (HM
   let-generalization, value-restricted): type/effect variables not free in the
   surrounding environment are abstracted, and each use instantiates fresh
   copies. So `let apply = fn (f, x) { f(x) }` gets `apply : ((a) -> b ! e, a) -> b ! e`
@@ -409,7 +407,7 @@ handle {
 ### Recursion with a typed signature
 
 ```js
-letrec fact = fn(n: int): int {
+let fact = fn(n: int): int {
   if (n == 0) { 1 } else { n * fact(n - 1) }
 };
 fact(5)
@@ -458,9 +456,9 @@ The result of the last expression is printed via `show` unless the program calls
 
 `ef lint <file>` runs a sequence of lint passes over the parsed program and prints each finding as `rule: message`. The current passes are:
 
-- `unused-arg` — a function parameter never referenced in the body. Scope-aware: a name shadowed by an inner lambda parameter or a `let`/`letrec` binding (or a handler-case parameter / `resume`) does not count as a use of the outer argument. Named functions (`let`/`letrec` of a `fn`) are reported as `function \`name\``; bare lambdas as `anonymous function`.
+- `unused-arg` — a function parameter never referenced in the body. Scope-aware: a name shadowed by an inner lambda parameter or a `let` binding (or a handler-case parameter / `resume`) does not count as a use of the outer argument. Named functions (`let` of a `fn`) are reported as `function \`name\``; bare lambdas as `anonymous function`.
 
-The REPL parses each line as a complete program; `let`/`letrec`/`effect` bindings accumulate across lines (both the runtime env and the type env persist). A bare expression prints both value and inferred type, e.g. `1 + 2` → `3 : int`.
+The REPL parses each line as a complete program; `let`/`effect` bindings accumulate across lines (both the runtime env and the type env persist). A bare expression prints both value and inferred type, e.g. `1 + 2` → `3 : int`.
 Type `:q` to quit.
 
 ## 9. Examples on disk

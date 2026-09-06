@@ -71,7 +71,7 @@ typing rules.
   `! { ... }` annotation listing a superset must be present (pure bodies may
   omit it). The declared set must cover what the body performs; it becomes the
   function type's effect set, shown as `(T) -> R ! { Effs }`. Functions are
-  defined via `let`/`letrec` + an anonymous lambda; the lambda carries the same
+  defined via `let` + an anonymous lambda; the lambda carries the same
   `: R` and `! { Effs }` annotations.
 - **No-Return handle rule.** When the handled body has effects, the result
   type `R` is NOT unified with the body type (handlers transform results).
