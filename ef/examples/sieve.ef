@@ -1,0 +1,27 @@
+// Sieve of Eratosthenes up to `max`, port of examples/sieve.ml.
+// ef has no mutable Array.make; build a bool array with range + map,
+// then sieve with set/get and print the primes.
+
+let max = 100;
+
+let prime = map(fn(_) { true }, range(0, max + 1, 1));
+set(prime, 0, false);
+set(prime, 1, false);
+
+let limit = round(sqrt(max));
+
+each(fn(n, _) {
+  if (get(prime, n)) {
+    let m = n * n;
+    while (m <= max) {
+      set(prime, m, false);
+      m = m + n;
+    }
+  };
+}, range(2, limit, 1));
+
+each(fn(n, _) {
+  if (get(prime, n)) {
+    Println!(n);
+  };
+}, range(2, max + 1, 1));

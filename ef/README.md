@@ -298,6 +298,7 @@ process control is via the `Exit`/`Wait` effects (§4.4), not functions.
 | `sin`     | `(float) -> float`              | Sine (radians). |
 | `abs`     | `(float) -> float`              | Absolute value. |
 | `round`   | `(float) -> int`                | Round to nearest int. |
+| `sqrt`   | `(float) -> float`              | Square root. |
 | `range`   | `(int, int, int) -> [int]`      | `range(start, end, step)`: half-open; `step` may be negative. |
 | `char`    | `(int) -> string`               | Code point → single-char string. |
 | `number`  | `(string) -> float`             | Parse a string to a number. |

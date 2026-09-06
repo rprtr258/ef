@@ -1066,6 +1066,7 @@ function checkProgram(
   env.vars.set("sin", tFun([TFLOAT], TFLOAT, new Set()));
   env.vars.set("abs", tFun([TFLOAT], TFLOAT, new Set()));
   env.vars.set("round", tFun([TFLOAT], TINT, new Set()));
+  env.vars.set("sqrt", tFun([TFLOAT], TFLOAT, new Set()));
   env.vars.set("range", tFun([TINT, TINT, TINT], tArr(TINT), new Set()));
   env.vars.set("char", tFun([TINT], TSTR, new Set()));
   env.vars.set("number", tFun([TSTR], TFLOAT, new Set()));
@@ -1284,6 +1285,7 @@ function globalEnv(): Env {
   g.vars.set("sin", lift((a) => Math.sin(num(a))));
   g.vars.set("abs", lift((a) => Math.abs(num(a))));
   g.vars.set("round", lift((a) => Math.round(num(a))));
+  g.vars.set("sqrt", lift((a) => Math.sqrt(num(a))));
   g.vars.set("char", lift((a) => String.fromCodePoint(num(a) | 0)));
   g.vars.set("number", lift((a) => parseFloat(a as string)));
   g.vars.set("args", lift(() => process.argv.slice(2) as Value[]));
