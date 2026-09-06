@@ -352,6 +352,21 @@ test("effect annotations are optional and derived if missing", () => {
   expect(() => run(`fn p(): unit ! { } { Out!("x") }\np`)).toThrow(/not declared in signature/);
 });
 
+test("higher-order builtins are effect-polymorphic", () => {
+  // Pure callback: the map call performs no effects.
+  expect(typeOf(`fn usePure(): [int] { map(fn(x: int): int { x + 1 }, [1, 2, 3]) }
+usePure`)).toBe("() -> [int]");
+  // Effectful callback: exactly { Out } propagates, not over-approximated.
+  expect(typeOf(`fn useEffectful(): [int] { map(fn(x: int): int { Out!("x"); x }, [1, 2, 3]) }
+useEffectful`)).toBe("() -> [int] ! { Out }");
+  // each with an effectful body callback propagates too.
+  expect(typeOf(`fn eachOut(): unit { each(fn(x: int, _: int) { Out!("x") }, [1, 2, 3]) }
+eachOut`)).toBe("() -> unit ! { Out }");
+  // Pure each stays pure.
+  expect(typeOf(`fn eachPure(): unit { each(fn(x: int, _: int) { unit }, [1, 2, 3]) }
+eachPure`)).toBe("() -> unit");
+});
+
 test("show prints function arity and type, natives stay [fn]", () => {
   expect(show(run(`fn add(a: int, b: int): int { a + b }\nadd`))).toBe("[fn: (int, int) -> int]");
   expect(show(run(`fn id(x: int): int { x }\nid`))).toBe("[fn: (int) -> int]");

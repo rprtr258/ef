@@ -67,7 +67,14 @@ type Cont = (v: Value) => Outcome;
 type Type = Prim | ArrT | FunT | Var | AnyT;
 type Prim = { tag: "prim"; name: "int" | "float" | "string" | "bool" | "unit" };
 type ArrT = { tag: "arr"; elem: Type };
-type FunT = { tag: "fun"; params: Type[]; ret: Type; effs: Set<string> };
+// Effect rows: a concrete `Set<string>` of performed effects, or an
+// unbound effect variable (row polymorphism). Effect variables unify by
+// union-find; a variable unifies with a concrete set by binding to it; two
+// concrete sets unify by equality. This lets higher-order builtins be
+// effect-polymorphic: `map : ((a) -> b ! e, [a]) -> [b] ! e` for a fresh `e`.
+type EffVar = { tag: "effvar"; id: number };
+type Effs = Set<string> | EffVar;
+type FunT = { tag: "fun"; params: Type[]; ret: Type; effs: Effs };
 type Var = { tag: "var"; id: number };
 type AnyT = { tag: "any" };
 
@@ -79,11 +86,11 @@ const TNULL: Prim = { tag: "prim", name: "unit" };
 const TANY: AnyT = { tag: "any" };
 
 function tArr(elem: Type): ArrT { return { tag: "arr", elem }; }
-function tFun(params: Type[], ret: Type, effs: Set<string>): FunT {
+function tFun(params: Type[], ret: Type, effs: Effs): FunT {
   return { tag: "fun", params, ret, effs };
 }
 
-function showT(t: Type): string {
+export function showT(t: Type): string {
   switch (t.tag) {
     case "prim": return t.name;
     case "arr": return "[" + showT(t.elem) + "]";
@@ -94,7 +101,10 @@ function showT(t: Type): string {
     }
     case "fun": {
       const ps = t.params.map(showT).join(", ");
-      const e = t.effs.size ? " ! { " + [...t.effs].join(", ") + " }" : "";
+      const er = resEff(t.effs);
+      const e = er instanceof Set
+        ? (er.size ? " ! { " + [...er].join(", ") + " }" : "")
+        : " ! { e" + er.id + " }";
       return "(" + ps + ") -> " + showT(t.ret) + e;
     }
   }
@@ -582,6 +592,57 @@ const uni = new Uni();
 function freshVar(): Var { return uni.fresh(); }
 const binds = new Map<number, Type>();
 
+// --- Effect variables (row polymorphism) ---
+// Separate union-find from type variables: effect rows resolve to `Set<string>`
+// (or stay unbound variables), not to `Type`s.
+let effCounter = 0;
+const effParent = new Map<number, number>();
+const effBinds = new Map<number, Set<string>>();
+function freshEff(): EffVar {
+  const id = effCounter++;
+  effParent.set(id, id);
+  return { tag: "effvar", id };
+}
+function effFind(id: number): number {
+  let r = id;
+  while (effParent.get(r) !== r) r = effParent.get(r)!;
+  let c = id;
+  while (effParent.get(c) !== r) {
+    const nx = effParent.get(c)!;
+    effParent.set(c, r);
+    c = nx;
+  }
+  return r;
+}
+// Resolve an effect row: follow the union-find; if bound, return the concrete
+// set (and further resolve any set-of... sets are always ground). Unbound →
+// the canonical variable.
+function resEff(e: Effs): Effs {
+  if (e instanceof Set) return e;
+  const r = effFind(e.id);
+  const b = effBinds.get(r);
+  return b ?? { tag: "effvar", id: r };
+}
+// Unify two effect rows. var+var union; var+set binds; set+set requires
+// equality — except the empty set `∅` is the polymorphic bottom: a function
+// typed `... ! ∅` performs no effects and may be used wherever *any* effect
+// set is expected (it is refined to the other set). This keeps unannotated
+// HOF parameters flexible without let-generalization.
+function unifyEff(a: Effs, b: Effs): void {
+  const ra = resEff(a), rb = resEff(b);
+  if (!(ra instanceof Set) && !(rb instanceof Set)) {
+    effParent.set(effFind(ra.id), effFind(rb.id));
+    return;
+  }
+  if (!(ra instanceof Set)) { effBinds.set(effFind(ra.id), rb as Set<string>); return; }
+  if (!(rb instanceof Set)) { effBinds.set(effFind(rb.id), ra as Set<string>); return; }
+  if (ra.size === 0) return; // ∅ unifies with anything (refine to rb)
+  if (rb.size === 0) return;
+  if (ra.size !== rb.size || ![...ra].every(op => rb.has(op)))
+    throw new TypeError_(
+      `effect mismatch: { ${[...ra].join(", ")} } ≠ { ${[...rb].join(", ")} }`);
+}
+
 function occurs(id: number, t: Type): boolean {
   switch (t.tag) {
     case "var": return uni.find(t.id) === id;
@@ -636,6 +697,7 @@ function unify(a: Type, b: Type): void {
       throw new TypeError_(`arity ${ra.params.length} ≠ ${rb.params.length}`);
     for (let i = 0; i < ra.params.length; i++) unify(ra.params[i]!, rb.params[i]!);
     unify(ra.ret, rb.ret);
+    unifyEff(ra.effs, rb.effs);
     return;
   }
   throw typeMismatch(ra, rb);
@@ -876,7 +938,12 @@ function infer(e: Expr, env: TEnv, effs: Set<string>, effects: Map<string, Effec
           throw new TypeError_(`arity ${fr.params.length} ≠ ${argTs.length}`);
         for (let i = 0; i < argTs.length; i++) unify(fr.params[i]!, argTs[i]!);
         unify(fr.ret, ret);
-        for (const op of fr.effs) effs.add(op);
+        // The callee's effect row is unified with each callback argument's
+        // effect row via the param unification above (polymorphic builtins
+        // share one effect variable between the callback and the result).
+        // Whatever the callee's row resolves to now is what the call performs.
+        const er = resEff(fr.effs);
+        if (er instanceof Set) for (const op of er) effs.add(op);
         return res(ret);
       }
       if (fr.tag === "any") return TANY;
@@ -928,8 +995,8 @@ function checkProgram(
   env.vars.set("len", () => { const a = freshVar(); return tFun([tArr(a)], TINT, new Set()); });
   env.vars.set("strlen", tFun([TSTR], TINT, new Set()));
   env.vars.set("map", () => {
-    const a = freshVar(), b = freshVar();
-    return tFun([tFun([a], b, new Set()), tArr(a)], tArr(b), new Set());
+    const a = freshVar(), b = freshVar(), e = freshEff();
+    return tFun([tFun([a], b, e), tArr(a)], tArr(b), e);
   });
   // --- builtins added for the star.ink port ---
   env.vars.set("PI", TFLOAT);
@@ -944,12 +1011,12 @@ function checkProgram(
   env.vars.set("get", () => { const a = freshVar(); return tFun([tArr(a), TINT], a, new Set()); });
   env.vars.set("set", () => { const a = freshVar(); return tFun([tArr(a), TINT, a], TNULL, new Set()); });
   env.vars.set("each", () => {
-    const a = freshVar(), b = freshVar();
-    return tFun([tFun([a, TINT], b, new Set()), tArr(a)], TNULL, new Set());
+    const a = freshVar(), b = freshVar(), e = freshEff();
+    return tFun([tFun([a, TINT], b, e), tArr(a)], TNULL, e);
   });
   env.vars.set("flatmap", () => {
-    const a = freshVar(), b = freshVar();
-    return tFun([tFun([a, TINT], tArr(b), new Set()), tArr(a)], tArr(b), new Set());
+    const a = freshVar(), b = freshVar(), e = freshEff();
+    return tFun([tFun([a, TINT], tArr(b), e), tArr(a)], tArr(b), e);
   });
   }
   for (const it of items) if ("effect" in it) effects.set(it.effect, it.sig);
@@ -1237,16 +1304,16 @@ export function typeOf(src: string): string {
 
 // types: typecheck a source file and print every top-level symbol (let / fn)
 // along with its inferred type, one per line as `name : type`.
-export function types(src: string): string {
+export function types(src: string): {name: string, type: Type}[] {
   const items = new Parser(src).parseProgram();
-  const { env } = checkProgram(items);
-  const names: string[] = [];
-  for (const it of items)
-    if ("e" in it && (it.e.t === "let" || it.e.t === "letrec")) names.push(it.e.name);
+  const {env} = checkProgram(items);
+  const names: string[] = items
+    .filter((it): it is {e: Expr & {t: "let" | "letrec"}} => "e" in it && (it.e.t === "let" || it.e.t === "letrec"))
+    .map(it => it.e.name);
   return names.map(n => {
     const t = tlookup(env, n);
-    return n + " : " + showT(res(typeof t === "function" ? t() : t!));
-  }).join("\n");
+    return {name: n, type: res(typeof t === "function" ? t() : t!)};
+  });
 }
 
 // repl: an interactive read-eval-print loop. State (runtime env + type env +

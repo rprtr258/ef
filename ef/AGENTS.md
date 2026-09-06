@@ -61,7 +61,7 @@ typing rules.
 - **CPS evaluator, not generators.** Generators are single-use; CPS gives
   genuine multi-shot resume via callable JS closures.
 - **`any` is absorbing.** Unifies with everything and stays `any`. Escape
-  hatch for effect demos without row polymorphism. `list` uses it
+  hatch for type demos. `list` uses it
   intentionally; `Println` takes `any` for the same reason.
 - **Effect declarations required for `Op!`.** `effect Op(args): ret` — the
   checker rejects `Op!` of an undeclared effect. `ret` is the type

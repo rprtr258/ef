@@ -2,7 +2,8 @@
 // `ef types <file>` prints every top-level symbol and its inferred type.
 // `ef repl` starts an interactive REPL with persistent bindings.
 import {readFileSync} from "fs";
-import { show, run, types, repl } from "./index.ts";
+import {show, run, types, repl, showT} from "./index.ts";
+import { styleText } from "util";
 
 function main(cmd: string, args: string[]) {
   switch (cmd) {
@@ -24,7 +25,7 @@ function main(cmd: string, args: string[]) {
       break;
     }
     const src = readFileSync(args[0]!).toString();
-    console.log(types(src));
+    console.log(types(src).map(({name, type}) => styleText("gray", name) + " : " + showT(type)).join("\n"));
     return;
   }
   }

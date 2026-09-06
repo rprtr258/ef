@@ -228,6 +228,8 @@ type  ::= "[" type "]"
 - `if c { a } else { b } : T` where `c : bool` and `a, b : T` (branches must
   agree). `if` with no `else` has an implicit `unit` else branch.
 - `f(a1, ..., an)` — `f : (T1,...,Tn) -> R ! {E}`, each `ai : Ti`, the call has type `R` and adds `E` to the caller's effects. Mismatched arity or argument types are errors.
+- **Effect rows are unified, not just propagated.** A function's `! { ... }` is a row: a concrete set of effect names, or an unbound *effect variable*. Two function types unify their effect rows by union-find: variable+variable unions, variable+set binds, set+set requires equality. The empty set `∅` is the polymorphic bottom — a function typed `... ! ∅` may be used wherever any effect set is expected (it is refined to the other set) — so unannotated higher-order parameters stay flexible without let-generalization.
+- **Higher-order builtins are effect-polymorphic.** `map : ((a) -> b ! e, [a]) -> [b] ! e`, `each : ((a, int) -> b ! e, [a]) -> unit ! e`, `flatmap : ((a, int) -> [b] ! e, [a]) -> [b] ! e` — each with a fresh effect variable `e` per instantiation, shared between the callback's effect row and the call's performed effects. So `map(pureF, xs)` performs `∅` while `map(fn(x){ Out!(x); x }, xs)` performs exactly `{ Out }` — neither over- nor under-approximated.
 - `Op!(a1, ..., an)` — requires a declared `effect Op(p1,...): ret`; each `ai : pi`; the expression has type `ret` and adds `Op` to the effects.
 - `handle { body } case Return(v) => k { rb } case Op(pi) => k { ob } ...`
   - The body is inferred with its own effect set `B`.
