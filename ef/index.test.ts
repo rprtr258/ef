@@ -3,8 +3,8 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {readFileSync, unlinkSync, existsSync} from "node:fs";
 import {execSync} from "node:child_process";
-import {run} from "./eval.ts";
-import {checkProgram, res, showT} from "./types.ts";
+import {run, newCtx, exec} from "./eval.ts";
+import {checkProgram, showT} from "./types.ts";
 import {show} from "./env.ts";
 import {Parser} from "./parser.ts";
 
@@ -12,10 +12,21 @@ import {Parser} from "./parser.ts";
 // Surfaces effect sets in function signatures, e.g. `(int) -> int ! { Emit }`.
 export function typeOf(src: string): string {
   const prog = new Parser(src).parseProgram();
-  return showT(res(checkProgram(prog).lastType));
+  return showT(checkProgram(prog).lastType);
 }
 
 const tmpPath = (n: string) => join(tmpdir(), `ef-test-${process.pid}-${n}.txt`);
+
+test("exec drives a REPL session: bindings persist, lastType resolved", () => {
+  const ctx = newCtx();
+  const l1 = exec(new Parser("let add = fn(a: int, b: int): int { a + b };").parseProgram(), ctx);
+  const l2 = exec(new Parser("add(1, 2)").parseProgram(), ctx);
+  expect(l1.value).toBe(null);
+  expect(l1.lastIsExpr).toBe(false);
+  expect(l2.value).toBe(3);
+  expect(l2.lastIsExpr).toBe(true);
+  expect(showT(l2.lastType)).toBe("int");
+});
 
 test("run accepts a custom effect interpreter (fakes Read, no fs touched)", () => {
   expect(run("Read!(\"missing.txt\")", {Read: (_a, k) => k("faked")}))

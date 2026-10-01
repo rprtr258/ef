@@ -359,6 +359,12 @@ export class Env {
     }
     return undefined;
   }
+  // Resolved lookup: instantiate scheme thunks and follow union-find vars —
+  // always a concrete, displayable type.
+  lookupResolved(name: string): Type {
+    const t = this.lookup(name)!;
+    return res(typeof t === "function" ? t() : t);
+  }
   extend(): Env {
     return new Env(this);
   }
@@ -772,10 +778,19 @@ function infer(
   }
 }
 
+export type Checked = {
+  env: Env,
+  effects: Map<string, EffectSig>,
+  lastType: Type,
+};
+
+// checkProgram: typecheck `prog`. `acc` is the previous result — the REPL
+// passes it back to accumulate bindings across lines. `lastType` (the last
+// item's type) is returned fully resolved; callers never call `res`.
 export function checkProgram(
   prog: Program,
-  acc?: { env: Env, effects: Map<string, EffectSig> },
-): { env: Env, effects: Map<string, EffectSig>, lastType: Type } {
+  acc?: Checked,
+): Checked {
   let env: Env;
   let effects: Map<string, EffectSig>;
   if (acc !== undefined) {
@@ -798,5 +813,5 @@ export function checkProgram(
   for (const it of prog.items.filter(it => "e" in it))
     lastType = infer(it.e, prog.nodes, env, new Set(), effects);
 
-  return {env, effects, lastType};
+  return {env, effects, lastType: res(lastType)};
 }

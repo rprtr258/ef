@@ -4,7 +4,7 @@
 import {readFileSync} from "fs";
 import {styleText} from "util";
 import {run} from "./eval.ts";
-import {type Type, showT, checkProgram, res} from "./types.ts";
+import {type Type, showT, checkProgram} from "./types.ts";
 import {lint} from "./lint.ts";
 import {repl} from "./repl.ts";
 import {show} from "./env.ts";
@@ -21,10 +21,7 @@ export function types(src: string): {name: string, type: Type}[] {
     if (e.t === "let")
       names.push(e.name);
   }
-  return names.map(n => {
-    const t = env.lookup(n);
-    return {name: n, type: res(typeof t === "function" ? t() : t!)};
-  });
+  return names.map(n => ({name: n, type: env.lookupResolved(n)}));
 }
 
 function main(cmd: string, args: string[]) {

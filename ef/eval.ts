@@ -3,9 +3,9 @@
 // with monomorphic effect tracking), then a CPS evaluator whose continuation
 // is a plain JS function — giving true multi-shot `resume`.
 
-import {checkProgram} from "./types.ts";
+import {checkProgram, type Checked, type Type} from "./types.ts";
 import {Env, show, type Cont, type Native, type Outcome, type Value, num, globalEnv, type Closure} from "./env.ts";
-import {Parser, type Expr, type ExprID, type HandlerCase} from "./parser.ts";
+import {Parser, type Expr, type ExprID, type HandlerCase, type Program} from "./parser.ts";
 import {builtins} from "./builtins.ts";
 
 function isNative(v: Value): v is Native {
@@ -173,16 +173,46 @@ export function runTop(out: Outcome, interp?: EffectInterp): Value {
   }
 }
 
-// run: typecheck first, then evaluate. Throws on type error. `interp`
-// optionally overrides the builtin interpretation of unhandled effects.
-export function run(src: string, interp?: EffectInterp): Value {
-  const prog = new Parser(src).parseProgram();
-  checkProgram(prog);
-  let last: Value = null;
-  const g = globalEnv();
+// Pipeline state for incremental execution (REPL): runtime env, checker
+// accumulator, and an optional effect-interpretation override.
+export type Ctx = {
+  env: Env,
+  checked: Checked,
+  interp?: EffectInterp,
+};
+
+// newCtx: fresh pipeline state, seeded with the builtins.
+export function newCtx(interp?: EffectInterp): Ctx {
+  return {
+    env: globalEnv(),
+    checked: checkProgram({nodes: [], items: []}),
+    interp,
+  };
+}
+
+// exec: the pipeline the REPL and `run` share — typecheck `prog` against
+// ctx's accumulated checker state, then evaluate its items in ctx's runtime
+// env. Returns the last item's value (null after a pure declaration), its
+// resolved type, and whether the program ends in a bare expression (the REPL
+// echo rule: declarations print nothing).
+export function exec(prog: Program, ctx: Ctx): {value: Value, lastType: Type, lastIsExpr: boolean} {
+  ctx.checked = checkProgram(prog, ctx.checked);
+  let value: Value = null;
+  let lastIsExpr = false;
   for (const it of prog.items) {
-    if ("e" in it)
-      last = runTop(evalE(it.e, prog.nodes, g, (v) => ({tag: "done", value: v})), interp);
+    if ("e" in it) {
+      value = runTop(evalE(it.e, prog.nodes, ctx.env, v => ({tag: "done", value: v})), ctx.interp);
+      lastIsExpr = prog.nodes[it.e].t !== "let";
+    } else {
+      lastIsExpr = false; // effect decl / alias: not an echoable expression
+    }
   }
-  return last;
+  return {value, lastType: ctx.checked.lastType, lastIsExpr};
+}
+
+// run: one-shot pipeline — parse, typecheck, and evaluate a source string
+// with fresh state. Throws on type error. `interp` optionally overrides the
+// builtin interpretation of unhandled effects.
+export function run(src: string, interp?: EffectInterp): Value {
+  return exec(new Parser(src).parseProgram(), newCtx(interp)).value;
 }

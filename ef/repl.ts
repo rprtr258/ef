@@ -1,28 +1,23 @@
 import * as readline from "node:readline";
-import {runTop, evalE} from "./eval.ts";
-import {globalEnv, show, type Value} from "./env.ts";
-import {checkProgram, res, showT} from "./types.ts";
+import {newCtx, exec} from "./eval.ts";
+import {show} from "./env.ts";
+import {showT} from "./types.ts";
 import {Parser} from "./parser.ts";
 
-// repl: an interactive read-eval-print loop. State (runtime env + type env +
-// effect signatures) persists across lines, so `let`/`effect` bindings
-// accumulate. Each line is parsed and evaluated as a complete program; ef is
-// newline-insensitive so multi-statement blocks fit on one line. Echoes the
-// value and inferred type of a bare expression; declarations print nothing.
+// repl: an interactive read-eval-print loop. Pipeline state (Ctx: runtime env
+// + type env + effect signatures) persists across lines, so `let`/`effect`
+// bindings accumulate. Each line is parsed and executed as a complete
+// program; ef is newline-insensitive so multi-statement blocks fit on one
+// line. Echoes the value and inferred type of a bare expression;
+// declarations print nothing.
 export function repl(): void {
-  const g = globalEnv();
-  const acc = checkProgram({nodes: [], items: []}); // seeded with builtins; extended incrementally
+  const ctx = newCtx();
   const rl = readline.createInterface({input: process.stdin, output: process.stdout, prompt: "ef> "});
   const evalLine = (src: string): void => {
     const prog = new Parser(src).parseProgram();
-    const {lastType} = checkProgram(prog, acc);
-    const last: Value = prog.items
-      .filter(it => "e" in it)
-      .reduce((_, it): Value => runTop(evalE(it.e, prog.nodes, g, v => ({tag: "done", value: v}))), null);
-    const tail = prog.items[prog.items.length - 1];
-    const isExpr = "e" in tail && prog.nodes[tail.e].t !== "let";
-    if (isExpr && last !== null)
-      console.log(show(last) + " : " + showT(res(lastType)));
+    const {value, lastType, lastIsExpr} = exec(prog, ctx);
+    if (lastIsExpr && value !== null)
+      console.log(show(value) + " : " + showT(lastType));
   };
   console.log("ef REPL — type :q to quit");
   rl.prompt();
