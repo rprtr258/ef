@@ -11,8 +11,8 @@ import {Parser} from "./parser.ts";
 // typeOf: return the inferred type of the last expression, as a string.
 // Surfaces effect sets in function signatures, e.g. `(int) -> int ! { Emit }`.
 export function typeOf(src: string): string {
-  const items = new Parser(src).parseProgram();
-  return showT(res(checkProgram(items).lastType));
+  const prog = new Parser(src).parseProgram();
+  return showT(res(checkProgram(prog).lastType));
 }
 
 const tmpPath = (n: string) => join(tmpdir(), `ef-test-${process.pid}-${n}.txt`);

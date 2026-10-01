@@ -6,7 +6,7 @@
 import {readFileSync, writeFileSync} from "node:fs";
 import {checkProgram} from "./types.ts";
 import {Env, show, type Cont, type Native, type Outcome, type Value, num, globalEnv, type Closure} from "./env.ts";
-import {Parser, type Expr, type HandlerCase} from "./parser.ts";
+import {Parser, type Expr, type ExprID, type HandlerCase} from "./parser.ts";
 
 function isNative(v: Value): v is Native {
   return v !== null && typeof v === "object" && !Array.isArray(v) && v.tag === "native";
@@ -22,13 +22,14 @@ export function apply(f: Value, args: Value[], k: Cont): Outcome {
     const n = f.env.extend();
     for (let i = 0; i < f.params.length; i++)
       n.vars.set(f.params[i], args[i] ?? null);
-    return evalE(f.body, n, k);
+    return evalE(f.body, f.nodes, n, k);
   }
   throw new Error("Not callable: " + show(f));
 }
 
-// Evaluator (CPS) 
-export function evalE(e: Expr, env: Env, k: Cont): Outcome {
+// Evaluator (CPS). `id` indexes into the program's flat node slice `nodes`.
+export function evalE(id: ExprID, nodes: Expr[], env: Env, k: Cont): Outcome {
+  const e = nodes[id];
   switch (e.t) {
     case "num":
     case "str":
@@ -39,43 +40,43 @@ export function evalE(e: Expr, env: Env, k: Cont): Outcome {
     case "sym":
       return k(env.lookup(e.v));
     case "lambda":
-      return k({tag: "fn", params: e.params.map(p => p.name), body: e.body, env, typ: e.typ});
+      return k({tag: "fn", params: e.params.map(p => p.name), body: e.body, nodes, env, typ: e.typ});
     case "let":
       env.vars.set(e.name, null);
-      return evalE(e.val, env, (v) => {
+      return evalE(e.val, nodes, env, (v) => {
         env.vars.set(e.name, v);
         return k(null);
       });
     case "if":
-      return evalE(e.c, env, (c) =>
-        evalE(c !== false && c !== null ? e.a : e.b, env, k),
+      return evalE(e.c, nodes, env, (c) =>
+        evalE(c !== false && c !== null ? e.a : e.b, nodes, env, k),
       );
     case "while": {
       const loop = (): Outcome =>
-        evalE(e.c, env, (c) =>
+        evalE(e.c, nodes, env, (c) =>
           c !== false && c !== null
-            ? evalE(e.body, env, () => loop())
+            ? evalE(e.body, nodes, env, () => loop())
             : k(null),
         );
       return loop();
     }
     case "assign":
-      return evalE(e.val, env, (v) => {
+      return evalE(e.val, nodes, env, (v) => {
         env.assignVar(e.name, v);
         return k(null);
       });
     case "block": {
       const n = env.extend();
-      return evalSeq(e.stmts, 0, n, k);
+      return evalSeq(e.stmts, 0, nodes, n, k);
     }
     case "perform":
-      return evalArgs(e.args, env, [], (args) => ({tag: "eff", op: e.op, args, k}));
+      return evalArgs(e.args, nodes, env, [], (args) => ({tag: "eff", op: e.op, args, k}));
     case "handle":
-      return handle(e.body, e.cases, env, k);
+      return handle(e.body, nodes, e.cases, env, k);
     case "arr":
-      return evalArgs(e.elems, env, [], (vals) => k(vals));
+      return evalArgs(e.elems, nodes, env, [], (vals) => k(vals));
     case "field":
-      return evalE(e.obj, env, (o) => {
+      return evalE(e.obj, nodes, env, (o) => {
         const a = o as Value[];
         const idx = e.idx!;
         if (idx < 0 || idx >= a.length || !Number.isInteger(idx))
@@ -83,42 +84,44 @@ export function evalE(e: Expr, env: Env, k: Cont): Outcome {
         return k(a[idx]);
       });
     case "dlet":
-      return evalE(e.val, env, (v) => {
+      return evalE(e.val, nodes, env, (v) => {
         const a = v as Value[];
         for (let i = 0; i < e.fields.length; i++) env.vars.set(e.fields[i].name, a[i]);
         return k(null);
       });
-    case "app":
+    case "app": {
       // `/` is stamped by the checker with int vs float division (the runtime
       // can't tell, since JS erases 7 and 7.0 to the same value).
-      if (e.fn.t === "sym" && e.fn.v === "/") {
-        return evalArgs(e.args, env, [], (args) => {
+      const fn = nodes[e.fn];
+      if (fn.t === "sym" && fn.v === "/") {
+        return evalArgs(e.args, nodes, env, [], (args) => {
           const a = args[0]!, b = args[1]!;
           const r = num(a) / num(b);
           return k(e.div === "int" ? Math.trunc(r) : r);
         });
       }
-      return evalE(e.fn, env, (f) =>
-        evalArgs(e.args, env, [], (args) => apply(f, args, k)),
+      return evalE(e.fn, nodes, env, (f) =>
+        evalArgs(e.args, nodes, env, [], (args) => apply(f, args, k)),
       );
+    }
   }
 }
 
-function evalArgs(args: Expr[], env: Env, acc: Value[], k: (vals: Value[]) => Outcome): Outcome {
+function evalArgs(args: ExprID[], nodes: Expr[], env: Env, acc: Value[], k: (vals: Value[]) => Outcome): Outcome {
   if (acc.length === args.length)
     return k(acc);
-  return evalE(args[acc.length], env, (v) => evalArgs(args, env, [...acc, v], k));
+  return evalE(args[acc.length], nodes, env, (v) => evalArgs(args, nodes, env, [...acc, v], k));
 }
 
-function evalSeq(stmts: Expr[], i: number, env: Env, k: Cont): Outcome {
+function evalSeq(stmts: ExprID[], i: number, nodes: Expr[], env: Env, k: Cont): Outcome {
   if (i >= stmts.length)
     return k(null);
   if (i === stmts.length - 1)
-    return evalE(stmts[i], env, k);
-  return evalE(stmts[i], env, () => evalSeq(stmts, i + 1, env, k));
+    return evalE(stmts[i], nodes, env, k);
+  return evalE(stmts[i], nodes, env, () => evalSeq(stmts, i + 1, nodes, env, k));
 }
 
-function handle(body: Expr, cases: HandlerCase[], env: Env, k: Cont): Outcome {
+function handle(body: ExprID, nodes: Expr[], cases: HandlerCase[], env: Env, k: Cont): Outcome {
   const handlers = new Map(cases.map(c => [c.op, c]));
   const ret = handlers.get("Return");
   function run(out: Outcome, kOuter: Cont): Outcome {
@@ -127,7 +130,7 @@ function handle(body: Expr, cases: HandlerCase[], env: Env, k: Cont): Outcome {
         const n = env.extend();
         n.vars.set(ret.params[0].name, out.value);
         n.vars.set(ret.resume, {tag: "native", fn: (_a, k2) => k2(out.value)});
-        return evalE(ret.body, n, kOuter);
+        return evalE(ret.body, nodes, n, kOuter);
       }
       return kOuter(out.value);
     }
@@ -142,9 +145,9 @@ function handle(body: Expr, cases: HandlerCase[], env: Env, k: Cont): Outcome {
     const n = env.extend();
     n.vars.set(h.resume, resume);
     for (let i = 0; i < h.params.length; i++) n.vars.set(h.params[i].name, out.args[i] ?? null);
-    return evalE(h.body, n, kOuter);
+    return evalE(h.body, nodes, n, kOuter);
   }
-  return run(evalE(body, env, (v) => ({tag: "done", value: v})), k);
+  return run(evalE(body, nodes, env, (v) => ({tag: "done", value: v})), k);
 }
 
 export function runTop(out: Outcome): Value {
@@ -175,13 +178,13 @@ export function runTop(out: Outcome): Value {
 
 // run: typecheck first, then evaluate. Throws on type error.
 export function run(src: string): Value {
-  const items = new Parser(src).parseProgram();
-  checkProgram(items);
+  const prog = new Parser(src).parseProgram();
+  checkProgram(prog);
   let last: Value = null;
   const g = globalEnv();
-  for (const it of items) {
+  for (const it of prog.items) {
     if ("e" in it)
-      last = runTop(evalE(it.e, g, (v) => ({tag: "done", value: v})));
+      last = runTop(evalE(it.e, prog.nodes, g, (v) => ({tag: "done", value: v})));
   }
   return last;
 }

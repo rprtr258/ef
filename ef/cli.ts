@@ -8,16 +8,19 @@ import {type Type, showT, checkProgram, res} from "./types.ts";
 import {lint} from "./lint.ts";
 import {repl} from "./repl.ts";
 import {show} from "./env.ts";
-import {Parser, type Expr} from "./parser.ts";
+import {Parser, type ExprID} from "./parser.ts";
 
 // types: typecheck a source file and print every top-level symbol (let)
 // along with its inferred type, one per line as `name : type`.
 export function types(src: string): {name: string, type: Type}[] {
-  const items = new Parser(src).parseProgram();
-  const {env} = checkProgram(items);
-  const names: string[] = items
-    .filter((it): it is {e: Expr & {t: "let"}} => "e" in it && it.e.t === "let")
-    .map(it => it.e.name);
+  const prog = new Parser(src).parseProgram();
+  const {env} = checkProgram(prog);
+  const names: string[] = [];
+  for (const it of prog.items.filter((it): it is {e: ExprID} => "e" in it)) {
+    const e = prog.nodes[it.e];
+    if (e.t === "let")
+      names.push(e.name);
+  }
   return names.map(n => {
     const t = env.lookup(n);
     return {name: n, type: res(typeof t === "function" ? t() : t!)};

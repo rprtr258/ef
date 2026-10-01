@@ -2,7 +2,7 @@ import * as readline from "node:readline";
 import {runTop, evalE} from "./eval.ts";
 import {globalEnv, show, type Value} from "./env.ts";
 import {checkProgram, res, showT} from "./types.ts";
-import {Parser, type Expr} from "./parser.ts";
+import {Parser} from "./parser.ts";
 
 // repl: an interactive read-eval-print loop. State (runtime env + type env +
 // effect signatures) persists across lines, so `let`/`effect` bindings
@@ -11,17 +11,17 @@ import {Parser, type Expr} from "./parser.ts";
 // value and inferred type of a bare expression; declarations print nothing.
 export function repl(): void {
   const g = globalEnv();
-  const acc = checkProgram([]); // seeded with builtins; extended incrementally
+  const acc = checkProgram({nodes: [], items: []}); // seeded with builtins; extended incrementally
   const rl = readline.createInterface({input: process.stdin, output: process.stdout, prompt: "ef> "});
   const evalLine = (src: string): void => {
-    const items = new Parser(src).parseProgram();
-    const {lastType} = checkProgram(items, acc);
+    const prog = new Parser(src).parseProgram();
+    const {lastType} = checkProgram(prog, acc);
     let last: Value = null;
-    for (const it of items)
+    for (const it of prog.items)
       if ("e" in it)
-        last = runTop(evalE(it.e, g, (v) => ({tag: "done", value: v})));
-    const tail = items[items.length - 1];
-    const isExpr = tail && "e" in tail && tail.e.t !== "let";
+        last = runTop(evalE(it.e, prog.nodes, g, (v) => ({tag: "done", value: v})));
+    const tail = prog.items[prog.items.length - 1];
+    const isExpr = "e" in tail && prog.nodes[tail.e].t !== "let";
     if (isExpr && last !== null)
       console.log(show(last) + " : " + showT(res(lastType)));
   };

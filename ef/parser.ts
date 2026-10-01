@@ -11,33 +11,37 @@ export type HandlerCase = {
   op: string,
   params: Param[],
   resume: string,
-  body: Expr,
+  body: ExprID,
 };
 
 export type Item =
-  | { e: Expr }
+  | { e: ExprID }
   | { effect: string, sig: EffectSig }
   | { alias: Alias };
 
 // --- AST ---
+// Flat node slice: expressions reference their children by `ExprID` (an index
+// into `Program.nodes`), not by embedding child nodes.
+export type ExprID = number;
+export type Program = { nodes: Expr[], items: Item[] };
 export type Expr =
   | { t: "num", v: number, isFloat: boolean, pos?: Pos }
   | { t: "str", v: string, pos?: Pos }
   | { t: "bool", v: boolean, pos?: Pos }
   | { t: "unit", pos?: Pos }
   | { t: "sym", v: string, pos?: Pos }
-  | { t: "lambda", params: Param[], retTyp: Type | null, retEffs: Set<string> | null, body: Expr, typ?: FunT, pos?: Pos }
-  | { t: "let", name: string, typ: Type | null, val: Expr, pos?: Pos }
-  | { t: "if", c: Expr, a: Expr, b: Expr, pos?: Pos }
-  | { t: "while", c: Expr, body: Expr, pos?: Pos }
-  | { t: "assign", name: string, val: Expr, pos?: Pos }
-  | { t: "block", stmts: Expr[], pos?: Pos }
-  | { t: "perform", op: string, args: Expr[], pos?: Pos }
-  | { t: "handle", body: Expr, cases: HandlerCase[], pos?: Pos }
-  | { t: "app", fn: Expr, args: Expr[], div?: "int" | "float", pos?: Pos }
-  | { t: "arr", elems: Expr[], pos?: Pos } // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous.
-  | { t: "field", obj: Expr, name: string, idx?: number, pos?: Pos } // `obj.x` / `obj.0` field access; `idx` is resolved by the checker.
-  | { t: "dlet", fields: { name: string, typ: Type | null }[], val: Expr, pos?: Pos }; // `let [a, b] = val;` tuple/array destructuring bind.
+  | { t: "lambda", params: Param[], retTyp: Type | null, retEffs: Set<string> | null, body: ExprID, typ?: FunT, pos?: Pos }
+  | { t: "let", name: string, typ: Type | null, val: ExprID, pos?: Pos }
+  | { t: "if", c: ExprID, a: ExprID, b: ExprID, pos?: Pos }
+  | { t: "while", c: ExprID, body: ExprID, pos?: Pos }
+  | { t: "assign", name: string, val: ExprID, pos?: Pos }
+  | { t: "block", stmts: ExprID[], pos?: Pos }
+  | { t: "perform", op: string, args: ExprID[], pos?: Pos }
+  | { t: "handle", body: ExprID, cases: HandlerCase[], pos?: Pos }
+  | { t: "app", fn: ExprID, args: ExprID[], div?: "int" | "float", pos?: Pos }
+  | { t: "arr", elems: ExprID[], pos?: Pos } // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous.
+  | { t: "field", obj: ExprID, name: string, idx?: number, pos?: Pos } // `obj.x` / `obj.0` field access; `idx` is resolved by the checker.
+  | { t: "dlet", fields: { name: string, typ: Type | null }[], val: ExprID, pos?: Pos }; // `let [a, b] = val;` tuple/array destructuring bind.
 
 // Unescape a string literal token (with surrounding quotes).
 function parseStr(t: string): string {
@@ -96,14 +100,22 @@ export class Parser {
     return this.i >= this.toks.length;
   }
 
-  parseProgram(): Item[] {
-    const out: Item[] = [];
+  // Flat node arena: every parsed expression is pushed here once and referred
+  // to by `ExprID` (its index) from parents, items, and closures.
+  nodes: Expr[] = [];
+  add(e: Expr): ExprID {
+    this.nodes.push(e);
+    return this.nodes.length - 1;
+  }
+
+  parseProgram(): Program {
+    const items: Item[] = [];
     while (!this.atEnd()) {
-      if (this.isKw("effect")) out.push(this.parseEffect());
-      else if (this.isKw("type")) out.push(this.parseAlias());
-      else out.push({e: this.parseStmt()});
+      if (this.isKw("effect")) items.push(this.parseEffect());
+      else if (this.isKw("type")) items.push(this.parseAlias());
+      else items.push({e: this.parseStmt()});
     }
-    return out;
+    return {nodes: this.nodes, items};
   }
   parseEffect(): Item {
     this.next(); // effect
@@ -140,9 +152,9 @@ export class Parser {
     return {alias};
   }
 
-  parseStmt(): Expr {
+  parseStmt(): ExprID {
     const p = this.pos();
-    let e: Expr;
+    let e: ExprID;
     if (this.isKw("let")) {
       this.next();
       if (this.is("[")) {
@@ -159,14 +171,14 @@ export class Parser {
         this.eat("=");
         const val = this.parseExpr();
         this.eat(";");
-        e = {t: "dlet", fields, val, pos: p};
+        e = this.add({t: "dlet", fields, val, pos: p});
       } else {
         const name = this.next();
         const typ = this.is(":") ? (this.next(), this.parseType()) : null;
         this.eat("=");
         const val = this.parseExpr();
         this.eat(";");
-        e = {t: "let", name, typ, val, pos: p};
+        e = this.add({t: "let", name, typ, val, pos: p});
       }
     } else if (!KEYWORDS.has(this.peek() ?? "") && this.peek(1) === "=") {
       const name = this.next();
@@ -174,12 +186,12 @@ export class Parser {
       const val = this.parseExpr();
       if (this.is(";"))
         this.i++;
-      e = {t: "assign", name, val, pos: p};
+      e = this.add({t: "assign", name, val, pos: p});
     } else {
       e = this.parseExpr();
       if (this.is(";"))
         this.i++;
-      else if (!isBlocky(e) && !this.is("}") && !this.atEnd())
+      else if (!isBlocky(this.nodes[e]) && !this.is("}") && !this.atEnd())
         this.eat(";");
     }
     return e;
@@ -199,9 +211,9 @@ export class Parser {
     return params;
   }
 
-  parseArgs(): Expr[] {
+  parseArgs(): ExprID[] {
     this.eat("(");
-    const args: Expr[] = [];
+    const args: ExprID[] = [];
     while (!this.is(")")) {
       args.push(this.parseExpr());
       if (this.is(",")) this.i++;
@@ -210,13 +222,13 @@ export class Parser {
     return args;
   }
 
-  parseBlock(): Expr {
+  parseBlock(): ExprID {
     const p = this.pos();
     this.eat("{");
-    const stmts: Expr[] = [];
+    const stmts: ExprID[] = [];
     while (!this.is("}")) stmts.push(this.parseStmt());
     this.eat("}");
-    return {t: "block", stmts, pos: p};
+    return this.add({t: "block", stmts, pos: p});
   }
 
   // optional `! { op, op, ... }` effect annotation on a fn return type
@@ -319,11 +331,11 @@ export class Parser {
   static PREC: Record<string, number> = {"||": 1, "&&": 2, "==": 3, "!=": 3, "<": 4, ">": 4, "<=": 4, ">=": 4, "+": 5, "-": 5, "*": 6, "/": 6, "%": 6};
   binOps = new Set(Object.keys(Parser.PREC));
 
-  parseExpr(): Expr {
+  parseExpr(): ExprID {
     return this.parseBinary(0);
   }
 
-  parseBinary(min: number): Expr {
+  parseBinary(min: number): ExprID {
     let left = this.parseUnary();
     while (true) {
       const op = this.peek();
@@ -335,40 +347,41 @@ export class Parser {
       this.next();
       const right = this.parseBinary(prec + 1);
       if (op === "&&")
-        left = {t: "if", c: left, a: right, b: {t: "bool", v: false}, pos: left.pos};
+        left = this.add({t: "if", c: left, a: right, b: this.add({t: "bool", v: false}), pos: this.nodes[left].pos});
       else if (op === "||")
-        left = {t: "if", c: left, a: {t: "bool", v: true}, b: right, pos: left.pos};
+        left = this.add({t: "if", c: left, a: this.add({t: "bool", v: true}), b: right, pos: this.nodes[left].pos});
       else
-        left = {t: "app", fn: {t: "sym", v: op}, args: [left, right], pos: left.pos};
+        left = this.add({t: "app", fn: this.add({t: "sym", v: op}), args: [left, right], pos: this.nodes[left].pos});
     }
     return left;
   }
 
-  parseUnary(): Expr {
+  parseUnary(): ExprID {
     const p = this.pos();
     if (this.is("-")) {
       this.next();
-      return {t: "app", fn: {t: "sym", v: "neg"}, args: [this.parseUnary()], pos: p};
+      return this.add({t: "app", fn: this.add({t: "sym", v: "neg"}), args: [this.parseUnary()], pos: p});
     }
     if (this.is("!")) {
       this.next();
-      return {t: "app", fn: {t: "sym", v: "not"}, args: [this.parseUnary()], pos: p};
+      return this.add({t: "app", fn: this.add({t: "sym", v: "not"}), args: [this.parseUnary()], pos: p});
     }
     return this.parsePostfix();
   }
 
-  parsePostfix(): Expr {
+  parsePostfix(): ExprID {
     let e = this.parsePrimary();
     // perform: `Op!(args)` (postfix `!` after an effect name).
-    if (e.t === "sym" && this.is("!") && this.peek(1) === "(") {
-      const op = e.v;
+    const prim = this.nodes[e];
+    if (prim.t === "sym" && this.is("!") && this.peek(1) === "(") {
+      const op = prim.v;
       this.next(); // !
       const args = this.parseArgs();
-      e = {t: "perform", op, args, pos: e.pos};
+      e = this.add({t: "perform", op, args, pos: prim.pos});
     }
     while (this.is("(")) {
       const args = this.parseArgs();
-      e = {t: "app", fn: e, args, pos: e.pos};
+      e = this.add({t: "app", fn: e, args, pos: this.nodes[e].pos});
     }
     // field access: `obj.x` (named) or `obj.0` (positional). The lexer
     // reads `0.0` as a single float token, so a chained `m.0.0` arrives as
@@ -376,34 +389,34 @@ export class Parser {
     while (this.is(".")) {
       this.next();
       const name = this.next();
-      for (const part of name.split(".")) e = {t: "field", obj: e, name: part, pos: e.pos};
+      for (const part of name.split(".")) e = this.add({t: "field", obj: e, name: part, pos: this.nodes[e].pos});
     }
     return e;
   }
 
-  parsePrimary(): Expr {
+  parsePrimary(): ExprID {
     const t = this.peek();
     if (t === undefined) throw new Error("Unexpected EOF");
     const p = this.pos();
     if (/^-?\d/.test(t)) {
       this.next();
-      return {t: "num", v: Number(t), isFloat: t.includes("."), pos: p};
+      return this.add({t: "num", v: Number(t), isFloat: t.includes("."), pos: p});
     }
     if (t.startsWith("\"")) {
       this.next();
-      return {t: "str", v: parseStr(t), pos: p};
+      return this.add({t: "str", v: parseStr(t), pos: p});
     }
     if (t === "true") {
       this.next();
-      return {t: "bool", v: true, pos: p};
+      return this.add({t: "bool", v: true, pos: p});
     }
     if (t === "false") {
       this.next();
-      return {t: "bool", v: false, pos: p};
+      return this.add({t: "bool", v: false, pos: p});
     }
     if (t === "unit") {
       this.next();
-      return {t: "unit", pos: p};
+      return this.add({t: "unit", pos: p});
     }
     if (t === "(") {
       this.next();
@@ -413,13 +426,13 @@ export class Parser {
     }
     if (t === "[") {
       this.next();
-      const els: Expr[] = [];
+      const els: ExprID[] = [];
       while (!this.is("]")) {
         els.push(this.parseExpr());
         if (this.is(",")) this.i++;
       }
       this.eat("]");
-      return {t: "arr", elems: els, pos: p};
+      return this.add({t: "arr", elems: els, pos: p});
     }
     if (this.isKw("fn")) {
       this.next();
@@ -427,7 +440,7 @@ export class Parser {
       const retTyp = this.is(":") ? (this.next(), this.parseType()) : null;
       const retEffs = this.parseEffAnnot();
       const body = this.parseBlock();
-      return {t: "lambda", params, retTyp, retEffs, body, pos: p};
+      return this.add({t: "lambda", params, retTyp, retEffs, body, pos: p});
     }
     if (this.isKw("if")) {
       this.next();
@@ -435,14 +448,14 @@ export class Parser {
       const c = this.parseExpr();
       this.eat(")");
       const a = this.parseBlock();
-      let b: Expr = {t: "unit", pos: p};
+      let b: ExprID = this.add({t: "unit", pos: p});
       if (this.isKw("else")) {
         this.next();
         b = this.isKw("if") ? this.parsePrimary() : this.parseBlock();
       } else if (this.is(";")) {
         this.i++;
       }
-      return {t: "if", c, a, b, pos: p};
+      return this.add({t: "if", c, a, b, pos: p});
     }
     if (this.isKw("while")) {
       this.next();
@@ -450,7 +463,7 @@ export class Parser {
       const c = this.parseExpr();
       this.eat(")");
       const body = this.parseBlock();
-      return {t: "while", c, body, pos: p};
+      return this.add({t: "while", c, body, pos: p});
     }
     if (this.isKw("handle")) {
       this.next();
@@ -465,10 +478,10 @@ export class Parser {
         const cbody = this.parseBlock();
         cases.push({op, params, resume, body: cbody});
       }
-      return {t: "handle", body, cases, pos: p};
+      return this.add({t: "handle", body, cases, pos: p});
     }
     this.next();
-    return {t: "sym", v: t, pos: p};
+    return this.add({t: "sym", v: t, pos: p});
   }
 }
 

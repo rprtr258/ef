@@ -1,4 +1,4 @@
-import type {Expr, Item} from "./parser";
+import type {Expr, ExprID, Program} from "./parser";
 
 export type Type = Prim | ArrT | TupT | FunT | Var | AnyT;
 export type Prim = { tag: "prim", name: "int" | "float" | "string" | "bool" | "unit" };
@@ -79,14 +79,14 @@ export function showT(t: Type): string {
     case "any": return "any";
     case "var": {
       const r = res(t);
-      return r.tag === "var" ? "t" + r.id : showT(r);
+      return r.tag === "var" ? `t${r.id}` : showT(r);
     }
     case "fun": {
       const ps = t.params.map(showT).join(", ");
       const er = resEff(t.effs);
       const e = er instanceof Set
         ? (er.size > 0 ? " ! { " + [...er].join(", ") + " }" : "")
-        : " ! { e" + er.id + " }";
+        : ` ! { e${er.id} }`;
       return "(" + ps + ") -> " + showT(t.ret) + e;
     }
   }
@@ -227,7 +227,7 @@ class TypeMismatch extends TypeError_ {
 // is labelled with it, otherwise it is shown as `got`.
 function typeMismatch(actual: Type, expected: Type, name?: string): TypeMismatch {
   const a = showT(res(actual)), e = showT(res(expected));
-  const lhs = name ? `${name} : ${a}` : `got      : ${a}`;
+  const lhs = name !== undefined ? `${name} : ${a}` : `got      : ${a}`;
   return new TypeMismatch(`Type mismatch:\n${lhs}\nexpected : ${e}`);
 }
 
@@ -352,7 +352,9 @@ export class Env {
   vars = new Map<string, Type | Scheme>();
   constructor(public parent: Env | null) {}
   lookup(name: string): Type | Scheme | undefined {
-    let e: Env | null = this;
+    let e: Env | null = this.parent;
+    if (this.vars.has(name))
+      return this.vars.get(name);
     while (e !== null) {
       if (e.vars.has(name))
         return e.vars.get(name);
@@ -370,12 +372,15 @@ export class Env {
 // attempt homogeneous unification behind a checkpoint; on failure build a
 // tuple from the (preserved) element types.
 function inferArr(
-  e: Expr & {t: "arr"},
+  id: ExprID,
+  nodes: Expr[],
   expected: TupT | null,
   env: Env,
   effs: Set<string>,
   effects: Map<string, EffectSig>,
 ): Type {
+  const e = nodes[id];
+  if (e.t !== "arr") throw new Error("inferArr: not an array literal");
   if (expected !== null) {
     if (e.elems.length !== expected.fields.length)
       throw new TypeError_(`literal arity ${e.elems.length} ≠ tuple ${expected.fields.length}`);
@@ -384,14 +389,14 @@ function inferArr(
       const el = e.elems[i];
       // Propagate the tuple expectation into a nested `[...]` literal so that
       // `let m: [[f,f,f],...] = [[1,2,3],...]` builds inner tuples, not arrays.
-      const et = (el.t === "arr" && res(ft).tag === "tup")
-        ? inferArr(el, res(ft) as TupT, env, effs, effects)
-        : infer(el, env, effs, effects);
+      const et = (nodes[el].t === "arr" && res(ft).tag === "tup")
+        ? inferArr(el, nodes, res(ft) as TupT, env, effs, effects)
+        : infer(el, nodes, env, effs, effects);
       unify(et, ft);
     }
     return expected;
   }
-  const elemTs = e.elems.map(a => infer(a, env, effs, effects));
+  const elemTs = e.elems.map(a => infer(a, nodes, env, effs, effects));
   const snap = checkpoint();
   try {
     const elem = freshVar();
@@ -408,28 +413,29 @@ function inferArr(
 // literals (so `[1,2,3]` becomes a tuple), blocks (last statement), and
 // lambda bodies (return type), so a declared `[f,f,f]` return flows into a
 // `[x, y, z]` body literal. Falls back to plain `infer` otherwise.
-function inferWith(e: Expr, expected: Type, env: Env, effs: Set<string>, effects: Map<string, EffectSig>): Type {
+function inferWith(id: ExprID, nodes: Expr[], expected: Type, env: Env, effs: Set<string>, effects: Map<string, EffectSig>): Type {
+  const e = nodes[id];
   const rt = res(expected);
   if (rt.tag !== "tup")
-    return infer(e, env, effs, effects);
+    return infer(id, nodes, env, effs, effects);
   if (e.t === "arr")
-    return inferArr(e, rt, env, effs, effects);
+    return inferArr(id, nodes, rt, env, effs, effects);
   if (e.t === "block") {
     const n = env.extend();
     let last: Type = TNULL;
     for (let i = 0; i < e.stmts.length; i++)
       last = i === e.stmts.length - 1
-        ? inferWith(e.stmts[i], rt, n, effs, effects)
-        : infer(e.stmts[i], n, effs, effects);
+        ? inferWith(e.stmts[i], nodes, rt, n, effs, effects)
+        : infer(e.stmts[i], nodes, n, effs, effects);
     return last;
   }
   if (e.t === "lambda" && e.retTyp !== null) {
     const saved = e.retTyp;
     e.retTyp = rt;
-    try { return infer(e, env, effs, effects); }
+    try { return infer(id, nodes, env, effs, effects); }
     finally { e.retTyp = saved; }
   }
-  return infer(e, env, effs, effects);
+  return infer(id, nodes, env, effs, effects);
 }
 
 // Parse a `.N` numeric field name into an index, or null if `name` isn't numeric.
@@ -488,12 +494,15 @@ function plusType(a: Type, b: Type): Type {
 }
 
 // infer: returns the type, side-effecting `effs` with performed effects.
+// `id` indexes into the program's flat node slice `nodes`.
 function infer(
-  e: Expr,
+  id: ExprID,
+  nodes: Expr[],
   env: Env,
   effs: Set<string>,
   effects: Map<string, EffectSig>,
 ): Type {
+  const e = nodes[id];
   try {
   switch (e.t) {
     case "num": return e.isFloat ? TFLOAT : TINT;
@@ -516,8 +525,8 @@ function infer(
       }
       const innerEffs = new Set<string>();
       const ret = e.retTyp !== null && res(e.retTyp).tag === "tup"
-        ? inferWith(e.body, e.retTyp, n, innerEffs, effects)
-        : infer(e.body, n, innerEffs, effects);
+        ? inferWith(e.body, nodes, e.retTyp, n, innerEffs, effects)
+        : infer(e.body, nodes, n, innerEffs, effects);
       if (e.retTyp !== null)
         unify(e.retTyp, ret);
       // Effect annotation is optional: if `! { ... }` is omitted, the
@@ -540,9 +549,9 @@ function infer(
       env.vars.set(e.name, declared);
       // A tuple annotation on an `[...]` literal makes it a tuple even when its
       // elements would otherwise unify homogeneously (e.g. `let p: [float, float] = [1.0, 2.0]`).
-      const vt = (e.typ !== null && res(e.typ).tag === "tup" && e.val.t === "arr")
-        ? inferArr(e.val, res(e.typ) as TupT, env, effs, effects)
-        : infer(e.val, env, effs, effects);
+      const vt = (e.typ !== null && res(e.typ).tag === "tup" && nodes[e.val].t === "arr")
+        ? inferArr(e.val, nodes, res(e.typ) as TupT, env, effs, effects)
+        : infer(e.val, nodes, env, effs, effects);
       unify(declared, vt);
       const rt = res(declared);
       // Exclude the self-binding from the free-var context before
@@ -551,19 +560,17 @@ function infer(
       // Value restriction: generalize only lambda values (literals carry no
       // type vars; `arr` literals are typed directly, not via `list`).
       // This keeps mutable-array/assign soundness (no `let x = []` : [a]).
-      env.vars.set(e.name, e.typ !== null ? rt : (e.val.t === "lambda" ? generalize(env, rt) : rt));
+      env.vars.set(e.name, e.typ !== null ? rt : (nodes[e.val].t === "lambda" ? generalize(env, rt) : rt));
       if (e.typ === null && containsAny(rt))
         warnInferredAny(e.name, rt);
       return TNULL;
     }
-    // `[a, b, c]` literal: array `[T]` if all element types unify, else a
-    // tuple `[T1, ..., Tn]`. `expected` (a tuple) forces tuple-ness.
     case "arr":
-      return inferArr(e, null, env, effs, effects);
+      return inferArr(id, nodes, null, env, effs, effects);
     // `obj.x` / `obj.0`: resolve the field index from the (tuple or array)
     // element type and stamp it on the node for the evaluator.
     case "field": {
-      const ot = res(infer(e.obj, env, effs, effects));
+      const ot = res(infer(e.obj, nodes, env, effs, effects));
       if (ot.tag === "arr") {
         const idx = fieldIndex(e.name);
         if (idx === null)
@@ -589,7 +596,7 @@ function infer(
     }
     // `let [a, b] = val;` — destructure a tuple (or array) into bindings.
     case "dlet": {
-      const vt = res(infer(e.val, env, effs, effects));
+      const vt = res(infer(e.val, nodes, env, effs, effects));
       if (vt.tag === "tup") {
         if (vt.fields.length !== e.fields.length)
           throw new TypeError_(`destructure arity ${e.fields.length} ≠ tuple ${vt.fields.length}`);
@@ -611,23 +618,23 @@ function infer(
       return TNULL;
     }
     case "if": {
-      const c = infer(e.c, env, effs, effects);
+      const c = infer(e.c, nodes, env, effs, effects);
       unify(c, TBOOL);
-      const a = infer(e.a, env, effs, effects);
-      const b = infer(e.b, env, effs, effects);
+      const a = infer(e.a, nodes, env, effs, effects);
+      const b = infer(e.b, nodes, env, effs, effects);
       unify(a, b);
       return res(a);
     }
     case "while": {
-      const c = infer(e.c, env, effs, effects);
+      const c = infer(e.c, nodes, env, effs, effects);
       unify(c, TBOOL);
-      infer(e.body, env, effs, effects);
+      infer(e.body, nodes, env, effs, effects);
       return TNULL;
     }
     case "assign": {
       const cur = env.lookup(e.name);
       if (cur === undefined) throw new TypeError_(`Assignment to unbound symbol: ${e.name}`);
-      const vt = infer(e.val, env, effs, effects);
+      const vt = infer(e.val, nodes, env, effs, effects);
       // Unify against the declared type so `let guess: float` keeps its type.
       unify(typeof cur === "function" ? cur() : cur, vt);
       return TNULL;
@@ -635,7 +642,7 @@ function infer(
     case "block": {
       const n = env.extend();
       let last: Type = TNULL;
-      for (const s of e.stmts) last = infer(s, n, effs, effects);
+      for (const s of e.stmts) last = infer(s, nodes, n, effs, effects);
       return last;
     }
     case "perform": {
@@ -644,14 +651,14 @@ function infer(
         throw new TypeError_(`Unknown effect: ${e.op} (declare with: effect ${e.op}(...);)`);
       if (e.args.length !== sig.params.length)
         throw new TypeError_(`effect ${e.op}: ${sig.params.length} args, got ${e.args.length}`);
-      const argTs = e.args.map(a => infer(a, env, effs, effects));
+      const argTs = e.args.map(a => infer(a, nodes, env, effs, effects));
       for (let i = 0; i < sig.params.length; i++) unify(sig.params[i], argTs[i]);
       effs.add(e.op);
       return sig.ret;
     }
     case "handle": {
       const bodyEffs = new Set<string>();
-      const bodyT = infer(e.body, env, bodyEffs, effects);
+      const bodyT = infer(e.body, nodes, env, bodyEffs, effects);
       let resultT: Type | null = null;
       for (const c of e.cases) {
         const n = env.extend();
@@ -670,7 +677,7 @@ function infer(
           ? tFun([res(bodyT)], freshVar(), new Set())
           : tFun([sig!.ret], freshVar(), new Set());
         n.vars.set(c.resume, resumeT);
-        const ct = infer(c.body, n, new Set<string>(), effects);
+        const ct = infer(c.body, nodes, n, new Set<string>(), effects);
         if (resultT === null)
           resultT = ct;
         else
@@ -682,53 +689,54 @@ function infer(
       return resultT ?? TNULL;
     }
     case "app": {
+      const fn = nodes[e.fn];
       // Array literals desugar to list(...); type as homogeneous [T].
-      if (e.fn.t === "sym" && e.fn.v === "list") {
+      if (fn.t === "sym" && fn.v === "list") {
         const elem = freshVar();
-        for (const a of e.args) unify(elem, infer(a, env, effs, effects));
+        for (const a of e.args) unify(elem, infer(a, nodes, env, effs, effects));
         return tArr(res(elem));
       }
       // `+` is overloaded: numeric widening or string concatenation.
-      if (e.fn.t === "sym" && e.fn.v === "+") {
-        const at = infer(e.args[0], env, effs, effects);
-        const bt = infer(e.args[1], env, effs, effects);
+      if (fn.t === "sym" && fn.v === "+") {
+        const at = infer(e.args[0], nodes, env, effs, effects);
+        const bt = infer(e.args[1], nodes, env, effs, effects);
         return plusType(at, bt);
       }
       // Numeric operators (- * / %) and comparisons (< > <= >=) widen int/float;
       // unary neg is handled below. Kept out of BINOPS so they get this logic.
-      if (e.fn.t === "sym" && (NUMOPS.has(e.fn.v) || CMPOPS.has(e.fn.v))) {
-        const at = infer(e.args[0], env, effs, effects);
-        const bt = infer(e.args[1], env, effs, effects);
-        const widened = numeric(at, bt, e.fn.v);
-        if (CMPOPS.has(e.fn.v)) return TBOOL;
+      if (fn.t === "sym" && (NUMOPS.has(fn.v) || CMPOPS.has(fn.v))) {
+        const at = infer(e.args[0], nodes, env, effs, effects);
+        const bt = infer(e.args[1], nodes, env, effs, effects);
+        const widened = numeric(at, bt, fn.v);
+        if (CMPOPS.has(fn.v)) return TBOOL;
         // `/` is type-preserving: int/int -> int (truncated at runtime),
         // float/float -> float, and any-operand -> float (don't truncate
         // unknowns). The checker stamps which division this is on the node so
         // the evaluator (which sees untyped JS numbers) knows whether to truncate.
-        if (e.fn.v === "/") { e.div = widened === TINT ? "int" : "float"; return widened; }
+        if (fn.v === "/") { e.div = widened === TINT ? "int" : "float"; return widened; }
         return widened;
       }
-      if (e.fn.t === "sym" && e.fn.v === "neg") {
-        const at = infer(e.args[0], env, effs, effects);
+      if (fn.t === "sym" && fn.v === "neg") {
+        const at = infer(e.args[0], nodes, env, effs, effects);
         return numeric(at, at, "neg");
       }
       // Equality: both operands must share a type (numeric widening lets
       // `int ~ float`). Cross-type (`"a" == 1`) is a type error.
-      if (e.fn.t === "sym" && EQOPS.has(e.fn.v)) {
-        const at = infer(e.args[0], env, effs, effects);
-        const bt = infer(e.args[1], env, effs, effects);
+      if (fn.t === "sym" && EQOPS.has(fn.v)) {
+        const at = infer(e.args[0], nodes, env, effs, effects);
+        const bt = infer(e.args[1], nodes, env, effs, effects);
         unify(at, bt);
         return TBOOL;
       }
-      const ft = infer(e.fn, env, effs, effects);
+      const ft = infer(e.fn, nodes, env, effs, effects);
       const fr = res(ft);
       // When the callee is a known function, an `[...]` literal argument
       // passed against a tuple parameter type is inferred as that tuple
       // (mirroring the `let : [..] = [...]` special case).
       const argTs = e.args.map((a, i) => {
-        if (a.t === "arr" && fr.tag === "fun" && fr.params[i] && res(fr.params[i]).tag === "tup")
-          return inferArr(a, res(fr.params[i]) as TupT, env, effs, effects);
-        return infer(a, env, effs, effects);
+        if (nodes[a].t === "arr" && fr.tag === "fun" && i < fr.params.length && res(fr.params[i]).tag === "tup")
+          return inferArr(a, nodes, res(fr.params[i]) as TupT, env, effs, effects);
+        return infer(a, nodes, env, effs, effects);
       });
       const ret = freshVar();
       if (fr.tag === "fun") {
@@ -748,8 +756,8 @@ function infer(
       const expected = tFun(argTs, ret, new Set());
       try { unify(ft, expected); }
       catch (err) {
-        if (err instanceof TypeError_ && e.fn.t === "sym")
-          throw typeMismatch(ft, expected, e.fn.v);
+        if (err instanceof TypeError_ && fn.t === "sym")
+          throw typeMismatch(ft, expected, fn.v);
         throw err;
       }
       return res(ret);
@@ -768,7 +776,7 @@ function infer(
 }
 
 export function checkProgram(
-  items: Item[],
+  prog: Program,
   acc?: { env: Env, effects: Map<string, EffectSig> },
 ): { env: Env, effects: Map<string, EffectSig>, lastType: Type } {
   let env: Env;
@@ -829,12 +837,12 @@ export function checkProgram(
     });
   }
 
-  for (const it of items.filter(it => "effect" in it))
+  for (const it of prog.items.filter(it => "effect" in it))
     effects.set(it.effect, it.sig);
 
   let lastType: Type = TNULL;
-  for (const it of items.filter(it => "e" in it))
-    lastType = infer(it.e, env, new Set(), effects);
+  for (const it of prog.items.filter(it => "e" in it))
+    lastType = infer(it.e, prog.nodes, env, new Set(), effects);
 
   return {env, effects, lastType};
 }

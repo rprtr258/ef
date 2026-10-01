@@ -1,12 +1,15 @@
 import {res, showT, type FunT} from "./types.ts";
-import type {Expr} from "./parser.ts";
+import type {Expr, ExprID} from "./parser.ts";
 import {apply} from "./eval.ts";
 
 // --- Values (runtime) ---
 export type Closure = {
   tag: "fn",
   params: string[],
-  body: Expr,
+  body: ExprID,
+  // The flat node slice the body's ExprIDs index into; closures carry their
+  // own arena so they stay valid across REPL lines and separate programs.
+  nodes: Expr[],
   env: Env,
   typ?: FunT,
 };
@@ -58,18 +61,28 @@ export class Env {
   vars = new Map<string, Value>();
   constructor(public parent: Env | null) {}
   lookup(name: string): Value {
-    let e: Env | null = this;
+    if (this.vars.has(name))
+      return this.vars.get(name) as Value;
+    let e = this.parent;
     while (e !== null) {
-      if (e.vars.has(name)) return e.vars.get(name) as Value;
+      if (e.vars.has(name))
+        return e.vars.get(name) as Value;
       e = e.parent;
     }
     throw new Error("Unbound symbol: " + name);
   }
   // Assign to the nearest enclosing scope that already binds `name`.
   assignVar(name: string, v: Value): void {
-    let e: Env | null = this;
+    if (this.vars.has(name)) {
+      this.vars.set(name, v);
+      return;
+    }
+    let e = this.parent;
     while (e !== null) {
-      if (e.vars.has(name)) { e.vars.set(name, v); return; }
+      if (e.vars.has(name)) {
+        e.vars.set(name, v);
+        return;
+      }
       e = e.parent;
     }
     throw new Error("Assignment to unbound symbol: " + name);
@@ -82,7 +95,10 @@ export class Env {
 export function globalEnv(): Env {
   const g = new Env(null);
   const bin = (s: string, f: (a: Value, b: Value) => Value) => g.vars.set(s, lift(f));
-  bin("+",  (a, b) => typeof a === "string" || typeof b === "string" ? String(a) + String(b) : num(a) + num(b));
+  bin("+",  (a, b) =>
+    typeof a === "string" && typeof b === "string" ? a + b :
+    typeof a === "number" && typeof b === "number" ? num(a) + num(b) :
+    undefined);
   bin("-",  (a, b) => num(a) - num(b));
   bin("*",  (a, b) => num(a) * num(b));
   bin("%",  (a, b) => num(a) % num(b));
@@ -110,7 +126,7 @@ export function globalEnv(): Env {
     fn: (args, k) => {
       const f = args[0]!;
       const xs = args[1] as Value[];
-      const out: Value[] = new Array(xs.length);
+      const out = new Array<Value>(xs.length);
       function go(i: number): Outcome {
         if (i >= xs.length)
           return k(out);
