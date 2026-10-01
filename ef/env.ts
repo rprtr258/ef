@@ -1,4 +1,4 @@
-import {res, showT, type FunT} from "./types.ts";
+import {showT, type FunT} from "./types.ts";
 import type {Expr, ExprID} from "./parser.ts";
 import {builtins} from "./builtins.ts";
 
@@ -47,7 +47,7 @@ export function show(v: Value): string {
   if (Array.isArray(v))
     return "[" + v.map(show).join(", ") + "]";
   if (typeof v === "object" && !Array.isArray(v) && v.tag === "fn")
-    return v.typ !== undefined ? "[fn: " + showT(res(v.typ)) + "]" : "[fn]";
+    return v.typ !== undefined ? "[fn: " + showT(v.typ) + "]" : "[fn]";
   return "[fn]";
 }
 

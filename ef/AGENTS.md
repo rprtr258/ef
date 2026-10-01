@@ -23,8 +23,9 @@ Hindley-Milner-flavoured type system with effect tracking.
    short-circuit). The AST is a flat node slice: expressions reference
    children by `ExprID` (an index into `Program.nodes`), not by embedding
    child nodes.
-3. **`types.ts`** — the checker. `Type` union, union-find (`Uni` + `binds`),
-   `unify`, `infer`, and a checker `Env` whose values may be `Scheme` thunks
+3. **`types.ts`** — the checker. `Type` union, the `Unifier` class (one instance per check: all
+   union-find/binding state lives there, carried in `Checked`),
+   `unify`, `infer`, `infer`, and a checker `Env` whose values may be `Scheme` thunks
    (polymorphism). `checkProgram(prog, acc?): Checked` — `acc` is the
    previous result passed back to accumulate bindings (the REPL protocol);
    `lastType` is returned fully resolved, as is `Env.lookupResolved`.
@@ -49,9 +50,6 @@ Hindley-Milner-flavoured type system with effect tracking.
    currently one rule (`unused-arg`).
 8. **Frontends** — `cli.ts` (`ef run|types|lint|repl <file>`) and `repl.ts`
    (line loop over `newCtx`/`exec`; bindings accumulate across lines).
-9. **`prims.ts`** — primitive type constants, extracted so `builtins.ts` can
-   import them without an import cycle (`types.ts` imports `builtins`).
-
 ## Working rules
 
 - **`bun run ci` must pass** — host typecheck (`tsc --noEmit`), eslint, and

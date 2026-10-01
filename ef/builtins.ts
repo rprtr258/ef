@@ -5,7 +5,8 @@ import {sleepSync} from "bun";
 import {apply} from "./eval.ts";
 import {num, show, type Cont, type Outcome, type Value} from "./env.ts";
 import {
-  freshEff, freshVar, tArr, tFun,
+  type Unifier,
+  tArr, tFun,
   type EffectSig, type Type,
 } from "./types.ts";
 import {TANY, TBOOL, TFLOAT, TINT, TNULL, TSTR} from "./prims.ts";
@@ -16,14 +17,14 @@ export type Builtin =
   | {
     kind: "fn",
     name: string,
-    t: Type | (() => Type),
+    t: Type | ((u: Unifier) => Type),
     fn: (...args: Value[]) => Value,
   }
   // A builtin that calls ef closures mid-flight (map/each/flatmap): CPS native.
   | {
     kind: "native",
     name: string,
-    t: Type | (() => Type),
+    t: Type | ((u: Unifier) => Type),
     fn: (args: Value[], k: Cont) => Outcome,
   }
   // A builtin effect: declared to the checker via `sig`, and given a default
@@ -41,19 +42,19 @@ export type Builtin =
 export const builtins: Builtin[] = [
     {kind: "fn", name: "not", t: tFun([TBOOL], TBOOL, new Set()), fn: a => (a === false || a === null ? true : false)},
     {kind: "fn", name: "list", t: tFun([TANY], tArr(TANY), new Set()), fn: (...xs) => xs},
-    {kind: "fn", name: "head", t: () => { const a = freshVar(); return tFun([tArr(a)], a, new Set()); }, fn: xs => {
+    {kind: "fn", name: "head", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a)], a, new Set()); }, fn: xs => {
       const a = xs as Value[];
       if (a.length === 0)
         throw new Error("head of empty array");
       return a[0]!;
     }},
-    {kind: "fn", name: "tail", t: () => { const a = freshVar(); return tFun([tArr(a)], tArr(a), new Set()); }, fn: xs => (xs as Value[]).slice(1)},
-    {kind: "fn", name: "concat", t: () => { const a = freshVar(); return tFun([tArr(a), tArr(a)], tArr(a), new Set()); }, fn: (a, b) => (a as Value[]).concat(b as Value[])},
-    {kind: "fn", name: "flat", t: () => { const a = freshVar(); return tFun([tArr(tArr(a))], tArr(a), new Set()); }, fn: xs => (xs as Value[]).flat()},
-    {kind: "fn", name: "len", t: () => { const a = freshVar(); return tFun([tArr(a)], TINT, new Set()); }, fn: xs => (xs as Value[]).length},
+    {kind: "fn", name: "tail", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a)], tArr(a), new Set()); }, fn: xs => (xs as Value[]).slice(1)},
+    {kind: "fn", name: "concat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), tArr(a)], tArr(a), new Set()); }, fn: (a, b) => (a as Value[]).concat(b as Value[])},
+    {kind: "fn", name: "flat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(tArr(a))], tArr(a), new Set()); }, fn: xs => (xs as Value[]).flat()},
+    {kind: "fn", name: "len", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a)], TINT, new Set()); }, fn: xs => (xs as Value[]).length},
     {kind: "fn", name: "strlen", t: tFun([TSTR], TINT, new Set()), fn: s => (s as string).length},
-    {kind: "native", name: "map", t: () => {
-      const a = freshVar(), b = freshVar(), e = freshEff();
+    {kind: "native", name: "map", t: (u: Unifier) => {
+      const a = u.fresh(), b = u.fresh(), e = u.freshEff();
       return tFun([tFun([a], b, e), tArr(a)], tArr(b), e);
     }, fn: (args, k) => {
       const f = args[0]!;
@@ -82,19 +83,19 @@ export const builtins: Builtin[] = [
     {kind: "fn", name: "char", t: tFun([TINT], TSTR, new Set()), fn: a => String.fromCodePoint(num(a) | 0)},
     {kind: "fn", name: "number", t: tFun([TSTR], TFLOAT, new Set()), fn: a => parseFloat(a as string)},
     {kind: "fn", name: "args", t: tFun([], tArr(TSTR), new Set()), fn: () => process.argv.slice(2)},
-    {kind: "fn", name: "get", t: () => { const a = freshVar(); return tFun([tArr(a), TINT], a, new Set()); }, fn: (xs, i) => {
+    {kind: "fn", name: "get", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TINT], a, new Set()); }, fn: (xs, i) => {
       const a = xs as Value[];
       const idx = num(i);
       if (idx < 0 || idx >= a.length || !Number.isInteger(idx))
         throw new Error(`get: index ${idx} out of bounds [0, ${a.length})`);
       return a[idx]!;
     }},
-    {kind: "fn", name: "set", t: () => { const a = freshVar(); return tFun([tArr(a), TINT, a], TNULL, new Set()); }, fn: (xs, i, v) => {
+    {kind: "fn", name: "set", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TINT, a], TNULL, new Set()); }, fn: (xs, i, v) => {
       (xs as Value[])[num(i)] = v;
       return null;
     }},
-    {kind: "native", name: "each", t: () => {
-      const a = freshVar(), b = freshVar(), e = freshEff();
+    {kind: "native", name: "each", t: (u: Unifier) => {
+      const a = u.fresh(), b = u.fresh(), e = u.freshEff();
       return tFun([tFun([a, TINT], b, e), tArr(a)], TNULL, e);
     }, fn: (args, k) => {
       const f = args[0]!, xs = args[1] as Value[];
@@ -105,8 +106,8 @@ export const builtins: Builtin[] = [
       }
       return go(0);
     }},
-    {kind: "native", name: "flatmap", t: () => {
-      const a = freshVar(), b = freshVar(), e = freshEff();
+    {kind: "native", name: "flatmap", t: (u: Unifier) => {
+      const a = u.fresh(), b = u.fresh(), e = u.freshEff();
       return tFun([tFun([a, TINT], tArr(b), e), tArr(a)], tArr(b), e);
     }, fn: (args, k) => {
       const f = args[0]!, xs = args[1] as Value[];

@@ -1,9 +1,45 @@
 import {
-  type FunT, type Type, type EffectSig, type Alias, type Var, type TupField,
+  type FunT, type Type, type EffectSig, type Var, type TupField,
   TINT, TFLOAT, TSTR, TBOOL, TNULL, TANY,
-  tArr, tTup, tFun, freshVar, instantiateAlias,
+  tArr, tTup, tFun,
 } from "./types.ts";
 import {KEYWORDS, lex, type Pos, type Tok} from "./lexer.ts";
+
+// Type variables allocated by the parser: alias type parameters, and
+// arguments omitted from a parametric alias use. They live in a negative id
+// space so they never collide with a checker `Unifier`'s ids; the unifier
+// treats unknown ids as their own root, so parser variables that reach
+// checking (only possible via omitted alias args) behave as ordinary
+// unbound variables.
+let parserVarN = 0;
+function parserVar(): Var {
+  return {tag: "var", id: --parserVarN};
+}
+
+// A top-level program item: a parametric type alias
+// (`type Pair(a, b) = [a, b];`). Type parameters are parser-allocated
+// variables scoped to the body.
+export type Alias = { name: string, tparams: Map<string, Var>, body: Type };
+
+// Instantiate a parametric type alias by substituting its type-parameter
+// variables with the given argument types (fresh parser variables for any
+// missing/trailing args). Pure substitution — no unifier involved.
+// ponytail: no recursion guard — recursive aliases (`type T = [T]`) stack-loop;
+// add a depth cap if recursive aliases become needed.
+function instantiateAlias(al: Alias, args: Type[]): Type {
+  const tm = new Map<number, Type>();
+  let i = 0;
+  for (const [, v] of al.tparams) tm.set(v.id, args[i++] ?? parserVar());
+  return subst(al.body, tm);
+}
+
+function subst(t: Type, tm: Map<number, Type>): Type {
+  if (t.tag === "var") { const s = tm.get(t.id); return s ?? t; }
+  if (t.tag === "arr") return tArr(subst(t.elem, tm));
+  if (t.tag === "tup") return tTup(t.fields.map(f => ({name: f.name, type: subst(f.type, tm)})));
+  if (t.tag === "fun") return tFun(t.params.map(p => subst(p, tm)), subst(t.ret, tm), t.effs);
+  return t;
+}
 
 export type Param = { name: string, typ: Type | null, pos?: Pos };
 
@@ -124,7 +160,7 @@ export class Parser {
     this.eat(":");
     const ret = this.parseType();
     this.eat(";");
-    return {effect: name, sig: {params: params.map(p => p.typ ?? freshVar()), ret}};
+    return {effect: name, sig: {params: params.map(p => p.typ), ret}};
   }
 
   // `type Name(p1, p2) = <body>;` — params are type variables scoped to body.
@@ -137,7 +173,7 @@ export class Parser {
       this.next();
       while (!this.is(")")) {
         const p = this.next();
-        tparams.set(p, freshVar());
+        tparams.set(p, parserVar());
         if (this.is(",")) this.i++;
       }
       this.eat(")");
