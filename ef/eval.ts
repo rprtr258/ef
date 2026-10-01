@@ -3,10 +3,10 @@
 // with monomorphic effect tracking), then a CPS evaluator whose continuation
 // is a plain JS function — giving true multi-shot `resume`.
 
-import {readFileSync, writeFileSync} from "node:fs";
 import {checkProgram} from "./types.ts";
 import {Env, show, type Cont, type Native, type Outcome, type Value, num, globalEnv, type Closure} from "./env.ts";
 import {Parser, type Expr, type ExprID, type HandlerCase} from "./parser.ts";
+import {builtins} from "./builtins.ts";
 
 function isNative(v: Value): v is Native {
   return v !== null && typeof v === "object" && !Array.isArray(v) && v.tag === "native";
@@ -150,41 +150,39 @@ function handle(body: ExprID, nodes: Expr[], cases: HandlerCase[], env: Env, k: 
   return run(evalE(body, nodes, env, (v) => ({tag: "done", value: v})), k);
 }
 
-export function runTop(out: Outcome): Value {
+// An effect interpreter: ops it knows map to host actions; unknown ops fall
+// through to the builtin table's default interpretation.
+export type EffectInterp = Partial<Record<string, (args: Value[], k: Cont) => Outcome>>;
+
+const builtinInterps: Record<string, (args: Value[], k: Cont) => Outcome> = Object.fromEntries(builtins.filter(b => b.kind === "effect").map(b => [b.name, b.interp]));
+
+export function runTop(out: Outcome, interp?: EffectInterp): Value {
   while (true) {
     if (out.tag === "done")
       return out.value;
     // Builtin effect interpretation: when Read/Write/Println/Out reach the
     // top unhandled, perform real I/O and resume the continuation.
-    switch (out.op) {
-      case "Read": out = out.k(readFileSync(out.args[0] as string, "utf8")); break;
-      case "Write": writeFileSync(out.args[0] as string, out.args[1] as string); out = out.k(null); break;
-      case "Println": console.log(show(out.args[0] ?? null)); out = out.k(null); break;
-      case "Out": process.stdout.write(out.args[0] as string); out = out.k(null); break;
-      // Exit terminates the process without resuming; Wait blocks then resumes
-      // with unit. Both are ordinary effects a handler can intercept.
-      case "Exit": { process.exit(num(out.args[0])); }
-      case "Wait": {
-        const end = Date.now() + num(out.args[0]) * 1000;
-        while (Date.now() < end) { /* busy-wait: synchronous CPS evaluator */ }
-        out = out.k(null);
-        break;
-      }
-      case "Random": out = out.k(Math.random()); break;
-      default: throw new Error("Unhandled effect: " + out.op);
+    const custom = interp?.[out.op];
+    if (custom !== undefined) {
+      out = custom(out.args, out.k);
+      continue;
     }
+    if (!(out.op in builtinInterps))
+      throw new Error("Unhandled effect: " + out.op);
+    out = builtinInterps[out.op](out.args, out.k);
   }
 }
 
-// run: typecheck first, then evaluate. Throws on type error.
-export function run(src: string): Value {
+// run: typecheck first, then evaluate. Throws on type error. `interp`
+// optionally overrides the builtin interpretation of unhandled effects.
+export function run(src: string, interp?: EffectInterp): Value {
   const prog = new Parser(src).parseProgram();
   checkProgram(prog);
   let last: Value = null;
   const g = globalEnv();
   for (const it of prog.items) {
     if ("e" in it)
-      last = runTop(evalE(it.e, prog.nodes, g, (v) => ({tag: "done", value: v})));
+      last = runTop(evalE(it.e, prog.nodes, g, (v) => ({tag: "done", value: v})), interp);
   }
   return last;
 }

@@ -1,4 +1,6 @@
 import type {Expr, ExprID, Program} from "./parser";
+import {TANY, TBOOL, TFLOAT, TINT, TNULL, TSTR} from "./prims.ts";
+import {builtins} from "./builtins.ts";
 
 export type Type = Prim | ArrT | TupT | FunT | Var | AnyT;
 export type Prim = { tag: "prim", name: "int" | "float" | "string" | "bool" | "unit" };
@@ -19,12 +21,7 @@ export type FunT = { tag: "fun", params: Type[], ret: Type, effs: Effs };
 export type Var = { tag: "var", id: number };
 export type AnyT = { tag: "any" };
 
-export const TINT: Prim = {tag: "prim", name: "int"};
-export const TFLOAT: Prim = {tag: "prim", name: "float"};
-export const TSTR: Prim = {tag: "prim", name: "string"};
-export const TBOOL: Prim = {tag: "prim", name: "bool"};
-export const TNULL: Prim = {tag: "prim", name: "unit"};
-export const TANY: AnyT = {tag: "any"};
+export {TINT, TFLOAT, TSTR, TBOOL, TNULL, TANY};
 
 export function tArr(elem: Type): ArrT { return {tag: "arr", elem}; }
 export function tTup(fields: TupField[]): TupT { return {tag: "tup", fields}; }
@@ -98,7 +95,7 @@ export function showT(t: Type): string {
 let effCounter = 0;
 const effParent = new Map<number, number>();
 const effBinds = new Map<number, Set<string>>();
-function freshEff(): EffVar {
+export function freshEff(): EffVar {
   const id = effCounter++;
   effParent.set(id, id);
   return {tag: "effvar", id};
@@ -785,56 +782,13 @@ export function checkProgram(
     env = acc.env;
     effects = acc.effects;
   } else {
-    effects = new Map<string, EffectSig>();
-    // Builtin effects, interpreted by the runtime when left unhandled.
-    // `Read(path): string` reads a file; `Write(path, content): null` writes one.
-    // `Println(v: any): null` and `Out(s: string): null` are the console effects.
-    // User `effect` decls below may add or override these.
-    effects.set("Read", {params: [TSTR], ret: TSTR});
-    effects.set("Write", {params: [TSTR, TSTR], ret: TNULL});
-    effects.set("Println", {params: [TANY], ret: TNULL});
-    effects.set("Out", {params: [TSTR], ret: TNULL});
-    // `Exit(code: int): unit` terminates the process by default (never resumes);
-    // `Wait(secs: int): unit` blocks for `secs` seconds then resumes with unit.
-    // Both are effects so a handler can intercept them.
-    effects.set("Exit", {params: [TINT], ret: TNULL});
-    effects.set("Wait", {params: [TINT], ret: TNULL});
-    // `Random(): float` resumes with a random number in [0, 1).
-    effects.set("Random", {params: [], ret: TFLOAT});
+    const bb = builtins;
+    effects = new Map<string, EffectSig>(bb.filter(b => b.kind === "effect").map(b => [b.name, b.sig]));
     env = new Env(null);
-    env.vars.set("not", tFun([TBOOL], TBOOL, new Set()));
-    env.vars.set("list", tFun([TANY], tArr(TANY), new Set()));
-    env.vars.set("head", () => { const a = freshVar(); return tFun([tArr(a)], a, new Set()); });
-    env.vars.set("tail", () => { const a = freshVar(); return tFun([tArr(a)], tArr(a), new Set()); });
-    env.vars.set("concat", () => { const a = freshVar(); return tFun([tArr(a), tArr(a)], tArr(a), new Set()); });
-    env.vars.set("flat", () => { const a = freshVar(); return tFun([tArr(tArr(a))], tArr(a), new Set()); });
-    env.vars.set("len", () => { const a = freshVar(); return tFun([tArr(a)], TINT, new Set()); });
-    env.vars.set("strlen", tFun([TSTR], TINT, new Set()));
-    env.vars.set("map", () => {
-      const a = freshVar(), b = freshVar(), e = freshEff();
-      return tFun([tFun([a], b, e), tArr(a)], tArr(b), e);
-    });
-    // --- builtins added for the star.ink port ---
-    env.vars.set("PI", TFLOAT);
-    env.vars.set("cos", tFun([TFLOAT], TFLOAT, new Set()));
-    env.vars.set("sin", tFun([TFLOAT], TFLOAT, new Set()));
-    env.vars.set("abs", tFun([TFLOAT], TFLOAT, new Set()));
-    env.vars.set("round", tFun([TFLOAT], TINT, new Set()));
-    env.vars.set("sqrt", tFun([TFLOAT], TFLOAT, new Set()));
-    env.vars.set("range", tFun([TINT, TINT, TINT], tArr(TINT), new Set()));
-    env.vars.set("char", tFun([TINT], TSTR, new Set()));
-    env.vars.set("number", tFun([TSTR], TFLOAT, new Set()));
-    env.vars.set("args", tFun([], tArr(TSTR), new Set()));
-    env.vars.set("get", () => { const a = freshVar(); return tFun([tArr(a), TINT], a, new Set()); });
-    env.vars.set("set", () => { const a = freshVar(); return tFun([tArr(a), TINT, a], TNULL, new Set()); });
-    env.vars.set("each", () => {
-      const a = freshVar(), b = freshVar(), e = freshEff();
-      return tFun([tFun([a, TINT], b, e), tArr(a)], TNULL, e);
-    });
-    env.vars.set("flatmap", () => {
-      const a = freshVar(), b = freshVar(), e = freshEff();
-      return tFun([tFun([a, TINT], tArr(b), e), tArr(a)], tArr(b), e);
-    });
+    for (const b of bb) {
+      if (b.kind !== "effect")
+        env.vars.set(b.name, b.t);
+    }
   }
 
   for (const it of prog.items.filter(it => "effect" in it))

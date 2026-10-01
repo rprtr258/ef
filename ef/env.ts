@@ -1,6 +1,6 @@
 import {res, showT, type FunT} from "./types.ts";
 import type {Expr, ExprID} from "./parser.ts";
-import {apply} from "./eval.ts";
+import {builtins} from "./builtins.ts";
 
 // --- Values (runtime) ---
 export type Closure = {
@@ -98,7 +98,7 @@ export function globalEnv(): Env {
   bin("+",  (a, b) =>
     typeof a === "string" && typeof b === "string" ? a + b :
     typeof a === "number" && typeof b === "number" ? num(a) + num(b) :
-    undefined);
+    null);
   bin("-",  (a, b) => num(a) - num(b));
   bin("*",  (a, b) => num(a) * num(b));
   bin("%",  (a, b) => num(a) % num(b));
@@ -109,78 +109,12 @@ export function globalEnv(): Env {
   bin("<=", (a, b) => num(a) <= num(b));
   bin(">=", (a, b) => num(a) >= num(b));
   g.vars.set("neg", lift(a => -num(a)));
-  g.vars.set("not", lift(a => (a === false || a === null ? true : false)));
-  g.vars.set("list", lift((...xs) => xs));
-  g.vars.set("head", lift(xs => {
-    const a = xs as Value[];
-    if (a.length === 0) throw new Error("head of empty array");
-    return a[0]!;
-  }));
-  g.vars.set("tail", lift(xs => (xs as Value[]).slice(1)));
-  g.vars.set("concat", lift((a, b) => (a as Value[]).concat(b as Value[])));
-  g.vars.set("flat", lift(xs => (xs as Value[]).flat()));
-  g.vars.set("len", lift(xs => (xs as Value[]).length));
-  g.vars.set("strlen", lift(s => (s as string).length));
-  g.vars.set("map", {
-    tag: "native",
-    fn: (args, k) => {
-      const f = args[0]!;
-      const xs = args[1] as Value[];
-      const out = new Array<Value>(xs.length);
-      function go(i: number): Outcome {
-        if (i >= xs.length)
-          return k(out);
-        return apply(f, [xs[i]!], v => { out[i] = v; return go(i + 1); });
-      }
-      return go(0);
-    },
-  });
-  // --- builtins added for the star.ink port ---
-  g.vars.set("PI", Math.PI);
-  g.vars.set("cos",    lift(a => Math.cos(num(a))));
-  g.vars.set("sin",    lift(a => Math.sin(num(a))));
-  g.vars.set("abs",    lift(a => Math.abs(num(a))));
-  g.vars.set("round",  lift(a => Math.round(num(a))));
-  g.vars.set("sqrt",   lift(a => Math.sqrt(num(a))));
-  g.vars.set("char",   lift(a => String.fromCodePoint(num(a) | 0)));
-  g.vars.set("number", lift(a => parseFloat(a as string)));
-  g.vars.set("args",   lift(() => process.argv.slice(2)));
-  g.vars.set("range",  lift((a, b, c) => {
-    const s = num(a), e = num(b), st = num(c);
-    const n = st === 0 ? 0 : Math.max(0, Math.ceil((e - s) / st));
-    return Array.from({length: n}, (_, k) => s + k * st);
-  }));
-  g.vars.set("get", lift((xs, i) => {
-    const a = xs as Value[];
-    const idx = num(i);
-    if (idx < 0 || idx >= a.length || !Number.isInteger(idx))
-      throw new Error(`get: index ${idx} out of bounds [0, ${a.length})`);
-    return a[idx]!;
-  }));
-  g.vars.set("set", lift((xs, i, v) => { (xs as Value[])[num(i)] = v; return null; }));
-  g.vars.set("each", {
-    tag: "native",
-    fn: (args, k) => {
-      const f = args[0]!, xs = args[1] as Value[];
-      function go(i: number): Outcome {
-        if (i >= xs.length)
-          return k(null);
-        return apply(f, [xs[i]!, i], () => go(i + 1));
-      }
-      return go(0);
-    },
-  });
-  g.vars.set("flatmap", {
-    tag: "native",
-    fn: (args, k) => {
-      const f = args[0]!, xs = args[1] as Value[];
-      const acc: Value[] = [];
-      function go(i: number): Outcome {
-        if (i >= xs.length) return k(acc);
-        return apply(f, [xs[i]!, i], (v) => { acc.push(...(v as Value[])); return go(i + 1); });
-      }
-      return go(0);
-    },
-  });
+  // Named builtins and their impls come from the one table in builtins.ts.
+  for (const [name, fn] of builtins
+    .filter(b => b.kind !== "effect")
+    .map(({name, kind, fn}) => [name, kind === "fn" ? lift(fn) : {tag: "native", fn}] as [string, Value])
+  ) {
+    g.vars.set(name, fn);
+  }
   return g;
 }

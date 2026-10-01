@@ -16,10 +16,9 @@ export function repl(): void {
   const evalLine = (src: string): void => {
     const prog = new Parser(src).parseProgram();
     const {lastType} = checkProgram(prog, acc);
-    let last: Value = null;
-    for (const it of prog.items)
-      if ("e" in it)
-        last = runTop(evalE(it.e, prog.nodes, g, (v) => ({tag: "done", value: v})));
+    const last: Value = prog.items
+      .filter(it => "e" in it)
+      .reduce((_, it): Value => runTop(evalE(it.e, prog.nodes, g, v => ({tag: "done", value: v}))), null);
     const tail = prog.items[prog.items.length - 1];
     const isExpr = "e" in tail && prog.nodes[tail.e].t !== "let";
     if (isExpr && last !== null)

@@ -17,6 +17,11 @@ export function typeOf(src: string): string {
 
 const tmpPath = (n: string) => join(tmpdir(), `ef-test-${process.pid}-${n}.txt`);
 
+test("run accepts a custom effect interpreter (fakes Read, no fs touched)", () => {
+  expect(run("Read!(\"missing.txt\")", {Read: (_a, k) => k("faked")}))
+    .toBe("faked");
+});
+
 test("Nondeterminism — multi-shot resume, declared effect + return type", () => {
 expect(show(run(`
 effect Choose(opts: [int]): int;

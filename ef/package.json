@@ -4,7 +4,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "lint": "eslint '**/*.{ts,json}'"
+    "lint": "eslint '**/*.{ts,json}'",
+    "typecheck": "tsc --noEmit",
+    "ci": "bun run typecheck && bun run lint && bun test"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
