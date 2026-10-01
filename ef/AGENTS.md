@@ -2,51 +2,64 @@
 
 ## What this is
 
-A single-file TypeScript implementation of a small statically-typed language
+A TypeScript implementation of a small statically-typed language
 with **algebraic effects and effect handlers**, C/Go-flavored syntax, and a
 Hindley-Milner-flavoured type system with effect tracking.
 
-- One source file: `index.ts` (~900 lines).
-- Tests: `index.test.ts` (uses `bun:test`).
-- Run the interpreter: `bun run index.ts` (runs the self-check demos).
-- Run tests: `bun test`.
-- Typecheck the host TS: `bunx tsc --noEmit` (must stay clean).
+- Modules: `lexer.ts`, `parser.ts`, `types.ts` (checker), `env.ts` (runtime
+  values), `builtins.ts` (the one builtin table), `eval.ts` (evaluator +
+  pipeline), `lint.ts`, `prims.ts`, frontends `cli.ts`/`repl.ts`.
+- Tests: `index.test.ts` + `lint.test.ts` (`bun:test`).
+- Run a file: `bun run cli.ts run <file>` (subcommands: `run`, `types`,
+  `lint`, `repl`).
+- Gates: `bun run ci` = typecheck + eslint + tests; all three must stay clean.
 
-## Architecture (top to bottom of `index.ts`)
+## Architecture (top to bottom, dependency order)
 
-1. **Values** — runtime values: `null` (the `unit` value), `boolean`, `number`, `string`, arrays,
-   `{ tag: "fn", params, body, env }` closures.
-2. **Types** — `Prim | ArrT | FunT | Var | AnyT`. Union-find (`Uni`) for type
-   variables, side-map (`binds`) for substitutions. `any` is absorbing.
-3. **AST** — `Expr` discriminated union + `Param`, `HandlerCase`, `Item`,
-   `EffectSig`.
-4. **Lexer** — whitespace/newline-insensitive token stream. `KEYWORDS`,
-   `ONE`/`TWO` char tables.
-5. **Parser** — Pratt for infix (precedence table `Parser.PREC`), recursive
-   descent for the rest. `&&`/`||` desugar to `if` (free short-circuit).
-   Array literals `[a, b]` desugar to `list(a, b)`.
-6. **Type checker** — `infer(e, env, effs, effects)` returns a `Type` and
-   side-effects a `Set<string>` of performed effects. `unify` does the
-   union-find thing. `checkProgram` wires builtins + effect decls.
-7. **Evaluator** — CPS (`evalE(e, env, k)`), multi-shot resume via plain JS
-   functions. `handle` installs a handler map; an effect `Op!(...)` walks up to a matching
-   handler and calls its `resume` (the captured continuation `k`).
-8. **Builtins** — arithmetic/comparison binops, `head`/`tail`/`concat`/`flat`/
-   `len`/`map`/`list`. `map` and the array ops are polymorphic (fresh
-   type vars per use via scheme thunks in the type env). Console output is via
-   the `Println`/`Out` builtin effects, not functions.
-9. **`run` / `show` / `typeOf`** — `run` typechecks then evaluates; `show`
-   pretty-prints a value; `typeOf` returns the inferred type of the last
-   expression as a string (surfaces effect sets).
+1. **`lexer.ts`** — whitespace/newline-insensitive token stream. `KEYWORDS`,
+   `ONE`/`TWO` char tables. `Pos` (1-indexed line/col) lives here.
+2. **`parser.ts`** — Pratt for infix (precedence table `Parser.PREC`),
+   recursive descent for the rest. `&&`/`||` desugar to `if` (free
+   short-circuit). The AST is a flat node slice: expressions reference
+   children by `ExprID` (an index into `Program.nodes`), not by embedding
+   child nodes.
+3. **`types.ts`** — the checker. `Type` union, union-find (`Uni` + `binds`),
+   `unify`, `infer`, and a checker `Env` whose values may be `Scheme` thunks
+   (polymorphism). `checkProgram(prog, acc?): Checked` — `acc` is the
+   previous result passed back to accumulate bindings (the REPL protocol);
+   `lastType` is returned fully resolved, as is `Env.lookupResolved`.
+4. **`env.ts`** — runtime `Value`s, `Outcome`/`Cont` (CPS plumbing), runtime
+   `Env`, `globalEnv()` (the operator natives), `show`.
+5. **`builtins.ts`** — the single table of builtins; adding a builtin means
+   adding one entry here. Three kinds: `fn` (plain, lifted to a native),
+   `native` (CPS — calls ef closures: `map`/`each`/`flatmap`), `effect`
+   (checker `sig` + default host interpretation for
+   `Read`/`Write`/`Println`/`Out`/`Exit`/`Wait`/`Random`). Operators
+   (`+ - * / % == neg` ...) stay in `env.ts`: the checker special-cases them
+   structurally, and no honest type signature exists for them.
+6. **`eval.ts`** — CPS evaluator (`evalE`/`apply`), multi-shot resume via
+   plain JS functions; `Op!(...)` walks up to a matching handler and calls
+   its `resume` (the captured continuation `k`). `runTop(out, interp?)`
+   interprets unhandled effects; `interp` optionally overrides builtin
+   interpretations (tests inject fake fs/time/randomness there). This module
+   also owns the pipeline shared by the REPL and `run`: `newCtx(interp?)`
+   seeds state, `exec(prog, ctx)` checks then evaluates and returns
+   `{value, lastType, lastIsExpr}`; `run(src, interp?)` is a one-shot `exec`.
+7. **`lint.ts`** — lint passes over a parsed program (`LINT_PASSES`);
+   currently one rule (`unused-arg`).
+8. **Frontends** — `cli.ts` (`ef run|types|lint|repl <file>`) and `repl.ts`
+   (line loop over `newCtx`/`exec`; bindings accumulate across lines).
+9. **`prims.ts`** — primitive type constants, extracted so `builtins.ts` can
+   import them without an import cycle (`types.ts` imports `builtins`).
 
 ## Working rules
 
-- **Single file.** Everything lives in `index.ts`. Do not split it.
-- **`tsc --noEmit` must pass clean.** No `any` host types leaking, no unused.
+- **`bun run ci` must pass** — host typecheck (`tsc --noEmit`), eslint, and
+  the test suite all clean.
 - **Tests are the spec's executable form.** When you change the language,
   update `index.test.ts` to match. Self-checks there must stay green.
-- **`bun test` must pass** (currently 14 tests) and `bun run index.ts` must
-  print all `OK`.
+- **The single builtins table.** A new builtin is one entry in
+  `builtins.ts`; never seed it ad hoc into `checkProgram` or `globalEnv`.
 
 ## When the language changes
 
@@ -78,16 +91,23 @@ typing rules.
   When the body is pure, `R ~ bodyType`.
 - **resume `k` type.** `k : (effectRetType) -> R` where `R` is the handle
   result type, not the body type.
-- **Monomorphic user bindings, polymorphic builtins.** `let` does not
-  generalize. Builtins `map`/`head`/`tail`/`concat`/`flat`/`len` get fresh type
-  vars per use via scheme thunks.
-- **Homogeneous arrays.** `[1, "a"]` is a type error; `list` is special-cased
-  in inference to unify all elements to a common `T`.
+- **Value restriction.** `let` with a lambda RHS is generalized
+  (user-defined polymorphic functions); a non-lambda RHS is not. Builtins
+  get fresh type vars per use via scheme thunks.
+- **Bracket literals.** Homogeneous → array; heterogeneous → tuple (named
+  fields, `.x`/`.0` access, destructuring). `list` is the variadic array
+  constructor.
+- **Fresh builtins per program.** `builtins()` returns a fresh array per
+  call; polymorphic thunks/closures are never shared between programs.
+- **Injectable effect interpretation.** `runTop`/`run`/`newCtx` accept an
+  `EffectInterp` override checked before the builtin defaults; the defaults
+  (fs, console, busy-wait, `Math.random`) live in `builtins.ts`.
 
 ## Quick orientation
 
 ```
-bun test              # run the test suite
-bun run index.ts      # run self-check demos
-bunx tsc --noEmit     # host typecheck
+bun run ci                # typecheck + lint + tests
+bun test                  # test suite only
+bun run cli.ts run examples/star.ef
+bun run cli.ts repl       # interactive REPL
 ```

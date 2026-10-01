@@ -1,6 +1,6 @@
 {
   "name": "ef",
-  "module": "index.ts",
+  "module": "cli.ts",
   "type": "module",
   "private": true,
   "scripts": {
