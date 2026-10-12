@@ -369,7 +369,7 @@ class Compiler {
   filledRests = new Set<Fn>();
   // Enclosing body roots (bodyCatch/emitMain): a split-mode if fills an
   // arm's fragment against the body root its emission is nested in.
-  bodyRoots: {stmts: ExprID[], sc: Scope, tail: boolean}[] = [];
+  bodyRoots: {stmts: ExprID[], sc: Scope, tail: boolean, savedCut: ExprID[]}[] = [];
   // Handle node → its after-handle rest fragment (T_III_I). Created when the
   // handle installs its cells; filled by the body-level catcher that catches
   // the handle's Split (or, when a perform inside the body split first, by
@@ -817,7 +817,7 @@ class Compiler {
     const bodyE = this.nodes[bodyId];
     const stmts = bodyE.t === "block" ? bodyE.stmts : [bodyId];
     const bsc = this.scopes.get(bodyId) ?? sc;
-    this.bodyRoots.push({stmts, sc: bsc, tail});
+    this.bodyRoots.push({stmts, sc: bsc, tail, savedCut: [...savedCut]});
     try {
       try {
         this.emitStmtSeq(stmts, f, bsc, tail, ctx);
@@ -1613,8 +1613,12 @@ class Compiler {
         // Non-tail lambda call (§3 emitCall): the caller's body ENDS at
         // the call — return_call_indirect with the continuation in the
         // RET cell {K_RET, rest-of-site fragment, caller frame, ambient
-        // k}; the rest-of-site is emitted into the fragment by the
-        // enclosing body-level catcher via the Split thrown below. The
+        // k}. Direct land emission: the caller's body is complete once the
+        // return_call is on the wire, so the rest-of-site fragment is
+        // filled HERE, synchronously — no Split is thrown and the
+        // body-level catch/replay round-trip is bypassed for these sites
+        // (the chain is still what fillRest re-emits; perform/handle/
+        // map/while sites keep the throw path until stages 3–4). The
         // caller must keep no pending return address: a handler capture
         // dispatches straight through H.next, and the terminal k=0
         // return must not unwind through this call site.
@@ -1627,7 +1631,20 @@ class Compiler {
     op(b, tail || land ? RETURN_CALL_INDIRECT : CALL_INDIRECT); // noSplit land calls tail too (see above)
     b.lebU(T_KABI);
     b.lebU(0);
-    if (splitAt !== null) throw splitAt;
+    if (splitAt !== null) {
+      // Fill the rest-of-site fragment directly at the land call site.
+      // Cut-stack baseline: the same value the enclosing body-level catcher
+      // (bodyCatch/emitMain) restores before its fillRest call, so nested
+      // splits during the fill re-discover clean chains from the body root.
+      const root = this.bodyRoots[this.bodyRoots.length - 1];
+      const savedCut = this.cutStack;
+      this.cutStack = [...root.savedCut];
+      try {
+        this.fillRest(splitAt, root.stmts, root.sc, root.tail);
+      } finally {
+        this.cutStack = savedCut;
+      }
+    }
   }
 
   // One rest-of-site fragment: a T_III_I function (frame, v, kNext) -> i32
@@ -2223,11 +2240,15 @@ class Compiler {
         i32c(b, e.elems.length);
         strd(b, 0);
         for (let k = 0; k < e.elems.length; k++) {
+          // Value-explicit element order: the child's ref is computed BEFORE
+          // the destination address is pushed, so a split inside the child
+          // aborts on a clean operand stack (same ordering as emitApp args).
+          const r = this.cutChildRef(e.elems[k], f, s, ctx,
+            cut === undefined ? "post" : cut[0] === e.elems[k] ? "cut" : "pre");
           g(b, blk);
           i32c(b, 8 + 4 * k);
           op(b, ADD);
-          this.cutChild(e.elems[k], f, s, ctx,
-            cut === undefined ? "post" : cut[0] === e.elems[k] ? "cut" : "pre");
+          this.pushRef(f, r);
           strd(b, 0);
         }
         this.boxArr(f, blk);
@@ -2314,6 +2335,8 @@ class Compiler {
             const kids = [e.fn, ...e.args];
             const ci = kids.indexOf(cut[0]);
             if (ci < 1) throw new WasmError("internal: split chain root mismatch");
+            // Value-explicit operand order: both child refs computed before
+            // either is materialized (a deeper split aborts cleanly).
             const aRef = this.cutChildRef(e.args[0], f, s, ctx, ci === 1 ? "cut" : "pre");
             const bvRef = this.cutChildRef(e.args[1], f, s, ctx, ci === 2 ? "cut" : "pre");
             this.pushRef(f, aRef);
@@ -2335,11 +2358,14 @@ class Compiler {
           this.pushRef(f, this.cutChildRef(e.fn, f, s, ctx, ci === 0 ? "cut" : "pre"));
           st(b, fc);
           this.emitCallClosure(f, fc, e.args.length, (k, ffp) => {
+            // Value-explicit arg order (see emitApp): child ref before the
+            // destination address, so a deeper split aborts cleanly.
+            const r = this.cutChildRef(e.args[k], f, s, ctx,
+              k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
             g(b, ffp);
             i32c(b, 8 + 4 * k);
             op(b, ADD);
-            this.pushRef(f, this.cutChildRef(e.args[k], f, s, ctx,
-              k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post"));
+            this.pushRef(f, r);
             strd(b, 0);
           }, false,
           // Builtins keep the k=0 trampoline convention (see emitApp).
@@ -2761,12 +2787,15 @@ class Compiler {
     // `/` is stamped by the checker (int vs float truncation).
     const fn = this.nodes[e.fn];
     if (fn.t === "sym" && fn.v === "/") {
+      // Value-explicit operand order: both child refs are computed (and
+      // spilled) before either is materialized, so a split inside a child
+      // aborts on a clean operand stack.
       const a = f.i32(), bv = f.i32();
-      this.exprStack(e.args[0], f, s, false, ctx);
-      this.spillIfMapped(e.args[0], f);
+      const aRef = this.keepRef(e.args[0], f, this.expr(e.args[0], f, s, false, ctx));
+      const bvRef = this.keepRef(e.args[1], f, this.expr(e.args[1], f, s, false, ctx));
+      this.pushRef(f, aRef);
       st(b, a);
-      this.exprStack(e.args[1], f, s, false, ctx);
-      this.spillIfMapped(e.args[1], f);
+      this.pushRef(f, bvRef);
       st(b, bv);
       g(b, a);
       ld64(b, 8);
@@ -2779,15 +2808,18 @@ class Compiler {
       return;
     }
     const fc = f.i32();
-    this.exprStack(e.fn, f, s, false, ctx);
-    this.spillIfMapped(e.fn, f);
+    const fnRef = this.keepRef(e.fn, f, this.expr(e.fn, f, s, false, ctx));
+    this.pushRef(f, fnRef);
     st(b, fc);
     this.emitCallClosure(f, fc, e.args.length, (k, ffp) => {
+      // Value-explicit arg order: the child's ref is computed (and spilled)
+      // BEFORE the destination address is pushed, so a split inside the
+      // child aborts on a clean operand stack (blocker (b) by construction).
+      const r = this.keepRef(e.args[k], f, this.expr(e.args[k], f, s, false, ctx));
       g(b, ffp);
       i32c(b, 8 + 4 * k);
       op(b, ADD);
-      this.exprStack(e.args[k], f, s, false, ctx);
-      this.spillIfMapped(e.args[k], f);
+      this.pushRef(f, r);
       strd(b, 0);
     }, tail,
     // Builtins never perform or capture, so they keep the k=0 trampoline
@@ -3789,7 +3821,7 @@ class Compiler {
       // ends the inline body; its fragment re-emits the remaining items.
       const savedCut = this.cutStack;
       const roots = exprs.map(it => it.e);
-      this.bodyRoots.push({stmts: roots, sc: this.globalScope, tail: false});
+      this.bodyRoots.push({stmts: roots, sc: this.globalScope, tail: false, savedCut: [...savedCut]});
       try {
         try {
           for (let k = 0; k < exprs.length; k++) {
