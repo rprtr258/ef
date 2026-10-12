@@ -110,11 +110,15 @@ export function globalEnv(): Env {
   bin(">=", (a, b) => num(a) >= num(b));
   g.vars.set("neg", lift(a => -num(a)));
   // Named builtins and their impls come from the one table in builtins.ts.
-  for (const [name, fn] of builtins
-    .filter(b => b.kind !== "effect")
-    .map(({name, kind, fn}) => [name, kind === "fn" ? lift(fn) : {tag: "native", fn}] as [string, Value])
-  ) {
-    g.vars.set(name, fn);
+  // Values (PI) bind as the value itself — `kind: "fn"` lifts to a CPS native,
+  // `kind: "native"` is already CPS — so runtime binding matches the checker,
+  // which binds every non-effect builtin by its `t`.
+  for (const b of builtins) {
+    if (b.kind === "effect") continue;
+    if (b.kind === "value")
+      g.vars.set(b.name, b.fn);
+    else
+      g.vars.set(b.name, b.kind === "fn" ? lift(b.fn) : {tag: "native", fn: b.fn});
   }
   return g;
 }

@@ -346,6 +346,13 @@ test("math + string builtins: cos/sin/PI/round/abs/char", () => {
   expect(show(run(`char(65)`))).toBe("\"A\"");
   // char uses code points, not UTF-16 code units: 0x1F600 is a supplementary char.
   expect(show(run(`char(128512)`))).toBe("\"\ud83d\ude00\"");
+  // PI is a value builtin: bound as its float, not a fn — so bare use and
+  // arithmetic/call arguments work at runtime, matching the checker's `float`.
+  expect(typeOf(`PI`)).toBe("float");
+  expect(show(run(`PI`))).toBe("3.141592653589793");
+  expect(typeOf(`PI * 100`)).toBe("float");
+  expect(show(run(`PI * 100`))).toBe("314.1592653589793");
+  expect(show(run(`cos(PI)`))).toBe("-1");
 });
 
 test("division is type-preserving: int/int -> int, float/float -> float", () => {

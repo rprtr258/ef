@@ -20,6 +20,14 @@ export type Builtin =
     t: Type | ((u: Unifier) => Type),
     fn: (...args: Value[]) => Value,
   }
+  // A builtin value: bound in the runtime env as the value itself (`fn()`),
+  // not as a native fn. `t` is its non-function checker type.
+  | {
+    kind: "value",
+    name: string,
+    t: Type | ((u: Unifier) => Type),
+    fn: Value,
+  }
   // A builtin that calls ef closures mid-flight (map/each/flatmap): CPS native.
   | {
     kind: "native",
@@ -69,7 +77,7 @@ export const builtins: Builtin[] = [
     }},
 
     // --- builtins added for the star.ink port ---
-    {kind: "fn", name: "PI", t: TFLOAT, fn: () => Math.PI},
+    {kind: "value", name: "PI", t: TFLOAT, fn: Math.PI},
     {kind: "fn", name: "cos", t: tFun([TFLOAT], TFLOAT, new Set()), fn: a => Math.cos(num(a))},
     {kind: "fn", name: "sin", t: tFun([TFLOAT], TFLOAT, new Set()), fn: a => Math.sin(num(a))},
     {kind: "fn", name: "abs", t: tFun([TFLOAT], TFLOAT, new Set()), fn: a => Math.abs(num(a))},
