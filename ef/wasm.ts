@@ -120,6 +120,10 @@ const BR = 0x0c, BR_IF = 0x0d, IF = 0x04, ELSE = 0x05, END = 0x0b, LOOP = 0x03, 
 // --- module-level constants -------------------------------------------------
 
 const TAG_UNIT = 0, TAG_NUM = 1, TAG_BOOL = 2, TAG_STR = 3, TAG_ARR = 4, TAG_CLO = 5;
+// k-cell kinds: cells are 16 bytes {kind@0, a@4, b@8, next@12}. K_RET: a = land
+// thunk funcref index, b = frame the thunk runs over. K_HDL: a = case-table byte
+// offset in the data section, b = the handler frame (hframe).
+const K_RET = 0, K_HDL = 1;
 // Static cells live at fixed offsets so the host can read them too.
 const TRUE_CELL = 0, FALSE_CELL = 16, UNIT_CELL = 32, STATIC_FIXED = 48;
 
@@ -184,8 +188,10 @@ const HOST_IMPORTS = [
 const F_ALLOC = HOST_IMPORTS.length, F_TRUTHY = F_ALLOC + 1, F_EQ = F_ALLOC + 2,
   F_BOX = F_ALLOC + 3, F_LAMBDA0 = F_ALLOC + 4;
 
-// Type section indices.
-const T_I_I = 0, T_V_I = 1, T_IIFF_I = 2, T_F_I = 3, T_II_I = 4;
+// Type section indices. T_KABI is the uniform CPS ABI of every defined
+// function (frame, k) -> i32; T_III_I is the land-thunk ABI (frame, v, k) -> i32.
+const T_I_I = 0, T_V_I = 1, T_IIFF_I = 2, T_F_I = 3, T_II_I = 4,
+  T_KABI = 5, T_III_I = 6;
 
 function impType(n: string): number {
   if (n === "ef_random" || n === "ef_args") return T_V_I;
@@ -199,7 +205,7 @@ function impType(n: string): number {
 class Fn {
   body = new Buf();
   locals: number[] = []; // extra locals in allocation order (valtype bytes)
-  typeIdx = T_I_I; // all ef functions share (i32) -> i32; helpers may differ
+  typeIdx = T_KABI; // program functions share (frame, k) -> i32; helpers may differ
   constructor(public params: number) {}
   i32(): number { this.locals.push(0x7f); return this.params + this.locals.length - 1; }
   f64(): number { this.locals.push(0x7c); return this.params + this.locals.length - 1; }
@@ -261,7 +267,7 @@ class Compiler {
       if ("e" in it) this.emitLambdas(it.e);
     }
     this.funcs.push(...this.emitBuiltins(builtin0));
-    const main = new Fn(1);
+    const main = new Fn(2);
     this.emitMain(main);
     this.funcs.push(main);
     // 5. Assemble.
@@ -385,8 +391,11 @@ class Compiler {
     const e = this.nodes[id];
     switch (e.t) {
       case "lambda": {
-        const f = new Fn(1);
+        const f = new Fn(2);
         this.expr(e.body, f, this.scopes.get(id), true);
+        const v = f.i32();
+        st(f.body, v);
+        this.emitDispatch(f, v); // dead when the body ended in a tail call
         this.funcs.push(f);
         this.emitLambdas(e.body);
         break;
@@ -430,6 +439,7 @@ class Compiler {
     // $alloc(n: i32) -> i32: bump-allocate n (rounded to 8) bytes, growing
     // memory as needed. $hp is the module's mutable heap-pointer global.
     const alloc = new Fn(1);
+    alloc.typeIdx = T_I_I; // internal helper, not part of the CPS ABI
     {
       const b = alloc.body;
       const old = alloc.i32(), need = alloc.i32();
@@ -472,6 +482,7 @@ class Compiler {
     // $truthy(cell: i32) -> i32: JS truthiness — false only for unit and
     // the bool payload 0 (matches `c !== false && c !== null`).
     const truthy = new Fn(1);
+    truthy.typeIdx = T_I_I; // internal helper, not part of the CPS ABI
     {
       const b = truthy.body;
       g(b, 0);
@@ -725,9 +736,12 @@ class Compiler {
   }
 
   // Calls the closure in local `fc`; argEmit(k, ffp) stores argument k into
-  // the fresh frame at local ffp. Leaves the result cell on the stack — or,
-  // when `tail`, returns the callee's result from the enclosing function
-  // directly (return_call_indirect, so tail recursion uses O(1) stack).
+  // the fresh frame at local ffp. The callee has the uniform CPS ABI
+  // (frame, k) -> i32. Leaves the result cell on the stack — or, when `tail`,
+  // returns the callee's result from the enclosing function directly
+  // (return_call_indirect passing the caller's k through, so tail recursion
+  // uses O(1) stack). A non-tail call passes k=0: the callee's dispatch(0, v)
+  // returns its result cell inline (today's zero-overhead arithmetic).
   emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false): void {
     const b = f.body;
     const clob = f.i32(), idx = f.i32(), cf = f.i32(), fs = f.i32(), ffp = f.i32();
@@ -766,10 +780,95 @@ class Compiler {
     strd(b, 4); // argc
     for (let k = 0; k < argc; k++) argEmit(k, ffp);
     g(b, ffp);
+    if (tail) g(b, 1); // tail call: pass the caller's own k through
+    else i32c(b, 0); // k=0: the callee's dispatch(0, v) returns its value inline
     g(b, idx);
     op(b, tail ? RETURN_CALL_INDIRECT : CALL_INDIRECT);
-    b.lebU(T_I_I);
+    b.lebU(T_KABI);
     b.lebU(0);
+  }
+
+  // End-of-body dispatch: completes a T_KABI function whose result cell sits
+  // in local `v`; `k` is the function's second parameter. k == 0 → the value
+  // is the result. K_RET cell → tail-call the land thunk over its frame.
+  // K_HDL cell → scan the case table at k.a for the Return entry (opid -1):
+  // found → write v into the hframe's Return param slot and tail-call the
+  // Return case body with (hframe, k.next); not found → identity default,
+  // propagate the value through k.next (eval.ts:135).
+  emitDispatch(f: Fn, v: number): void {
+    const b = f.body;
+    const k = 1; // k parameter of the (frame, k) -> i32 ABI
+    const nL = f.i32(), iL = f.i32(), found = f.i32(), fnIdx = f.i32(),
+      nparams = f.i32(), ent = f.i32();
+    op(b, BLOCK);
+    b.u8(0x7f); // block (result i32)
+    op(b, LOOP);
+    b.u8(0x40);
+    g(b, k); i32c(b, 0); op(b, EQ);
+    op(b, IF);
+    b.u8(0x40);
+    g(b, v);
+    op(b, BR); b.lebU(2); // leave the block with v
+    op(b, END);
+    g(b, k); ld(b, 0); i32c(b, K_RET); op(b, EQ);
+    op(b, IF);
+    b.u8(0x40);
+    // RET: tail-call the land thunk (frame, v, next); funcref index last.
+    g(b, k); ld(b, 8);
+    g(b, v);
+    g(b, k); ld(b, 12);
+    g(b, k); ld(b, 4);
+    op(b, RETURN_CALL_INDIRECT);
+    b.lebU(T_III_I);
+    b.lebU(0);
+    op(b, END);
+    // K_HDL: scan the case table at k.a (a data-section byte offset, laid out
+    // [n][opid, fnIdx, fsize, nparams]*; the Return case, opid -1, goes last).
+    g(b, k); ld(b, 4); ld(b, 0); st(b, nL);
+    i32c(b, 0); st(b, found);
+    i32c(b, 0); st(b, iL);
+    op(b, BLOCK);
+    b.u8(0x40);
+    op(b, LOOP);
+    b.u8(0x40);
+    g(b, iL); g(b, nL); op(b, GEU); op(b, BR_IF); b.lebU(1);
+    g(b, k); ld(b, 4); i32c(b, 4); op(b, ADD);
+    g(b, iL); i32c(b, 16); op(b, MUL); op(b, ADD); st(b, ent);
+    g(b, ent); ld(b, 0); i32c(b, -1); op(b, EQ);
+    op(b, IF);
+    b.u8(0x40);
+    i32c(b, 1); st(b, found);
+    g(b, ent); ld(b, 4); st(b, fnIdx);
+    g(b, ent); ld(b, 12); st(b, nparams);
+    op(b, BR); b.lebU(2); // exit the scan block
+    op(b, END);
+    g(b, iL); i32c(b, 1); op(b, ADD); st(b, iL);
+    op(b, BR); b.lebU(0);
+    op(b, END);
+    op(b, END);
+    g(b, found);
+    op(b, IF);
+    b.u8(0x40);
+    // Return case: store v into the hframe's Return param slot, then
+    // tail-call the case body as (hframe, k.next); funcref index last.
+    g(b, k); ld(b, 8);
+    g(b, nparams); i32c(b, 1); op(b, ADD); i32c(b, 4); op(b, MUL); i32c(b, 8); op(b, ADD);
+    op(b, ADD);
+    g(b, v);
+    strd(b, 0);
+    g(b, k); ld(b, 8);
+    g(b, k); ld(b, 12);
+    g(b, fnIdx);
+    op(b, RETURN_CALL_INDIRECT);
+    b.lebU(T_KABI);
+    b.lebU(0);
+    op(b, END);
+    // No Return case: k = k.next and dispatch again.
+    g(b, k); ld(b, 12); st(b, k);
+    op(b, BR); b.lebU(0);
+    op(b, END); // loop
+    op(b, 0x00); // unreachable: the loop exits only through the k==0 branch
+    op(b, END); // block
   }
 
   // Calls ef_fail(code, namePtr, a, b); the import throws, so unreachable.
@@ -1230,7 +1329,7 @@ class Compiler {
   emitBuiltins(builtin0: number): Fn[] {
     const out: Fn[] = [];
     for (const {name} of BUILTINS) {
-      const f = new Fn(1);
+      const f = new Fn(2); // (frame, k): builtins are T_KABI trampolines
       const b = f.body;
       const box = () => {
         op(b, CALL);
@@ -1747,6 +1846,11 @@ class Compiler {
         default:
           throw new WasmError(`internal: builtin ${name} not implemented`);
       }
+      // Complete with the ABI's dispatch: builtins are called with k=0, so
+      // dispatch(0, v) just returns the computed cell.
+      const v = f.i32();
+      st(b, v);
+      this.emitDispatch(f, v);
       out.push(f);
     }
     return out;
@@ -1905,20 +2009,26 @@ class Compiler {
     i32c(b, 0);
     strd(b, 4); // argc = 0
     const exprs = this.prog.items.filter((it): it is {e: ExprID} => "e" in it);
+    const v = f.i32();
     if (exprs.length === 0) {
       i32c(b, UNIT_CELL);
-      return;
+      st(b, v);
+    } else {
+      for (let k = 0; k < exprs.length; k++) {
+        this.expr(exprs[k].e, f, this.globalScope);
+        if (k < exprs.length - 1) drp(b);
+        else st(b, v);
+      }
     }
-    for (let k = 0; k < exprs.length; k++) {
-      this.expr(exprs[k].e, f, this.globalScope);
-      if (k < exprs.length - 1) drp(b);
-    }
+    // The JS caller invokes run() with no args; the frame and k params coerce
+    // to 0, so dispatch(0, v) returns the top-level value.
+    this.emitDispatch(f, v);
   }
 
   assemble(): Uint8Array {
     // type section
     const typeSection = new Buf();
-    typeSection.lebU(5);
+    typeSection.lebU(7);
     const emitType = (params: number[]) => {
       typeSection.u8(0x60);
       typeSection.lebU(params.length);
@@ -1931,6 +2041,8 @@ class Compiler {
     emitType([0x7f, 0x7f, 0x7c, 0x7c]); // T2 (i32,i32,f64,f64) -> i32
     emitType([0x7c]);                   // T3 (f64) -> i32
     emitType([0x7f, 0x7f]);             // T4 (i32,i32) -> i32
+    emitType([0x7f, 0x7f]);             // T5 T_KABI: (frame, k) -> i32
+    emitType([0x7f, 0x7f, 0x7f]);       // T6 T_III_I: (frame, v, k) -> i32
 
     // import section
     const impSection = new Buf();
@@ -2132,7 +2244,9 @@ function hostStr(inst: WebAssembly.Instance, cell: number): string {
 }
 
 // compile+instantiate+run: the wasm-target twin of eval.ts's run().
-export function runWasm(src: string): Value {
+// `interp` is accepted (and inert) until the CPS host boundary lands; its
+// EffectInterp type is defined at step 3.
+export function runWasm(src: string, interp?: EffectInterp): Value {
   const bytes = compile(src);
   const mod = new WebAssembly.Module(bytes);
   // Assigned after the imports are built (they close over the instance).
@@ -2199,7 +2313,10 @@ const builtinEffectHosts: Record<string, (args: Value[]) => Value> = {
 };
 
 // compile+instantiate+run: the wasm-target twin of eval.ts's run().
-export function runWasm(src: string, interp?: EffectInterp): Value {
+// TEMP (step 1): kept under a non-exported-name alias so the pre-CPS host
+// boundary below stays live; step 3 wires compileWithOps + the shared op
+// table and restores this as the exported runWasm.
+export function runWasmWithOps(src: string, interp?: EffectInterp): Value {
   const {bytes, ops} = compileWithOps(src);
   const mod = new WebAssembly.Module(bytes);
   // Assigned after the imports are built (they close over the instance).
