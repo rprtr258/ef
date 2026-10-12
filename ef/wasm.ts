@@ -300,12 +300,20 @@ class Compiler {
   hdlCases = new Map<ExprID, {
     cases: {op: string, opid: number, fn: Fn, fsize: number, nparams: number, body: ExprID}[],
     retCase: {fn: Fn, fsize: number, nparams: number, body: ExprID} | null,
+    // Default-Return identity fn for handlers without an explicit Return
+    // case and with npMax > 0: with nparams = npMax, emitDispatch stashes
+    // the Return value at hframe slot npMax + 1 where this fn reads it —
+    // the shared npMax=0 identity fn would clobber param/resume slots.
+    idRet: Fn | null,
+    // Max op-case param count; sizes the hframe and the identity Return fn.
+    npMax: number,
     tableOff: number,
     scope: Scope,
   }>();
-  // Shared default-Return case function (created by assignCaseFns): reads
-  // the Return value emitDispatch stashed in hframe slot 1 and dispatches
-  // it through its k — eval.ts:132's `(v, k2) => k2(v)`.
+  // Shared default-Return case function, used only by handlers with npMax 0
+  // (created by assignCaseFns): reads the Return value emitDispatch stashed
+  // in hframe slot 1 and dispatches it through its k — eval.ts:132's
+  // `(v, k2) => k2(v)`.
   identityRet: Fn | null = null;
   // Shared resume-closure fn (§4.6, created by assignCaseFns): the T_KABI
   // fn every perform site's boxed resume binder points at.
@@ -530,7 +538,7 @@ class Compiler {
           }
         }
         frame.slots = npMax + 2;
-        this.hdlCases.set(id, {cases, retCase, tableOff: 0, scope: hs});
+        this.hdlCases.set(id, {cases, retCase, idRet: null, npMax, tableOff: 0, scope: hs});
         // The handler body binds into the enclosing frame (it runs inline
         // there); case bodies bind into the hframe.
         this.discover(e.body, sc);
@@ -644,10 +652,10 @@ class Compiler {
   // two-k rule: the ambient continuation is the one captured OUTSIDE the
   // handler, so a perform inside a case body walks from there and never
   // re-enters its own handler, and a case body finishing normally
-  // dispatches straight through it (no Return re-wrap). The shared
-  // identity fn dispatches its frame's Return value (slot 1, where
-  // emitDispatch stashes it for the nparams-0 default entry) through its k
-  // — eval.ts:132's (v, k2) => k2(v).
+  // dispatches straight through it (no Return re-wrap). The identity fns
+  // dispatch their frame's Return value (slot 1 for the shared npMax=0 fn,
+  // slot npMax+1 for a per-handler fn — where emitDispatch stashes it for
+  // the matching nparams) through their k — eval.ts:132's (v, k2) => k2(v).
   emitCaseFns(): void {
     const idf = this.identityRet!;
     {
@@ -667,6 +675,15 @@ class Compiler {
       if (info.retCase !== null) {
         this.bodyCatch(info.retCase.body, info.retCase.fn, info.scope, true, INLINE);
         this.funcs.push(info.retCase.fn);
+      } else if (info.idRet !== null) {
+        const idr = info.idRet;
+        const b = idr.body;
+        const v = idr.i32();
+        g(b, 0);
+        ld(b, 8 + 4 * (info.npMax + 1)); // hframe Return slot (nparams = npMax)
+        st(b, v);
+        this.emitDispatch(idr, v);
+        this.funcs.push(idr);
       }
     }
     // The shared resume closure fn (§4.6): (frame, k) -> cell. frame's
@@ -1335,8 +1352,9 @@ class Compiler {
   }
 
   // 2c. Handler case functions (§4.4): funcref indices + hframe sizes, plus
-  // the shared default-Return identity function. Case functions run over the
-  // handler's shared hframe, so every case of one handler shares its fsize.
+  // the default-Return identity functions (shared npMax=0 one, per-handler
+  // ones for npMax > 0). Case functions run over the handler's shared
+  // hframe, so every case of one handler shares its fsize.
   assignCaseFns(): void {
     const idf = new Fn(2);
     idf.idx = F_LAMBDA0 + this.lambdaIdx.size;
@@ -1351,6 +1369,9 @@ class Compiler {
       if (info.retCase !== null) {
         info.retCase.fn.idx = next++;
         info.retCase.fsize = fs;
+      } else if (info.npMax > 0) {
+        info.idRet = new Fn(2);
+        info.idRet.idx = next++;
       }
     }
     const rf = new Fn(2);
@@ -1422,15 +1443,19 @@ class Compiler {
     // Handler case tables (§4.4): [n: i32][opid, fnIdx, fsize, nparams]*.
     // The Return entry (opid -1) always goes last — an explicit case fn when
     // the handler declares one (its nparams = npMax puts the value at slot
-    // npMax+1), otherwise the shared identity fn with nparams 0, which puts
-    // the value at slot 1 where the identity fn reads it back. The perform
-    // walk reads these at runtime, so all facts are data, not immediates.
+    // npMax+1), otherwise an identity fn with matching nparams (the shared
+    // npMax=0 fn puts the value at slot 1 where it reads it back; handlers
+    // with npMax > 0 get a per-handler fn so param/resume slots stay
+    // intact). The perform walk reads these at runtime, so all facts are
+    // data, not immediates.
     for (const [hdlId, info] of this.hdlCases) {
       const entries = info.cases.map(c => ({opid: c.opid, fn: c.fn, fsize: c.fsize, nparams: c.nparams}));
       if (info.retCase !== null) {
         entries.push({opid: -1, fn: info.retCase.fn, fsize: info.retCase.fsize, nparams: info.retCase.nparams});
-      } else {
+      } else if (info.npMax === 0) {
         entries.push({opid: -1, fn: this.identityRet!, fsize: this.frameSizeOf(info.scope), nparams: 0});
+      } else {
+        entries.push({opid: -1, fn: info.idRet!, fsize: this.frameSizeOf(info.scope), nparams: info.npMax});
       }
       const words = [entries.length];
       for (const en of entries) words.push(en.opid, en.fn.idx, en.fsize, en.nparams);
@@ -1596,9 +1621,9 @@ class Compiler {
   // in local `v`; `k` is the function's second parameter. k == 0 → the value
   // is the result. K_RET cell → tail-call the land thunk over its frame.
   // K_HDL cell → scan the case table at k.a for the Return entry (opid -1):
-  // found → write v into the hframe's Return param slot and tail-call the
-  // Return case body with (hframe, k.next); not found → identity default,
-  // propagate the value through k.next (eval.ts:135).
+  // found → write v into the hframe's Return param slot (nparams + 1) and
+  // tail-call the Return case body with (hframe, k.next); not found →
+  // identity default, propagate the value through k.next (eval.ts:135).
   // `k` is the local holding the continuation cell: 1 = the k parameter of
   // the (frame, k) -> i32 ABI, 2 = the k parameter of a land thunk.
   emitDispatch(f: Fn, v: number, k = 1): void {
@@ -2897,6 +2922,12 @@ class Compiler {
   // fragment along the chain through this while.
   emitLoopPass(f: Fn, e: Expr & {t: "while"}, s: Scope, kNext: number, entryIdx: number, condCut?: ExprID[]): void {
     const b = f.body;
+    // A perform/handle inside the CONDITION has no sound split shape (the
+    // cond-cut path would re-emit perform machinery inside the pass's
+    // BLOCK/LOOP), so it gets the same clean rejection as if-arms. The
+    // guard is scoped to the condition only: perform inside the loop BODY
+    // is supported (it splits the body via the pass's RET cell).
+    this.ctlDepth++;
     if (condCut === undefined) {
       this.expr(e.c, f, s, false, {kL: kNext});
     } else if (condCut.length === 0) {
@@ -2904,6 +2935,7 @@ class Compiler {
     } else {
       this.expr(e.c, f, s, false, {kL: kNext, cut: condCut});
     }
+    this.ctlDepth--;
     this.spillIfMapped(e.c, f);
     op(b, CALL);
     b.lebU(F_TRUTHY);
@@ -3197,16 +3229,34 @@ class Compiler {
           st(b, n);
           i32c(b, 0);
           st(b, total);
+          // JS Array.prototype.flat parity: non-array elements pass through
+          // instead of being read as inner arrays (a resumed scalar flowing
+          // back through a map-like land path lands exactly here).
           this.loop(f, () => {
             g(b, n);
           }, k => {
+            const cell = f.i32();
             this.elemAddr(f, xss, k);
-            ld(b, 0); // inner arr cell
+            ld(b, 0); // element cell
+            st(b, cell);
+            g(b, cell);
+            ld(b, 0); // tag
+            i32c(b, TAG_ARR);
+            op(b, EQ);
+            op(b, IF);
+            b.u8(0x40);
+            g(b, cell);
             ld(b, 8); // inner block
             ld(b, 0); // inner len
             g(b, total);
             op(b, ADD);
             st(b, total);
+            op(b, ELSE);
+            g(b, total);
+            i32c(b, 1);
+            op(b, ADD);
+            st(b, total);
+            op(b, END);
           });
           const blk = this.allocArrBlk(f, total);
           const w = f.i32();
@@ -3215,9 +3265,17 @@ class Compiler {
           this.loop(f, () => {
             g(b, n);
           }, k => {
-            const xb = f.i32(), xl = f.i32();
+            const cell = f.i32(), xb = f.i32(), xl = f.i32();
             this.elemAddr(f, xss, k);
             ld(b, 0);
+            st(b, cell);
+            g(b, cell);
+            ld(b, 0);
+            i32c(b, TAG_ARR);
+            op(b, EQ);
+            op(b, IF);
+            b.u8(0x40);
+            g(b, cell);
             ld(b, 8);
             st(b, xb);
             g(b, xb);
@@ -3235,6 +3293,15 @@ class Compiler {
               op(b, ADD);
               st(b, w);
             });
+            op(b, ELSE);
+            this.elemAddr(f, blk, w);
+            g(b, cell);
+            strd(b, 0);
+            g(b, w);
+            i32c(b, 1);
+            op(b, ADD);
+            st(b, w);
+            op(b, END);
           });
           this.boxArr(f, blk);
           break;
