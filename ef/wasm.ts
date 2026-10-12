@@ -235,6 +235,8 @@ class Compiler {
   strLits = new Map<string, number>();    // literal value → static cell offset
   cloOffsets = new Map<string, number>(); // builtin name → static clo offset
   funcs: Fn[] = [];
+  thunks: Fn[] = []; // land thunks (T_III_I), emitted between builtins and main
+  thunk0 = 0;        // funcref table index of the first land thunk
   lambdaIdx = new Map<ExprID, number>();
   piOff = 0;
   hp0 = 0;
@@ -257,6 +259,8 @@ class Compiler {
       if ("e" in it) this.assignLambdas(it.e);
     }
     const builtin0 = F_LAMBDA0 + this.lambdaIdx.size;
+    // Land thunks occupy the table slots between builtins and main.
+    this.thunk0 = builtin0 + BUILTINS.length;
     // 3. Static layout (heap pointer starts after it).
     this.layoutStatics(builtin0);
     this.hp0 = (this.data.b.length + 7) & ~7;
@@ -269,6 +273,9 @@ class Compiler {
     this.funcs.push(...this.emitBuiltins(builtin0));
     const main = new Fn(2);
     this.emitMain(main);
+    // Thunks are appended after all emission (emitMain's top-level calls
+    // create thunks too); main stays the last function (exported as run).
+    this.funcs.push(...this.thunks);
     this.funcs.push(main);
     // 5. Assemble.
     return this.assemble();
@@ -741,8 +748,14 @@ class Compiler {
   // returns the callee's result from the enclosing function directly
   // (return_call_indirect passing the caller's k through, so tail recursion
   // uses O(1) stack). A non-tail call passes k=0: the callee's dispatch(0, v)
-  // returns its result cell inline (today's zero-overhead arithmetic).
-  emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false): void {
+  // returns its result cell inline (today's zero-overhead arithmetic) — or,
+  // when `land`, a freshly allocated RET cell {K_RET, landThunk, $fp, k}:
+  // the callee's dispatch tail-calls the land thunk over the caller's frame
+  // and k, which dispatches the result into the caller's continuation (k=0
+  // here, so the value comes back to this call site and the body continues
+  // inline; the rest-of-site fragment machinery is in place for the
+  // suspendable constructs of later steps).
+  emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false): void {
     const b = f.body;
     const clob = f.i32(), idx = f.i32(), cf = f.i32(), fs = f.i32(), ffp = f.i32();
     g(b, fc);
@@ -781,11 +794,46 @@ class Compiler {
     for (let k = 0; k < argc; k++) argEmit(k, ffp);
     g(b, ffp);
     if (tail) g(b, 1); // tail call: pass the caller's own k through
-    else i32c(b, 0); // k=0: the callee's dispatch(0, v) returns its value inline
+    else if (land) {
+      // Non-tail lambda call: continuation = RET cell {K_RET, landThunk,
+      // caller frame, caller k}; see the class comment on emitDispatch.
+      const cell = f.i32();
+      i32c(b, 16);
+      op(b, CALL);
+      b.lebU(F_ALLOC);
+      st(b, cell);
+      g(b, cell);
+      i32c(b, K_RET);
+      strd(b, 0);
+      g(b, cell);
+      i32c(b, this.landThunk());
+      strd(b, 4);
+      g(b, cell);
+      g(b, 0); // b = the caller's frame
+      strd(b, 8);
+      g(b, cell);
+      g(b, 1); // next = the caller's k
+      strd(b, 12);
+      g(b, cell);
+    } else i32c(b, 0); // k=0: the callee's dispatch(0, v) returns its value inline
     g(b, idx);
     op(b, tail ? RETURN_CALL_INDIRECT : CALL_INDIRECT);
     b.lebU(T_KABI);
     b.lebU(0);
+  }
+
+  // Land thunk for one non-tail lambda call site: a T_III_I rest-of-site
+  // fragment (frame, v, k) -> i32. frame is the caller's frame (spilled
+  // pre-call temps live in its slots); the fragment dispatches the call
+  // result v into the continuation captured in the RET cell (the caller's k
+  // at the call site). One thunk per distinct non-tail call site.
+  landThunk(): number {
+    const f = new Fn(3);
+    f.typeIdx = T_III_I;
+    this.emitDispatch(f, 1, 2); // v = param 1, k = param 2
+    const idx = this.thunk0 + this.thunks.length;
+    this.thunks.push(f);
+    return idx;
   }
 
   // End-of-body dispatch: completes a T_KABI function whose result cell sits
@@ -795,9 +843,10 @@ class Compiler {
   // found → write v into the hframe's Return param slot and tail-call the
   // Return case body with (hframe, k.next); not found → identity default,
   // propagate the value through k.next (eval.ts:135).
-  emitDispatch(f: Fn, v: number): void {
+  // `k` is the local holding the continuation cell: 1 = the k parameter of
+  // the (frame, k) -> i32 ABI, 2 = the k parameter of a land thunk.
+  emitDispatch(f: Fn, v: number, k = 1): void {
     const b = f.body;
-    const k = 1; // k parameter of the (frame, k) -> i32 ABI
     const nL = f.i32(), iL = f.i32(), found = f.i32(), fnIdx = f.i32(),
       nparams = f.i32(), ent = f.i32();
     op(b, BLOCK);
@@ -1308,7 +1357,10 @@ class Compiler {
       op(b, ADD);
       this.expr(e.args[k], f, s);
       strd(b, 0);
-    }, tail);
+    }, tail,
+    // Builtins never perform or capture, so they keep the k=0 trampoline
+    // convention; every other (lambda) call site lands through a RET cell.
+    !(fn.t === "sym" && this.resolve(s, fn.v) === null && this.cloOffsets.has(fn.v)));
   }
 
   // --- builtin trampolines ---------------------------------------------------
@@ -1876,7 +1928,7 @@ class Compiler {
         const push = argLocal(k);
         if (push !== null) push();
         strd(b, 0);
-      });
+      }, false, true); // the callback is user lambda code: land-style call
     };
     if (name === "map") {
       const res = this.allocArrBlk(f, n);
