@@ -2174,3 +2174,62 @@ export function runWasm(src: string): Value {
   const result = (inst.exports.run as () => number)();
   return hostUnbox(inst, result);
 }
+// style — interp entries in wasm land return a value, never an Outcome).
+const builtinEffectHosts: Record<string, (args: Value[]) => Value> = {
+  Read: (args) => readFileSync(args[0] as string, "utf8"),
+  Write: (args) => {
+    writeFileSync(args[0] as string, args[1] as string);
+    return null;
+  },
+  Println: (args) => {
+    console.log(show(args[0] ?? null));
+    return null;
+  },
+  Out: (args) => {
+    process.stdout.write(args[0] as string);
+    return null;
+  },
+  // Exit terminates the process by default (never resumes).
+  Exit: (args) => process.exit(args[0] as number),
+  Wait: (args) => {
+    sleepSync((args[0] as number) * 1000);
+    return null;
+  },
+  Random: () => Math.random(),
+};
+
+// compile+instantiate+run: the wasm-target twin of eval.ts's run().
+export function runWasm(src: string, interp?: EffectInterp): Value {
+  const {bytes, ops} = compileWithOps(src);
+  const mod = new WebAssembly.Module(bytes);
+  // Assigned after the imports are built (they close over the instance).
+  // eslint-disable-next-line prefer-const
+  let inst!: WebAssembly.Instance;
+  const imports = {
+    ef_perform: (opid: number, argsCell: number) => {
+      const op = (ops as (string | undefined)[])[opid];
+      if (op === undefined) throw new Error(`wasm host: unknown effect opid ${opid}`);
+      const args = hostUnbox(inst, argsCell) as Value[];
+      const custom = interp?.[op];
+      if (custom !== undefined) return hostBox(inst, custom(args));
+      const bi = (builtinEffectHosts as
+        Record<string, ((args: Value[]) => Value) | undefined>)[op];
+      if (bi === undefined) throw new Error("Unhandled effect: " + op);
+      return hostBox(inst, bi(args));
+    },
+    ef_char: (cell: number) =>
+      hostBox(inst, String.fromCodePoint((hostUnbox(inst, cell) as number) | 0)),
+    ef_number: (cell: number) => hostBox(inst, parseFloat(hostStr(inst, cell))),
+    ef_args: () => hostBox(inst, process.argv.slice(2)),
+    ef_cos: (cell: number) => hostBox(inst, Math.cos(hostUnbox(inst, cell) as number)),
+    ef_sin: (cell: number) => hostBox(inst, Math.sin(hostUnbox(inst, cell) as number)),
+    ef_fail: (code: number, namePtr: number, a: number, bnum: number) => {
+      if (code === 0) throw new Error("head of empty array");
+      if (code === 1) throw new Error(`get: index ${a} out of bounds [0, ${bnum})`);
+      throw new Error(`.${hostStr(inst, namePtr)}: index ${a} out of bounds [0, ${bnum})`);
+    },
+  };
+  inst = new WebAssembly.Instance(mod, {env: imports});
+  const result = (inst.exports.run as () => number)();
+  return hostUnbox(inst, result);
+}

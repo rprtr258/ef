@@ -112,4 +112,78 @@ describe("wasm backend", () => {
     expect(show(runWasm(`Write!("${p}", "rewritten")`))).toBe("unit");
     expect(readFileSync(p, "utf8")).toBe("rewritten");
   });
+
+  test("user effects compile and escape to the host", () => {
+    // Same unhandled-effect error message as the interpreter.
+    parity("effect Foo(n: int): int; Foo!(1) + 2");
+    // One-shot interp injection overrides the default interpretation.
+    expect(show(runWasm("effect Foo(n: int): int; Foo!(21) * 2", {Foo: args => (args[0] as number) + 1})))
+      .toBe("44");
+  });
+
+  test("handlers: user ops, resume, deep nesting, multi-shot", () => {
+    // Single op, constant result.
+    expect(parity("effect Op(): int; handle { 1 + Op!() } case Op() => k { 7 }")).toBe("7");
+    // Resume with different values.
+    expect(parity("effect Op(): int; handle { Op!() + Op!() } case Op() => k { k(3) }")).toBe("6");
+    // Perform inside a lambda called twice; non-resuming case discards the rest.
+    expect(parity("effect Op(): int; handle { let f = fn() { Op!() }; f() + f() } case Op() => k { 1 }")).toBe("1");
+    // Return case.
+    expect(parity("effect Op(): int; handle { 5 } case Op() => k { 0 }")).toBe("5");
+    // Unhandled effect propagates past a non-matching inner handler.
+    expect(parity("effect A(): int; effect B(): int; handle { handle { A!() } case B() => k { 99 } } case A() => k { 5 }")).toBe("5");
+    // Matching inner handler fires first.
+    expect(parity("effect A(): int; handle { handle { A!() } case A() => k { 10 } } case A() => k { 20 }")).toBe("10");
+    // Multi-shot resume via map: cross-product of two choices (the plan target).
+    expect(parity(`effect Choose(opts: [int]): int;
+      handle { let x = Choose!([1,2,3]); let y = Choose!([10,20]); [x, y] }
+      case Return(v) => k { [v] }
+      case Choose(opts) => k { flat(map(k, opts)) }`))
+      .toBe("[[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]");
+    // Non-resuming case aborts the rest of the body.
+    expect(parity(`effect Div(a: int, b: int): int;
+      handle { let r = Div!(10, 0); [r] }
+      case Div(a, b) => k { if (b == 0) { ["div by zero"] } else { k(a / b) } }`))
+      .toBe("[\"div by zero\"]");
+    // Deep handlers: a log threaded through nested resumes (resume in a
+    // non-tail position inside concat).
+    expect(parity(`effect Log(msg: string): unit;
+      effect Result(v: string): unit;
+      handle { Log!("a"); Log!("b"); Result!("42") }
+      case Log(msg) => k { concat([msg], k(unit)) }
+      case Result(v) => k { [v] }`))
+      .toBe("[\"a\", \"b\", \"42\"]");
+    // Propagation from inside a case body to the next handler.
+    expect(parity(`effect Emit(m: string): unit;
+      effect Other(m: string): unit;
+      handle { handle { Emit!("hi") } case Other(m) => k { ["should-not-match"] } }
+      case Emit(m) => k { [m] }`))
+      .toBe("[\"hi\"]");
+    // Inner handler with a Return case stays live around the resumed segment:
+    // outer case resumes 3, segment yields 4, inner Return case wraps it.
+    expect(parity(`effect A(): int;
+      handle { handle { A!() + 1 } case Return(v) => k { [v] } } case A() => k { k(3) }`))
+      .toBe("[4]");
+    // Builtin effect intercepted by a user handler.
+    expect(parity("effect Read(): int; handle { Read!() + 1 } case Read() => k { 41 }")).toBe("41");
+    // Exit! intercepted without resuming: the code after it never runs.
+    expect(parity(`handle { Out!("pre"); Exit!(42); Out!("post") }
+      case Exit(c) => k { c }
+      case Out(s) => k { Println!(s); k(unit) }`))
+      .toBe("42");
+    // Perform inside call arguments: two invocations get independent frames.
+    expect(parity(`effect Op(): int;
+      handle { let f = fn(a: int, b: int): int { a + b }; f(Op!(), Op!()) }
+      case Op() => k { k(3) }`))
+      .toBe("6");
+  });
+
+  test("interp injection overrides builtin effects (Read mock)", () => {
+    const p = join(tmpdir(), `ef-wasm-mock-${process.pid}.txt`);
+    const src = `Read!("${p}")`;
+    // Interpreter interp entries are CPS (they resume a continuation); the
+    // wasm host boundary is direct style (it returns the resumed value).
+    expect(show(run(src, {Read: (_args, k) => k("mocked")}))).toBe("\"mocked\"");
+    expect(show(runWasm(src, {Read: () => "mocked"}))).toBe("\"mocked\"");
+  });
 });
