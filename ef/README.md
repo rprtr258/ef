@@ -507,12 +507,15 @@ handle {
 
 ```
 ef run <file> [args...]   # typecheck then evaluate; extra args reach `args()`
+ef runwasm <file>         # compile to WebAssembly and run on the embedded host runtime
 ef types <file>           # print every top-level symbol and its inferred type
 ef lint <file>            # run lint passes and report issues (exits 1 on findings)
 ef repl                   # interactive REPL; bindings persist across lines
 ```
 
 The result of the last expression is printed via `show` unless the program calls `Exit!(...)` itself. Programs that loop forever (animations) run until killed.
+
+`ef runwasm` compiles the whole program to a binary `.wasm` module (`wasm.ts`, no external toolchain) and executes it in the host's WebAssembly engine. Output matches `ef run` for the supported subset: values, control flow, closures, arrays/strings, and the builtin effects (which become host import calls). Not supported: `handle`/user effect ops (rejected at compile time — multi-shot continuations have no wasm primitive), and `Exit!` semantics differ slightly (the host import calls `process.exit`).
 
 `ef lint <file>` runs a sequence of lint passes over the parsed program and prints each finding as `rule: message`. The current passes are:
 
@@ -524,6 +527,6 @@ Type `:q` to quit.
 ## 9. Examples on disk
 
 - `examples/newton.ef` — Newton's method square root (`while` + assignment).
-- `examples/tco.ef` — recursion probe. The CPS evaluator is fully tail-call-structured, so Bun/JSC's TCO keeps the stack O(1) for both tail and non-tail calls; non-tail recursion costs heap allocation (linear time), not stack overflow.
+- `examples/tco.ef` — recursion probe. The CPS evaluator is fully tail-call-structured, so Bun/JSC's TCO keeps the stack O(1) for both tail and non-tail calls; non-tail recursion costs heap allocation (linear time), not stack overflow. The wasm target also runs it: calls in tail position compile to `return_call_indirect` (O(1) wasm stack), but each call still bump-allocates a frame block, so very deep recursion grows the heap linearly (100M depth ≈ 1.6 GB, no GC).
 - `examples/star.ef` — rotating 3D star polygon (port of `ink/samples/star.ink`).
   Run: `ef run examples/star.ef <vertices> <step>` where `0 < step < vertices/2`.

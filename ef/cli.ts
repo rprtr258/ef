@@ -1,9 +1,12 @@
 // ef CLI. `ef run <file>` typechecks then evaluates a source file.
+// `ef runwasm <file>` compiles the file to WebAssembly and runs it on the
+// embedded host runtime (same observable output as `ef run`).
 // `ef types <file>` prints every top-level symbol and its inferred type.
 // `ef repl` starts an interactive REPL with persistent bindings.
 import {readFileSync} from "fs";
 import {styleText} from "util";
 import {run} from "./eval.ts";
+import {runWasm} from "./wasm.ts";
 import {type Type, showT, checkProgram} from "./types.ts";
 import {lint} from "./lint.ts";
 import {repl} from "./repl.ts";
@@ -39,6 +42,15 @@ function main(cmd: string, args: string[]) {
     console.log(show(result));
     return;
   }
+  case "runwasm": {
+    if (args.length === 0) {
+      break;
+    }
+    const src = readFileSync(args[0]).toString();
+    const result = runWasm(src);
+    console.log(show(result));
+    return;
+  }
   case "types": {
     if (args.length === 0) {
       break;
@@ -64,7 +76,7 @@ function main(cmd: string, args: string[]) {
     process.exit(1);
   }
   }
-  console.error("Usage: ef run <file> [args...] | ef types <file> | ef lint <file> | ef repl");
+  console.error("Usage: ef run <file> [args...] | ef runwasm <file> | ef types <file> | ef lint <file> | ef repl");
   process.exit(2);
 }
 
