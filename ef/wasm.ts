@@ -2318,7 +2318,7 @@ class Compiler {
           if (ci === 0) throw new WasmError("internal: split chain root mismatch");
           this.pushRef(f, this.cutChildRef(e.args[0], f, s, ctx, ci === 1 ? "cut" : ci < 0 ? "post" : "pre"));
           ld64(b, 8);
-          this.pushRef(f, this.cutChildRef(e.args[1], f, s, ctx, ci === 2 ? "cut" : ci < 0 ? "post" : "pre"));
+          this.pushRef(f, this.cutChildRef(e.args[1], f, s, ctx, ci === 2 ? "cut" : "post"));
           ld64(b, 8);
           op(b, FDIV);
           if (e.div === "int") op(b, FTRUNC);
