@@ -238,6 +238,29 @@ class Fn {
 type Ctx = {kL: number, cut?: ExprID[]};
 const INLINE: Ctx = {kL: 1};
 
+// Value-explicit rewrite (stage 1): every expression emitter RETURNS a
+// ValueRef instead of leaving a cell pointer on the wasm operand stack.
+// 1. ValueRef = one of: const (immediate cell), local (wasm local index,
+//    single-use), slot (frame slot: $fp + offset — suspension-stable).
+//    Emitters never leave implicit operands on the stack across emitter
+//    calls. Short-lived stack use is allowed ONLY inside a helper that
+//    fully balances before returning (pushRef materializes a ref onto the
+//    stack at its consume point).
+// 2. Suspension rule: a ref consumed AFTER a potential suspension point
+//    (non-tail call, perform, handle, land) must be a slot or const —
+//    materialize locals to frame slots at the split (keepRef; the operand
+//    spill map computeSpills fills is the materializer).
+// 3. ONE emission shape per node — no direct/cut dual branches. Nodes whose
+//    stage-2/3 subsystems still expect stack-delivered operands (emitApp,
+//    arr, perform args) bridge through exprStack/cutChild: those push the
+//    child's ref so the legacy emission loads it, and the site's cut paths
+//    reload through the same bridge.
+type ValueRef =
+  | {k: "const", off: number} // immediate cell (literal / unit / bool / placed closure)
+  | {k: "local", l: number}   // wasm local index holding the cell pointer (single-use)
+  | {k: "slot", off: number}; // frame slot: cell pointer at $fp + off
+const REF_UNIT: ValueRef = {k: "const", off: UNIT_CELL};
+
 // Compile-time split signal: a perform/handle site or a non-builtin call
 // site ended the inline wasm body (return_call into a case function, the
 // after-site fragment, or the host boundary). The rest of the enclosing body is compiled once into
@@ -774,9 +797,9 @@ class Compiler {
       return;
     }
     for (let k = 0; k < stmts.length; k++) {
-      this.expr(stmts[k], f, sc, tail && k === stmts.length - 1, ctx);
-      if (k < stmts.length - 1) drp(b);
-      else {
+      const r = this.expr(stmts[k], f, sc, tail && k === stmts.length - 1, ctx);
+      if (k === stmts.length - 1) {
+        this.pushRef(f, r);
         const v = f.i32();
         st(b, v);
         this.emitDispatch(f, v, ctx.kL);
@@ -831,15 +854,13 @@ class Compiler {
     try {
       for (let k = 0; k < root.length; k++) {
         if (k < ci) continue; // executed before the split
-        if (k === ci) {
-          this.expr(sp.chain[0], g, sc, tail && k === root.length - 1, {kL: 2, cut: sp.chain.slice(1)});
-        } else {
-          this.expr(root[k], g, sc, tail && k === root.length - 1, {kL: 2});
-        }
-        if (k < root.length - 1) drp(b);
-        else {
+        const r = (k === ci)
+          ? this.expr(sp.chain[0], g, sc, tail && k === root.length - 1, {kL: 2, cut: sp.chain.slice(1)})
+          : this.expr(root[k], g, sc, tail && k === root.length - 1, {kL: 2});
+        if (k === root.length - 1) {
+          this.pushRef(g, r);
           const v = g.i32();
-          st(b, v);
+          st(g.body, v);
           this.emitDispatch(g, v, 2); // kNext param
         }
       }
@@ -859,15 +880,16 @@ class Compiler {
   // statements before index ci already executed (skipped — surviving values
   // reload from spill slots), stmts[ci] continues the fragment with its
   // value being the fragment's v param, statements after it re-emit inline.
-  emitStmtsFrom(stmts: ExprID[], f: Fn, s: Scope, ctx: Ctx, ci: number, cut: ExprID[], tail: boolean): void {
+  // Returns the last statement's ref; pushRef it where the caller needs the
+  // legacy stack operand (handle/while-cut do, block-cut returns it).
+  emitStmtsFrom(stmts: ExprID[], f: Fn, s: Scope, ctx: Ctx, ci: number, cut: ExprID[], tail: boolean): ValueRef {
+    let r: ValueRef = REF_UNIT;
     for (let k = ci; k < stmts.length; k++) {
-      if (k === ci) {
-        this.expr(stmts[k], f, s, tail && k === stmts.length - 1, {kL: ctx.kL, cut: cut.slice(1)});
-      } else {
-        this.expr(stmts[k], f, s, tail && k === stmts.length - 1, {kL: ctx.kL});
-      }
-      if (k < stmts.length - 1) drp(f.body);
+      r = (k === ci)
+        ? this.expr(stmts[k], f, s, tail && k === stmts.length - 1, {kL: ctx.kL, cut: cut.slice(1)})
+        : this.expr(stmts[k], f, s, tail && k === stmts.length - 1, {kL: ctx.kL});
     }
+    return r;
   }
 
   // --- helper functions (fixed indices 11..14) -------------------------------
@@ -1479,21 +1501,23 @@ class Compiler {
     return null;
   }
 
-  // Leaves the cell pointer of `name` on the stack ($fp is local 0).
-  emitSym(f: Fn, sc: Scope, name: string): void {
+  // Returns the cell pointer of `name` as a ValueRef: a frame slot for the
+  // current frame, a fresh local for parent frames (the frame walk balances
+  // its own stack), or an immediate for placed closures.
+  emitSym(f: Fn, sc: Scope, name: string): ValueRef {
     const b = f.body;
     const r = this.resolve(sc, name);
     if (r !== null) {
+      if (r.d === 0) return {k: "slot", off: 8 + 4 * r.i};
+      const v = f.i32();
       g(b, 0);
       for (let k = 0; k < r.d; k++) ld(b, 0); // walk parent frames
       ld(b, 8 + 4 * r.i);
-      return;
+      st(b, v);
+      return {k: "local", l: v};
     }
     const clo = this.cloOffsets.get(name);
-    if (clo !== undefined) {
-      i32c(b, clo);
-      return;
-    }
+    if (clo !== undefined) return {k: "const", off: clo};
     throw new WasmError(`Unbound symbol: ${name}`);
   }
 
@@ -1901,22 +1925,48 @@ class Compiler {
     op(b, SELECT);
   }
 
-  // The main expression emitter. Leaves exactly one i32 (cell pointer).
-  // Value of a child that already ran before a split deeper among its
-  // siblings: reload its spilled value, or (pure children) re-emit it
-  // inline — observationally identical.
-  preCut(id: ExprID, f: Fn, s: Scope, ctx: Ctx): void {
-    const sp = this.operandSpill.get(id) ?? this.valSpill.get(id);
-    if (sp !== undefined) {
-      g(f.body, 0);
-      ld(f.body, 8 + 4 * sp);
-      return;
-    }
-    this.expr(id, f, s, false, {kL: ctx.kL});
+  // Materialize a ValueRef onto the operand stack, at its consume point.
+  // This is the ONLY sanctioned place short-lived stack values cross an
+  // emitter boundary (the helper fully balances the stack per ref).
+  pushRef(f: Fn, r: ValueRef): void {
+    const b = f.body;
+    if (r.k === "const") i32c(b, r.off);
+    else if (r.k === "local") g(b, r.l);
+    else { g(b, 0); ld(b, r.off); }
   }
 
-  // Persist a just-computed value into its operand spill slot so a later
-  // split's fragment reloads it instead of re-running the computation.
+  // Stage-2/3 bridge: deliver a child's ref as the stack operand the legacy
+  // emitter expects (emitApp, emitLoopPass, arr, perform args).
+  exprStack(id: ExprID, f: Fn, s?: Scope, tail = false, ctx: Ctx = INLINE): void {
+    this.pushRef(f, this.expr(id, f, s, tail, ctx));
+  }
+
+  // Persist a ref into the operand spill slot computeSpills allocated for
+  // `id` (if any) and return the slot ref: a value that must survive a
+  // later split is read back from the frame by the fragment machinery.
+  keepRef(id: ExprID, f: Fn, r: ValueRef): ValueRef {
+    const sp = this.operandSpill.get(id);
+    if (sp === undefined) return r;
+    const b = f.body;
+    this.pushRef(f, r);
+    const t = f.i32();
+    st(b, t);
+    g(b, 0);
+    g(b, t);
+    strd(b, 8 + 4 * sp);
+    return {k: "slot", off: 8 + 4 * sp};
+  }
+
+  // Value of a child that already ran before a split deeper among its
+  // siblings: a slot ref to its spilled value, or (pure children) re-emit
+  // it inline — observationally identical.
+  preCut(id: ExprID, f: Fn, s: Scope, ctx: Ctx): ValueRef {
+    const sp = this.operandSpill.get(id) ?? this.valSpill.get(id);
+    if (sp !== undefined) return {k: "slot", off: 8 + 4 * sp};
+    return this.expr(id, f, s, false, {kL: ctx.kL});
+  }
+
+  // Legacy stack bridge for spillIfMapped consumers (emitApp, emitLoopPass).
   spillIfMapped(id: ExprID, f: Fn): void {
     const sp = this.operandSpill.get(id);
     if (sp === undefined) return;
@@ -1929,27 +1979,33 @@ class Compiler {
     g(b, t);
   }
 
-  // One child of a cut node during fragment re-emission. "cut": the child
-  // holding the deeper split site — continues the fragment chain (its value
-  // is the fragment's v param). "pre": a sibling evaluated BEFORE the cut
-  // child — reload its spilled value, or re-emit pure code inline (preCut).
-  // "post": a sibling evaluated AFTER the cut child (or no cut at all) —
-  // re-emit inline. Persists any mapped operand spill slot either way.
+  // One child of a cut node during fragment re-emission, ref-native.
+  // "cut": the child holding the deeper split site — continues the fragment
+  // chain (its value is the fragment's v param). "pre": a sibling evaluated
+  // BEFORE the cut child — a slot ref into its spill, or re-emit pure code
+  // inline (preCut). "post": a sibling evaluated AFTER the cut child (or no
+  // cut at all) — re-emit inline. Persists any mapped operand spill slot.
+  cutChildRef(child: ExprID, f: Fn, s: Scope, ctx: Ctx, mode: "cut" | "pre" | "post"): ValueRef {
+    if (mode === "cut") return this.keepRef(child, f, this.expr(child, f, s, false, {kL: ctx.kL, cut: ctx.cut!.slice(1)}));
+    if (mode === "pre") return this.keepRef(child, f, this.preCut(child, f, s, ctx));
+    return this.keepRef(child, f, this.expr(child, f, s, false, {kL: ctx.kL}));
+  }
+
+  // Legacy bridge: deliver the child's ref as a stack operand (arr, emitPerform).
   cutChild(child: ExprID, f: Fn, s: Scope, ctx: Ctx, mode: "cut" | "pre" | "post"): void {
-    if (mode === "cut") this.expr(child, f, s, false, {kL: ctx.kL, cut: ctx.cut!.slice(1)});
-    else if (mode === "pre") this.preCut(child, f, s, ctx);
-    else this.expr(child, f, s, false, {kL: ctx.kL});
-    this.spillIfMapped(child, f);
+    this.pushRef(f, this.cutChildRef(child, f, s, ctx, mode));
   }
 
   // The split site is this node itself inside a fragment: its value is the
   // fragment's v param (local 1), persisted for later fragments that reload it.
-  fragV(id: ExprID, f: Fn): void {
-    g(f.body, 1);
-    this.spillIfMapped(id, f);
+  fragV(id: ExprID, f: Fn): ValueRef {
+    return this.keepRef(id, f, {k: "local", l: 1});
   }
 
-  expr(id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = INLINE): void {
+  // The main expression emitter. Returns the expression's cell as a
+  // ValueRef — never leaves an implicit operand on the stack (see the
+  // value-explicit invariants above the ValueRef type).
+  expr(id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = INLINE): ValueRef {
     const e = this.nodes[id];
     // Lambda/block nodes carry their own scope; other nodes inherit sc.
     const s = this.scopes.get(id) ?? sc;
@@ -1972,20 +2028,15 @@ class Compiler {
     try {
     switch (e.t) {
       case "num":
-        i32c(b, this.numLits.get(e.v)!);
-        break;
+        return {k: "const", off: this.numLits.get(e.v)!};
       case "str":
-        i32c(b, this.strLits.get(e.v)!);
-        break;
+        return {k: "const", off: this.strLits.get(e.v)!};
       case "bool":
-        i32c(b, e.v ? TRUE_CELL : FALSE_CELL);
-        break;
+        return {k: "const", off: e.v ? TRUE_CELL : FALSE_CELL};
       case "unit":
-        i32c(b, UNIT_CELL);
-        break;
+        return REF_UNIT;
       case "sym":
-        this.emitSym(f, s, e.v);
-        break;
+        return this.emitSym(f, s, e.v);
       case "lambda": {
         // clo block {fn_idx, frame, fsize} then cell {TAG_CLO, clo}
         const blk = f.i32(), cell = f.i32();
@@ -2013,60 +2064,51 @@ class Compiler {
         g(b, blk);
         strd(b, 8);
         g(b, cell);
-        break;
+        const v = f.i32();
+        st(b, v);
+        return {k: "local", l: v};
       }
       case "let": {
         // Binds in the current frame (mirrors the interpreter: the binding
         // exists before the value is computed, so `let x = x` sees null).
         const slot = s.map.get(e.name)!;
-        const v = f.i32();
-        this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
-        st(b, v);
-        g(b, 0);
-        g(b, v);
+        const vr = this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
+        g(b, 0); // frame address
+        this.pushRef(f, vr);
         strd(b, 8 + 4 * slot);
-        i32c(b, UNIT_CELL);
-        break;
+        return REF_UNIT;
       }
       case "dlet": {
-        const arr = f.i32(), blk = f.i32();
-        this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
-        st(b, arr);
-        g(b, arr);
+        const blk = f.i32();
+        const vr = this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
+        this.pushRef(f, vr);
         ld(b, 8);
         st(b, blk);
         for (let k = 0; k < e.fields.length; k++) {
           const slot = s.map.get(e.fields[k].name)!;
-          const v = f.i32();
+          // cellAt(blk, 8+4k) → frame slot (balances its stack in place)
+          g(b, 0);
           g(b, blk);
           ld(b, 8 + 4 * k);
-          st(b, v);
-          g(b, 0);
-          g(b, v);
           strd(b, 8 + 4 * slot);
         }
-        i32c(b, UNIT_CELL);
-        break;
+        return REF_UNIT;
       }
       case "assign": {
         const r = this.resolve(s, e.name);
         if (r === null) throw new WasmError(`Assignment to unbound symbol: ${e.name}`);
-        const v = f.i32();
-        this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
-        st(b, v);
+        const vr = this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
         g(b, 0);
         for (let k = 0; k < r.d; k++) ld(b, 0);
-        g(b, v);
+        this.pushRef(f, vr);
         strd(b, 8 + 4 * r.i);
-        i32c(b, UNIT_CELL);
-        break;
+        return REF_UNIT;
       }
       case "if": {
         if (cut !== undefined && cut.length === 0) {
           // The split site itself inside a fragment: a split-mode if's
           // value arrives via the after-if fragment's v param.
-          this.fragV(id, f);
-          break;
+          return this.fragV(id, f);
         }
         if (cut !== undefined) {
           // The condition or an arm continues the fragment. When the cut is
@@ -2078,23 +2120,25 @@ class Compiler {
           if (ci < 0) throw new WasmError("internal: split chain root mismatch");
           const dispatchShape: boolean = ci !== 0 || this.splits(e.a) || this.splits(e.b);
           if (!dispatchShape) {
-            // Value shape: no arm can split, arms leave values inline.
-            this.cutChild(e.c, f, s, ctx, ci === 0 ? "cut" : "pre");
+            // Value shape: no arm can split, arms leave values inline —
+            // each arm's ref is pushed as the IF block's result value.
+            this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, ci === 0 ? "cut" : "pre"));
             op(b, CALL);
             b.lebU(F_TRUTHY);
             op(b, IF);
             b.u8(0x7f); // result i32
             this.ctlDepth++;
-            this.cutChild(e.a, f, s, ctx, ci === 1 ? "cut" : ci === 2 ? "pre" : "post");
+            this.pushRef(f, this.cutChildRef(e.a, f, s, ctx, ci === 1 ? "cut" : ci === 2 ? "pre" : "post"));
             op(b, ELSE);
-            this.cutChild(e.b, f, s, ctx, ci === 2 ? "cut" : "post");
+            this.pushRef(f, this.cutChildRef(e.b, f, s, ctx, ci === 2 ? "cut" : "post"));
             this.ctlDepth--;
             op(b, END);
-            this.spillIfMapped(id, f);
-            break;
+            const v = f.i32();
+            st(b, v);
+            return this.keepRef(id, f, {k: "local", l: v});
           }
           this.emitIfDispatch(id, e, f, s, ctx, ci);
-          break;
+          return REF_UNIT; // unreachable: the dispatch-shape if throws Split
         }
         if (this.splits(e.a) || this.splits(e.b)) {
           // Split-mode if: an arm containing a split site cannot keep the
@@ -2104,29 +2148,33 @@ class Compiler {
           // split site whose fragment (filled by the body-level catcher)
           // receives the if's value.
           this.emitIfDispatch(id, e, f, s, ctx);
-          break;
+          return REF_UNIT; // unreachable: the dispatch-shape if throws Split
         }
-        this.expr(e.c, f, s, false, ctx);
-        this.spillIfMapped(e.c, f);
+        // Fresh value shape: condition and both arms are value-explicit;
+        // each arm's ref is pushed as the IF block's result value.
+        this.pushRef(f, this.keepRef(e.c, f, this.expr(e.c, f, s, false, ctx)));
         op(b, CALL);
         b.lebU(F_TRUTHY);
         op(b, IF);
         b.u8(0x7f); // result i32
         this.ctlDepth++;
-        this.expr(e.a, f, s, tail, ctx);
-        this.spillIfMapped(e.a, f);
+        this.pushRef(f, this.keepRef(e.a, f, this.expr(e.a, f, s, tail, ctx)));
         op(b, ELSE);
-        this.expr(e.b, f, s, tail, ctx);
-        this.spillIfMapped(e.b, f);
+        this.pushRef(f, this.keepRef(e.b, f, this.expr(e.b, f, s, tail, ctx)));
         this.ctlDepth--;
         op(b, END);
-        this.spillIfMapped(id, f);
-        break;
+        const v = f.i32();
+        st(b, v);
+        return this.keepRef(id, f, {k: "local", l: v});
       }
       case "while": {
+        if (cut !== undefined && cut.length === 0) {
+          // The loop exited: its unit value is the fragment's v param.
+          return this.fragV(id, f);
+        }
         if (this.splits(e.c) || this.splits(e.body)) {
           this.emitWhileCPS(id, e, f, s, ctx, cut);
-          break;
+          return REF_UNIT; // unreachable: the split-mode while throws Split
         }
         if (cut !== undefined) throw new WasmError("internal: split crossing a while");
         op(b, BLOCK);
@@ -2134,39 +2182,36 @@ class Compiler {
         op(b, LOOP);
         b.u8(0x40);
         this.ctlDepth++;
-        this.expr(e.c, f, s, false, ctx);
+        this.pushRef(f, this.expr(e.c, f, s, false, ctx));
         op(b, CALL);
         b.lebU(F_TRUTHY);
         op(b, EQZ);
         op(b, BR_IF);
         b.lebU(1);
         this.ctlDepth++;
-        this.expr(e.body, f, s, false, ctx);
+        this.expr(e.body, f, s, false, ctx); // body value dropped: nothing on the stack
         this.ctlDepth -= 2;
-        drp(b);
         op(b, BR);
         b.lebU(0);
         op(b, END);
         op(b, END);
-        i32c(b, UNIT_CELL);
-        break;
+        return REF_UNIT;
       }
       case "block": {
         if (cut === undefined) {
+          let last: ValueRef = REF_UNIT;
           for (let k = 0; k < e.stmts.length; k++) {
-            this.expr(e.stmts[k], f, s, tail && k === e.stmts.length - 1, ctx);
-            if (k < e.stmts.length - 1) drp(b);
+            // Dropped statements leave nothing on the stack.
+            last = this.expr(e.stmts[k], f, s, tail && k === e.stmts.length - 1, ctx);
           }
-          if (e.stmts.length === 0) i32c(b, UNIT_CELL);
-          break;
+          return last;
         }
         // Cut path through the block: statements before the cut site already
         // executed (skipped), the cut statement continues the fragment with
         // its value from the fragment's v param, the rest re-emits inline.
         const ci = e.stmts.indexOf(cut[0]);
         if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-        this.emitStmtsFrom(e.stmts, f, s, ctx, ci, cut, tail);
-        break;
+        return this.emitStmtsFrom(e.stmts, f, s, ctx, ci, cut, tail);
       }
       case "arr": {
         const blk = f.i32();
@@ -2186,11 +2231,13 @@ class Compiler {
           strd(b, 0);
         }
         this.boxArr(f, blk);
-        break;
+        const v = f.i32();
+        st(b, v);
+        return {k: "local", l: v};
       }
       case "field": {
         const o = f.i32(), blk = f.i32();
-        this.expr(e.obj, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
+        this.pushRef(f, this.expr(e.obj, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)}));
         st(b, o);
         g(b, o);
         ld(b, 8);
@@ -2210,24 +2257,24 @@ class Compiler {
         op(b, END);
         g(b, blk);
         ld(b, 8 + 4 * e.idx!);
-        break;
+        const v = f.i32();
+        st(b, v);
+        return {k: "local", l: v};
       }
       case "perform":
         if (cut !== undefined && cut.length === 0) {
           // The split site itself inside a fragment: its value is the
           // fragment's v param (the value the case body or host resumed
           // with).
-          this.fragV(id, f);
-          break;
+          return this.fragV(id, f);
         }
         this.emitPerform(id, e, f, s, ctx);
-        break;
+        return REF_UNIT; // unreachable: perform always ends at its split site
       case "handle":
         if (cut !== undefined && cut.length === 0) {
           // The split site itself inside a fragment: its value is the
           // handle's value delivered by the after-handle fragment chain.
-          this.fragV(id, f);
-          break;
+          return this.fragV(id, f);
         }
         if (cut !== undefined) {
           // A perform inside the body split: emit the body's remainder with
@@ -2241,7 +2288,7 @@ class Compiler {
           const bsc = this.scopes.get(e.body) ?? s;
           const ci = stmts.indexOf(cut[0]);
           if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-          this.emitStmtsFrom(stmts, f, bsc, ctx, ci, cut, false);
+          this.pushRef(f, this.emitStmtsFrom(stmts, f, bsc, ctx, ci, cut, false));
           const v = f.i32();
           st(b, v);
           this.emitDispatch(f, v, ctx.kL);
@@ -2250,14 +2297,13 @@ class Compiler {
           throw new Split(this.hdlRest.get(id)!, [...this.cutStack]);
         }
         this.emitHandle(id, e, f, s, ctx);
-        break;
+        return REF_UNIT; // unreachable: the body's dispatch tail-calls away
       case "app": {
         if (cut !== undefined && cut.length === 0) {
           // The split site itself inside a fragment: the call's result is
           // the fragment's v param (the caller's body ended at the call's
           // return_call, §3 emitCall).
-          this.fragV(id, f);
-          break;
+          return this.fragV(id, f);
         }
         if (cut !== undefined) {
           // Cut through the fn or an argument: children before the cut site
@@ -2268,43 +2314,52 @@ class Compiler {
             const kids = [e.fn, ...e.args];
             const ci = kids.indexOf(cut[0]);
             if (ci < 1) throw new WasmError("internal: split chain root mismatch");
-            const a = f.i32(), bv = f.i32();
-            this.cutChild(e.args[0], f, s, ctx, ci === 1 ? "cut" : "pre");
-            st(b, a);
-            this.cutChild(e.args[1], f, s, ctx, ci === 2 ? "cut" : "pre");
-            st(b, bv);
-            g(b, a);
+            const aRef = this.cutChildRef(e.args[0], f, s, ctx, ci === 1 ? "cut" : "pre");
+            const bvRef = this.cutChildRef(e.args[1], f, s, ctx, ci === 2 ? "cut" : "pre");
+            this.pushRef(f, aRef);
             ld64(b, 8);
-            g(b, bv);
+            this.pushRef(f, bvRef);
             ld64(b, 8);
             op(b, FDIV);
             if (e.div === "int") op(b, FTRUNC);
             op(b, CALL); // the value continues inside the fragment
             b.lebU(F_BOX);
-            break;
+            const v = f.i32();
+            st(b, v);
+            return {k: "local", l: v};
           }
           const kids = [e.fn, ...e.args];
           const ci = kids.indexOf(cut[0]);
           if (ci < 0) throw new WasmError("internal: split chain root mismatch");
           const fc = f.i32();
-          this.cutChild(e.fn, f, s, ctx, ci === 0 ? "cut" : "pre");
+          this.pushRef(f, this.cutChildRef(e.fn, f, s, ctx, ci === 0 ? "cut" : "pre"));
           st(b, fc);
           this.emitCallClosure(f, fc, e.args.length, (k, ffp) => {
             g(b, ffp);
             i32c(b, 8 + 4 * k);
             op(b, ADD);
-            this.cutChild(e.args[k], f, s, ctx,
-              k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
+            this.pushRef(f, this.cutChildRef(e.args[k], f, s, ctx,
+              k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post"));
             strd(b, 0);
           }, false,
           // Builtins keep the k=0 trampoline convention (see emitApp).
           this.landCalls.has(id),
           ctx.kL);
-          break;
+          const v = f.i32();
+          st(b, v);
+          return {k: "local", l: v};
         }
         this.emitApp(id, f, s, tail, ctx);
-        break;
+        // emitCallClosure leaves the landed result on the stack (or
+        // tail-returns, making this capture unreachable). Bridge to a ref.
+        const v = f.i32();
+        st(b, v);
+        return {k: "local", l: v};
       }
+      default:
+        // Unreachable: the switch covers every Expr variant, but a try/finally
+        // wrapper defeats TS's exhaustiveness-based end-of-function check.
+        throw new WasmError(`internal: no emitter for node ${id}`);
     }
     } finally {
       if (pushed) this.cutStack.pop();
@@ -2707,10 +2762,10 @@ class Compiler {
     const fn = this.nodes[e.fn];
     if (fn.t === "sym" && fn.v === "/") {
       const a = f.i32(), bv = f.i32();
-      this.expr(e.args[0], f, s, false, ctx);
+      this.exprStack(e.args[0], f, s, false, ctx);
       this.spillIfMapped(e.args[0], f);
       st(b, a);
-      this.expr(e.args[1], f, s, false, ctx);
+      this.exprStack(e.args[1], f, s, false, ctx);
       this.spillIfMapped(e.args[1], f);
       st(b, bv);
       g(b, a);
@@ -2724,14 +2779,14 @@ class Compiler {
       return;
     }
     const fc = f.i32();
-    this.expr(e.fn, f, s, false, ctx);
+    this.exprStack(e.fn, f, s, false, ctx);
     this.spillIfMapped(e.fn, f);
     st(b, fc);
     this.emitCallClosure(f, fc, e.args.length, (k, ffp) => {
       g(b, ffp);
       i32c(b, 8 + 4 * k);
       op(b, ADD);
-      this.expr(e.args[k], f, s, false, ctx);
+      this.exprStack(e.args[k], f, s, false, ctx);
       this.spillIfMapped(e.args[k], f);
       strd(b, 0);
     }, tail,
@@ -2764,8 +2819,8 @@ class Compiler {
     const ifk = this.retCell(f, restAfterIf.idx, () => {
       g(b, ctx.kL); // next = the ambient continuation
     });
-    if (ci === undefined) this.cutChild(e.c, f, s, ctx, "post");
-    else this.cutChild(e.c, f, s, ctx, ci === 0 ? "cut" : "pre");
+    if (ci === undefined) this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, "post"));
+    else this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, ci === 0 ? "cut" : "pre"));
     op(b, CALL);
     b.lebU(F_TRUTHY);
     op(b, IF);
@@ -2776,11 +2831,11 @@ class Compiler {
       let sp: Split | null = null;
       try {
         if (cutArm) {
-          this.cutChild(armE, f, s, ctx, "cut");
+          this.pushRef(f, this.cutChildRef(armE, f, s, ctx, "cut"));
         } else {
           // The other arm re-emits without the cut: the cut path belongs to
           // the cut arm's subtree only.
-          this.cutChild(armE, f, s, ctx, "post");
+          this.pushRef(f, this.cutChildRef(armE, f, s, ctx, "post"));
         }
         st(b, va);
       } catch (sp2) {
@@ -2836,11 +2891,6 @@ class Compiler {
   //   (emitLoopPass with kNext = the fragment's ambient continuation).
   emitWhileCPS(id: ExprID, e: Expr & {t: "while"}, f: Fn, s: Scope, ctx: Ctx, cut?: ExprID[]): void {
     const b = f.body;
-    if (cut !== undefined && cut.length === 0) {
-      // The loop exited: its unit value is the fragment's v param.
-      this.fragV(id, f);
-      return;
-    }
     if (cut === undefined) {
       const chainToWhile = [...this.cutStack];
       const restAfter = this.makeRestThunk();
@@ -2889,7 +2939,7 @@ class Compiler {
       // Mid-iteration re-entry with a non-block body: it continues the
       // fragment with the cut site's value.
       const bsc = this.scopes.get(e.body) ?? s;
-      this.expr(e.body, f, bsc, false, {kL: ctx.kL, cut: cut.slice(1)});
+      this.pushRef(f, this.expr(e.body, f, bsc, false, {kL: ctx.kL, cut: cut.slice(1)}));
     } else {
       // Mid-iteration re-entry: skip the condition (already run). Like
       // handler bodies, a block body is bypassed by emitStmtSeq, so the
@@ -2902,7 +2952,7 @@ class Compiler {
       const bsc = this.scopes.get(e.body) ?? s;
       const ci = stmts.indexOf(cut[0]);
       if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-      this.emitStmtsFrom(stmts, f, bsc, ctx, ci, cut, false);
+      this.pushRef(f, this.emitStmtsFrom(stmts, f, bsc, ctx, ci, cut, false));
     }
     const v = f.i32();
     st(b, v);
@@ -2929,11 +2979,11 @@ class Compiler {
     // is supported (it splits the body via the pass's RET cell).
     this.ctlDepth++;
     if (condCut === undefined) {
-      this.expr(e.c, f, s, false, {kL: kNext});
+      this.exprStack(e.c, f, s, false, {kL: kNext});
     } else if (condCut.length === 0) {
       g(b, 1); // the condition itself is the fragment's split site
     } else {
-      this.expr(e.c, f, s, false, {kL: kNext, cut: condCut});
+      this.exprStack(e.c, f, s, false, {kL: kNext, cut: condCut});
     }
     this.ctlDepth--;
     this.spillIfMapped(e.c, f);
@@ -3743,9 +3793,9 @@ class Compiler {
       try {
         try {
           for (let k = 0; k < exprs.length; k++) {
-            this.expr(exprs[k].e, f, this.globalScope);
-            if (k < exprs.length - 1) drp(b);
-            else st(b, v);
+            const r = this.expr(exprs[k].e, f, this.globalScope);
+            if (k < exprs.length - 1) { /* dropped: nothing on the stack */ }
+            else { this.pushRef(f, r); st(b, v); }
           }
         } catch (sp) {
           this.cutStack = savedCut;
