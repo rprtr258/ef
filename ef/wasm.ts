@@ -250,13 +250,15 @@ const INLINE: Ctx = {kL: 1};
 //    (non-tail call, perform, handle, land) must be a slot or const —
 //    materialize locals to frame slots at the split (keepRef; the operand
 //    spill map computeSpills fills is the materializer).
-// 3. ONE emission shape per node — no direct/cut dual branches. Nodes whose
-//    stage-2/3 subsystems still expect stack-delivered operands (emitApp,
-//    arr, perform args) bridge through exprStack/cutChild: those push the
-//    child's ref so the legacy emission loads it, and the site's cut paths
-//    reload through the same bridge.
-// Stage 3: the last stack-delivered consumers (perform args, loop-pass cond,
-// arr cut modes) are ref-native; exprStack/cutChild/spillIfMapped are gone.
+// 3. ONE emission shape per node — fresh emission and fragment re-emission
+//    (the cut path) share a single body, differing only in the child mode
+//    handed to cutChildRef ("post" = evaluate the child now, "cut" = the
+//    child continues the fragment, "pre" = reload a pre-cut sibling's
+//    spilled value) and in the tail flag (fragment re-emission never
+//    tail-calls children). Where fresh and cut shapes remain separate
+//    (handle, while, the dispatch-shape if) the difference is structural —
+//    the split changes the site itself, not just its children; forcing one
+//    shape there would move complexity, not remove it (stage-3/4 ruling).
 type ValueRef =
   | {k: "const", off: number} // immediate cell (literal / unit / bool / placed closure)
   | {k: "local", l: number}   // wasm local index holding the cell pointer (single-use)
@@ -270,6 +272,13 @@ const REF_UNIT: ValueRef = {k: "const", off: UNIT_CELL};
 // (bodyCatch/emitMain), which re-emits from the body root along `chain` —
 // the AST path from that root down to the split site — skipping everything
 // before the cut at each level and reloading spilled values.
+//
+// Stage 4: this machinery stays. The control-flow sites still throw —
+// handle (fresh and body-cut), perform, the dispatch-shape if, while
+// (entry, cond-cut, re-entry) — and the non-builtin call/land site
+// constructs a Split and fills it synchronously. Every other node now
+// shares one direct/cut body, so a split crossing those nodes only rides
+// the `chain` cutStack records; nothing here is dead.
 class Split extends Error {
   constructor(
     public restFn: Fn,
@@ -494,7 +503,7 @@ class Compiler {
         break;
       case "app": {
         // Mark non-builtin calls as split sites (§3 emitCall); the same
-        // predicate emitApp/emitCallClosure use for the land convention.
+        // predicate the app case/emitCallClosure use for the land convention.
         // map/each/flatmap are builtins but land-style too: their result
         // dispatches through the caller's continuation and a performing
         // callback must see the caller's handler chain.
@@ -1979,16 +1988,18 @@ class Compiler {
     return this.expr(id, f, s, false, {kL: ctx.kL});
   }
 
-  // One child of a cut node during fragment re-emission, ref-native.
+  // One child of a cut node, ref-native — also used for fresh emission
+  // (mode "post"), so fresh and cut bodies can share one shape.
   // "cut": the child holding the deeper split site — continues the fragment
   // chain (its value is the fragment's v param). "pre": a sibling evaluated
   // BEFORE the cut child — a slot ref into its spill, or re-emit pure code
   // inline (preCut). "post": a sibling evaluated AFTER the cut child (or no
-  // cut at all) — re-emit inline. Persists any mapped operand spill slot.
-  cutChildRef(child: ExprID, f: Fn, s: Scope, ctx: Ctx, mode: "cut" | "pre" | "post"): ValueRef {
+  // cut at all) — re-emit inline, with the caller's tail flag. Persists any
+  // mapped operand spill slot.
+  cutChildRef(child: ExprID, f: Fn, s: Scope, ctx: Ctx, mode: "cut" | "pre" | "post", tail = false): ValueRef {
     if (mode === "cut") return this.keepRef(child, f, this.expr(child, f, s, false, {kL: ctx.kL, cut: ctx.cut!.slice(1)}));
     if (mode === "pre") return this.keepRef(child, f, this.preCut(child, f, s, ctx));
-    return this.keepRef(child, f, this.expr(child, f, s, false, {kL: ctx.kL}));
+    return this.keepRef(child, f, this.expr(child, f, s, tail, {kL: ctx.kL}));
   }
 
   // The split site is this node itself inside a fragment: its value is the
@@ -2105,57 +2116,39 @@ class Compiler {
           // value arrives via the after-if fragment's v param.
           return this.fragV(id, f);
         }
-        if (cut !== undefined) {
-          // The condition or an arm continues the fragment. When the cut is
-          // inside an arm (or the condition while an arm can split), the if
-          // uses the dispatch shape: a sibling arm's own split during this
-          // re-emission would otherwise leave the fragment's IF unclosed.
-          const kids = [e.c, e.a, e.b];
-          const ci: number = kids.indexOf(cut[0]);
-          if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-          const dispatchShape: boolean = ci !== 0 || this.splits(e.a) || this.splits(e.b);
-          if (!dispatchShape) {
-            // Value shape: no arm can split, arms leave values inline —
-            // each arm's ref is pushed as the IF block's result value.
-            this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, ci === 0 ? "cut" : "pre"));
-            op(b, CALL);
-            b.lebU(F_TRUTHY);
-            op(b, IF);
-            b.u8(0x7f); // result i32
-            this.ctlDepth++;
-            this.pushRef(f, this.cutChildRef(e.a, f, s, ctx, ci === 1 ? "cut" : ci === 2 ? "pre" : "post"));
-            op(b, ELSE);
-            this.pushRef(f, this.cutChildRef(e.b, f, s, ctx, ci === 2 ? "cut" : "post"));
-            this.ctlDepth--;
-            op(b, END);
-            const v = f.i32();
-            st(b, v);
-            return this.keepRef(id, f, {k: "local", l: v});
-          }
+        // Cut descent index (0 = the condition, 1/2 = an arm); undefined =
+        // fresh emission.
+        const ci = cut === undefined ? undefined : [e.c, e.a, e.b].indexOf(cut[0]);
+        if (ci !== undefined && ci < 0) throw new WasmError("internal: split chain root mismatch");
+        // When the cut is inside an arm (or the condition while an arm can
+        // split), the if uses the dispatch shape: a sibling arm's own split
+        // during this re-emission would otherwise leave the fragment's IF
+        // unclosed. Split-mode fresh emission needs the same shape: an arm
+        // containing a split site cannot keep the value-shape IF — the
+        // site's return_call would end the function mid-block. Both arms
+        // dispatch their values through a RET cell chained to the after-if
+        // fragment, and the if itself becomes a split site whose fragment
+        // (filled by the body-level catcher) receives the if's value.
+        if (ci !== undefined
+          ? (ci !== 0 || this.splits(e.a) || this.splits(e.b))
+          : (this.splits(e.a) || this.splits(e.b))) {
           this.emitIfDispatch(id, e, f, s, ctx, ci);
           return REF_UNIT; // unreachable: the dispatch-shape if throws Split
         }
-        if (this.splits(e.a) || this.splits(e.b)) {
-          // Split-mode if: an arm containing a split site cannot keep the
-          // value-shape IF — the site's return_call would end the function
-          // mid-block. Both arms dispatch their values through a RET cell
-          // chained to the after-if fragment, and the if itself becomes a
-          // split site whose fragment (filled by the body-level catcher)
-          // receives the if's value.
-          this.emitIfDispatch(id, e, f, s, ctx);
-          return REF_UNIT; // unreachable: the dispatch-shape if throws Split
-        }
-        // Fresh value shape: condition and both arms are value-explicit;
-        // each arm's ref is pushed as the IF block's result value.
-        this.pushRef(f, this.keepRef(e.c, f, this.expr(e.c, f, s, false, ctx)));
+        // Value shape — shared by fresh emission (ci undefined) and
+        // fragment re-emission (no arm can split): condition and both arms
+        // are value-explicit; each arm's ref is pushed as the IF block's
+        // result value. Fragment re-emission never tail-calls the arms.
+        const at = ci === undefined && tail;
+        this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, ci === undefined ? "post" : ci === 0 ? "cut" : "pre"));
         op(b, CALL);
         b.lebU(F_TRUTHY);
         op(b, IF);
         b.u8(0x7f); // result i32
         this.ctlDepth++;
-        this.pushRef(f, this.keepRef(e.a, f, this.expr(e.a, f, s, tail, ctx)));
+        this.pushRef(f, this.cutChildRef(e.a, f, s, ctx, ci === undefined ? "post" : ci === 1 ? "cut" : ci === 2 ? "pre" : "post", at));
         op(b, ELSE);
-        this.pushRef(f, this.keepRef(e.b, f, this.expr(e.b, f, s, tail, ctx)));
+        this.pushRef(f, this.cutChildRef(e.b, f, s, ctx, ci === undefined ? "post" : ci === 2 ? "cut" : "post", at));
         this.ctlDepth--;
         op(b, END);
         const v = f.i32();
@@ -2222,7 +2215,8 @@ class Compiler {
         for (let k = 0; k < e.elems.length; k++) {
           // Value-explicit element order: the child's ref is computed BEFORE
           // the destination address is pushed, so a split inside the child
-          // aborts on a clean operand stack (same ordering as emitApp args).
+          // aborts on a clean operand stack (same ordering as the app
+          // case's args).
           // Elements after the cut child have NOT run yet: they re-emit
           // inline ("post"), never reload a never-written spill slot ("pre").
           const r = this.cutChildRef(e.elems[k], f, s, ctx,
@@ -2308,40 +2302,39 @@ class Compiler {
           // return_call, §3 emitCall).
           return this.fragV(id, f);
         }
-        if (cut !== undefined) {
-          // Cut through the fn or an argument: children before the cut site
-          // reload (or, if pure, re-emit), the cut child continues with the
-          // fragment's v param, children after re-emit inline.
-          if (e.div !== undefined) {
-            // `/` is stamped by the checker (int vs float truncation).
-            const kids = [e.fn, ...e.args];
-            const ci = kids.indexOf(cut[0]);
-            if (ci < 1) throw new WasmError("internal: split chain root mismatch");
-            // Value-explicit operand order: both child refs computed before
-            // either is materialized (a deeper split aborts cleanly).
-            const aRef = this.cutChildRef(e.args[0], f, s, ctx, ci === 1 ? "cut" : "pre");
-            const bvRef = this.cutChildRef(e.args[1], f, s, ctx, ci === 2 ? "cut" : "pre");
-            this.pushRef(f, aRef);
-            ld64(b, 8);
-            this.pushRef(f, bvRef);
-            ld64(b, 8);
-            op(b, FDIV);
-            if (e.div === "int") op(b, FTRUNC);
-            op(b, CALL); // the value continues inside the fragment
-            b.lebU(F_BOX);
-            const v = f.i32();
-            st(b, v);
-            return {k: "local", l: v};
-          }
-          const kids = [e.fn, ...e.args];
-          const ci = kids.indexOf(cut[0]);
-          if (ci < 0) throw new WasmError("internal: split chain root mismatch");
+        // One shape for fresh emission and fragment re-emission: children
+        // before the cut site reload (or, if pure, re-emit), the cut child
+        // continues with the fragment's v param, children after re-emit
+        // inline; fresh emission evaluates everything (mode "post").
+        const kids = [e.fn, ...e.args];
+        const ci = cut === undefined ? -1 : kids.indexOf(cut[0]);
+        if (cut !== undefined && ci < 0) throw new WasmError("internal: split chain root mismatch");
+        if (e.div !== undefined) {
+          // `/` is stamped by the checker (int vs float truncation); the
+          // fn is the `/` sym itself, so the cut site is always in an
+          // operand (ci >= 1). Value-explicit operand order: both child
+          // refs are computed (and spilled) before either is materialized,
+          // so a split inside a child aborts on a clean operand stack.
+          if (ci === 0) throw new WasmError("internal: split chain root mismatch");
+          this.pushRef(f, this.cutChildRef(e.args[0], f, s, ctx, ci === 1 ? "cut" : ci < 0 ? "post" : "pre"));
+          ld64(b, 8);
+          this.pushRef(f, this.cutChildRef(e.args[1], f, s, ctx, ci === 2 ? "cut" : ci < 0 ? "post" : "pre"));
+          ld64(b, 8);
+          op(b, FDIV);
+          if (e.div === "int") op(b, FTRUNC);
+          // Fresh + tail: the boxed value is the caller's return value;
+          // fragment re-emission: the value continues inside the fragment.
+          op(b, cut === undefined && tail ? RETURN_CALL : CALL); // return_call / call
+          b.lebU(F_BOX);
+        } else {
           const fc = f.i32();
-          this.pushRef(f, this.cutChildRef(e.fn, f, s, ctx, ci === 0 ? "cut" : "pre"));
+          this.pushRef(f, this.cutChildRef(e.fn, f, s, ctx, ci === 0 ? "cut" : ci < 0 ? "post" : "pre"));
           st(b, fc);
           this.emitCallClosure(f, fc, e.args.length, (k, ffp) => {
-            // Value-explicit arg order (see emitApp): child ref before the
-            // destination address, so a deeper split aborts cleanly.
+            // Value-explicit arg order: the child's ref is computed (and
+            // spilled) BEFORE the destination address is pushed, so a split
+            // inside the child aborts on a clean operand stack (blocker (b)
+            // by construction).
             const r = this.cutChildRef(e.args[k], f, s, ctx,
               k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
             g(b, ffp);
@@ -2349,15 +2342,13 @@ class Compiler {
             op(b, ADD);
             this.pushRef(f, r);
             strd(b, 0);
-          }, false,
-          // Builtins keep the k=0 trampoline convention (see emitApp).
+          }, cut === undefined && tail,
+          // Builtins never perform or capture, so they keep the k=0
+          // trampoline convention; every other (lambda) call site lands
+          // through a RET cell and is a split site (§3 emitCall).
           this.landCalls.has(id),
           ctx.kL);
-          const v = f.i32();
-          st(b, v);
-          return {k: "local", l: v};
         }
-        this.emitApp(id, f, s, tail, ctx);
         // emitCallClosure leaves the landed result on the stack (or
         // tail-returns, making this capture unreachable). Bridge to a ref.
         const v = f.i32();
@@ -2417,7 +2408,7 @@ class Compiler {
     for (let k = 0; k < e.args.length; k++) {
       // Value-explicit arg order: the child's ref is computed BEFORE the
       // destination address is pushed, so a split inside the child aborts
-      // on a clean operand stack (same ordering as emitApp args).
+      // on a clean operand stack (same ordering as the app case's args).
       const r = k === ci
         ? this.cutChildRef(e.args[k], f, s, ctx, "cut")
         : k < ci
@@ -2764,55 +2755,6 @@ class Compiler {
     throw new Split(restFn, [...this.cutStack]);
   }
 
-  emitApp(id: ExprID, f: Fn, s: Scope, tail = false, ctx: Ctx = INLINE): void {
-    const e = this.nodes[id];
-    if (e.t !== "app") throw new WasmError("internal: not an app node");
-    const b = f.body;
-    // `/` is stamped by the checker (int vs float truncation).
-    const fn = this.nodes[e.fn];
-    if (fn.t === "sym" && fn.v === "/") {
-      // Value-explicit operand order: both child refs are computed (and
-      // spilled) before either is materialized, so a split inside a child
-      // aborts on a clean operand stack.
-      const a = f.i32(), bv = f.i32();
-      const aRef = this.keepRef(e.args[0], f, this.expr(e.args[0], f, s, false, ctx));
-      const bvRef = this.keepRef(e.args[1], f, this.expr(e.args[1], f, s, false, ctx));
-      this.pushRef(f, aRef);
-      st(b, a);
-      this.pushRef(f, bvRef);
-      st(b, bv);
-      g(b, a);
-      ld64(b, 8);
-      g(b, bv);
-      ld64(b, 8);
-      op(b, FDIV);
-      if (e.div === "int") op(b, FTRUNC);
-      op(b, tail ? RETURN_CALL : CALL); // return_call / call
-      b.lebU(F_BOX);
-      return;
-    }
-    const fc = f.i32();
-    const fnRef = this.keepRef(e.fn, f, this.expr(e.fn, f, s, false, ctx));
-    this.pushRef(f, fnRef);
-    st(b, fc);
-    this.emitCallClosure(f, fc, e.args.length, (k, ffp) => {
-      // Value-explicit arg order: the child's ref is computed (and spilled)
-      // BEFORE the destination address is pushed, so a split inside the
-      // child aborts on a clean operand stack (blocker (b) by construction).
-      const r = this.keepRef(e.args[k], f, this.expr(e.args[k], f, s, false, ctx));
-      g(b, ffp);
-      i32c(b, 8 + 4 * k);
-      op(b, ADD);
-      this.pushRef(f, r);
-      strd(b, 0);
-    }, tail,
-    // Builtins never perform or capture, so they keep the k=0 trampoline
-    // convention; every other (lambda) call site lands through a RET cell
-    // and is a split site (§3 emitCall).
-    this.landCalls.has(id),
-    ctx.kL);
-  }
-
   // --- builtin trampolines ---------------------------------------------------
 
   // Dispatch-shape if (§3): used when an arm can split, or when re-emitting
@@ -2996,7 +2938,7 @@ class Compiler {
     this.ctlDepth++;
     // Value-explicit cond: the ref is materialized at its consume point
     // (F_TRUTHY); keepRef persists it into the operand spill slot when the
-    // fragment machinery mapped one (same discipline as emitApp args).
+    // fragment machinery mapped one (same discipline as the app case's args).
     const condRef = condCut === undefined
       ? this.keepRef(e.c, f, this.expr(e.c, f, s, false, {kL: kNext}))
       : condCut.length === 0
