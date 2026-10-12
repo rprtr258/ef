@@ -7,11 +7,14 @@
 // leaves on nodes (`e.div` for division, `e.idx` for field access).
 //
 // Subset: everything except `handle`. Every `perform` (builtin or
-// user-declared op) compiles to an `ef_perform(opid, args)` host-import
-// call: the effect reaches the host, which interprets it via the op table
-// `compileWithOps` returns (like the interpreter's runTop) and resumes with
-// the result. `handle` needs multi-shot continuations, which wasm has no
-// primitive for — rejected at compile time.
+// user-declared op) boxes its args, spills the args cell to a frame slot,
+// and walks the continuation chain for a handler before falling back to the
+// `ef_perform(opid, args)` host-import call: with no handler in the chain
+// (the only reachable case until `handle` emission lands) the effect reaches
+// the host, which interprets it via the op table `compileWithOps` returns
+// (like the interpreter's runTop) and resumes with the result. `handle`
+// needs multi-shot continuations, which wasm has no primitive for — rejected
+// at compile time.
 //
 // Representation:
 // - Value = 16-byte cell {tag: i32, pad: i32, data: 8B} where data holds an
@@ -180,7 +183,8 @@ const HOST_IMPORTS = [
 
 // Defined-function indices: helpers first, then lambdas, builtins, main.
 const F_ALLOC = HOST_IMPORTS.length, F_TRUTHY = F_ALLOC + 1, F_EQ = F_ALLOC + 2,
-  F_BOX = F_ALLOC + 3, F_LAMBDA0 = F_ALLOC + 4;
+  F_BOX = F_ALLOC + 3, F_CASESTUB = F_ALLOC + 4, F_CAPTURE = F_ALLOC + 5,
+  F_LAMBDA0 = F_ALLOC + 6;
 
 // Type section indices. T_KABI is the uniform CPS ABI of every defined
 // function (frame, k) -> i32; T_III_I is the land-thunk ABI (frame, v, k) -> i32.
@@ -256,6 +260,14 @@ class Compiler {
   }>();
   piOff = 0;
   hp0 = 0;
+  // Perform spilling (§4.2): perform node → base frame slot of its spill
+  // area. The args cell must survive the handler walk and stay reachable
+  // from the after-perform fragment through the RET cell's frame pointer
+  // (cell.b).
+  spillOf = new Map<ExprID, number>();
+  // frame → spill slots appended after its named slots (folded into the
+  // lambda's frameSize / the global frame's allocation; see frameSizeOf).
+  spillTotals = new Map<{slots: number}, number>();
 
   constructor(public prog: Program) {
     this.nodes = prog.nodes;
@@ -274,6 +286,9 @@ class Compiler {
     for (const it of this.prog.items) {
       if ("e" in it) this.assignLambdas(it.e);
     }
+    // 2b. Spill slots for perform sites (§4.2): one frame slot per perform
+    // for its args cell, folded into the enclosing frame's size.
+    this.computeSpills();
     const builtin0 = F_LAMBDA0 + this.lambdaIdx.size;
     // Land thunks occupy the table slots between builtins and main.
     this.thunk0 = builtin0 + BUILTINS.length;
@@ -667,7 +682,181 @@ class Compiler {
       st64(b, 8);
       g(b, cell);
     }
-    return [alloc, truthy, eq, box];
+    // Case-invocation stub (§4.2): the T_KABI dispatch point a perform's
+    // handler-found path tail-calls with (hframe, slice). STEP 5 fills the
+    // body with the real case dispatch (write the performed op's params into
+    // the hframe, build the resume binder over the slice, tail-call the
+    // matched case body). Temporary stub: unreachable until `handle` lands,
+    // because no K_HDL cell can exist before then.
+    const caseStub = new Fn(2);
+    op(caseStub.body, 0x00); // unreachable — STEP 5 fills the body
+    // $captureSlice(k: i32, until: i32) -> i32: reify the slice of
+    // continuation cells strictly above `until` (the matched K_HDL) as a
+    // FRESH cell chain — originals untouched (cells are immutable; the
+    // resume closure copies again). The head is a copy of the cell at `k`
+    // (the perform's just-pushed RET); each copy keeps {kind, a, b} verbatim
+    // and chains to the next copy; the last copy's next points at `until`.
+    const capture = new Fn(2);
+    {
+      const b = capture.body;
+      const n = capture.i32(), cur = capture.i32(), base = capture.i32();
+      const i = capture.i32(), src = capture.i32(), dst = capture.i32();
+      // Pass 1: n = number of cells from k up to (excluding) until.
+      i32c(b, 0);
+      st(b, n);
+      g(b, 0);
+      st(b, cur);
+      op(b, BLOCK);
+      b.u8(0x40);
+      op(b, LOOP);
+      b.u8(0x40);
+      g(b, cur);
+      g(b, 1);
+      op(b, EQ);
+      op(b, BR_IF);
+      b.lebU(1);
+      g(b, n);
+      i32c(b, 1);
+      op(b, ADD);
+      st(b, n);
+      g(b, cur);
+      ld(b, 12);
+      st(b, cur);
+      op(b, BR);
+      b.lebU(0);
+      op(b, END);
+      op(b, END);
+      // Pass 2: one contiguous fresh block, cell i at base + 16*i.
+      g(b, n);
+      i32c(b, 16);
+      op(b, MUL);
+      op(b, CALL);
+      b.lebU(F_ALLOC);
+      st(b, base);
+      g(b, 0);
+      st(b, src);
+      i32c(b, 0);
+      st(b, i);
+      op(b, BLOCK);
+      b.u8(0x40);
+      op(b, LOOP);
+      b.u8(0x40);
+      g(b, base);
+      g(b, i);
+      i32c(b, 16);
+      op(b, MUL);
+      op(b, ADD);
+      st(b, dst);
+      g(b, dst);
+      g(b, src);
+      ld(b, 0);
+      strd(b, 0); // kind
+      g(b, dst);
+      g(b, src);
+      ld(b, 4);
+      strd(b, 4); // a
+      g(b, dst);
+      g(b, src);
+      ld(b, 8);
+      strd(b, 8); // b
+      g(b, i);
+      i32c(b, 1);
+      op(b, ADD);
+      st(b, i);
+      g(b, i);
+      g(b, n);
+      op(b, EQ);
+      op(b, IF);
+      b.u8(0x40);
+      // Last copy chains to the matched handler cell (the resume closure
+      // replaces that pointer with a fresh HDL chained to the resume-site k).
+      g(b, dst);
+      g(b, 1);
+      strd(b, 12);
+      op(b, ELSE);
+      g(b, dst);
+      g(b, base);
+      g(b, i);
+      i32c(b, 16);
+      op(b, MUL);
+      op(b, ADD);
+      strd(b, 12);
+      op(b, END);
+      g(b, i);
+      g(b, n);
+      op(b, EQ);
+      op(b, BR_IF);
+      b.lebU(1);
+      g(b, src);
+      ld(b, 12);
+      st(b, src);
+      op(b, BR);
+      b.lebU(0);
+      op(b, END);
+      op(b, END);
+      g(b, base);
+    }
+    return [alloc, truthy, eq, box, caseStub, capture];
+  }
+
+  // Spill-slot allocation for perform sites (§4.2, PREV computeSpills
+  // pattern): each perform's args cell gets one frame slot in its enclosing
+  // frame, allocated after the frame's named slots. Lambdas get their own
+  // frame; blocks share the enclosing one. Runs after discovery so the
+  // named-slot counts are final, before any emission reads a frame size.
+  computeSpills(): void {
+    const walk = (id: ExprID, frame: {slots: number}): void => {
+      const e = this.nodes[id];
+      switch (e.t) {
+        case "lambda":
+          walk(e.body, this.scopes.get(id)!.frame);
+          break;
+        case "block":
+          for (const stmt of e.stmts) walk(stmt, frame);
+          break;
+        case "let":
+        case "assign":
+        case "dlet":
+          walk(e.val, frame);
+          break;
+        case "if":
+          walk(e.c, frame);
+          walk(e.a, frame);
+          walk(e.b, frame);
+          break;
+        case "while":
+          walk(e.c, frame);
+          walk(e.body, frame);
+          break;
+        case "app":
+          walk(e.fn, frame);
+          for (const a of e.args) walk(a, frame);
+          break;
+        case "arr":
+          for (const el of e.elems) walk(el, frame);
+          break;
+        case "field":
+          walk(e.obj, frame);
+          break;
+        case "perform":
+          this.spillOf.set(id, frame.slots + (this.spillTotals.get(frame) ?? 0));
+          this.spillTotals.set(frame, (this.spillTotals.get(frame) ?? 0) + 1);
+          for (const a of e.args) walk(a, frame);
+          break;
+        default:
+          break; // num/str/bool/unit/sym: no children
+      }
+    };
+    for (const it of this.prog.items) {
+      if ("e" in it) walk(it.e, this.globalFrame);
+    }
+  }
+
+  // Frame size of a scope's frame: named slots + perform spill slots (§4.2).
+  // Everything that allocates a frame (lambda closure fsize, the global
+  // frame in emitMain) must go through this so spilled values fit.
+  frameSizeOf(sc: Scope): number {
+    return sc.frame.slots + (this.spillTotals.get(sc.frame) ?? 0);
   }
 
   // --- static layout ---------------------------------------------------------
@@ -862,6 +1051,21 @@ class Compiler {
   // result v into the continuation captured in the RET cell (the caller's k
   // at the call site). One thunk per distinct non-tail call site.
   landThunk(): number {
+    const f = new Fn(3);
+    f.typeIdx = T_III_I;
+    this.emitDispatch(f, 1, 2); // v = param 1, k = param 2
+    const idx = this.thunk0 + this.thunks.length;
+    this.thunks.push(f);
+    return idx;
+  }
+
+  // Rest-of-site ("after-perform") land thunk for one perform site: a
+  // T_III_I fragment (frame, v, k) -> i32 — the continuation captured in the
+  // perform's RET cell (a = this thunk, b = the frame the rest-of-site runs
+  // over). STEP 5 fills it with the site's real rest-of-site fragment
+  // (today's inline codegen cannot reify the code after the perform); for
+  // now the stub forwards the resumed value into the captured continuation.
+  performRestThunk(): number {
     const f = new Fn(3);
     f.typeIdx = T_III_I;
     this.emitDispatch(f, 1, 2); // v = param 1, k = param 2
@@ -1189,7 +1393,7 @@ class Compiler {
         g(b, 0); // captured frame = current $fp
         strd(b, 4);
         g(b, blk);
-        i32c(b, this.scopes.get(id)!.frame.slots); // params + body lets
+        i32c(b, this.frameSizeOf(this.scopes.get(id)!)); // params + body lets + perform spills
         strd(b, 8);
         i32c(b, 16);
         op(b, CALL);
@@ -1333,32 +1537,9 @@ class Compiler {
         ld(b, 8 + 4 * e.idx!);
         break;
       }
-      case "perform": {
-        // Package the op's args as an array cell (same layout as an `arr`
-        // literal), then call the generic host boundary ef_perform(opid, args).
-        const blk = f.i32(), argsCell = f.i32();
-        i32c(b, 8 + 4 * e.args.length);
-        op(b, CALL);
-        b.lebU(F_ALLOC);
-        st(b, blk);
-        g(b, blk);
-        i32c(b, e.args.length);
-        strd(b, 0);
-        for (let k = 0; k < e.args.length; k++) {
-          g(b, blk);
-          i32c(b, 8 + 4 * k);
-          op(b, ADD);
-          this.expr(e.args[k], f, s);
-          strd(b, 0);
-        }
-        this.boxArr(f, blk);
-        st(b, argsCell);
-        i32c(b, this.effOpIds.get(e.op)!);
-        g(b, argsCell);
-        op(b, tail ? RETURN_CALL : CALL);
-        b.lebU(HOST_IMPORTS.indexOf("ef_perform"));
+      case "perform":
+        this.emitPerform(id, e, f, s, tail);
         break;
-      }
       case "handle":
         throw new WasmError(
           "wasm target: 'handle' is not supported (multi-shot continuations); " +
@@ -1368,6 +1549,174 @@ class Compiler {
         this.emitApp(id, f, s, tail);
         break;
     }
+  }
+
+  // §4.2 perform. Package the op's args as an array cell (same layout as an
+  // `arr` literal) and spill it to the frame slot computeSpills allocated:
+  // the cell must survive the handler walk and stay reachable from the
+  // after-perform fragment through the RET cell's frame pointer (cell.b).
+  // Then scan-first: walk the continuation chain (the function's k param)
+  // BEFORE pushing anything, looking for the first K_HDL whose case table
+  // contains the performed opid.
+  // - No handler (the walk reaches k=0 — the only reachable case until
+  //   `handle` lands in step 5): bare ef_perform host call, result continues
+  //   inline, no continuation cells allocated (pre-walk behavior; the
+  //   builtin host-effect programs never allocate here).
+  // - Handler found: push this perform's RET cell {K_RET, rest-of-site
+  //   thunk, frame, k}, capture the slice (every cell strictly above the
+  //   handler, INCLUDING the just-pushed RET, reified as a fresh cell
+  //   chain), and tail-call the case-invocation stub with (hframe, slice).
+  emitPerform(id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: Scope, tail: boolean): void {
+    const b = f.body;
+    const blk = f.i32(), cell = f.i32();
+    i32c(b, 8 + 4 * e.args.length);
+    op(b, CALL);
+    b.lebU(F_ALLOC);
+    st(b, blk);
+    g(b, blk);
+    i32c(b, e.args.length);
+    strd(b, 0);
+    for (let k = 0; k < e.args.length; k++) {
+      g(b, blk);
+      i32c(b, 8 + 4 * k);
+      op(b, ADD);
+      this.expr(e.args[k], f, s);
+      strd(b, 0);
+    }
+    this.boxArr(f, blk);
+    st(b, cell);
+    const spillSlot = this.spillOf.get(id)!;
+    g(b, 0);
+    g(b, cell);
+    strd(b, 8 + 4 * spillSlot);
+    // Handler walk: kL walks the k chain; the first K_HDL whose case table
+    // ([n][opid, fnIdx, fsize, nparams]*) contains opid wins.
+    const opid = this.effOpIds.get(e.op)!;
+    const kL = f.i32(), hdl = f.i32(), found = f.i32();
+    const nL = f.i32(), iL = f.i32(), ent = f.i32();
+    g(b, 1); // the function's k parameter
+    st(b, kL);
+    i32c(b, 0);
+    st(b, found);
+    op(b, BLOCK);
+    b.u8(0x40);
+    op(b, LOOP);
+    b.u8(0x40);
+    g(b, kL);
+    i32c(b, 0);
+    op(b, EQ);
+    op(b, BR_IF);
+    b.lebU(1); // k=0: no handler anywhere → host fallback
+    g(b, kL);
+    ld(b, 0);
+    i32c(b, K_HDL);
+    op(b, EQ);
+    op(b, IF);
+    b.u8(0x40);
+    g(b, kL);
+    ld(b, 4);
+    ld(b, 0);
+    st(b, nL);
+    i32c(b, 0);
+    st(b, iL);
+    op(b, BLOCK);
+    b.u8(0x40);
+    op(b, LOOP);
+    b.u8(0x40);
+    g(b, iL);
+    g(b, nL);
+    op(b, GEU);
+    op(b, BR_IF);
+    b.lebU(1); // table exhausted without a match
+    g(b, kL);
+    ld(b, 4);
+    i32c(b, 4);
+    op(b, ADD);
+    g(b, iL);
+    i32c(b, 16);
+    op(b, MUL);
+    op(b, ADD);
+    st(b, ent);
+    g(b, ent);
+    ld(b, 0);
+    i32c(b, opid);
+    op(b, EQ);
+    op(b, IF);
+    b.u8(0x40);
+    i32c(b, 1);
+    st(b, found);
+    g(b, kL);
+    st(b, hdl);
+    op(b, BR);
+    b.lebU(2); // exit the table scan
+    op(b, END);
+    g(b, iL);
+    i32c(b, 1);
+    op(b, ADD);
+    st(b, iL);
+    op(b, BR);
+    b.lebU(0);
+    op(b, END);
+    op(b, END);
+    g(b, found);
+    op(b, BR_IF);
+    b.lebU(2); // matched handler → leave the walk
+    op(b, END);
+    g(b, kL);
+    ld(b, 12);
+    st(b, kL);
+    op(b, BR);
+    b.lebU(0);
+    op(b, END);
+    op(b, END);
+    g(b, found);
+    op(b, IF);
+    b.u8(0x7f); // handler found: tail-call the case-invocation stub
+    // Push this perform's RET cell; the slice below is captured as if this
+    // cell had been pushed before the walk (scan-first).
+    const ret = f.i32();
+    i32c(b, 16);
+    op(b, CALL);
+    b.lebU(F_ALLOC);
+    st(b, ret);
+    g(b, ret);
+    i32c(b, K_RET);
+    strd(b, 0);
+    g(b, ret);
+    i32c(b, this.performRestThunk());
+    strd(b, 4);
+    g(b, ret);
+    g(b, 0); // b = the current frame (holds the spilled args cell)
+    strd(b, 8);
+    g(b, ret);
+    g(b, 1); // next = the continuation the walk started from
+    strd(b, 12);
+    // Capture the slice above the handler into fresh cells (originals
+    // untouched; the resume closure's copy-on-resume lands in step 6).
+    const slice = f.i32();
+    g(b, ret);
+    g(b, hdl);
+    op(b, CALL);
+    b.lebU(F_CAPTURE);
+    st(b, slice);
+    // Hand (hframe, slice) to the case-invocation stub — the T_KABI dispatch
+    // point whose body step 5 fills. Unreachable today: no K_HDL cell can
+    // exist until `handle` emission lands.
+    g(b, hdl);
+    ld(b, 8);
+    g(b, slice);
+    op(b, RETURN_CALL);
+    b.lebU(F_CASESTUB);
+    op(b, ELSE);
+    // No matching handler: bare host call, result continues inline. The
+    // args cell is reloaded from its spill slot — the pattern the
+    // after-perform fragment will use to reload spilled values via cell.b.
+    i32c(b, opid);
+    g(b, 0);
+    ld(b, 8 + 4 * spillSlot);
+    op(b, tail ? RETURN_CALL : CALL);
+    b.lebU(HOST_IMPORTS.indexOf("ef_perform"));
+    op(b, END);
   }
 
   emitApp(id: ExprID, f: Fn, s: Scope, tail = false): void {
@@ -2094,7 +2443,7 @@ class Compiler {
   emitMain(f: Fn): void {
     const b = f.body;
     // Allocate the global frame into local 0 ($fp convention).
-    i32c(b, 8 + 4 * this.globalFrame.slots);
+    i32c(b, 8 + 4 * this.frameSizeOf(this.globalScope));
     op(b, CALL);
     b.lebU(F_ALLOC);
     st(b, 0);
