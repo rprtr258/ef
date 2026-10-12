@@ -255,6 +255,8 @@ const INLINE: Ctx = {kL: 1};
 //    arr, perform args) bridge through exprStack/cutChild: those push the
 //    child's ref so the legacy emission loads it, and the site's cut paths
 //    reload through the same bridge.
+// Stage 3: the last stack-delivered consumers (perform args, loop-pass cond,
+// arr cut modes) are ref-native; exprStack/cutChild/spillIfMapped are gone.
 type ValueRef =
   | {k: "const", off: number} // immediate cell (literal / unit / bool / placed closure)
   | {k: "local", l: number}   // wasm local index holding the cell pointer (single-use)
@@ -1952,12 +1954,6 @@ class Compiler {
     else { g(b, 0); ld(b, r.off); }
   }
 
-  // Stage-2/3 bridge: deliver a child's ref as the stack operand the legacy
-  // emitter expects (emitApp, emitLoopPass, arr, perform args).
-  exprStack(id: ExprID, f: Fn, s?: Scope, tail = false, ctx: Ctx = INLINE): void {
-    this.pushRef(f, this.expr(id, f, s, tail, ctx));
-  }
-
   // Persist a ref into the operand spill slot computeSpills allocated for
   // `id` (if any) and return the slot ref: a value that must survive a
   // later split is read back from the frame by the fragment machinery.
@@ -1983,19 +1979,6 @@ class Compiler {
     return this.expr(id, f, s, false, {kL: ctx.kL});
   }
 
-  // Legacy stack bridge for spillIfMapped consumers (emitApp, emitLoopPass).
-  spillIfMapped(id: ExprID, f: Fn): void {
-    const sp = this.operandSpill.get(id);
-    if (sp === undefined) return;
-    const b = f.body;
-    const t = f.i32();
-    st(b, t);
-    g(b, 0);
-    g(b, t);
-    strd(b, 8 + 4 * sp);
-    g(b, t);
-  }
-
   // One child of a cut node during fragment re-emission, ref-native.
   // "cut": the child holding the deeper split site — continues the fragment
   // chain (its value is the fragment's v param). "pre": a sibling evaluated
@@ -2006,11 +1989,6 @@ class Compiler {
     if (mode === "cut") return this.keepRef(child, f, this.expr(child, f, s, false, {kL: ctx.kL, cut: ctx.cut!.slice(1)}));
     if (mode === "pre") return this.keepRef(child, f, this.preCut(child, f, s, ctx));
     return this.keepRef(child, f, this.expr(child, f, s, false, {kL: ctx.kL}));
-  }
-
-  // Legacy bridge: deliver the child's ref as a stack operand (arr, emitPerform).
-  cutChild(child: ExprID, f: Fn, s: Scope, ctx: Ctx, mode: "cut" | "pre" | "post"): void {
-    this.pushRef(f, this.cutChildRef(child, f, s, ctx, mode));
   }
 
   // The split site is this node itself inside a fragment: its value is the
@@ -2239,12 +2217,16 @@ class Compiler {
         g(b, blk);
         i32c(b, e.elems.length);
         strd(b, 0);
+        const ci = cut === undefined ? -1 : e.elems.indexOf(cut[0]);
+        if (cut !== undefined && ci < 0) throw new WasmError("internal: split chain root mismatch");
         for (let k = 0; k < e.elems.length; k++) {
           // Value-explicit element order: the child's ref is computed BEFORE
           // the destination address is pushed, so a split inside the child
           // aborts on a clean operand stack (same ordering as emitApp args).
+          // Elements after the cut child have NOT run yet: they re-emit
+          // inline ("post"), never reload a never-written spill slot ("pre").
           const r = this.cutChildRef(e.elems[k], f, s, ctx,
-            cut === undefined ? "post" : cut[0] === e.elems[k] ? "cut" : "pre");
+            cut === undefined ? "post" : k === ci ? "cut" : k < ci ? "pre" : "post");
           g(b, blk);
           i32c(b, 8 + 4 * k);
           op(b, ADD);
@@ -2433,16 +2415,18 @@ class Compiler {
     const ci = cut === undefined ? -1 : e.args.indexOf(cut[0]);
     if (cut !== undefined && ci < 0) throw new WasmError("internal: split chain root mismatch");
     for (let k = 0; k < e.args.length; k++) {
+      // Value-explicit arg order: the child's ref is computed BEFORE the
+      // destination address is pushed, so a split inside the child aborts
+      // on a clean operand stack (same ordering as emitApp args).
+      const r = k === ci
+        ? this.cutChildRef(e.args[k], f, s, ctx, "cut")
+        : k < ci
+          ? this.cutChildRef(e.args[k], f, s, ctx, "pre")
+          : this.cutChildRef(e.args[k], f, s, ctx, "post");
       g(b, blk);
       i32c(b, 8 + 4 * k);
       op(b, ADD);
-      if (k === ci) {
-        this.cutChild(e.args[k], f, s, ctx, "cut");
-      } else if (k < ci) {
-        this.cutChild(e.args[k], f, s, ctx, "pre");
-      } else {
-        this.cutChild(e.args[k], f, s, ctx, "post");
-      }
+      this.pushRef(f, r);
       strd(b, 0);
     }
     this.boxArr(f, blk);
@@ -3010,15 +2994,16 @@ class Compiler {
     // guard is scoped to the condition only: perform inside the loop BODY
     // is supported (it splits the body via the pass's RET cell).
     this.ctlDepth++;
-    if (condCut === undefined) {
-      this.exprStack(e.c, f, s, false, {kL: kNext});
-    } else if (condCut.length === 0) {
-      g(b, 1); // the condition itself is the fragment's split site
-    } else {
-      this.exprStack(e.c, f, s, false, {kL: kNext, cut: condCut});
-    }
+    // Value-explicit cond: the ref is materialized at its consume point
+    // (F_TRUTHY); keepRef persists it into the operand spill slot when the
+    // fragment machinery mapped one (same discipline as emitApp args).
+    const condRef = condCut === undefined
+      ? this.keepRef(e.c, f, this.expr(e.c, f, s, false, {kL: kNext}))
+      : condCut.length === 0
+        ? this.keepRef(e.c, f, {k: "local", l: 1}) // cond is the split site: v param
+        : this.cutChildRef(e.c, f, s, {kL: kNext, cut: condCut}, "cut");
     this.ctlDepth--;
-    this.spillIfMapped(e.c, f);
+    this.pushRef(f, condRef);
     op(b, CALL);
     b.lebU(F_TRUTHY);
     op(b, IF);
@@ -3699,8 +3684,11 @@ class Compiler {
         this.loop(t, () => {
           g(tb, n);
         }, i => {
+          // total += len of callback result i: elem cell → its block → len
+          // (the cell's word @0 is the TAG, not the length).
           this.elemAddr(t, tmp, i);
           ld(tb, 0);
+          ld(tb, 8);
           ld(tb, 0);
           g(tb, total);
           op(tb, ADD);
@@ -3724,13 +3712,9 @@ class Compiler {
           this.loop(t, () => {
             g(tb, xl);
           }, j => {
+            // dst = res + 8 + 4*w (element cell pointers, same layout the
+            // box/collect path reads back), src = xb2[j].
             this.elemAddr(t, res, w);
-            i32c(tb, 4);
-            op(tb, ADD);
-            g(tb, w);
-            i32c(tb, 4);
-            op(tb, MUL);
-            op(tb, ADD);
             this.elemAddr(t, xb2, j);
             ld(tb, 0);
             strd(tb, 0);
@@ -3755,6 +3739,8 @@ class Compiler {
       ld(tb, 0);
       st(tb, elem);
       this.emitCallClosure(t, fc, name === "map" ? 1 : 2, (k, ffp) => {
+        // Suspension-safe as-is: elem/iL are locals set before the call, and
+        // F_BOX cannot suspend, so no operand spans a suspension point.
         g(tb, ffp);
         i32c(tb, 8 + 4 * k);
         op(tb, ADD);
