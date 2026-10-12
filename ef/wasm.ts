@@ -344,6 +344,13 @@ class Compiler {
   // the handle's Split (or, when a perform inside the body split first, by
   // the catcher filling the body fragment's nested split).
   hdlRest = new Map<ExprID, Fn>();
+  // Split-mode while node → its loop-entry fragment and after-while rest
+  // fragment (§6b). The loop entry re-evaluates the condition each pass; the
+  // loop-back cell inside a pass re-enters it, so the continuation chain —
+  // not a wasm label — carries the loop across suspension points and a
+  // captured (copied) chain resumes mid-iteration correctly. Refreshed on
+  // every re-emission of the while (fragments that re-run the loop fresh).
+  ctlLoops = new Map<ExprID, {entry: Fn, rest: Fn}>();
   // Open if/while structures at emission time. A split cannot cross one (the
   // partial branch/loop bytes would dangle in the body buffer), so perform/
   // handle sites throw a compile error instead.
@@ -2098,10 +2105,11 @@ class Compiler {
         break;
       }
       case "while": {
-        if (cut !== undefined) throw new WasmError("internal: split crossing a while");
         if (this.splits(e.c) || this.splits(e.body)) {
-          throw new WasmError("wasm target: effecting call inside while is not supported");
+          this.emitWhileCPS(id, e, f, s, ctx, cut);
+          break;
         }
+        if (cut !== undefined) throw new WasmError("internal: split crossing a while");
         op(b, BLOCK);
         b.u8(0x40);
         op(b, LOOP);
@@ -2896,6 +2904,202 @@ class Compiler {
     // The code after the if chains through restAfterIf: the enclosing
     // body-level catcher fills it with the if's value as v.
     throw new Split(restAfterIf, chainToIf);
+  }
+
+  // Split-mode while (§6b): a perform/handle/land call inside the condition
+  // or body cannot keep the wasm block/loop shape — the site's return_call
+  // would end the function mid-loop and no captured continuation may cross a
+  // wasm label. The loop becomes a split site:
+  // - pass 1 (fresh): allocates the after-while RET cell {K_RET, restAfter,
+  //   $fp, ambient k} and the loop-entry RET cell {K_RET, loopEntry, $fp,
+  //   ifk}, fills the loopEntry fragment (one loop pass), and enters the
+  //   loop by dispatching unit through the entry cell. The body's ambient
+  //   continuation is a fresh per-pass loop-back cell {K_RET, loopEntry,
+  //   $fp, kNext} — the body re-enters the loop through the k chain, never
+  //   a label, and a perform inside the body captures that cell (so a
+  //   resumed copy re-enters the loop on the resumed chain).
+  // - cut = [] (fragment re-emission after the loop exited): the loop's
+  //   unit value is the fragment's v param.
+  // - cut through the body (a split inside it resumed): the rest of the
+  //   current iteration runs with the fragment's ambient continuation (the
+  //   loop-back cell in effect) and the iteration re-enters the loop
+  //   through it; the after-while rest chains off a fresh Split.
+  // - cut through the condition (a split inside it resumed): the condition
+  //   continues with the fragment's v, then one loop pass re-runs
+  //   (emitLoopPass with kNext = the fragment's ambient continuation).
+  emitWhileCPS(id: ExprID, e: Expr & {t: "while"}, f: Fn, s: Scope, ctx: Ctx, cut?: ExprID[]): void {
+    const b = f.body;
+    if (cut !== undefined && cut.length === 0) {
+      // The loop exited: its unit value is the fragment's v param.
+      g(b, 1);
+      this.spillIfMapped(id, f);
+      return;
+    }
+    if (cut === undefined) {
+      const chainToWhile = [...this.cutStack];
+      const restAfter = this.makeRestThunk();
+      const loopEntry = this.makeRestThunk();
+      this.ctlLoops.set(id, {entry: loopEntry, rest: restAfter});
+      let inner: Split | null = null;
+      const savedCtl = this.ctlDepth;
+      try {
+        // Fresh fragment fn: no wasm structures are open across it.
+        this.ctlDepth = 0;
+        this.emitLoopPass(loopEntry, e, s, 2, loopEntry.idx);
+      } catch (sp) {
+        if (!(sp instanceof Split)) throw sp;
+        inner = sp;
+      }
+      this.ctlDepth = savedCtl;
+      const ifk = f.i32(), loopk = f.i32();
+      i32c(b, 16);
+      op(b, CALL);
+      b.lebU(F_ALLOC);
+      st(b, ifk);
+      g(b, ifk);
+      i32c(b, K_RET);
+      strd(b, 0);
+      g(b, ifk);
+      i32c(b, restAfter.idx);
+      strd(b, 4);
+      g(b, ifk);
+      g(b, 0); // b = the frame at the while site
+      strd(b, 8);
+      g(b, ifk);
+      g(b, ctx.kL); // next = the ambient continuation
+      strd(b, 12);
+      i32c(b, 16);
+      op(b, CALL);
+      b.lebU(F_ALLOC);
+      st(b, loopk);
+      g(b, loopk);
+      i32c(b, K_RET);
+      strd(b, 0);
+      g(b, loopk);
+      i32c(b, loopEntry.idx);
+      strd(b, 4);
+      g(b, loopk);
+      g(b, 0);
+      strd(b, 8);
+      g(b, loopk);
+      g(b, ifk);
+      strd(b, 12);
+      const u = f.i32();
+      i32c(b, UNIT_CELL);
+      st(b, u);
+      this.emitDispatch(f, u, loopk); // enter the loop (tail call)
+      // The loop pass's emission ends at a split site inside it (that is
+      // what makes the while split-mode): that site's rest fragment is
+      // filled by the enclosing body-level catcher along the chain through
+      // this while; this loop's own after-rest chains when the cut path
+      // re-emits (below). The throw is unreachable in practice.
+      if (inner !== null) throw inner;
+      throw new Split(restAfter, chainToWhile);
+    }
+    const loop = this.ctlLoops.get(id);
+    if (loop === undefined) throw new WasmError("internal: split chain root mismatch");
+    if (cut[0] === e.c) {
+      // The condition continues the fragment with the fragment's v, then one
+      // loop pass re-runs over the ambient continuation (fresh loop-back
+      // cell inside emitLoopPass).
+      this.emitLoopPass(f, e, s, ctx.kL, loop.entry.idx, cut.slice(1));
+      op(b, UNREACHABLE); // each path dispatched (loop back / exit)
+      throw new Split(loop.rest, [...this.cutStack]);
+    }
+    if (cut[0] === e.body) {
+      // Mid-iteration re-entry with a non-block body: it continues the
+      // fragment with the cut site's value.
+      const bsc = this.scopes.get(e.body) ?? s;
+      this.expr(e.body, f, bsc, false, {kL: ctx.kL, cut: cut.slice(1)});
+    } else {
+      // Mid-iteration re-entry: skip the condition (already run). Like
+      // handler bodies, a block body is bypassed by emitStmtSeq, so the
+      // chain's next element is a statement of the body block: statements
+      // before the cut site executed, it continues with the fragment's v,
+      // statements after it re-emit inline.
+      const bodyE = this.nodes[e.body];
+      if (bodyE.t !== "block") throw new WasmError("internal: split chain root mismatch");
+      const stmts = bodyE.stmts;
+      const bsc = this.scopes.get(e.body) ?? s;
+      const ci = stmts.indexOf(cut[0]);
+      if (ci < 0) throw new WasmError("internal: split chain root mismatch");
+      for (let k = 0; k < stmts.length; k++) {
+        if (k < ci) continue; // executed before the split
+        if (k === ci) {
+          this.expr(stmts[k], f, bsc, false, {kL: ctx.kL, cut: cut.slice(1)});
+        } else {
+          this.expr(stmts[k], f, bsc, false, {kL: ctx.kL});
+        }
+        if (k < stmts.length - 1) drp(b);
+      }
+    }
+    const v = f.i32();
+    st(b, v);
+    this.emitDispatch(f, v, ctx.kL); // loop back through the k chain
+    op(b, UNREACHABLE);
+    throw new Split(loop.rest, [...this.cutStack]);
+  }
+
+  // One loop pass (§6b loop-entry fragment): evaluate the condition (fresh,
+  // or continuing a fragment's v when `condCut` is set), then truthy?
+  // body-then-loop-back : exit with the loop's unit value. The loop-back
+  // cell is allocated per pass and chained to `kNext` (the after-loop
+  // continuation in effect), so every capture of it resumes on the chain it
+  // was captured from. The body's completion dispatches through the cell;
+  // a Split inside the body leaves the pass closed at the site (unreachable
+  // body path) and propagates — the enclosing catcher fills that site's
+  // fragment along the chain through this while.
+  emitLoopPass(f: Fn, e: Expr & {t: "while"}, s: Scope, kNext: number, entryIdx: number, condCut?: ExprID[]): void {
+    const b = f.body;
+    if (condCut === undefined) {
+      this.expr(e.c, f, s, false, {kL: kNext});
+    } else if (condCut.length === 0) {
+      g(b, 1); // the condition itself is the fragment's split site
+    } else {
+      this.expr(e.c, f, s, false, {kL: kNext, cut: condCut});
+    }
+    this.spillIfMapped(e.c, f);
+    op(b, CALL);
+    b.lebU(F_TRUTHY);
+    op(b, IF);
+    b.u8(0x40); // void: the body path tails into the loop-back cell
+    try {
+      const lb = f.i32();
+      i32c(b, 16);
+      op(b, CALL);
+      b.lebU(F_ALLOC);
+      st(b, lb);
+      g(b, lb);
+      i32c(b, K_RET);
+      strd(b, 0);
+      g(b, lb);
+      i32c(b, entryIdx);
+      strd(b, 4);
+      g(b, lb);
+      g(b, 0); // b = the frame the pass runs over
+      strd(b, 8);
+      g(b, lb);
+      g(b, kNext); // next = the after-loop continuation
+      strd(b, 12);
+      const bodyE = this.nodes[e.body];
+      const stmts = bodyE.t === "block" ? bodyE.stmts : [e.body];
+      const bsc = this.scopes.get(e.body) ?? s;
+      this.emitStmtSeq(stmts, f, bsc, false, {kL: lb});
+    } catch (sp) {
+      if (!(sp instanceof Split)) throw sp;
+      op(b, UNREACHABLE); // the body never completes inline at this site
+      op(b, END);
+      const u = f.i32();
+      i32c(b, UNIT_CELL);
+      st(b, u);
+      this.emitDispatch(f, u, kNext); // condition false: exit
+      throw sp;
+    }
+    op(b, END);
+    const u = f.i32();
+    i32c(b, UNIT_CELL);
+    st(b, u);
+    this.emitDispatch(f, u, kNext); // condition false: exit
   }
 
   slot(f: Fn, i: number): void {
