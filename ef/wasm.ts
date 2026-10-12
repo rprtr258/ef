@@ -17,9 +17,11 @@
 // T_KABI functions running over the handler's shared hframe (§4.4); every
 // perform/handle site ends the inline body and reifies the code after it as
 // a rest-of-site fragment via the compile-time split protocol below. Resume
-// as a value (calling the captured continuation from a case body) is step 6:
-// the resume binder is still the raw captured slice, so resume calls fail
-// until then.
+// as a value (§4.6): the resume binder is a TAG_CLO cell over the shared
+// resume fn plus a per-perform-site capture record; every call copies the
+// captured slice afresh, re-chains the copy's bottom to a fresh HDL whose
+// next is the k the closure was invoked with, and dispatches the resumed
+// value through that chain (terminating at the caller's continuation).
 //
 // Representation:
 // - Value = 16-byte cell {tag: i32, pad: i32, data: 8B} where data holds an
@@ -296,6 +298,9 @@ class Compiler {
   // the Return value emitDispatch stashed in hframe slot 1 and dispatches
   // it through its k — eval.ts:132's `(v, k2) => k2(v)`.
   identityRet: Fn | null = null;
+  // Shared resume-closure fn (§4.6, created by assignCaseFns): the T_KABI
+  // fn every perform site's boxed resume binder points at.
+  resumeFn: Fn | null = null;
   caseFnTotal = 0;
   piOff = 0;
   hp0 = 0;
@@ -638,6 +643,79 @@ class Compiler {
         this.funcs.push(info.retCase.fn);
       }
     }
+    // The shared resume closure fn (§4.6): (frame, k) -> cell. frame's
+    // parent is the perform site's capture record {arg0 = captured slice,
+    // arg1 = matched HDL}; frame's arg0 is the resumed value. Copies the
+    // slice afresh (originals untouched — multi-shot safe), re-chains the
+    // copy's bottom to a fresh HDL {case table, hframe, next = this call's
+    // k} and dispatches the resumed value through the fresh chain: RET
+    // cells run the segment's fragments, the fresh HDL's Return entry
+    // fires, and dispatch terminates at the caller's continuation.
+    const rf = this.resumeFn!;
+    {
+      const b = rf.body;
+      const v = rf.i32(), slice = rf.i32(), hdl = rf.i32();
+      const copy = rf.i32(), fresh = rf.i32(), cur = rf.i32();
+      g(b, 0);
+      ld(b, 8);
+      st(b, v); // the resumed value: the closure call frame's arg0
+      g(b, 0);
+      ld(b, 0);
+      ld(b, 12);
+      st(b, slice);
+      g(b, 0);
+      ld(b, 0);
+      ld(b, 16);
+      st(b, hdl);
+      g(b, slice);
+      g(b, hdl);
+      op(b, CALL);
+      b.lebU(F_CAPTURE);
+      st(b, copy);
+      i32c(b, 16);
+      op(b, CALL);
+      b.lebU(F_ALLOC);
+      st(b, fresh);
+      g(b, fresh);
+      i32c(b, K_HDL);
+      strd(b, 0);
+      g(b, fresh);
+      g(b, hdl);
+      ld(b, 4);
+      strd(b, 4); // a = the matched handler's case-table offset
+      g(b, fresh);
+      g(b, 0);
+      ld(b, 0);
+      ld(b, 20);
+      strd(b, 8); // b = the invocation's hframe copy (rec arg2)
+      g(b, fresh);
+      g(b, 1); // next = the k this closure was invoked with
+      strd(b, 12);
+      g(b, copy);
+      st(b, cur);
+      op(b, BLOCK);
+      b.u8(0x40);
+      op(b, LOOP);
+      b.u8(0x40);
+      g(b, cur);
+      ld(b, 12);
+      g(b, hdl);
+      op(b, EQ);
+      op(b, BR_IF);
+      b.lebU(1); // cur is the bottom copy (its next is the old HDL)
+      g(b, cur);
+      ld(b, 12);
+      st(b, cur);
+      op(b, BR);
+      b.lebU(0);
+      op(b, END);
+      op(b, END);
+      g(b, cur);
+      g(b, fresh);
+      strd(b, 12);
+      this.emitDispatch(rf, v, copy); // k = the closure's own k param
+    }
+    this.funcs.push(rf);
   }
 
   // One statement of a body sequence; the sequence completes by dispatching
@@ -1229,6 +1307,9 @@ class Compiler {
         info.retCase.fsize = fs;
       }
     }
+    const rf = new Fn(2);
+    rf.idx = next++;
+    this.resumeFn = rf;
     this.caseFnTotal = next - idf.idx;
   }
 
@@ -1661,6 +1742,8 @@ class Compiler {
   loop(f: Fn, pushN: () => void, iter: (i: number) => void): void {
     const b = f.body;
     const i = f.i32();
+    i32c(b, 0);
+    st(b, i); // reset: a loop nested in another loop's body reuses this local across outer iterations
     op(b, BLOCK);
     b.u8(0x40);
     op(b, LOOP);
@@ -2106,17 +2189,12 @@ class Compiler {
           break;
         }
         if (cut !== undefined) {
-          // A perform inside the body split: reload the installed K_HDL cell
-          // from its frame spill slot and emit the body's remainder with
-          // that cell as the ambient continuation. The completion dispatch
-          // tail-calls the Return case, which reaches the after-handle rest
-          // through the RET cell captured at install time (hdl.next).
-          const hdl = f.i32();
-          g(b, 0);
-          ld(b, 8 + 4 * this.valSpill.get(id)!);
-          st(b, hdl);
-          // Body remainder as a cut sequence (statements before the cut
-          // site already executed), completing through the handler cell.
+          // A perform inside the body split: emit the body's remainder with
+          // the fragment's ambient continuation (kNext) — the perform-site
+          // RET cell carries it: the handler cell the walk started from in
+          // the original flow, or the fresh §4.6 chain (whose copied HDLs
+          // keep every enclosing handler live around the resumed segment)
+          // when the fragment runs from a resume closure.
           const bodyE = this.nodes[e.body];
           const stmts = bodyE.t === "block" ? bodyE.stmts : [e.body];
           const bsc = this.scopes.get(e.body) ?? s;
@@ -2125,15 +2203,15 @@ class Compiler {
           for (let k = 0; k < stmts.length; k++) {
             if (k < ci) continue; // executed before the split
             if (k === ci) {
-              this.expr(stmts[k], f, bsc, false, {kL: hdl, cut: cut.slice(1)});
+              this.expr(stmts[k], f, bsc, false, {kL: ctx.kL, cut: cut.slice(1)});
             } else {
-              this.expr(stmts[k], f, bsc, false, {kL: hdl});
+              this.expr(stmts[k], f, bsc, false, {kL: ctx.kL});
             }
             if (k < stmts.length - 1) drp(b);
           }
           const v = f.i32();
           st(b, v);
-          this.emitDispatch(f, v, hdl);
+          this.emitDispatch(f, v, ctx.kL);
           // The dispatch tail-calls away (every table carries a Return
           // entry); the after-handle rest chains from the split site.
           throw new Split(this.hdlRest.get(id)!, [...this.cutStack]);
@@ -2224,9 +2302,9 @@ class Compiler {
   // - Handler found: push this perform's RET cell {K_RET, rest-of-site
   //   fragment, frame, ambient k}, capture the slice (every cell strictly
   //   above the handler, INCLUDING the just-pushed RET, reified as a fresh
-  //   cell chain), bind the case params from the args cell plus the raw
-  //   slice as the resume binder, and tail-call the matched case body with
-  //   (hframe, hdl.next) — the two-k rule: the case body's ambient
+  //   cell chain), bind the case params from the args cell plus the boxed
+  //   resume closure as the resume binder, and tail-call the matched case
+  //   body with (hframe, hdl.next) — the two-k rule: the case body's ambient
   //   continuation is OUTSIDE the handler, never a chain containing it.
   // - No handler (the walk reaches k=0): bare ef_perform host call, then
   //   the SAME rest-of-site fragment the RET cell carries tail-calls with
@@ -2275,14 +2353,19 @@ class Compiler {
     g(b, cell);
     strd(b, 8 + 4 * spillSlot);
     // Handler walk: kL walks the k chain; the first K_HDL whose case table
-    // ([n][opid, fnIdx, fsize, nparams]*) contains opid wins.
+    // ([n][opid, fnIdx, fsize, nparams]*) contains opid wins. The pre-walk
+    // ambient continuation (amb) is what the RET cell carries: fragments
+    // re-dispatch through their kNext, so a resumed segment follows the
+    // fresh §4.6 chain (copied HDLs + kCaller) instead of skipping it.
     const opid = this.effOpIds.get(e.op)!;
     const restFn = this.makeRestThunk();
     const kL = f.i32(), hdl = f.i32(), found = f.i32();
     const nL = f.i32(), iL = f.i32(), ent = f.i32();
-    const fnIdx = f.i32(), nparams = f.i32();
+    const fnIdx = f.i32(), nparams = f.i32(), amb = f.i32();
     g(b, ctx.kL); // the ambient continuation
     st(b, kL);
+    g(b, ctx.kL);
+    st(b, amb);
     i32c(b, 0);
     st(b, found);
     op(b, BLOCK);
@@ -2365,6 +2448,45 @@ class Compiler {
     g(b, found);
     op(b, IF);
     b.u8(0x7f); // handler found: invoke the matched case body
+    // Per-invocation frame copy: case invocations of one handler nest (a
+    // resumed segment can re-enter the handler), and each invocation needs
+    // its own params/spills — the interpreter gives every case invocation a
+    // fresh env, so the shared hframe must not be re-bound under an
+    // in-flight outer invocation (its fragments re-read scope slots). Copy
+    // the hframe; the matched entry's fsize (word @8) sizes the copy, and
+    // the resume capture records a fresh HDL over the copy so the fresh
+    // chain's Return lands in this invocation's frame.
+    const hfc = f.i32(), fsz = f.i32();
+    g(b, ent);
+    ld(b, 8);
+    st(b, fsz);
+    i32c(b, 8);
+    g(b, fsz);
+    i32c(b, 4);
+    op(b, MUL);
+    op(b, ADD);
+    op(b, CALL);
+    b.lebU(F_ALLOC);
+    st(b, hfc);
+    this.loop(f, () => {
+      g(b, fsz);
+      i32c(b, 2);
+      op(b, ADD);
+    }, i => {
+      g(b, hfc);
+      g(b, i);
+      i32c(b, 4);
+      op(b, MUL);
+      op(b, ADD);
+      g(b, hdl);
+      ld(b, 8);
+      g(b, i);
+      i32c(b, 4);
+      op(b, MUL);
+      op(b, ADD);
+      ld(b, 0);
+      strd(b, 0);
+    });
     // Push this perform's RET cell; the slice below is captured as if this
     // cell had been pushed before the walk (scan-first).
     const ret = f.i32();
@@ -2382,25 +2504,78 @@ class Compiler {
     g(b, 0); // b = the current frame (holds the spilled args cell)
     strd(b, 8);
     g(b, ret);
-    g(b, kL); // next = the continuation the walk started from
+    g(b, amb); // next = the pre-walk ambient continuation
     strd(b, 12);
     // Capture the slice above the handler into fresh cells (originals
-    // untouched; the resume closure's copy-on-resume lands in step 6).
+    // untouched; the resume closure copies again on every call).
     const slice = f.i32();
     g(b, ret);
     g(b, hdl);
     op(b, CALL);
     b.lebU(F_CAPTURE);
     st(b, slice);
+    // Box the resume binder (§4.6): a TAG_CLO cell over the shared resume
+    // fn and a capture record {arg0 = the slice, arg1 = the matched HDL
+    // (the capture sentinel), arg2 = this invocation's hframe copy}. The
+    // resume fn copies the slice afresh per call (sentinel = arg1) and
+    // re-chains its bottom to a fresh HDL {arg1's table, arg2's frame,
+    // next = the k the closure was invoked with}, so the resumed segment
+    // runs against the caller's continuation and its Return lands in the
+    // invocation's frame copy.
+    const rec = f.i32(), rblk = f.i32(), rclo = f.i32();
+    i32c(b, 24);
+    op(b, CALL);
+    b.lebU(F_ALLOC);
+    st(b, rec);
+    g(b, rec);
+    i32c(b, 0);
+    strd(b, 0); // parent = none
+    g(b, rec);
+    i32c(b, 2);
+    strd(b, 4); // argc
+    g(b, rec);
+    g(b, slice);
+    strd(b, 12); // arg0: the captured slice
+    g(b, rec);
+    g(b, hdl);
+    strd(b, 16); // arg1: the matched HDL cell (the capture sentinel)
+    g(b, rec);
+    g(b, hfc);
+    strd(b, 20); // arg2: this invocation's hframe copy
+    i32c(b, 12);
+    op(b, CALL);
+    b.lebU(F_ALLOC);
+    st(b, rblk);
+    g(b, rblk);
+    i32c(b, this.resumeFn!.idx);
+    strd(b, 0);
+    g(b, rblk);
+    g(b, rec);
+    strd(b, 4);
+    g(b, rblk);
+    i32c(b, 1);
+    strd(b, 8); // fsize (call frame size hint)
+    i32c(b, 16);
+    op(b, CALL);
+    b.lebU(F_ALLOC);
+    st(b, rclo);
+    g(b, rclo);
+    i32c(b, TAG_CLO);
+    strd(b, 0);
+    g(b, rclo);
+    g(b, rblk);
+    strd(b, 8);
     // Case invocation over the handler's shared hframe (hdl.b): bind the
-    // case params from the args cell, the resume binder to the raw captured
-    // slice (boxed resume closure = step 6), then tail-call the case body
+    // case params from the args cell, the resume binder to the boxed
+    // resume closure, then tail-call the case body
     // with (hframe, hdl.next) — its continuation never contains this
     // handler (two-k rule).
-    const hf = f.i32(), i2 = f.i32();
-    g(b, hdl);
-    ld(b, 8);
+    const hf = f.i32(), i2 = f.i32(), argsBlk = f.i32();
+    g(b, hfc); // run the case body over the invocation's frame copy
     st(b, hf);
+    g(b, cell);
+    ld(b, 8); // the args cell's block: element ptrs live at blk+8+4i, not cell+8+4i
+    st(b, argsBlk);
     i32c(b, 0);
     st(b, i2);
     op(b, BLOCK);
@@ -2419,7 +2594,7 @@ class Compiler {
     i32c(b, 8);
     op(b, ADD);
     op(b, ADD);
-    g(b, cell);
+    g(b, argsBlk);
     g(b, i2);
     i32c(b, 4);
     op(b, MUL);
@@ -2443,7 +2618,7 @@ class Compiler {
     i32c(b, 8);
     op(b, ADD);
     op(b, ADD);
-    g(b, slice);
+    g(b, rclo);
     strd(b, 0);
     g(b, hf);
     g(b, hdl);
@@ -2469,7 +2644,7 @@ class Compiler {
     strd(b, 8 + 4 * this.valSpill.get(id)!);
     g(b, 0);
     g(b, v);
-    g(b, kL);
+    g(b, amb);
     i32c(b, restFn.idx);
     op(b, RETURN_CALL_INDIRECT);
     b.lebU(T_III_I);
@@ -2981,12 +3156,6 @@ class Compiler {
               g(b, xl);
             }, j => {
               this.elemAddr(f, blk, w);
-              i32c(b, 4);
-              op(b, ADD);
-              g(b, w);
-              i32c(b, 4);
-              op(b, MUL);
-              op(b, ADD);
               this.elemAddr(f, xb, j);
               ld(b, 0);
               strd(b, 0);
@@ -3252,7 +3421,7 @@ class Compiler {
         const push = argLocal(k);
         if (push !== null) push();
         strd(b, 0);
-      }, false, true, 1, true); // the callback is user lambda code: land-style RET cell, no split (see emitCallClosure)
+      }, false, true, 2, true); // the callback is user lambda code: land-style RET cell, no split (see emitCallClosure); kL=2 = this T_III_I thunk's k param (frame=0, v=1, k=2) — the callback's land dispatches into the thunk's own continuation, never into its v (an args cell, not a k chain)
     };
     if (name === "map") {
       const res = this.allocArrBlk(f, n);
