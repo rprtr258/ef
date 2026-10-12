@@ -838,6 +838,21 @@ class Compiler {
     this.cutStack = savedCut;
   }
 
+  // Fragment re-emission of a statement sequence from a cut statement:
+  // statements before index ci already executed (skipped — surviving values
+  // reload from spill slots), stmts[ci] continues the fragment with its
+  // value being the fragment's v param, statements after it re-emit inline.
+  emitStmtsFrom(stmts: ExprID[], f: Fn, s: Scope, ctx: Ctx, ci: number, cut: ExprID[], tail: boolean): void {
+    for (let k = ci; k < stmts.length; k++) {
+      if (k === ci) {
+        this.expr(stmts[k], f, s, tail && k === stmts.length - 1, {kL: ctx.kL, cut: cut.slice(1)});
+      } else {
+        this.expr(stmts[k], f, s, tail && k === stmts.length - 1, {kL: ctx.kL});
+      }
+      if (k < stmts.length - 1) drp(f.body);
+    }
+  }
+
   // --- helper functions (fixed indices 11..14) -------------------------------
 
   emitHelpers(): Fn[] {
@@ -1464,12 +1479,37 @@ class Compiler {
   // (return_call_indirect passing the caller's k through, so tail recursion
   // uses O(1) stack). A non-tail call passes k=0: the callee's dispatch(0, v)
   // returns its result cell inline (today's zero-overhead arithmetic) — or,
-  // when `land`, a freshly allocated RET cell {K_RET, landThunk, $fp, k}:
+  // when `land`, a freshly allocated RET cell {K_RET, landA, $fp, k}:
   // the callee's dispatch tail-calls the land thunk over the caller's frame
   // and k, which dispatches the result into the caller's continuation (k=0
   // here, so the value comes back to this call site and the body continues
   // inline; the rest-of-site fragment machinery is in place for the
   // suspendable constructs of later steps).
+  // A RET cell {K_RET, fragIdx, $fp, next} (§3): the continuation cell that
+  // tail-calls fragment `fragIdx` (T_III_I) over the caller's frame (local
+  // 0). `nextE` pushes the cell's next-pointer operand. Returns the cell.
+  retCell(f: Fn, fragIdx: number, nextE: () => void): number {
+    const b = f.body;
+    const cell = f.i32();
+    i32c(b, 16);
+    op(b, CALL);
+    b.lebU(F_ALLOC);
+    st(b, cell);
+    g(b, cell);
+    i32c(b, K_RET);
+    strd(b, 0);
+    g(b, cell);
+    i32c(b, fragIdx);
+    strd(b, 4);
+    g(b, cell);
+    g(b, 0); // b = the frame the fragment runs over
+    strd(b, 8);
+    g(b, cell);
+    nextE();
+    strd(b, 12);
+    return cell;
+  }
+
   emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false, landA?: number): void {
     const b = f.body;
     const clob = f.i32(), idx = f.i32(), cf = f.i32(), fs = f.i32(), ffp = f.i32();
@@ -1519,24 +1559,7 @@ class Compiler {
         // a tail call: the callback's completion always tails into landA
         // (never returns here), and a terminal k=0 return must unwind past
         // the whole loop to the caller's own call site.
-        const cell = f.i32();
-        i32c(b, 16);
-        op(b, CALL);
-        b.lebU(F_ALLOC);
-        st(b, cell);
-        g(b, cell);
-        i32c(b, K_RET);
-        strd(b, 0);
-        g(b, cell);
-        i32c(b, landA ?? this.landThunk());
-        strd(b, 4);
-        g(b, cell);
-        g(b, 0); // b = the caller's frame
-        strd(b, 8);
-        g(b, cell);
-        g(b, kL); // next = the ambient continuation
-        strd(b, 12);
-        g(b, cell);
+        g(b, this.retCell(f, landA!, () => g(b, kL))); // next = ambient k
       } else {
         // Non-tail lambda call (§3 emitCall): the caller's body ENDS at
         // the call — return_call_indirect with the continuation in the
@@ -1547,24 +1570,7 @@ class Compiler {
         // dispatches straight through H.next, and the terminal k=0
         // return must not unwind through this call site.
         const rest = this.makeRestThunk();
-        const cell = f.i32();
-        i32c(b, 16);
-        op(b, CALL);
-        b.lebU(F_ALLOC);
-        st(b, cell);
-        g(b, cell);
-        i32c(b, K_RET);
-        strd(b, 0);
-        g(b, cell);
-        i32c(b, rest.idx);
-        strd(b, 4);
-        g(b, cell);
-        g(b, 0); // b = the caller's frame
-        strd(b, 8);
-        g(b, cell);
-        g(b, kL); // next = the ambient continuation
-        strd(b, 12);
-        g(b, cell);
+        g(b, this.retCell(f, rest.idx, () => g(b, kL))); // next = ambient k
         splitAt = new Split(rest, [...this.cutStack]);
       }
     } else i32c(b, 0); // k=0: the callee's dispatch(0, v) returns its value inline
@@ -1584,17 +1590,6 @@ class Compiler {
     f.idx = this.thunk0 + this.thunks.length;
     this.thunks.push(f);
     return f;
-  }
-
-  // Land thunk for one non-tail lambda call site: a T_III_I rest-of-site
-  // fragment (frame, v, k) -> i32. frame is the caller's frame (spilled
-  // pre-call temps live in its slots); the fragment dispatches the call
-  // result v into the continuation captured in the RET cell (the caller's
-  // ambient k at the call site). One thunk per distinct non-tail call site.
-  landThunk(): number {
-    const f = this.makeRestThunk();
-    this.emitDispatch(f, 1, 2); // v = param 1, k = param 2
-    return f.idx;
   }
 
   // End-of-body dispatch: completes a T_KABI function whose result cell sits
@@ -1909,6 +1904,26 @@ class Compiler {
     g(b, t);
   }
 
+  // One child of a cut node during fragment re-emission. "cut": the child
+  // holding the deeper split site — continues the fragment chain (its value
+  // is the fragment's v param). "pre": a sibling evaluated BEFORE the cut
+  // child — reload its spilled value, or re-emit pure code inline (preCut).
+  // "post": a sibling evaluated AFTER the cut child (or no cut at all) —
+  // re-emit inline. Persists any mapped operand spill slot either way.
+  cutChild(child: ExprID, f: Fn, s: Scope, ctx: Ctx, mode: "cut" | "pre" | "post"): void {
+    if (mode === "cut") this.expr(child, f, s, false, {kL: ctx.kL, cut: ctx.cut!.slice(1)});
+    else if (mode === "pre") this.preCut(child, f, s, ctx);
+    else this.expr(child, f, s, false, {kL: ctx.kL});
+    this.spillIfMapped(child, f);
+  }
+
+  // The split site is this node itself inside a fragment: its value is the
+  // fragment's v param (local 1), persisted for later fragments that reload it.
+  fragV(id: ExprID, f: Fn): void {
+    g(f.body, 1);
+    this.spillIfMapped(id, f);
+  }
+
   expr(id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = INLINE): void {
     const e = this.nodes[id];
     // Lambda/block nodes carry their own scope; other nodes inherit sc.
@@ -1980,11 +1995,7 @@ class Compiler {
         // exists before the value is computed, so `let x = x` sees null).
         const slot = s.map.get(e.name)!;
         const v = f.i32();
-        if (cut !== undefined) {
-          this.expr(e.val, f, s, false, {kL: ctx.kL, cut: cut.slice(1)});
-        } else {
-          this.expr(e.val, f, s, false, ctx);
-        }
+        this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
         st(b, v);
         g(b, 0);
         g(b, v);
@@ -1994,11 +2005,7 @@ class Compiler {
       }
       case "dlet": {
         const arr = f.i32(), blk = f.i32();
-        if (cut !== undefined) {
-          this.expr(e.val, f, s, false, {kL: ctx.kL, cut: cut.slice(1)});
-        } else {
-          this.expr(e.val, f, s, false, ctx);
-        }
+        this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
         st(b, arr);
         g(b, arr);
         ld(b, 8);
@@ -2020,11 +2027,7 @@ class Compiler {
         const r = this.resolve(s, e.name);
         if (r === null) throw new WasmError(`Assignment to unbound symbol: ${e.name}`);
         const v = f.i32();
-        if (cut !== undefined) {
-          this.expr(e.val, f, s, false, {kL: ctx.kL, cut: cut.slice(1)});
-        } else {
-          this.expr(e.val, f, s, false, ctx);
-        }
+        this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
         st(b, v);
         g(b, 0);
         for (let k = 0; k < r.d; k++) ld(b, 0);
@@ -2037,8 +2040,7 @@ class Compiler {
         if (cut !== undefined && cut.length === 0) {
           // The split site itself inside a fragment: a split-mode if's
           // value arrives via the after-if fragment's v param.
-          g(b, 1);
-          this.spillIfMapped(id, f);
+          this.fragV(id, f);
           break;
         }
         if (cut !== undefined) {
@@ -2052,23 +2054,15 @@ class Compiler {
           const dispatchShape: boolean = ci !== 0 || this.splits(e.a) || this.splits(e.b);
           if (!dispatchShape) {
             // Value shape: no arm can split, arms leave values inline.
-            if (ci === 0) this.expr(e.c, f, s, false, {kL: ctx.kL, cut: cut.slice(1)});
-            else this.preCut(e.c, f, s, ctx);
+            this.cutChild(e.c, f, s, ctx, ci === 0 ? "cut" : "pre");
             op(b, CALL);
             b.lebU(F_TRUTHY);
             op(b, IF);
             b.u8(0x7f); // result i32
             this.ctlDepth++;
-            if (ci === 1) {
-              this.expr(e.a, f, s, false, {kL: ctx.kL, cut: cut.slice(1)});
-              this.spillIfMapped(e.a, f);
-            } else if (ci === 2) this.preCut(e.a, f, s, ctx);
-            else this.expr(e.a, f, s, false, {kL: ctx.kL});
+            this.cutChild(e.a, f, s, ctx, ci === 1 ? "cut" : ci === 2 ? "pre" : "post");
             op(b, ELSE);
-            if (ci === 2) {
-              this.expr(e.b, f, s, false, {kL: ctx.kL, cut: cut.slice(1)});
-              this.spillIfMapped(e.b, f);
-            } else this.expr(e.b, f, s, false, {kL: ctx.kL});
+            this.cutChild(e.b, f, s, ctx, ci === 2 ? "cut" : "post");
             this.ctlDepth--;
             op(b, END);
             this.spillIfMapped(id, f);
@@ -2146,15 +2140,7 @@ class Compiler {
         // its value from the fragment's v param, the rest re-emits inline.
         const ci = e.stmts.indexOf(cut[0]);
         if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-        for (let k = 0; k < e.stmts.length; k++) {
-          if (k < ci) continue; // executed before the split
-          if (k === ci) {
-            this.expr(e.stmts[k], f, s, tail && k === e.stmts.length - 1, {kL: ctx.kL, cut: cut.slice(1)});
-          } else {
-            this.expr(e.stmts[k], f, s, tail && k === e.stmts.length - 1, {kL: ctx.kL});
-          }
-          if (k < e.stmts.length - 1) drp(b);
-        }
+        this.emitStmtsFrom(e.stmts, f, s, ctx, ci, cut, tail);
         break;
       }
       case "arr": {
@@ -2170,14 +2156,8 @@ class Compiler {
           g(b, blk);
           i32c(b, 8 + 4 * k);
           op(b, ADD);
-          if (cut !== undefined && cut[0] === e.elems[k]) {
-            this.expr(e.elems[k], f, s, false, {kL: ctx.kL, cut: cut.slice(1)});
-          } else if (cut !== undefined) {
-            this.preCut(e.elems[k], f, s, ctx);
-          } else {
-            this.expr(e.elems[k], f, s, false, ctx);
-            this.spillIfMapped(e.elems[k], f);
-          }
+          this.cutChild(e.elems[k], f, s, ctx,
+            cut === undefined ? "post" : cut[0] === e.elems[k] ? "cut" : "pre");
           strd(b, 0);
         }
         this.boxArr(f, blk);
@@ -2185,11 +2165,7 @@ class Compiler {
       }
       case "field": {
         const o = f.i32(), blk = f.i32();
-        if (cut !== undefined) {
-          this.expr(e.obj, f, s, false, {kL: ctx.kL, cut: cut.slice(1)});
-        } else {
-          this.expr(e.obj, f, s, false, ctx);
-        }
+        this.expr(e.obj, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
         st(b, o);
         g(b, o);
         ld(b, 8);
@@ -2215,9 +2191,8 @@ class Compiler {
         if (cut !== undefined && cut.length === 0) {
           // The split site itself inside a fragment: its value is the
           // fragment's v param (the value the case body or host resumed
-          // with), persisted for later fragments that reload it.
-          g(b, 1);
-          this.spillIfMapped(id, f);
+          // with).
+          this.fragV(id, f);
           break;
         }
         this.emitPerform(id, e, f, s, ctx);
@@ -2226,8 +2201,7 @@ class Compiler {
         if (cut !== undefined && cut.length === 0) {
           // The split site itself inside a fragment: its value is the
           // handle's value delivered by the after-handle fragment chain.
-          g(b, 1);
-          this.spillIfMapped(id, f);
+          this.fragV(id, f);
           break;
         }
         if (cut !== undefined) {
@@ -2242,15 +2216,7 @@ class Compiler {
           const bsc = this.scopes.get(e.body) ?? s;
           const ci = stmts.indexOf(cut[0]);
           if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-          for (let k = 0; k < stmts.length; k++) {
-            if (k < ci) continue; // executed before the split
-            if (k === ci) {
-              this.expr(stmts[k], f, bsc, false, {kL: ctx.kL, cut: cut.slice(1)});
-            } else {
-              this.expr(stmts[k], f, bsc, false, {kL: ctx.kL});
-            }
-            if (k < stmts.length - 1) drp(b);
-          }
+          this.emitStmtsFrom(stmts, f, bsc, ctx, ci, cut, false);
           const v = f.i32();
           st(b, v);
           this.emitDispatch(f, v, ctx.kL);
@@ -2265,8 +2231,7 @@ class Compiler {
           // The split site itself inside a fragment: the call's result is
           // the fragment's v param (the caller's body ended at the call's
           // return_call, §3 emitCall).
-          g(b, 1);
-          this.spillIfMapped(id, f);
+          this.fragV(id, f);
           break;
         }
         if (cut !== undefined) {
@@ -2279,13 +2244,9 @@ class Compiler {
             const ci = kids.indexOf(cut[0]);
             if (ci < 1) throw new WasmError("internal: split chain root mismatch");
             const a = f.i32(), bv = f.i32();
-            if (ci === 1) this.expr(e.args[0], f, s, false, {kL: ctx.kL, cut: cut.slice(1)});
-            else this.preCut(e.args[0], f, s, ctx);
-            this.spillIfMapped(e.args[0], f);
+            this.cutChild(e.args[0], f, s, ctx, ci === 1 ? "cut" : "pre");
             st(b, a);
-            if (ci === 2) this.expr(e.args[1], f, s, false, {kL: ctx.kL, cut: cut.slice(1)});
-            else this.preCut(e.args[1], f, s, ctx);
-            this.spillIfMapped(e.args[1], f);
+            this.cutChild(e.args[1], f, s, ctx, ci === 2 ? "cut" : "pre");
             st(b, bv);
             g(b, a);
             ld64(b, 8);
@@ -2301,23 +2262,14 @@ class Compiler {
           const ci = kids.indexOf(cut[0]);
           if (ci < 0) throw new WasmError("internal: split chain root mismatch");
           const fc = f.i32();
-          if (ci === 0) this.expr(e.fn, f, s, false, {kL: ctx.kL, cut: cut.slice(1)});
-          else this.preCut(e.fn, f, s, ctx);
-          this.spillIfMapped(e.fn, f);
+          this.cutChild(e.fn, f, s, ctx, ci === 0 ? "cut" : "pre");
           st(b, fc);
           this.emitCallClosure(f, fc, e.args.length, (k, ffp) => {
             g(b, ffp);
             i32c(b, 8 + 4 * k);
             op(b, ADD);
-            if (k + 1 === ci) {
-              this.expr(e.args[k], f, s, false, {kL: ctx.kL, cut: cut.slice(1)});
-              this.spillIfMapped(e.args[k], f);
-            } else if (k + 1 < ci) {
-              this.preCut(e.args[k], f, s, ctx);
-            } else {
-              this.expr(e.args[k], f, s, false, {kL: ctx.kL});
-              this.spillIfMapped(e.args[k], f);
-            }
+            this.cutChild(e.args[k], f, s, ctx,
+              k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
             strd(b, 0);
           }, false,
           // Builtins keep the k=0 trampoline convention (see emitApp).
@@ -2379,13 +2331,12 @@ class Compiler {
       i32c(b, 8 + 4 * k);
       op(b, ADD);
       if (k === ci) {
-        this.expr(e.args[k], f, s, false, {kL: ctx.kL, cut: cut!.slice(1)});
+        this.cutChild(e.args[k], f, s, ctx, "cut");
       } else if (k < ci) {
-        this.preCut(e.args[k], f, s, ctx);
+        this.cutChild(e.args[k], f, s, ctx, "pre");
       } else {
-        this.expr(e.args[k], f, s, false, {kL: ctx.kL});
+        this.cutChild(e.args[k], f, s, ctx, "post");
       }
-      this.spillIfMapped(e.args[k], f);
       strd(b, 0);
     }
     this.boxArr(f, blk);
@@ -2402,7 +2353,7 @@ class Compiler {
     const opid = this.effOpIds.get(e.op)!;
     const restFn = this.makeRestThunk();
     const kL = f.i32(), hdl = f.i32(), found = f.i32();
-    const nL = f.i32(), iL = f.i32(), ent = f.i32();
+    const nL = f.i32(), ent = f.i32();
     const fnIdx = f.i32(), nparams = f.i32(), amb = f.i32();
     g(b, ctx.kL); // the ambient continuation
     st(b, kL);
@@ -2429,53 +2380,38 @@ class Compiler {
     ld(b, 4);
     ld(b, 0);
     st(b, nL);
-    i32c(b, 0);
-    st(b, iL);
-    op(b, BLOCK);
-    b.u8(0x40);
-    op(b, LOOP);
-    b.u8(0x40);
-    g(b, iL);
-    g(b, nL);
-    op(b, GEU);
-    op(b, BR_IF);
-    b.lebU(1); // table exhausted without a match
-    g(b, kL);
-    ld(b, 4);
-    i32c(b, 4);
-    op(b, ADD);
-    g(b, iL);
-    i32c(b, 16);
-    op(b, MUL);
-    op(b, ADD);
-    st(b, ent);
-    g(b, ent);
-    ld(b, 0);
-    i32c(b, opid);
-    op(b, EQ);
-    op(b, IF);
-    b.u8(0x40);
-    i32c(b, 1);
-    st(b, found);
-    g(b, kL);
-    st(b, hdl);
-    g(b, ent);
-    ld(b, 4);
-    st(b, fnIdx);
-    g(b, ent);
-    ld(b, 12);
-    st(b, nparams);
-    op(b, BR);
-    b.lebU(2); // exit the table scan
-    op(b, END);
-    g(b, iL);
-    i32c(b, 1);
-    op(b, ADD);
-    st(b, iL);
-    op(b, BR);
-    b.lebU(0);
-    op(b, END);
-    op(b, END);
+    this.loop(f, () => {
+      g(b, nL);
+    }, iL => {
+      g(b, kL);
+      ld(b, 4);
+      i32c(b, 4);
+      op(b, ADD);
+      g(b, iL);
+      i32c(b, 16);
+      op(b, MUL);
+      op(b, ADD);
+      st(b, ent);
+      g(b, ent);
+      ld(b, 0);
+      i32c(b, opid);
+      op(b, EQ);
+      op(b, IF);
+      b.u8(0x40);
+      i32c(b, 1);
+      st(b, found);
+      g(b, kL);
+      st(b, hdl);
+      g(b, ent);
+      ld(b, 4);
+      st(b, fnIdx);
+      g(b, ent);
+      ld(b, 12);
+      st(b, nparams);
+      op(b, BR);
+      b.lebU(2); // exit the table scan
+      op(b, END);
+    });
     g(b, found);
     op(b, BR_IF);
     b.lebU(2); // matched handler → leave the walk
@@ -2531,23 +2467,9 @@ class Compiler {
     });
     // Push this perform's RET cell; the slice below is captured as if this
     // cell had been pushed before the walk (scan-first).
-    const ret = f.i32();
-    i32c(b, 16);
-    op(b, CALL);
-    b.lebU(F_ALLOC);
-    st(b, ret);
-    g(b, ret);
-    i32c(b, K_RET);
-    strd(b, 0);
-    g(b, ret);
-    i32c(b, restFn.idx);
-    strd(b, 4);
-    g(b, ret);
-    g(b, 0); // b = the current frame (holds the spilled args cell)
-    strd(b, 8);
-    g(b, ret);
-    g(b, amb); // next = the pre-walk ambient continuation
-    strd(b, 12);
+    const ret = this.retCell(f, restFn.idx, () => {
+      g(b, amb); // next = the pre-walk ambient continuation
+    }); // b = the current frame (holds the spilled args cell)
     // Capture the slice above the handler into fresh cells (originals
     // untouched; the resume closure copies again on every call).
     const slice = f.i32();
@@ -2612,47 +2534,32 @@ class Compiler {
     // resume closure, then tail-call the case body
     // with (hframe, hdl.next) — its continuation never contains this
     // handler (two-k rule).
-    const hf = f.i32(), i2 = f.i32(), argsBlk = f.i32();
+    const hf = f.i32(), argsBlk = f.i32();
     g(b, hfc); // run the case body over the invocation's frame copy
     st(b, hf);
     g(b, cell);
     ld(b, 8); // the args cell's block: element ptrs live at blk+8+4i, not cell+8+4i
     st(b, argsBlk);
-    i32c(b, 0);
-    st(b, i2);
-    op(b, BLOCK);
-    b.u8(0x40);
-    op(b, LOOP);
-    b.u8(0x40);
-    g(b, i2);
-    g(b, nparams);
-    op(b, GEU);
-    op(b, BR_IF);
-    b.lebU(1);
-    g(b, hf);
-    g(b, i2);
-    i32c(b, 4);
-    op(b, MUL);
-    i32c(b, 8);
-    op(b, ADD);
-    op(b, ADD);
-    g(b, argsBlk);
-    g(b, i2);
-    i32c(b, 4);
-    op(b, MUL);
-    i32c(b, 8);
-    op(b, ADD);
-    op(b, ADD);
-    ld(b, 0);
-    strd(b, 0);
-    g(b, i2);
-    i32c(b, 1);
-    op(b, ADD);
-    st(b, i2);
-    op(b, BR);
-    b.lebU(0);
-    op(b, END);
-    op(b, END);
+    this.loop(f, () => {
+      g(b, nparams);
+    }, i2 => {
+      g(b, hf);
+      g(b, i2);
+      i32c(b, 4);
+      op(b, MUL);
+      i32c(b, 8);
+      op(b, ADD);
+      op(b, ADD);
+      g(b, argsBlk);
+      g(b, i2);
+      i32c(b, 4);
+      op(b, MUL);
+      i32c(b, 8);
+      op(b, ADD);
+      op(b, ADD);
+      ld(b, 0);
+      strd(b, 0);
+    });
     g(b, hf);
     g(b, nparams);
     i32c(b, 4);
@@ -2719,7 +2626,7 @@ class Compiler {
     const info = this.hdlCases.get(id)!;
     const restFn = this.makeRestThunk();
     this.hdlRest.set(id, restFn);
-    const hf = f.i32(), ret = f.i32(), hdl = f.i32();
+    const hf = f.i32(), hdl = f.i32();
     i32c(b, 8 + 4 * this.frameSizeOf(info.scope));
     op(b, CALL);
     b.lebU(F_ALLOC);
@@ -2727,22 +2634,12 @@ class Compiler {
     g(b, hf);
     g(b, 0);
     strd(b, 0); // parent = the frame at the handle site
-    i32c(b, 16);
-    op(b, CALL);
-    b.lebU(F_ALLOC);
-    st(b, ret);
-    g(b, ret);
-    i32c(b, K_RET);
-    strd(b, 0);
-    g(b, ret);
-    i32c(b, restFn.idx);
-    strd(b, 4);
-    g(b, ret);
-    g(b, 0); // b = the frame at the handle site (the after-rest runs over it)
-    strd(b, 8);
-    g(b, ret);
-    g(b, ctx.kL); // next = the continuation outside the handler
-    strd(b, 12);
+    // RET cell over the handle-site frame; next = the continuation outside
+    // the handler (the two-k rule: the case body's ambient continuation is
+    // the one captured OUTSIDE the handler).
+    const ret = this.retCell(f, restFn.idx, () => {
+      g(b, ctx.kL);
+    });
     i32c(b, 16);
     op(b, CALL);
     b.lebU(F_ALLOC);
@@ -2839,28 +2736,11 @@ class Compiler {
     // part of it.
     const chainToIf = [...this.cutStack];
     const restAfterIf = this.makeRestThunk();
-    const ifk = f.i32();
-    i32c(b, 16);
-    op(b, CALL);
-    b.lebU(F_ALLOC);
-    st(b, ifk);
-    g(b, ifk);
-    i32c(b, K_RET);
-    strd(b, 0);
-    g(b, ifk);
-    i32c(b, restAfterIf.idx);
-    strd(b, 4);
-    g(b, ifk);
-    g(b, 0); // b = this frame
-    strd(b, 8);
-    g(b, ifk);
-    g(b, ctx.kL); // next = the ambient continuation
-    strd(b, 12);
-    if (ci === undefined) {
-      this.expr(e.c, f, s, false, ctx);
-      this.spillIfMapped(e.c, f);
-    } else if (ci === 0) this.expr(e.c, f, s, false, {kL: ctx.kL, cut: (ctx.cut ?? []).slice(1)});
-    else this.preCut(e.c, f, s, ctx);
+    const ifk = this.retCell(f, restAfterIf.idx, () => {
+      g(b, ctx.kL); // next = the ambient continuation
+    });
+    if (ci === undefined) this.cutChild(e.c, f, s, ctx, "post");
+    else this.cutChild(e.c, f, s, ctx, ci === 0 ? "cut" : "pre");
     op(b, CALL);
     b.lebU(F_TRUTHY);
     op(b, IF);
@@ -2870,11 +2750,13 @@ class Compiler {
       const va = f.i32();
       let sp: Split | null = null;
       try {
-        if (cutArm) this.expr(armE, f, s, false, {kL: ctx.kL, cut: (ctx.cut ?? []).slice(1)});
-        // The other arm re-emits without the cut: the cut path belongs to
-        // the cut arm's subtree only.
-        else this.expr(armE, f, s, false, {kL: ctx.kL});
-        this.spillIfMapped(armE, f);
+        if (cutArm) {
+          this.cutChild(armE, f, s, ctx, "cut");
+        } else {
+          // The other arm re-emits without the cut: the cut path belongs to
+          // the cut arm's subtree only.
+          this.cutChild(armE, f, s, ctx, "post");
+        }
         st(b, va);
       } catch (sp2) {
         if (!(sp2 instanceof Split)) throw sp2;
@@ -2931,8 +2813,7 @@ class Compiler {
     const b = f.body;
     if (cut !== undefined && cut.length === 0) {
       // The loop exited: its unit value is the fragment's v param.
-      g(b, 1);
-      this.spillIfMapped(id, f);
+      this.fragV(id, f);
       return;
     }
     if (cut === undefined) {
@@ -2951,39 +2832,12 @@ class Compiler {
         inner = sp;
       }
       this.ctlDepth = savedCtl;
-      const ifk = f.i32(), loopk = f.i32();
-      i32c(b, 16);
-      op(b, CALL);
-      b.lebU(F_ALLOC);
-      st(b, ifk);
-      g(b, ifk);
-      i32c(b, K_RET);
-      strd(b, 0);
-      g(b, ifk);
-      i32c(b, restAfter.idx);
-      strd(b, 4);
-      g(b, ifk);
-      g(b, 0); // b = the frame at the while site
-      strd(b, 8);
-      g(b, ifk);
-      g(b, ctx.kL); // next = the ambient continuation
-      strd(b, 12);
-      i32c(b, 16);
-      op(b, CALL);
-      b.lebU(F_ALLOC);
-      st(b, loopk);
-      g(b, loopk);
-      i32c(b, K_RET);
-      strd(b, 0);
-      g(b, loopk);
-      i32c(b, loopEntry.idx);
-      strd(b, 4);
-      g(b, loopk);
-      g(b, 0);
-      strd(b, 8);
-      g(b, loopk);
-      g(b, ifk);
-      strd(b, 12);
+      const ifk = this.retCell(f, restAfter.idx, () => {
+        g(b, ctx.kL); // next = the ambient continuation
+      });
+      const loopk = this.retCell(f, loopEntry.idx, () => {
+        g(b, ifk); // next = the after-while cell
+      });
       const u = f.i32();
       i32c(b, UNIT_CELL);
       st(b, u);
@@ -3023,15 +2877,7 @@ class Compiler {
       const bsc = this.scopes.get(e.body) ?? s;
       const ci = stmts.indexOf(cut[0]);
       if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-      for (let k = 0; k < stmts.length; k++) {
-        if (k < ci) continue; // executed before the split
-        if (k === ci) {
-          this.expr(stmts[k], f, bsc, false, {kL: ctx.kL, cut: cut.slice(1)});
-        } else {
-          this.expr(stmts[k], f, bsc, false, {kL: ctx.kL});
-        }
-        if (k < stmts.length - 1) drp(b);
-      }
+      this.emitStmtsFrom(stmts, f, bsc, ctx, ci, cut, false);
     }
     const v = f.i32();
     st(b, v);
@@ -3064,23 +2910,10 @@ class Compiler {
     op(b, IF);
     b.u8(0x40); // void: the body path tails into the loop-back cell
     try {
-      const lb = f.i32();
-      i32c(b, 16);
-      op(b, CALL);
-      b.lebU(F_ALLOC);
-      st(b, lb);
-      g(b, lb);
-      i32c(b, K_RET);
-      strd(b, 0);
-      g(b, lb);
-      i32c(b, entryIdx);
-      strd(b, 4);
-      g(b, lb);
-      g(b, 0); // b = the frame the pass runs over
-      strd(b, 8);
-      g(b, lb);
-      g(b, kNext); // next = the after-loop continuation
-      strd(b, 12);
+      // RET cell over the pass's frame; next = the after-loop continuation
+      const lb = this.retCell(f, entryIdx, () => {
+        g(b, kNext);
+      });
       const bodyE = this.nodes[e.body];
       const stmts = bodyE.t === "block" ? bodyE.stmts : [e.body];
       const bsc = this.scopes.get(e.body) ?? s;
