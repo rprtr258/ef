@@ -179,6 +179,15 @@ const BUILTINS: {name: string, params: number}[] = [
   {name: "flatmap", params: 2},
 ];
 
+// map/each/flatmap invoke user callbacks, so they are called land-style: a
+// map-like call site is a landCalls split site (§3) and the builtin loops
+// through per-iteration thunks instead of an inline wasm loop.
+const MAP_LIKE = new Set(["map", "each", "flatmap"]);
+// Extra entry-frame words a map-like builtin needs beyond its args: the
+// result/tmp block pointer (except each) and the iteration counter.
+const mapLikeFrameWords = (name: string): number =>
+  name === "each" ? 1 : MAP_LIKE.has(name) ? 2 : 0;
+
 // Builtin effects in op-table order. User-declared ops (from `effect` decls)
 // follow them: `effOpIds` interns every op performed in the program, and the
 // host maps an opid back to its name via the table `compileWithOps` returns.
@@ -323,6 +332,10 @@ class Compiler {
   // site — the caller's body ends at the call and the rest-of-site lives
   // in a land fragment (§3 emitCall). Builtins keep the k=0 trampoline.
   landCalls = new Set<ExprID>();
+  // Rest fragments already filled: a handle's after-rest fragment is thrown
+  // to fillRest from every fragment re-emission of that handle, but only the
+  // first fill must land (later fills would append duplicate code to it).
+  filledRests = new Set<Fn>();
   // Enclosing body roots (bodyCatch/emitMain): a split-mode if fills an
   // arm's fragment against the body root its emission is nested in.
   bodyRoots: {stmts: ExprID[], sc: Scope, tail: boolean}[] = [];
@@ -442,10 +455,16 @@ class Compiler {
       case "app": {
         // Mark non-builtin calls as split sites (§3 emitCall); the same
         // predicate emitApp/emitCallClosure use for the land convention.
+        // map/each/flatmap are builtins but land-style too: their result
+        // dispatches through the caller's continuation and a performing
+        // callback must see the caller's handler chain.
         // (cloOffsets is only filled at static layout, later than this
         // pass, so match against the BUILTINS name list here.)
         const fne = this.nodes[e.fn];
-        if (!(fne.t === "sym" && this.resolve(sc, fne.v) === null && BUILTINS.some(b => b.name === fne.v))) {
+        const name = fne.t === "sym" ? fne.v : null;
+        const isBuiltin = name !== null && this.resolve(sc, name) === null &&
+          BUILTINS.some(b => b.name === name);
+        if (name === null || !isBuiltin || MAP_LIKE.has(name)) {
           this.landCalls.add(id);
         }
         this.discover(e.fn, sc);
@@ -775,6 +794,11 @@ class Compiler {
   // re-emission chains another fragment off this one's split site.
   fillRest(sp: Split, root: ExprID[], sc: Scope, tail: boolean): void {
     const g = sp.restFn;
+    // A shared after-rest fragment (e.g. a handle's) may be routed here
+    // again by a later re-emission of the same site; its content is already
+    // correct, so re-filling would only append a duplicate tail.
+    if (this.filledRests.has(g)) return;
+    this.filledRests.add(g);
     const b = g.body;
     const ci = root.indexOf(sp.chain[0]);
     if (ci < 0) throw new WasmError("internal: split chain root mismatch");
@@ -1355,7 +1379,9 @@ class Compiler {
       const blk = this.place([
         fni & 0xff, (fni >> 8) & 0xff, (fni >> 16) & 0xff, (fni >> 24) & 0xff,
         0, 0, 0, 0,
-        bi.params & 0xff, 0, 0, 0,
+        // fsize: map-like entries keep their result block + counter in the
+        // frame the per-iteration thunks reload after a suspension.
+        (bi.params + mapLikeFrameWords(bi.name)) & 0xff, 0, 0, 0,
       ], 4);
       this.cloOffsets.set(bi.name, this.placeCell(TAG_CLO, 0, blk));
     }
@@ -1437,7 +1463,7 @@ class Compiler {
   // here, so the value comes back to this call site and the body continues
   // inline; the rest-of-site fragment machinery is in place for the
   // suspendable constructs of later steps).
-  emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false): void {
+  emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false, landA?: number): void {
     const b = f.body;
     const clob = f.i32(), idx = f.i32(), cf = f.i32(), fs = f.i32(), ffp = f.i32();
     g(b, fc);
@@ -1479,10 +1505,13 @@ class Compiler {
     if (tail) g(b, kL); // tail call: pass the ambient continuation through
     else if (land) {
       if (noSplit) {
-        // Land-style RET cell without ending the caller's body: map-like
-        // builtins loop over callback calls inline (their own fragment
-        // protocol is future work; callbacks that perform reach only the
-        // host boundary today).
+        // Land-style RET cell ending the caller's body: used inside
+        // loop-entry thunks (map-like builtins), where the callback's result
+        // lands in the per-iteration thunk `landA` instead of the generic
+        // per-site dispatcher and the loop continues from there. The call is
+        // a tail call: the callback's completion always tails into landA
+        // (never returns here), and a terminal k=0 return must unwind past
+        // the whole loop to the caller's own call site.
         const cell = f.i32();
         i32c(b, 16);
         op(b, CALL);
@@ -1492,7 +1521,7 @@ class Compiler {
         i32c(b, K_RET);
         strd(b, 0);
         g(b, cell);
-        i32c(b, this.landThunk());
+        i32c(b, landA ?? this.landThunk());
         strd(b, 4);
         g(b, cell);
         g(b, 0); // b = the caller's frame
@@ -1533,7 +1562,7 @@ class Compiler {
       }
     } else i32c(b, 0); // k=0: the callee's dispatch(0, v) returns its value inline
     g(b, idx);
-    op(b, tail || (land && !noSplit) ? RETURN_CALL_INDIRECT : CALL_INDIRECT);
+    op(b, tail || land ? RETURN_CALL_INDIRECT : CALL_INDIRECT); // noSplit land calls tail too (see above)
     b.lebU(T_KABI);
     b.lebU(0);
     if (splitAt !== null) throw splitAt;
@@ -1883,7 +1912,12 @@ class Compiler {
     // site (its value is the fragment's v param); [child, ...] = the child
     // on the path continues the fragment.
     const cut = ctx.cut;
-    this.cutStack.push(id);
+    // A split caught mid-emission (emitIfDispatch filling an arm's Split
+    // against the body root) re-emits a node whose own emission frame is
+    // still on the cut stack. The chain must stay an AST path — one frame
+    // per node — so do not duplicate the frame on re-entry.
+    const pushed = this.cutStack[this.cutStack.length - 1] !== id;
+    if (pushed) this.cutStack.push(id);
     // try/finally: a child's Split (or error) unwinds through this frame —
     // the push must not survive, or the next Split captures a stale chain
     // whose head re-routes fillRest through the same (already handled)
@@ -2288,7 +2322,7 @@ class Compiler {
       }
     }
     } finally {
-      this.cutStack.pop();
+      if (pushed) this.cutStack.pop();
     }
   }
 
@@ -3401,141 +3435,179 @@ class Compiler {
     return out;
   }
 
-  // map/each/flatmap: callbacks invoked through the same call_indirect path.
+  // map/each/flatmap CPS (§3): a map-like call site is a landCalls split
+  // site, so the entry (this builtin Fn) runs with the caller's RET cell as
+  // its k and its result dispatches through the caller's continuation. The
+  // entry reads the array, allocates the result block into its own frame,
+  // and tail-calls the loop-entry thunk; each iteration calls the callback
+  // with a RET cell {K_RET, iter-land, entry frame, ambient k} — so a
+  // performing callback walks the caller's handler chain, and a completed
+  // callback lands in the per-iteration thunk (res[i] = v, i+1, loop-entry).
+  // All loop state (result/tmp block, counter) lives in the entry frame
+  // slots, so the loop survives suspension.
   emitMapLike(f: Fn, name: string): void {
     const b = f.body;
-    const fc = f.i32(), xb = f.i32(), n = f.i32();
-    this.slot(f, 0);
-    st(b, fc);
+    const resSlot = name === "each" ? -1 : 2; // map: res, flatmap: tmp
+    const iSlot = name === "each" ? 2 : 3;
+    const loopEntry = this.makeRestThunk();
+    const iterLand = this.makeRestThunk();
+    // Per-iteration land: store the callback result (map/flatmap), bump the
+    // counter, continue the loop. frame = the entry frame, v = the callback
+    // result, k = the ambient continuation (passed to the next iteration).
+    {
+      const t = iterLand, tb = t.body;
+      if (name !== "each") {
+        const blk = t.i32(), iL = t.i32();
+        this.slot(t, resSlot);
+        st(tb, blk);
+        this.slot(t, iSlot);
+        st(tb, iL);
+        this.elemAddr(t, blk, iL);
+        g(tb, 1);
+        strd(tb, 0);
+      }
+      g(tb, 0);
+      this.slot(t, iSlot);
+      i32c(tb, 1);
+      op(tb, ADD);
+      strd(tb, 8 + 4 * iSlot);
+      g(tb, 0);
+      i32c(tb, UNIT_CELL);
+      g(tb, 2);
+      op(tb, RETURN_CALL);
+      tb.lebU(loopEntry.idx);
+    }
+    // Loop entry: done → finalize (box the result / flatmap copy) and
+    // dispatch through this thunk's k; else call the callback on element i.
+    {
+      const t = loopEntry, tb = t.body;
+      const xb = t.i32(), n = t.i32(), iL = t.i32(), fc = t.i32();
+      this.slot(t, 1); // the xs cell (arg 1) → its block pointer and length
+      ld(tb, 8);
+      st(tb, xb);
+      g(tb, xb);
+      ld(tb, 0);
+      st(tb, n);
+      this.slot(t, iSlot);
+      st(tb, iL);
+      g(tb, iL);
+      g(tb, n);
+      op(tb, GEU);
+      op(tb, IF);
+      tb.u8(0x40);
+      const v = t.i32();
+      if (name === "map") {
+        const res = t.i32();
+        this.slot(t, resSlot);
+        st(tb, res);
+        this.boxArr(t, res);
+      } else if (name === "each") {
+        i32c(tb, UNIT_CELL);
+      } else {
+        // flatmap: total = Σ per-element lengths; allocate; copy; box.
+        const tmp = t.i32(), total = t.i32();
+        this.slot(t, resSlot);
+        st(tb, tmp);
+        i32c(tb, 0);
+        st(tb, total);
+        this.loop(t, () => {
+          g(tb, n);
+        }, i => {
+          this.elemAddr(t, tmp, i);
+          ld(tb, 0);
+          ld(tb, 0);
+          g(tb, total);
+          op(tb, ADD);
+          st(tb, total);
+        });
+        const res = this.allocArrBlk(t, total);
+        const w = t.i32();
+        i32c(tb, 0);
+        st(tb, w);
+        this.loop(t, () => {
+          g(tb, n);
+        }, i => {
+          const xb2 = t.i32(), xl = t.i32();
+          this.elemAddr(t, tmp, i);
+          ld(tb, 0);
+          ld(tb, 8);
+          st(tb, xb2);
+          g(tb, xb2);
+          ld(tb, 0);
+          st(tb, xl);
+          this.loop(t, () => {
+            g(tb, xl);
+          }, j => {
+            this.elemAddr(t, res, w);
+            i32c(tb, 4);
+            op(tb, ADD);
+            g(tb, w);
+            i32c(tb, 4);
+            op(tb, MUL);
+            op(tb, ADD);
+            this.elemAddr(t, xb2, j);
+            ld(tb, 0);
+            strd(tb, 0);
+            g(tb, w);
+            i32c(tb, 1);
+            op(tb, ADD);
+            st(tb, w);
+          });
+        });
+        this.boxArr(t, res);
+      }
+      st(tb, v);
+      this.emitDispatch(t, v, 2); // k = this thunk's k param
+      op(tb, RETURN); // only the k=0 branch reaches here, with the value
+      op(tb, ELSE);
+      // Iteration: elem = xs[i]; the callback's RET cell lands in iterLand
+      // (landA) over this thunk's frame, with next = this thunk's k.
+      this.slot(t, 0);
+      st(tb, fc);
+      const elem = t.i32();
+      this.elemAddr(t, xb, iL);
+      ld(tb, 0);
+      st(tb, elem);
+      this.emitCallClosure(t, fc, name === "map" ? 1 : 2, (k, ffp) => {
+        g(tb, ffp);
+        i32c(tb, 8 + 4 * k);
+        op(tb, ADD);
+        if (k === 0) g(tb, elem);
+        else {
+          g(tb, iL);
+          op(tb, CONV_I32);
+          op(tb, CALL);
+          tb.lebU(F_BOX);
+        }
+        strd(tb, 0);
+      }, false, true, 2, true, iterLand.idx);
+      op(tb, UNREACHABLE); // the callback always tails into iterLand
+      op(tb, END);
+      op(tb, UNREACHABLE); // both if arms diverge; keep the implicit end typed
+    }
+    // Entry (this builtin Fn): allocate the result block, init the counter,
+    // tail-call the loop entry.
+    const xb = f.i32(), n = f.i32();
     this.slot(f, 1);
     ld(b, 8);
     st(b, xb);
     g(b, xb);
     ld(b, 0);
     st(b, n);
-    const callWith = (argc: number, argLocal: (k: number) => (() => void) | null) => {
-      this.emitCallClosure(f, fc, argc, (k, ffp) => {
-        g(b, ffp);
-        i32c(b, 8 + 4 * k);
-        op(b, ADD);
-        const push = argLocal(k);
-        if (push !== null) push();
-        strd(b, 0);
-      }, false, true, 2, true); // the callback is user lambda code: land-style RET cell, no split (see emitCallClosure); kL=2 = this T_III_I thunk's k param (frame=0, v=1, k=2) — the callback's land dispatches into the thunk's own continuation, never into its v (an args cell, not a k chain)
-    };
-    if (name === "map") {
+    if (resSlot >= 0) {
       const res = this.allocArrBlk(f, n);
-      const out = f.i32();
-      this.loop(f, () => {
-        g(b, n);
-      }, i => {
-        const elem = f.i32();
-        this.elemAddr(f, xb, i);
-        ld(b, 0);
-        st(b, elem);
-        callWith(1, k => (k === 0 ? () => g(b, elem) : null));
-        st(b, out);
-        this.elemAddr(f, res, i);
-        g(b, out);
-        strd(b, 0);
-      });
-      this.boxArr(f, res);
-      return;
+      g(b, 0);
+      g(b, res);
+      strd(b, 8 + 4 * resSlot);
     }
-    if (name === "each") {
-      this.loop(f, () => {
-        g(b, n);
-      }, i => {
-        const elem = f.i32();
-        this.elemAddr(f, xb, i);
-        ld(b, 0);
-        st(b, elem);
-        callWith(2, k => {
-          if (k === 0) return () => g(b, elem);
-          return () => {
-            g(b, i);
-            op(b, CONV_I32);
-            op(b, CALL);
-            b.lebU(F_BOX);
-          };
-        });
-        drp(b);
-      });
-      i32c(b, UNIT_CELL);
-      return;
-    }
-    // flatmap: two passes — collect per-element arrays, then copy.
-    const tmp = this.allocArrBlk(f, n);
-    const arrCell = f.i32();
-    this.loop(f, () => {
-      g(b, n);
-    }, i => {
-      const elem = f.i32();
-      this.elemAddr(f, xb, i);
-      ld(b, 0);
-      st(b, elem);
-      callWith(2, k => {
-        if (k === 0) return () => g(b, elem);
-        return () => {
-          g(b, i);
-          op(b, CONV_I32);
-          op(b, CALL);
-          b.lebU(F_BOX);
-        };
-      });
-      st(b, arrCell);
-      this.elemAddr(f, tmp, i);
-      g(b, arrCell);
-      strd(b, 0);
-    });
-    const total = f.i32();
+    g(b, 0);
     i32c(b, 0);
-    st(b, total);
-    this.loop(f, () => {
-      g(b, n);
-    }, i => {
-      this.elemAddr(f, tmp, i);
-      ld(b, 0);
-      ld(b, 0);
-      g(b, total);
-      op(b, ADD);
-      st(b, total);
-    });
-    const res = this.allocArrBlk(f, total);
-    const w = f.i32();
-    i32c(b, 0);
-    st(b, w);
-    this.loop(f, () => {
-      g(b, n);
-    }, i => {
-      const xb2 = f.i32(), xl = f.i32();
-      this.elemAddr(f, tmp, i);
-      ld(b, 0);
-      ld(b, 8);
-      st(b, xb2);
-      g(b, xb2);
-      ld(b, 0);
-      st(b, xl);
-      this.loop(f, () => {
-        g(b, xl);
-      }, j => {
-        this.elemAddr(f, res, w);
-        i32c(b, 4);
-        op(b, ADD);
-        g(b, w);
-        i32c(b, 4);
-        op(b, MUL);
-        op(b, ADD);
-        this.elemAddr(f, xb2, j);
-        ld(b, 0);
-        strd(b, 0);
-        g(b, w);
-        i32c(b, 1);
-        op(b, ADD);
-        st(b, w);
-      });
-    });
-    this.boxArr(f, res);
+    strd(b, 8 + 4 * iSlot);
+    g(b, 0);
+    i32c(b, UNIT_CELL);
+    g(b, 1);
+    op(b, RETURN_CALL);
+    b.lebU(loopEntry.idx);
   }
 
   // --- main & assembly -------------------------------------------------------
