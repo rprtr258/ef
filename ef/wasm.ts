@@ -6,12 +6,12 @@
 // only checker output the backend consumes is the runtime stamps the checker
 // leaves on nodes (`e.div` for division, `e.idx` for field access).
 //
-// Subset: everything except `handle` and user-declared effect ops. `perform`
-// of a builtin effect (Read/Write/Println/Out/Exit/Wait/Random) compiles to a
-// host-import call: the effect reaches the host, which interprets it (like
-// the interpreter's runTop) and resumes with the result. `handle` needs
-// multi-shot continuations, which wasm has no primitive for — rejected at
-// compile time.
+// Subset: everything except `handle`. Every `perform` (builtin or
+// user-declared op) compiles to an `ef_perform(opid, args)` host-import
+// call: the effect reaches the host, which interprets it via the op table
+// `compileWithOps` returns (like the interpreter's runTop) and resumes with
+// the result. `handle` needs multi-shot continuations, which wasm has no
+// primitive for — rejected at compile time.
 //
 // Representation:
 // - Value = 16-byte cell {tag: i32, pad: i32, data: 8B} where data holds an
@@ -168,19 +168,13 @@ const BUILTINS: {name: string, params: number}[] = [
   {name: "flatmap", params: 2},
 ];
 
-// Builtin effects performable in the wasm target: op → host import.
-const EFFECT_IMPORTS: Record<string, {imp: string, zeroArgs?: boolean}> = {
-  "Read": {imp: "ef_read"},
-  "Write": {imp: "ef_write"},
-  "Println": {imp: "ef_println"},
-  "Out": {imp: "ef_out"},
-  "Exit": {imp: "ef_exit"},
-  "Wait": {imp: "ef_wait"},
-  "Random": {imp: "ef_random", zeroArgs: true},
-};
+// Builtin effects in op-table order. User-declared ops (from `effect` decls)
+// follow them: `effOpIds` interns every op performed in the program, and the
+// host maps an opid back to its name via the table `compileWithOps` returns.
+const BUILTIN_EFFECT_OPS = ["Read", "Write", "Println", "Out", "Exit", "Wait", "Random"];
 
 const HOST_IMPORTS = [
-  ...Object.values(EFFECT_IMPORTS).map(e => e.imp),
+  "ef_perform",
   "ef_char", "ef_number", "ef_args", "ef_cos", "ef_sin", "ef_fail",
 ];
 
@@ -194,9 +188,9 @@ const T_I_I = 0, T_V_I = 1, T_IIFF_I = 2, T_F_I = 3, T_II_I = 4,
   T_KABI = 5, T_III_I = 6;
 
 function impType(n: string): number {
-  if (n === "ef_random" || n === "ef_args") return T_V_I;
+  if (n === "ef_perform") return T_II_I;
   if (n === "ef_fail") return T_IIFF_I;
-  if (n === "ef_write") return T_II_I; // (path, content)
+  if (n === "ef_args") return T_V_I;
   return T_I_I;
 }
 
@@ -206,6 +200,8 @@ class Fn {
   body = new Buf();
   locals: number[] = []; // extra locals in allocation order (valtype bytes)
   typeIdx = T_KABI; // program functions share (frame, k) -> i32; helpers may differ
+  // Funcref table index (assigned at creation, stable across emission).
+  idx = 0;
   constructor(public params: number) {}
   i32(): number { this.locals.push(0x7f); return this.params + this.locals.length - 1; }
   f64(): number { this.locals.push(0x7c); return this.params + this.locals.length - 1; }
@@ -222,7 +218,15 @@ type Scope = {
 export class WasmError extends Error {}
 
 export function compile(src: string): Uint8Array {
-  return new Compiler(new Parser(src).parseProgram()).compile();
+  return compileWithOps(src).bytes;
+}
+
+// compile + the effect op table (opid → name) the host needs to interpret
+// ef_perform calls. The table is built by the same discovery pass that emits
+// the code, so the wasm module and the host agree on op numbering.
+export function compileWithOps(src: string): {bytes: Uint8Array, ops: string[]} {
+  const c = new Compiler(new Parser(src).parseProgram());
+  return {bytes: c.compile(), ops: c.effOps};
 }
 
 class Compiler {
@@ -238,6 +242,18 @@ class Compiler {
   thunks: Fn[] = []; // land thunks (T_III_I), emitted between builtins and main
   thunk0 = 0;        // funcref table index of the first land thunk
   lambdaIdx = new Map<ExprID, number>();
+  // Effect op table: opid (table index) → op name. Seeded with the builtin
+  // effects; discover() interns user-declared ops at perform sites.
+  effOps: string[] = [...BUILTIN_EFFECT_OPS];
+  effOpIds = new Map<string, number>(BUILTIN_EFFECT_OPS.map((op, i) => [op, i]));
+  // Handler machinery (V1b): per `handle` node, its op cases, Return case,
+  // and the offset of its dispatch table in static data (set by
+  // layoutStatics). Empty until `handle` emission lands (step 5).
+  hdlCases = new Map<ExprID, {
+    cases: {op: string, opid: number, fn: Fn, fsize: number, nparams: number}[],
+    retCase: {fn: Fn, fsize: number, nparams: number} | null,
+    tableOff: number,
+  }>();
   piOff = 0;
   hp0 = 0;
 
@@ -340,6 +356,10 @@ class Compiler {
         this.strLits.set(e.name, -1); // for the out-of-bounds message
         break;
       case "perform":
+        if (!this.effOpIds.has(e.op)) {
+          this.effOpIds.set(e.op, this.effOps.length);
+          this.effOps.push(e.op);
+        }
         for (const a of e.args) this.discover(a, sc);
         break;
       case "handle":
@@ -707,6 +727,20 @@ class Compiler {
     for (const [v] of this.strLits) {
       const blk = this.placeStrBlock(v);
       this.strLits.set(v, this.placeCell(TAG_STR, 0, blk));
+    }
+    // Handler case tables (V1b): [n: i32][opid, fnIdx, fsize, nparams]*.
+    // The Return case (opid -1), when present, goes last. The perform walk
+    // reads these at runtime, so all facts are data, not immediates.
+    for (const [hdlId, info] of this.hdlCases) {
+      const entries = info.cases.map(c => ({opid: c.opid, fn: c.fn, fsize: c.fsize, nparams: c.nparams}));
+      if (info.retCase !== null) {
+        entries.push({opid: -1, fn: info.retCase.fn, fsize: info.retCase.fsize, nparams: info.retCase.nparams});
+      }
+      const words = [entries.length];
+      for (const en of entries) words.push(en.opid, en.fn.idx, en.fsize, en.nparams);
+      const bytes = words.flatMap(w => [w & 0xff, (w >> 8) & 0xff, (w >> 16) & 0xff, (w >> 24) & 0xff]);
+      const off = this.place(bytes, 4);
+      this.hdlCases.get(hdlId)!.tableOff = off;
     }
   }
 
@@ -1300,19 +1334,29 @@ class Compiler {
         break;
       }
       case "perform": {
-        const spec =
-          (EFFECT_IMPORTS as Record<string, {imp: string, zeroArgs?: boolean} | undefined>)[e.op];
-        if (spec === undefined) {
-          throw new WasmError(
-            `wasm target: user effect ops are not supported (op '${e.op}'); only builtin ` +
-            "effects (Read/Write/Println/Out/Exit/Wait/Random) can reach the host",
-          );
+        // Package the op's args as an array cell (same layout as an `arr`
+        // literal), then call the generic host boundary ef_perform(opid, args).
+        const blk = f.i32(), argsCell = f.i32();
+        i32c(b, 8 + 4 * e.args.length);
+        op(b, CALL);
+        b.lebU(F_ALLOC);
+        st(b, blk);
+        g(b, blk);
+        i32c(b, e.args.length);
+        strd(b, 0);
+        for (let k = 0; k < e.args.length; k++) {
+          g(b, blk);
+          i32c(b, 8 + 4 * k);
+          op(b, ADD);
+          this.expr(e.args[k], f, s);
+          strd(b, 0);
         }
-        if (spec.zeroArgs !== true) {
-          for (const a of e.args) this.expr(a, f, s);
-        }
+        this.boxArr(f, blk);
+        st(b, argsCell);
+        i32c(b, this.effOpIds.get(e.op)!);
+        g(b, argsCell);
         op(b, tail ? RETURN_CALL : CALL);
-        b.lebU(HOST_IMPORTS.indexOf(spec.imp));
+        b.lebU(HOST_IMPORTS.indexOf("ef_perform"));
         break;
       }
       case "handle":
@@ -2295,51 +2339,13 @@ function hostStr(inst: WebAssembly.Instance, cell: number): string {
   return hostUnbox(inst, cell) as string;
 }
 
-// compile+instantiate+run: the wasm-target twin of eval.ts's run().
-// `interp` is accepted (and inert) until the CPS host boundary lands; its
-// EffectInterp type is defined at step 3.
-export function runWasm(src: string, interp?: EffectInterp): Value {
-  const bytes = compile(src);
-  const mod = new WebAssembly.Module(bytes);
-  // Assigned after the imports are built (they close over the instance).
-  // eslint-disable-next-line prefer-const
-  let inst!: WebAssembly.Instance;
-  const imports = {
-    ef_read: (cell: number) => hostBox(inst, readFileSync(hostStr(inst, cell), "utf8")),
-    ef_write: (p: number, c: number) => {
-      writeFileSync(hostStr(inst, p), hostStr(inst, c));
-      return UNIT_CELL;
-    },
-    ef_println: (cell: number) => {
-      console.log(show(hostUnbox(inst, cell)));
-      return UNIT_CELL;
-    },
-    ef_out: (cell: number) => {
-      process.stdout.write(hostStr(inst, cell));
-      return UNIT_CELL;
-    },
-    ef_exit: (cell: number) => process.exit(hostUnbox(inst, cell) as number),
-    ef_wait: (cell: number) => {
-      sleepSync((hostUnbox(inst, cell) as number) * 1000);
-      return UNIT_CELL;
-    },
-    ef_random: () => hostBox(inst, Math.random()),
-    ef_char: (cell: number) =>
-      hostBox(inst, String.fromCodePoint((hostUnbox(inst, cell) as number) | 0)),
-    ef_number: (cell: number) => hostBox(inst, parseFloat(hostStr(inst, cell))),
-    ef_args: () => hostBox(inst, process.argv.slice(2)),
-    ef_cos: (cell: number) => hostBox(inst, Math.cos(hostUnbox(inst, cell) as number)),
-    ef_sin: (cell: number) => hostBox(inst, Math.sin(hostUnbox(inst, cell) as number)),
-    ef_fail: (code: number, namePtr: number, a: number, bnum: number) => {
-      if (code === 0) throw new Error("head of empty array");
-      if (code === 1) throw new Error(`get: index ${a} out of bounds [0, ${bnum})`);
-      throw new Error(`.${hostStr(inst, namePtr)}: index ${a} out of bounds [0, ${bnum})`);
-    },
-  };
-  inst = new WebAssembly.Instance(mod, {env: imports});
-  const result = (inst.exports.run as () => number)();
-  return hostUnbox(inst, result);
-}
+// One-shot host-side effect interpretation (direct style — the wasm boundary
+// has no continuations to resume): maps an op name to an implementation that
+// receives the performed args and returns the value to resume with. Overrides
+// the builtin interpretation; unhandled ops throw the interpreter's error.
+export type EffectInterp = Partial<Record<string, (args: Value[]) => Value>>;
+
+// The 7 builtin effects' default interpretation (mirrors builtins.ts, direct
 // style — interp entries in wasm land return a value, never an Outcome).
 const builtinEffectHosts: Record<string, (args: Value[]) => Value> = {
   Read: (args) => readFileSync(args[0] as string, "utf8"),
@@ -2365,10 +2371,7 @@ const builtinEffectHosts: Record<string, (args: Value[]) => Value> = {
 };
 
 // compile+instantiate+run: the wasm-target twin of eval.ts's run().
-// TEMP (step 1): kept under a non-exported-name alias so the pre-CPS host
-// boundary below stays live; step 3 wires compileWithOps + the shared op
-// table and restores this as the exported runWasm.
-export function runWasmWithOps(src: string, interp?: EffectInterp): Value {
+export function runWasm(src: string, interp?: EffectInterp): Value {
   const {bytes, ops} = compileWithOps(src);
   const mod = new WebAssembly.Module(bytes);
   // Assigned after the imports are built (they close over the instance).
