@@ -242,14 +242,24 @@ describe("wasm effect codegen regressions", () => {
     )).toBe("1");
   });
 
-  test("perform inside a while condition is cleanly rejected at compile time", () => {
-    // The guard lives in emitLoopPass: perform in the cond has no sound
-    // split shape, so compilation must throw a WasmError — never emit
-    // silently-wrong wasm. Perform in the while BODY stays supported.
-    expect(() => compile("effect Op(): int; let i = 0; while (Op!() < 1) { i = i + 1 }; i"))
-      .toThrow(WasmError);
-    expect(() => compile("effect Op(): int; let i = 0; while (Op!() < 1) { i = i + 1 }; i"))
-      .toThrow(/perform inside if\/while is not supported/);
+  test("perform inside a while condition", () => {
+    // Split-mode while: the cond is a legal cut position (the cond-cut path
+    // re-runs one pass with the resumed value).
+    // A resuming handler drives the loop: the case body returns the live i,
+    // so the cond sees 0,1,2 then 3 and the loop exits.
+    expect(parity(
+      "effect Op(): int; let i = 0; handle { while (Op!() < 3) { i = i + 1 }; i } case Op() => k { k(i) }",
+    )).toBe("3");
+    // A non-resuming case body abandons the loop: its value is the handle
+    // block's value (the continuation is discarded).
+    expect(parity(
+      "effect Op(): int; let i = 0; handle { while (Op!() < 3) { i = i + 1 }; i } case Op() => k { i }",
+    )).toBe("0");
+    // Perform in the cond AND a body perform whose case body abandons the
+    // continuation (finite: the cond resumes with the live i via the Op arm).
+    expect(parity(
+      "effect Op(): int; effect Twice(): int; let i = 0; handle { let s = 0; while (Op!() < 3) { s = s + Twice!(); i = i + 1 }; s } case Op() => k { k(i) } case Twice() => k { 7 }",
+    )).toBe("7");
     expect(parity(
       "effect Op(): int; handle { let s = 0; let i = 0; while (i < 2) { s = s + Op!(); i = i + 1 }; s } case Op() => k { k(2) }",
     )).toBe("4");

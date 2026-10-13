@@ -134,7 +134,11 @@ const TAG_UNIT = 0, TAG_NUM = 1, TAG_BOOL = 2, TAG_STR = 3, TAG_ARR = 4, TAG_CLO
 // k-cell kinds: cells are 16 bytes {kind@0, a@4, b@8, next@12}. K_RET: a = land
 // thunk funcref index, b = frame the thunk runs over. K_HDL: a = case-table byte
 // offset in the data section, b = the handler frame (hframe).
-const K_RET = 0, K_HDL = 1;
+// K_SPILL: a = frozen frame-image block (per-capture operand snapshot),
+// b = 0; it sits between a split site's RET cell and the ambient chain so
+// only that site's rest fragment sees it (its prologue loads a and skips
+// the cell before dispatching).
+const K_RET = 0, K_HDL = 1, K_SPILL = 2;
 // Static cells live at fixed offsets so the host can read them too.
 const TRUE_CELL = 0, FALSE_CELL = 16, UNIT_CELL = 32, STATIC_FIXED = 48;
 
@@ -234,8 +238,11 @@ class Fn {
 // other local = a handle's K_HDL cell), plus the not-yet-executed cut path
 // when re-emitting a fragment: cut[0] is the child of the current node on
 // the path to the split site; an empty array marks the split site itself
-// (its value is the fragment's v param).
-type Ctx = {kL: number, cut?: ExprID[]};
+// (its value is the fragment's v param). `snap` is the wasm local holding
+// the fragment's frozen frame-image pointer (the K_SPILL cell's a): pre-cut
+// siblings reload from it instead of the live frame, matching the
+// interpreter's frozen CPS accs under multi-shot resume.
+type Ctx = {kL: number, cut?: ExprID[], snap?: number};
 const INLINE: Ctx = {kL: 1};
 
 // Value-explicit rewrite (stage 1): every expression emitter RETURNS a
@@ -262,7 +269,8 @@ const INLINE: Ctx = {kL: 1};
 type ValueRef =
   | {k: "const", off: number} // immediate cell (literal / unit / bool / placed closure)
   | {k: "local", l: number}   // wasm local index holding the cell pointer (single-use)
-  | {k: "slot", off: number}; // frame slot: cell pointer at $fp + off
+  | {k: "slot", off: number}  // frame slot: cell pointer at $fp + off
+  | {k: "snapSlot", snap: number, off: number}; // frozen frame-image slot
 const REF_UNIT: ValueRef = {k: "const", off: UNIT_CELL};
 
 // Compile-time split signal: a perform/handle site or a non-builtin call
@@ -393,10 +401,6 @@ class Compiler {
   // captured (copied) chain resumes mid-iteration correctly. Refreshed on
   // every re-emission of the while (fragments that re-run the loop fresh).
   ctlLoops = new Map<ExprID, {entry: Fn, rest: Fn}>();
-  // Open if/while structures at emission time. A split cannot cross one (the
-  // partial branch/loop bytes would dangle in the body buffer), so perform/
-  // handle sites throw a compile error instead.
-  ctlDepth = 0;
   // frame → spill slots appended after its named slots (folded into the
   // lambda's frameSize / the global frame's allocation; see frameSizeOf).
   spillTotals = new Map<{slots: number}, number>();
@@ -824,7 +828,6 @@ class Compiler {
   // lambda call, so each body's catcher owns its sites' fragments.
   bodyCatch(bodyId: ExprID, f: Fn, sc: Scope, tail: boolean, ctx: Ctx): void {
     const savedCut = this.cutStack;
-    this.ctlDepth = 0;
     const bodyE = this.nodes[bodyId];
     const stmts = bodyE.t === "block" ? bodyE.stmts : [bodyId];
     const bsc = this.scopes.get(bodyId) ?? sc;
@@ -851,28 +854,57 @@ class Compiler {
   // the v param, statements after it re-emit inline. A further split during
   // re-emission chains another fragment off this one's split site.
   fillRest(sp: Split, root: ExprID[], sc: Scope, tail: boolean): void {
-    const g = sp.restFn;
+    const gf = sp.restFn;
+    if ((globalThis as any).__DBGEMIT) console.log("FILL_REST fn=", gf.idx, "root=", root.length, "chain=", sp.chain.length, "tail=", tail);
     // A shared after-rest fragment (e.g. a handle's) may be routed here
     // again by a later re-emission of the same site; its content is already
     // correct, so re-filling would only append a duplicate tail.
-    if (this.filledRests.has(g)) return;
-    this.filledRests.add(g);
-    const b = g.body;
+    if (this.filledRests.has(gf)) return;
+    this.filledRests.add(gf);
+    const b = gf.body;
+    // Prologue: the k param is the split site's K_SPILL cell (see snapWrap)
+    // — load its frozen frame-image pointer into the `snap` local (pre-cut
+    // operand reloads read it) and continue with the cell's own next. A
+    // plain cell (nested-chained fragments whose site ran synchronously)
+    // means snap = 0: no operand-spill reload can happen in a fragment
+    // whose site never froze one, because such fragments re-emit only
+    // post-cut code and pure children re-emit instead of reloading.
+    const snap = gf.i32();
+    g(b, 2);
+    op(b, EQZ);
+    op(b, IF);
+    b.u8(0x40);
+    i32c(b, 0);
+    st(b, snap);
+    op(b, ELSE);
+    g(b, 2);
+    ld(b, 0);
+    i32c(b, K_SPILL);
+    op(b, EQ);
+    op(b, IF);
+    b.u8(0x40);
+    g(b, 2);
+    ld(b, 4);
+    st(b, snap);
+    g(b, 2);
+    ld(b, 12);
+    st(b, 2);
+    op(b, END);
+    op(b, END);
     const ci = root.indexOf(sp.chain[0]);
     if (ci < 0) throw new WasmError("internal: split chain root mismatch");
     const savedCut = this.cutStack;
-    this.ctlDepth = 0;
     try {
       for (let k = 0; k < root.length; k++) {
         if (k < ci) continue; // executed before the split
         const r = (k === ci)
-          ? this.expr(sp.chain[0], g, sc, tail && k === root.length - 1, {kL: 2, cut: sp.chain.slice(1)})
-          : this.expr(root[k], g, sc, tail && k === root.length - 1, {kL: 2});
+          ? this.expr(sp.chain[0], gf, sc, tail && k === root.length - 1, {kL: 2, cut: sp.chain.slice(1), snap})
+          : this.expr(root[k], gf, sc, tail && k === root.length - 1, {kL: 2, snap});
         if (k === root.length - 1) {
-          this.pushRef(g, r);
-          const v = g.i32();
-          st(g.body, v);
-          this.emitDispatch(g, v, 2); // kNext param
+          this.pushRef(gf, r);
+          const v = gf.i32();
+          st(gf.body, v);
+          this.emitDispatch(gf, v, 2); // kNext param
         }
       }
     } catch (sp2) {
@@ -881,6 +913,7 @@ class Compiler {
       // The re-emitted code ended at another split site: this fragment is
       // complete (it ends at that site's host boundary / case invocation);
       // the rest after it chains into the new site's fragment.
+      if ((globalThis as any).__DBGEMIT) console.log("  NESTED_SPLIT in fn=", gf.idx, "-> chain=", "[" + sp2.chain.map((x) => this.nodes[x]?.t).join(",") + "]");
       this.fillRest(sp2, root, sc, tail);
       return;
     }
@@ -1305,9 +1338,14 @@ class Compiler {
           if (this.splits(e.c) || this.splits(e.a) || this.splits(e.b)) {
             // A split-mode if (splitting arms): the condition reloads in
             // the fragment, and an arm before the cut site reloads too.
-            if (!this.pure(e.c)) this.addOperandSpill(e.c, frame);
-            if (!this.pure(e.a)) this.addOperandSpill(e.a, frame);
-            if (!this.pure(e.b)) this.addOperandSpill(e.b, frame);
+            // Every child spills — including pure ones: a multi-shot resume
+            // re-runs the fragment after the first resume mutated the frame,
+            // so re-emitting a sym/lambda/arr-literal child would observe
+            // post-mutation state (or a fresh cell identity) where the
+            // interpreter's CPS acc froze the pre-perform value.
+            this.addOperandSpill(e.c, frame);
+            this.addOperandSpill(e.a, frame);
+            this.addOperandSpill(e.b, frame);
           }
           walk(e.c, frame);
           walk(e.a, frame);
@@ -1320,11 +1358,12 @@ class Compiler {
         case "app": {
           const kids = [e.fn, ...e.args];
           // Any splitting child (land call, perform, handle) ends the
-          // inline body: every impure sibling's value must survive in a
-          // spill slot so the fragment reloads it instead of re-running it.
+          // inline body: every sibling's value must survive in a spill
+          // slot so the fragment reloads it instead of re-running it.
+          // Pure children spill too — see the if case (multi-shot freeze).
           if (kids.some(k2 => this.splits(k2))) {
             for (const k2 of kids) {
-              if (!this.pure(k2)) this.addOperandSpill(k2, frame);
+              this.addOperandSpill(k2, frame);
             }
           }
           for (const k2 of kids) walk(k2, frame);
@@ -1334,7 +1373,7 @@ class Compiler {
           const elems = e.elems;
           if (elems.some(el => this.splits(el))) {
             for (const el of elems) {
-              if (!this.pure(el)) this.addOperandSpill(el, frame);
+              this.addOperandSpill(el, frame);
             }
           }
           for (const el of elems) walk(el, frame);
@@ -1351,7 +1390,7 @@ class Compiler {
           const flags = e.args.map(a => this.splits(a));
           if (flags.some(Boolean)) {
             for (const a of e.args) {
-              if (!this.pure(a)) this.addOperandSpill(a, frame);
+              this.addOperandSpill(a, frame);
             }
           }
           for (const a of e.args) walk(a, frame);
@@ -1570,7 +1609,65 @@ class Compiler {
     return cell;
   }
 
-  emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false, landA?: number): void {
+  // A K_SPILL cell {K_SPILL, snapshot, 0, next} chained in front of a
+  // split site's rest fragment. The snapshot freezes the values the rest
+  // fragment reloads from operand-spill slots: on the fresh path it is a
+  // copy of the current frame image taken at the split site (per capture —
+  // this cell is allocated at runtime on every site execution and copied
+  // into every continuation captured here, so multi-shot resumes each see
+  // the pre-perform values, matching the interpreter's CPS accs); on a
+  // fragment re-emission it is the enclosing fragment's snapshot (the same
+  // capture's frozen values — nested split sites inside the fragment must
+  // not re-freeze the already-mutated frame).
+  snapWrap(f: Fn, sc: Scope, ctx: Ctx, nextE: () => void): number {
+    const b = f.body;
+    const ksp = f.i32(), snapv = f.i32();
+    if (ctx.snap !== undefined) {
+      g(b, ctx.snap);
+      st(b, snapv);
+    } else {
+      const total = this.frameSizeOf(sc);
+      i32c(b, 8 + 4 * total);
+      op(b, CALL);
+      b.lebU(F_ALLOC);
+      st(b, snapv);
+      this.loop(f, () => {
+        i32c(b, 2 + total);
+      }, i => {
+        g(b, snapv);
+        g(b, i);
+        i32c(b, 4);
+        op(b, MUL);
+        op(b, ADD);
+        g(b, 0);
+        g(b, i);
+        i32c(b, 4);
+        op(b, MUL);
+        op(b, ADD);
+        ld(b, 0);
+        strd(b, 0);
+      });
+    }
+    i32c(b, 16);
+    op(b, CALL);
+    b.lebU(F_ALLOC);
+    st(b, ksp);
+    g(b, ksp);
+    i32c(b, K_SPILL);
+    strd(b, 0);
+    g(b, ksp);
+    g(b, snapv);
+    strd(b, 4);
+    g(b, ksp);
+    i32c(b, 0);
+    strd(b, 8);
+    g(b, ksp);
+    nextE();
+    strd(b, 12);
+    return ksp;
+  }
+
+  emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false, landA?: number, sc?: Scope, ctx?: Ctx): void {
     const b = f.body;
     const clob = f.i32(), idx = f.i32(), cf = f.i32(), fs = f.i32(), ffp = f.i32();
     g(b, fc);
@@ -1632,9 +1729,14 @@ class Compiler {
         // map/while sites keep the throw path until stages 3–4). The
         // caller must keep no pending return address: a handler capture
         // dispatches straight through H.next, and the terminal k=0
-        // return must not unwind through this call site.
-        const rest = this.makeRestThunk();
-        g(b, this.retCell(f, rest.idx, () => g(b, kL))); // next = ambient k
+        // return must not unwind through this call site. The rest
+        // fragment's K_SPILL cell freezes the frame image at the call
+        // (pre-cut operand reloads — sibling operands of the call — read
+        // the frozen values under multi-shot resume).
+        const rest = this.makeRestThunk("handle:after-handle");
+        const ksp = this.snapWrap(f, sc!, ctx!, () => g(b, kL));
+        g(b, this.retCell(f, rest.idx, () => g(b, ksp))); // next = K_SPILL{frozen frame, ambient k}
+        if ((globalThis as any).__DBGEMIT) console.log("THROW handle-split cutStack=", this.cutStack.length);
         splitAt = new Split(rest, [...this.cutStack]);
       }
     } else i32c(b, 0); // k=0: the callee's dispatch(0, v) returns its value inline
@@ -1661,8 +1763,9 @@ class Compiler {
   // One rest-of-site fragment: a T_III_I function (frame, v, kNext) -> i32
   // registered in the funcref table. Filled later by the body-level catcher
   // that catches this site's Split (bodyCatch/emitMain/fillRest).
-  makeRestThunk(): Fn {
+  makeRestThunk(role?: string): Fn {
     const f = new Fn(3);
+    if ((globalThis as any).__DBGEMIT && role) console.log("THUNK", f.idx, role);
     f.typeIdx = T_III_I;
     f.idx = this.thunk0 + this.thunks.length;
     this.thunks.push(f);
@@ -1706,6 +1809,11 @@ class Compiler {
     op(b, END);
     // K_HDL: scan the case table at k.a (a data-section byte offset, laid out
     // [n][opid, fnIdx, fsize, nparams]*; the Return case, opid -1, goes last).
+    // A K_SPILL cell (a rest fragment's frozen-frame marker) is transparent:
+    // it carries no handler — skip it and walk on. Only kind==K_HDL scans.
+    g(b, k); ld(b, 0); i32c(b, K_HDL); op(b, EQ);
+    op(b, IF);
+    b.u8(0x40);
     g(b, k); ld(b, 4); ld(b, 0); st(b, nL);
     i32c(b, 0); st(b, found);
     i32c(b, 0); st(b, iL);
@@ -1745,7 +1853,8 @@ class Compiler {
     b.lebU(T_KABI);
     b.lebU(0);
     op(b, END);
-    // No Return case: k = k.next and dispatch again.
+    op(b, END); // kind==K_HDL guard
+    // No Return case (or a skipped K_SPILL): k = k.next and dispatch again.
     g(b, k); ld(b, 12); st(b, k);
     op(b, BR); b.lebU(0);
     op(b, END); // loop
@@ -1960,6 +2069,7 @@ class Compiler {
     const b = f.body;
     if (r.k === "const") i32c(b, r.off);
     else if (r.k === "local") g(b, r.l);
+    else if (r.k === "snapSlot") { g(b, r.snap); ld(b, r.off); }
     else { g(b, 0); ld(b, r.off); }
   }
 
@@ -1980,12 +2090,20 @@ class Compiler {
   }
 
   // Value of a child that already ran before a split deeper among its
-  // siblings: a slot ref to its spilled value, or (pure children) re-emit
-  // it inline — observationally identical.
+  // siblings: a slot ref to its spilled value — from the fragment's frozen
+  // frame-image snapshot when re-emitting a fragment (multi-shot resumes
+  // re-run the fragment against a mutated frame; the interpreter froze the
+  // pre-perform value in its CPS acc, so we reload the frozen copy), or
+  // from the live frame on the fresh path (identical there). Pure children
+  // have spill slots too since the multi-shot freeze (computeSpills), so
+  // the re-emit fallback only fires for shapes without a mapped slot.
   preCut(id: ExprID, f: Fn, s: Scope, ctx: Ctx): ValueRef {
     const sp = this.operandSpill.get(id) ?? this.valSpill.get(id);
-    if (sp !== undefined) return {k: "slot", off: 8 + 4 * sp};
-    return this.expr(id, f, s, false, {kL: ctx.kL});
+    if (sp !== undefined) {
+      if (ctx.snap !== undefined) return {k: "snapSlot", snap: ctx.snap, off: 8 + 4 * sp};
+      return {k: "slot", off: 8 + 4 * sp};
+    }
+    return this.expr(id, f, s, false, {kL: ctx.kL, snap: ctx.snap});
   }
 
   // One child of a cut node, ref-native — also used for fresh emission
@@ -1997,9 +2115,9 @@ class Compiler {
   // cut at all) — re-emit inline, with the caller's tail flag. Persists any
   // mapped operand spill slot.
   cutChildRef(child: ExprID, f: Fn, s: Scope, ctx: Ctx, mode: "cut" | "pre" | "post", tail = false): ValueRef {
-    if (mode === "cut") return this.keepRef(child, f, this.expr(child, f, s, false, {kL: ctx.kL, cut: ctx.cut!.slice(1)}));
+    if (mode === "cut") return this.keepRef(child, f, this.expr(child, f, s, false, {kL: ctx.kL, cut: ctx.cut!.slice(1), snap: ctx.snap}));
     if (mode === "pre") return this.keepRef(child, f, this.preCut(child, f, s, ctx));
-    return this.keepRef(child, f, this.expr(child, f, s, tail, {kL: ctx.kL}));
+    return this.keepRef(child, f, this.expr(child, f, s, tail, {kL: ctx.kL, snap: ctx.snap}));
   }
 
   // The split site is this node itself inside a fragment: its value is the
@@ -2078,7 +2196,7 @@ class Compiler {
         // Binds in the current frame (mirrors the interpreter: the binding
         // exists before the value is computed, so `let x = x` sees null).
         const slot = s.map.get(e.name)!;
-        const vr = this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
+        const vr = this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
         g(b, 0); // frame address
         this.pushRef(f, vr);
         strd(b, 8 + 4 * slot);
@@ -2086,7 +2204,7 @@ class Compiler {
       }
       case "dlet": {
         const blk = f.i32();
-        const vr = this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
+        const vr = this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
         this.pushRef(f, vr);
         ld(b, 8);
         st(b, blk);
@@ -2103,7 +2221,7 @@ class Compiler {
       case "assign": {
         const r = this.resolve(s, e.name);
         if (r === null) throw new WasmError(`Assignment to unbound symbol: ${e.name}`);
-        const vr = this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
+        const vr = this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
         g(b, 0);
         for (let k = 0; k < r.d; k++) ld(b, 0);
         this.pushRef(f, vr);
@@ -2145,11 +2263,9 @@ class Compiler {
         b.lebU(F_TRUTHY);
         op(b, IF);
         b.u8(0x7f); // result i32
-        this.ctlDepth++;
         this.pushRef(f, this.cutChildRef(e.a, f, s, ctx, ci === undefined ? "post" : ci === 1 ? "cut" : ci === 2 ? "pre" : "post", at));
         op(b, ELSE);
         this.pushRef(f, this.cutChildRef(e.b, f, s, ctx, ci === undefined ? "post" : ci === 2 ? "cut" : "post", at));
-        this.ctlDepth--;
         op(b, END);
         const v = f.i32();
         st(b, v);
@@ -2169,16 +2285,13 @@ class Compiler {
         b.u8(0x40);
         op(b, LOOP);
         b.u8(0x40);
-        this.ctlDepth++;
         this.pushRef(f, this.expr(e.c, f, s, false, ctx));
         op(b, CALL);
         b.lebU(F_TRUTHY);
         op(b, EQZ);
         op(b, BR_IF);
         b.lebU(1);
-        this.ctlDepth++;
         this.expr(e.body, f, s, false, ctx); // body value dropped: nothing on the stack
-        this.ctlDepth -= 2;
         op(b, BR);
         b.lebU(0);
         op(b, END);
@@ -2347,7 +2460,11 @@ class Compiler {
           // trampoline convention; every other (lambda) call site lands
           // through a RET cell and is a split site (§3 emitCall).
           this.landCalls.has(id),
-          ctx.kL);
+          ctx.kL,
+          undefined,
+          undefined,
+          s,
+          ctx);
         }
         // emitCallClosure leaves the landed result on the stack (or
         // tail-returns, making this capture unreachable). Bridge to a ref.
@@ -2386,9 +2503,6 @@ class Compiler {
   // Either way the inline body ends here; the enclosing body-level catcher
   // (bodyCatch/emitMain/fillRest) fills the fragment afterwards.
   emitPerform(id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: Scope, ctx: Ctx): void {
-    if (this.ctlDepth > 0) {
-      throw new WasmError("wasm target: perform inside if/while is not supported");
-    }
     const b = f.body;
     const blk = f.i32(), cell = f.i32();
     i32c(b, 8 + 4 * e.args.length);
@@ -2432,7 +2546,7 @@ class Compiler {
     // re-dispatch through their kNext, so a resumed segment follows the
     // fresh §4.6 chain (copied HDLs + kCaller) instead of skipping it.
     const opid = this.effOpIds.get(e.op)!;
-    const restFn = this.makeRestThunk();
+    const restFn = this.makeRestThunk("perform:rest op=" + e.op);
     const kL = f.i32(), hdl = f.i32(), found = f.i32();
     const nL = f.i32(), ent = f.i32();
     const fnIdx = f.i32(), nparams = f.i32(), amb = f.i32();
@@ -2504,6 +2618,14 @@ class Compiler {
     b.lebU(0);
     op(b, END);
     op(b, END);
+    // Freeze the frame image for this capture and chain the rest fragment
+    // behind a K_SPILL cell carrying it: the fragment's pre-cut operand
+    // reloads read the frozen values, so a multi-shot resume re-runs the
+    // rest against the pre-perform state (the interpreter's CPS accs),
+    // not the frame as mutated by earlier resumes / loop iterations.
+    const ksp = this.snapWrap(f, s, ctx, () => {
+      g(b, amb);
+    });
     g(b, found);
     op(b, IF);
     b.u8(0x7f); // handler found: invoke the matched case body
@@ -2547,9 +2669,12 @@ class Compiler {
       strd(b, 0);
     });
     // Push this perform's RET cell; the slice below is captured as if this
-    // cell had been pushed before the walk (scan-first).
+    // cell had been pushed before the walk (scan-first). Its next is the
+    // K_SPILL cell (the rest fragment's prologue loads the snapshot and
+    // skips the cell before dispatching, so K_SPILL stays invisible to
+    // every other dispatch and to F_CAPTURE's slice walk).
     const ret = this.retCell(f, restFn.idx, () => {
-      g(b, amb); // next = the pre-walk ambient continuation
+      g(b, ksp); // next = K_SPILL{frozen frame image, pre-walk ambient}
     }); // b = the current frame (holds the spilled args cell)
     // Capture the slice above the handler into fresh cells (originals
     // untouched; the resume closure copies again on every call).
@@ -2674,7 +2799,7 @@ class Compiler {
     strd(b, 8 + 4 * this.valSpill.get(id)!);
     g(b, 0);
     g(b, v);
-    g(b, amb);
+    g(b, ksp);
     i32c(b, restFn.idx);
     op(b, RETURN_CALL_INDIRECT);
     b.lebU(T_III_I);
@@ -2682,6 +2807,7 @@ class Compiler {
     op(b, END);
     op(b, 0x00); // unreachable: both arms end in a tail call
     // The inline body ends at the split site; the catcher fills restFn.
+    if ((globalThis as any).__DBGEMIT) console.log("THROW perform-split op=", e.op, "cut=", this.cutStack.length, "[" + this.cutStack.map((x) => this.nodes[x]?.t).join(",") + "]");
     throw new Split(restFn, [...this.cutStack]);
   }
 
@@ -2700,12 +2826,9 @@ class Compiler {
   // shared identity); like a perform site, the handle ends the inline body
   // and the after-handle rest lives in its own fragment.
   emitHandle(id: ExprID, e: Expr & {t: "handle"}, f: Fn, s: Scope, ctx: Ctx): void {
-    if (this.ctlDepth > 0) {
-      throw new WasmError("wasm target: handle inside if/while is not supported");
-    }
     const b = f.body;
     const info = this.hdlCases.get(id)!;
-    const restFn = this.makeRestThunk();
+    const restFn = this.makeRestThunk("handle:restFn");
     this.hdlRest.set(id, restFn);
     const hf = f.i32(), hdl = f.i32();
     i32c(b, 8 + 4 * this.frameSizeOf(info.scope));
@@ -2715,11 +2838,18 @@ class Compiler {
     g(b, hf);
     g(b, 0);
     strd(b, 0); // parent = the frame at the handle site
+    // K_SPILL cell freezing the pre-handle frame image: the after-handle
+    // rest's pre-cut operand reloads (chain levels above the handle, e.g.
+    // sibling operands of `s + handle {...}`) must see the values as of
+    // the install, not as mutated by the handler body / resumes.
+    const ksp = this.snapWrap(f, s, ctx, () => {
+      g(b, ctx.kL);
+    });
     // RET cell over the handle-site frame; next = the continuation outside
     // the handler (the two-k rule: the case body's ambient continuation is
     // the one captured OUTSIDE the handler).
     const ret = this.retCell(f, restFn.idx, () => {
-      g(b, ctx.kL);
+      g(b, ksp);
     });
     i32c(b, 16);
     op(b, CALL);
@@ -2773,9 +2903,14 @@ class Compiler {
     // Frames pushed while emitting the arms (nested re-emissions) are not
     // part of it.
     const chainToIf = [...this.cutStack];
-    const restAfterIf = this.makeRestThunk();
+    const restAfterIf = this.makeRestThunk("if:after");
+    // K_SPILL cell freezing the pre-if frame image for the after-if rest's
+    // pre-cut operand reloads (see snapWrap).
+    const ksp = this.snapWrap(f, s, ctx, () => {
+      g(b, ctx.kL); // the ambient continuation
+    });
     const ifk = this.retCell(f, restAfterIf.idx, () => {
-      g(b, ctx.kL); // next = the ambient continuation
+      g(b, ksp); // next = K_SPILL{frozen frame image, ambient k}
     });
     if (ci === undefined) this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, "post"));
     else this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, ci === 0 ? "cut" : "pre"));
@@ -2783,7 +2918,6 @@ class Compiler {
     b.lebU(F_TRUTHY);
     op(b, IF);
     b.u8(0x40); // void: each arm ends in dispatch + return
-    this.ctlDepth++;
     const arm = (armE: ExprID, cutArm: boolean): Split | null => {
       const va = f.i32();
       let sp: Split | null = null;
@@ -2810,7 +2944,6 @@ class Compiler {
     const spA = arm(e.a, ci === 1);
     op(b, ELSE);
     const spB = arm(e.b, ci === 2);
-    this.ctlDepth--;
     op(b, END);
     op(b, UNREACHABLE); // unreachable: each arm returned or trapped
     const root = this.bodyRoots[this.bodyRoots.length - 1];
@@ -2823,6 +2956,7 @@ class Compiler {
     this.cutStack.push(id);
     // The code after the if chains through restAfterIf: the enclosing
     // body-level catcher fills it with the if's value as v.
+    if ((globalThis as any).__DBGEMIT) console.log("THROW if-split");
     throw new Split(restAfterIf, chainToIf);
   }
 
@@ -2851,22 +2985,23 @@ class Compiler {
     const b = f.body;
     if (cut === undefined) {
       const chainToWhile = [...this.cutStack];
-      const restAfter = this.makeRestThunk();
-      const loopEntry = this.makeRestThunk();
+      const restAfter = this.makeRestThunk("while:after");
+      const loopEntry = this.makeRestThunk("while:loopEntry");
       this.ctlLoops.set(id, {entry: loopEntry, rest: restAfter});
       let inner: Split | null = null;
-      const savedCtl = this.ctlDepth;
       try {
-        // Fresh fragment fn: no wasm structures are open across it.
-        this.ctlDepth = 0;
         this.emitLoopPass(loopEntry, e, s, 2, loopEntry.idx);
       } catch (sp) {
         if (!(sp instanceof Split)) throw sp;
         inner = sp;
       }
-      this.ctlDepth = savedCtl;
+      // K_SPILL cell freezing the pre-loop frame image for the after-while
+      // rest's pre-cut operand reloads (see snapWrap).
+      const ksp = this.snapWrap(f, s, ctx, () => {
+        g(b, ctx.kL); // the ambient continuation
+      });
       const ifk = this.retCell(f, restAfter.idx, () => {
-        g(b, ctx.kL); // next = the ambient continuation
+        g(b, ksp); // next = K_SPILL{frozen frame image, ambient k}
       });
       const loopk = this.retCell(f, loopEntry.idx, () => {
         g(b, ifk); // next = the after-while cell
@@ -2881,15 +3016,17 @@ class Compiler {
       // this while; this loop's own after-rest chains when the cut path
       // re-emits (below). The throw is unreachable in practice.
       if (inner !== null) throw inner;
+      if ((globalThis as any).__DBGEMIT) console.log("THROW while-cond-split");
       throw new Split(restAfter, chainToWhile);
     }
     const loop = this.ctlLoops.get(id);
     if (loop === undefined) throw new WasmError("internal: split chain root mismatch");
+    if ((globalThis as any).__DBGEMIT) console.log("WHILE_CUT cond=", cut[0] === e.c, "body=", cut[0] === e.body, "cutlen=", cut.length);
     if (cut[0] === e.c) {
       // The condition continues the fragment with the fragment's v, then one
       // loop pass re-runs over the ambient continuation (fresh loop-back
       // cell inside emitLoopPass).
-      this.emitLoopPass(f, e, s, ctx.kL, loop.entry.idx, cut.slice(1));
+      this.emitLoopPass(f, e, s, ctx.kL, loop.entry.idx, cut.slice(1), ctx.snap);
       op(b, UNREACHABLE); // each path dispatched (loop back / exit)
       throw new Split(loop.rest, [...this.cutStack]);
     }
@@ -2928,23 +3065,31 @@ class Compiler {
   // a Split inside the body leaves the pass closed at the site (unreachable
   // body path) and propagates — the enclosing catcher fills that site's
   // fragment along the chain through this while.
-  emitLoopPass(f: Fn, e: Expr & {t: "while"}, s: Scope, kNext: number, entryIdx: number, condCut?: ExprID[]): void {
+  emitLoopPass(f: Fn, e: Expr & {t: "while"}, s: Scope, kNext: number, entryIdx: number, condCut?: ExprID[], snap?: number): void {
     const b = f.body;
-    // A perform/handle inside the CONDITION has no sound split shape (the
-    // cond-cut path would re-emit perform machinery inside the pass's
-    // BLOCK/LOOP), so it gets the same clean rejection as if-arms. The
-    // guard is scoped to the condition only: perform inside the loop BODY
-    // is supported (it splits the body via the pass's RET cell).
-    this.ctlDepth++;
     // Value-explicit cond: the ref is materialized at its consume point
     // (F_TRUTHY); keepRef persists it into the operand spill slot when the
-    // fragment machinery mapped one (same discipline as the app case's args).
-    const condRef = condCut === undefined
-      ? this.keepRef(e.c, f, this.expr(e.c, f, s, false, {kL: kNext}))
-      : condCut.length === 0
-        ? this.keepRef(e.c, f, {k: "local", l: 1}) // cond is the split site: v param
-        : this.cutChildRef(e.c, f, s, {kL: kNext, cut: condCut}, "cut");
-    this.ctlDepth--;
+    // fragment machinery mapped one (same discipline as the app case's
+    // args). A Split inside the condition (a perform/handle/land call in
+    // it) propagates to the enclosing catcher before the IF opens — the
+    // pass closes with unreachable and the cond-cut fragment re-runs the
+    // pass with the resumed value.
+    let condRef: ValueRef;
+    try {
+      condRef = condCut === undefined
+        ? this.keepRef(e.c, f, this.expr(e.c, f, s, false, {kL: kNext}))
+        : condCut.length === 0
+          ? this.keepRef(e.c, f, {k: "local", l: 1}) // cond is the split site: v param
+          // condCut[0] is a descendant of the cond (e.g. a perform inside
+          // the comparison), not the cond itself — pass the cut through
+          // intact; cutChildRef's slice(1) would drop the site and the
+          // cond would collapse to bare fragV.
+          : this.keepRef(e.c, f, this.expr(e.c, f, s, false, {kL: kNext, cut: condCut, snap}));
+    } catch (sp) {
+      if (!(sp instanceof Split)) throw sp;
+      op(b, UNREACHABLE); // the pass never completes inline at this site
+      throw sp;
+    }
     this.pushRef(f, condRef);
     op(b, CALL);
     b.lebU(F_TRUTHY);
@@ -2959,6 +3104,11 @@ class Compiler {
       const stmts = bodyE.t === "block" ? bodyE.stmts : [e.body];
       const bsc = this.scopes.get(e.body) ?? s;
       this.emitStmtSeq(stmts, f, bsc, false, {kL: lb});
+      // The body's completion dispatch left the dispatch walk's block
+      // result on the stack (the k=0 terminal-return value): consume it as
+      // this pass's return. When the body splits, the catch below closes
+      // the arm before this line.
+      op(b, RETURN);
     } catch (sp) {
       if (!(sp instanceof Split)) throw sp;
       op(b, UNREACHABLE); // the body never completes inline at this site
@@ -3562,8 +3712,8 @@ class Compiler {
     const b = f.body;
     const resSlot = name === "each" ? -1 : 2; // map: res, flatmap: tmp
     const iSlot = name === "each" ? 2 : 3;
-    const loopEntry = this.makeRestThunk();
-    const iterLand = this.makeRestThunk();
+    const loopEntry = this.makeRestThunk("maplike:loopEntry");
+    const iterLand = this.makeRestThunk("maplike:iterLand");
     // Per-iteration land: store the callback result (map/flatmap), bump the
     // counter, continue the loop. frame = the entry frame, v = the callback
     // result, k = the ambient continuation (passed to the next iteration).
