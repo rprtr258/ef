@@ -50,7 +50,7 @@ export type Builtin =
 // runs are reproducible (both backends interpret `Random` through this host,
 // each starting from the same seed per process).
 const random: () => number = (() => {
-  const seed = process.env.EF_RANDOM_SEED;
+  const seed = process.env["EF_RANDOM_SEED"];
   if (seed === undefined || seed === "")
     return Math.random;
   if (!/^-?\d+$/.test(seed.trim()))
