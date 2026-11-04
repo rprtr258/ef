@@ -1,6 +1,5 @@
 import js from "@eslint/js";
 import {defineConfig} from "eslint/config";
-import globals from "globals";
 import tseslint from "typescript-eslint";
 import stylistic from "@stylistic/eslint-plugin";
 import importPlugin from "eslint-plugin-import";
@@ -10,7 +9,6 @@ export default defineConfig([
     files: ["**/*.{ts}"],
     plugins: {js},
     ...js.configs.recommended,
-    languageOptions: {globals: globals.browser},
   },
   tseslint.configs.recommendedTypeChecked,
   {
