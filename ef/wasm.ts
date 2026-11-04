@@ -214,6 +214,10 @@ function impType(n: string): number {
   return T_I_I;
 }
 
+// debug emitter tracing: run with DBGEMIT=1 to log split/thunk internals
+// during compile; off (and free) otherwise.
+const DBGEMIT = process.env.DBGEMIT === "1";
+
 // --- per-function emitter ---------------------------------------------------
 
 class Fn {
@@ -881,7 +885,7 @@ class Compiler {
   // re-emission chains another fragment off this one's split site.
   fillRest(sp: Split, root: ExprID[], sc: Scope, tail: boolean): void {
     const gf = sp.restFn;
-    if ((globalThis as any).__DBGEMIT) console.log("FILL_REST fn=", gf.idx, "root=", root.length, "chain=", sp.chain.length, "tail=", tail);
+    if (DBGEMIT) console.log("FILL_REST fn=", gf.idx, "root=", root.length, "chain=", sp.chain.length, "tail=", tail);
     // A shared after-rest fragment (e.g. a handle's) may be routed here
     // again by a later re-emission of the same site; its content is already
     // correct, so re-filling would only append a duplicate tail.
@@ -939,7 +943,7 @@ class Compiler {
       // The re-emitted code ended at another split site: this fragment is
       // complete (it ends at that site's host boundary / case invocation);
       // the rest after it chains into the new site's fragment.
-      if ((globalThis as any).__DBGEMIT) console.log("  NESTED_SPLIT in fn=", gf.idx, "-> chain=", "[" + sp2.chain.map((x) => this.nodes[x]?.t).join(",") + "]");
+      if (DBGEMIT) console.log("  NESTED_SPLIT in fn=", gf.idx, "-> chain=", "[" + sp2.chain.map((x) => this.nodes[x]?.t).join(",") + "]");
       this.fillRest(sp2, root, sc, tail);
       return;
     }
@@ -1768,7 +1772,7 @@ class Compiler {
         const rest = this.makeRestThunk("handle:after-handle");
         const ksp = this.snapWrap(f, sc!, ctx!, () => g(b, kL));
         g(b, this.retCell(f, rest.idx, () => g(b, ksp))); // next = K_SPILL{frozen frame, ambient k}
-        if ((globalThis as any).__DBGEMIT) console.log("THROW handle-split cutStack=", this.cutStack.length);
+        if (DBGEMIT) console.log("THROW handle-split cutStack=", this.cutStack.length);
         splitAt = new Split(rest, [...this.cutStack]);
       }
     } else i32c(b, 0); // k=0: the callee's dispatch(0, v) returns its value inline
@@ -1797,7 +1801,7 @@ class Compiler {
   // that catches this site's Split (bodyCatch/emitMain/fillRest).
   makeRestThunk(role?: string): Fn {
     const f = new Fn(3);
-    if ((globalThis as any).__DBGEMIT && role) console.log("THUNK", f.idx, role);
+    if (DBGEMIT && role !== undefined) console.log("THUNK", f.idx, role);
     f.typeIdx = T_III_I;
     f.idx = this.thunk0 + this.thunks.length;
     this.thunks.push(f);
@@ -2839,7 +2843,7 @@ class Compiler {
     op(b, END);
     op(b, 0x00); // unreachable: both arms end in a tail call
     // The inline body ends at the split site; the catcher fills restFn.
-    if ((globalThis as any).__DBGEMIT) console.log("THROW perform-split op=", e.op, "cut=", this.cutStack.length, "[" + this.cutStack.map((x) => this.nodes[x]?.t).join(",") + "]");
+    if (DBGEMIT) console.log("THROW perform-split op=", e.op, "cut=", this.cutStack.length, "[" + this.cutStack.map((x) => this.nodes[x]?.t).join(",") + "]");
     throw new Split(restFn, [...this.cutStack]);
   }
 
@@ -2988,7 +2992,7 @@ class Compiler {
     this.cutStack.push(id);
     // The code after the if chains through restAfterIf: the enclosing
     // body-level catcher fills it with the if's value as v.
-    if ((globalThis as any).__DBGEMIT) console.log("THROW if-split");
+    if (DBGEMIT) console.log("THROW if-split");
     throw new Split(restAfterIf, chainToIf);
   }
 
@@ -3048,12 +3052,12 @@ class Compiler {
       // this while; this loop's own after-rest chains when the cut path
       // re-emits (below). The throw is unreachable in practice.
       if (inner !== null) throw inner;
-      if ((globalThis as any).__DBGEMIT) console.log("THROW while-cond-split");
+      if (DBGEMIT) console.log("THROW while-cond-split");
       throw new Split(restAfter, chainToWhile);
     }
     const loop = this.ctlLoops.get(id);
     if (loop === undefined) throw new WasmError("internal: split chain root mismatch");
-    if ((globalThis as any).__DBGEMIT) console.log("WHILE_CUT cond=", cut[0] === e.c, "body=", cut[0] === e.body, "cutlen=", cut.length);
+    if (DBGEMIT) console.log("WHILE_CUT cond=", cut[0] === e.c, "body=", cut[0] === e.body, "cutlen=", cut.length);
     if (cut[0] === e.c) {
       // The condition continues the fragment with the fragment's v, then one
       // loop pass re-runs over the ambient continuation (fresh loop-back
