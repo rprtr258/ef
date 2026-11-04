@@ -350,3 +350,19 @@ describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () =>
     parity(src);
   });
 });
+
+describe("wasm binaryen shrink pass (optimizeBinary)", () => {
+  test("keeps host ABI exports/imports and semantics after the shrink pass", () => {
+    // effectful program: ef_perform must survive the optimizer via the table
+    const src = "Println!(\"hi\"); let f = fn(x: int): int ! { Println } { Println!(x); x * 2 }; f(21)";
+    const mod = new WebAssembly.Module(compile(src));
+    const exports = WebAssembly.Module.exports(mod).map(e => e.name);
+    for (const e of ["mem", "run", "__hp"]) expect(exports).toContain(e);
+    expect(importsOf(src)).toContain("ef_perform");
+    parity(src);
+  });
+
+  test("output is deterministic", () => {
+    expect(Buffer.from(compile("len(range(1, 10, 1))")).equals(Buffer.from(compile("len(range(1, 10, 1))")))).toBe(true);
+  });
+});

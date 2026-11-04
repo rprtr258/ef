@@ -1,10 +1,11 @@
 // wasm.ts — WebAssembly backend for ef.
 //
-// Pipeline: parse → typecheck (types.ts, reused as-is) → emit a
-// self-contained binary .wasm module → instantiate against host imports and
-// run. No WasmGC, no external tools, no types needed at emission time: the
-// only checker output the backend consumes is the runtime stamps the checker
-// leaves on nodes (`e.div` for division, `e.idx` for field access).
+// Pipeline: parse → typecheck (types.ts, reused as-is) → emit a binary .wasm
+// module (self-contained, no WasmGC) → binaryen shrink pass (optimizeBinary:
+// in-process npm `binaryen`, no external tools) → instantiate against host
+// imports and run. No types needed at emission time: the only checker output
+// the backend consumes is the runtime stamps the checker leaves on nodes
+// (`e.div` for division, `e.idx` for field access).
 //
 // Subset: everything except suspension across `if`/`while` (a perform or
 // handle site inside a branch or loop body is rejected at compile time).
@@ -57,6 +58,7 @@ import {checkProgram} from "./types.ts";
 import {type Value, show} from "./env.ts";
 import {readFileSync, writeFileSync} from "node:fs";
 import {sleepSync} from "bun";
+import binaryen from "binaryen";
 
 // --- binary encoding helpers -----------------------------------------------
 
@@ -312,7 +314,58 @@ export function compile(src: string): Uint8Array {
 // the code, so the wasm module and the host agree on op numbering.
 export function compileWithOps(src: string): {bytes: Uint8Array, ops: string[]} {
   const c = new Compiler(new Parser(src).parseProgram());
-  return {bytes: c.compile(), ops: c.effOps};
+  return {bytes: optimizeBinary(c.compile()), ops: c.effOps};
+}
+
+// --- binaryen shrink pass ---------------------------------------------------
+
+// binaryen's typings lag its runtime: the binary reader/dispose paths are raw
+// emscripten exports without .d.ts entries. Everything else (Features,
+// wrapModule, optimize, emitBinary) is typed.
+type RawBinaryen = typeof binaryen & {
+  _malloc(n: number): number,
+  _free(ptr: number): void,
+  stringToAscii(s: string, ptr: number): void, // byte-per-char: latin1 round-trips
+  _BinaryenModuleReadWithFeatures(ptr: number, len: number, features: number): number,
+  _BinaryenModuleDispose(ptr: number): void,
+};
+
+// Feature set to read with: exactly what the emitter emits — funcref table
+// (reference-types) + return_call_indirect (tail-call) + MVP basics.
+const BIN_FEATURES = binaryen.Features.MVP | binaryen.Features.ReferenceTypes |
+  binaryen.Features.TailCall | binaryen.Features.BulkMemory |
+  binaryen.Features.SignExt | binaryen.Features.MutableGlobals;
+
+// Shrink every compiled module through binaryen (wasm-opt in-process; the
+// emscripten module is sync-ready at import). Shrink level 2 alone matches
+// -Oz output size on our modules at ~1/3 the cost of full -Oz. dispose/free
+// per module keeps the binaryen heap flat across many compiles.
+// Binaryen aborts (throws a raw emscripten object) on malformed input — e.g.
+// the emitter's invalid-module bugs — so a failed pass is normalized into a
+// WasmError. The aborted binaryen heap is not reusable in-process afterwards;
+// every current caller either recovers by process exit or never hits this.
+function optimizeBinary(bytes: Uint8Array): Uint8Array {
+  const m = binaryen as RawBinaryen;
+  try {
+    const latin = Buffer.from(bytes).toString("latin1");
+    const ptr = m._malloc(latin.length + 1); // +1: stringToAscii appends a NUL
+    m.stringToAscii(latin, ptr);
+    const modPtr = m._BinaryenModuleReadWithFeatures(ptr, bytes.length, BIN_FEATURES);
+    try {
+      if (modPtr === 0) throw new WasmError("binaryen: failed to read compiled module");
+      const mod = m.wrapModule(modPtr);
+      m.setOptimizeLevel(0);
+      m.setShrinkLevel(2);
+      mod.optimize();
+      return mod.emitBinary();
+    } finally {
+      if (modPtr !== 0) m._BinaryenModuleDispose(modPtr);
+      m._free(ptr);
+    }
+  } catch (e) {
+    if (e instanceof WasmError) throw e;
+    throw new WasmError("binaryen: failed to shrink compiled module");
+  }
 }
 
 class Compiler {
