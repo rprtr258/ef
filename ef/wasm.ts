@@ -207,7 +207,7 @@ function impType(n: string): number {
 
 // debug emitter tracing: run with DBGEMIT=1 to log split/thunk internals
 // during compile; off (and free) otherwise.
-const DBGEMIT = process.env.DBGEMIT === "1";
+const DBGEMIT = process.env["DBGEMIT"] === "1";
 
 
 // --- per-function emitter ---------------------------------------------------
@@ -345,7 +345,7 @@ export const BIN_FEATURES = binaryen.Features.MVP | binaryen.Features.ReferenceT
 // (every compile fails until process exit), so there must be an escape
 // hatch from day one.
 function optimizeBinary(bytes: Uint8Array, extraFeatures = 0): Uint8Array {
-  if (process.env.EF_SKIP_WASM_OPT === "1") return bytes;
+  if (process.env["EF_SKIP_WASM_OPT"] === "1") return bytes;
   const m = binaryen as RawBinaryen;
   try {
     const latin = Buffer.from(bytes).toString("latin1");
@@ -557,7 +557,7 @@ class Compiler {
     for (let i = 0; i < builtins.length; i++)
       this.builtinFnIdx.set(builtins[i].name, builtin0 + i);
     // 3. Static layout: assign global indices + $init code (§5).
-    this.layoutStatics(builtin0);
+    this.layoutStatics();
     // 4. Emit code: helpers (right after the live imports), lambdas, builtin
     //    trampolines, then main (last; run/$init/accessors follow in
     //    assemble()).
@@ -566,7 +566,7 @@ class Compiler {
       if ("e" in it) this.emitLambdas(it.e);
     }
     this.emitCaseFns();
-    this.funcs.push(...this.emitBuiltins(builtin0));
+    this.funcs.push(...this.emitBuiltins());
     const main = new Fn(2);
     this.emitMain(main);
     // Thunks are appended after all emission (emitMain's top-level calls
@@ -1592,7 +1592,7 @@ class Compiler {
     return this.gcount - 1;
   }
 
-  layoutStatics(builtin0: number): void {
+  layoutStatics(): void {
     // Unit: the global's initial ref.null any IS the unit value.
     this.unitRef = {k: "g", gi: this.newStatic()};
     // Bools: i31(0/1), built by $init.
@@ -1776,7 +1776,7 @@ class Compiler {
   // fragment re-emission it is the enclosing fragment's snapshot (the same
   // capture's frozen values — nested split sites inside the fragment must
   // not re-freeze the already-mutated frame).
-  snapWrap(f: Fn, sc: Scope, ctx: Ctx, nextE: () => void): number {
+  snapWrap(f: Fn, ctx: Ctx, nextE: () => void): number {
     const b = f.body;
     const ksp = f.anyref(), snapv = f.anyref();
     if (ctx.snap !== undefined) {
@@ -1817,7 +1817,7 @@ class Compiler {
   // fsize, funcref index known) and emit a direct call instead of reading
   // the code index and dispatching through the table. The frame/k
   // convention is identical in both modes.
-  emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false, landA?: number, sc?: Scope, ctx?: Ctx, direct?: {idx: number, fsize: number}): void {
+  emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false, landA?: number, ctx?: Ctx, direct?: {idx: number, fsize: number}): void {
     const b = f.body;
     const clob = f.anyref(), idx = f.i32(), cf = f.anyref(), fs = f.i32(),
       maxL = f.i32(), slots = f.anyref(), ffp = f.anyref();
@@ -1891,7 +1891,7 @@ class Compiler {
         // (pre-cut operand reloads — sibling operands of the call — read
         // the frozen values under multi-shot resume).
         const rest = this.makeRestThunk("handle:after-handle");
-        const ksp = this.snapWrap(f, sc!, ctx!, () => g(b, kL));
+        const ksp = this.snapWrap(f, ctx!, () => g(b, kL));
         g(b, this.retCell(f, rest.idx, () => g(b, ksp))); // next = K_SPILL{frozen frame, ambient k}
         rcast(b, 5);
         if (DBGEMIT) console.log("THROW handle-split cutStack=", this.cutStack.length);
@@ -2505,7 +2505,7 @@ class Compiler {
         return {k: "local", l: v};
       }
       case "field": {
-        const o = f.anyref(), blk = f.anyref();
+        const blk = f.anyref();
         this.pushRef(f, this.expr(e.obj, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)}));
         rcast(b, 3);
         sget(b, 3, 0);
@@ -2636,7 +2636,6 @@ class Compiler {
           ctx.kL,
           undefined,
           undefined,
-          s,
           ctx,
           {idx: this.builtinFnIdx.get(bname)!, fsize: bi.params + mapLikeFrameWords(bname)});
         } else {
@@ -2662,7 +2661,6 @@ class Compiler {
           ctx.kL,
           undefined,
           undefined,
-          s,
           ctx);
         }
         // emitCallClosure leaves the landed result on the stack (or
@@ -2730,7 +2728,7 @@ class Compiler {
     const opid = this.effOpIds.get(e.op)!;
     const restFn = this.makeRestThunk("perform:rest op=" + e.op);
     const kL = f.anyref(), hdl = f.anyref(), found = f.i32();
-    const tbl = f.anyref(), nL = f.i32(), iL = f.i32(), ent = f.i32();
+    const tbl = f.anyref(), nL = f.i32(), ent = f.i32();
     const fnIdx = f.i32(), fsz = f.i32(), nparams = f.i32(), amb = f.anyref();
     const i31of = () => { rcastn(b, I31REF); i31get(b); }; // anyref → i32 (i31 payload)
     g(b, ctx.kL); // the ambient continuation
@@ -2795,7 +2793,7 @@ class Compiler {
     // reloads read the frozen values, so a multi-shot resume re-runs the
     // rest against the pre-perform state (the interpreter's CPS accs),
     // not the frame as mutated by earlier resumes / loop iterations.
-    const ksp = this.snapWrap(f, s, ctx, () => {
+    const ksp = this.snapWrap(f, ctx, () => {
       g(b, amb);
     });
     g(b, found);
@@ -2963,7 +2961,7 @@ class Compiler {
     // rest's pre-cut operand reloads (chain levels above the handle, e.g.
     // sibling operands of `s + handle {...}`) must see the values as of
     // the install, not as mutated by the handler body / resumes.
-    const ksp = this.snapWrap(f, s, ctx, () => {
+    const ksp = this.snapWrap(f, ctx, () => {
       g(b, ctx.kL);
     });
     // RET cell over the handle-site frame; next = the continuation outside
@@ -3019,7 +3017,7 @@ class Compiler {
     const restAfterIf = this.makeRestThunk("if:after");
     // K_SPILL cell freezing the pre-if frame image for the after-if rest's
     // pre-cut operand reloads (see snapWrap).
-    const ksp = this.snapWrap(f, s, ctx, () => {
+    const ksp = this.snapWrap(f, ctx, () => {
       g(b, ctx.kL); // the ambient continuation
     });
     const ifk = this.retCell(f, restAfterIf.idx, () => {
@@ -3163,7 +3161,7 @@ class Compiler {
       }
       // K_SPILL cell freezing the pre-loop frame image for the after-while
       // rest's pre-cut operand reloads (see snapWrap).
-      const ksp = this.snapWrap(f, s, ctx, () => {
+      const ksp = this.snapWrap(f, ctx, () => {
         g(b, ctx.kL); // the ambient continuation
       });
       const ifk = this.retCell(f, restAfter.idx, () => {
@@ -3312,7 +3310,7 @@ class Compiler {
     return l;
   }
 
-  emitBuiltins(builtin0: number): Fn[] {
+  emitBuiltins(): Fn[] {
     const out: Fn[] = [];
     for (const {name} of BUILTINS) {
       if (!this.usedBuiltins.has(name)) continue;
@@ -4635,6 +4633,6 @@ export function runWasm(src: string, interp?: EffectInterp): Value {
     },
   };
   inst = new WebAssembly.Instance(mod, {env: imports});
-  const result = (inst.exports.run as () => unknown)();
+  const result = (inst.exports["run"] as () => unknown)();
   return hostUnbox(ex(), result);
 }
