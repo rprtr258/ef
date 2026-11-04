@@ -2,53 +2,75 @@
 //
 // Pipeline: parse → typecheck (types.ts, reused as-is) → frontend analysis
 // (analysis.ts: builtin tree-shaking, op discovery, live imports) → emit a
-// binary .wasm module (self-contained, no WasmGC) → binaryen shrink pass
-// (optimizeBinary: in-process npm `binaryen`, no external tools) →
-// imports and run. No types needed at emission time: the only checker
-// output the backend consumes is the runtime stamps the checker leaves on
-// nodes (`e.div` for division, `e.idx` for field access).
+// binary .wasm module (WasmGC value plane, no linear memory) → binaryen
+// shrink pass (optimizeBinary: in-process npm `binaryen`, no external
+// tools) → imports and run. No types needed at emission time: the only
+// checker output the backend consumes is the runtime stamps the checker
+// leaves on nodes (`e.div` for division, `e.idx` for field access).
 //
 // Subset: everything except suspension across `if`/`while` (a perform or
 // handle site inside a branch or loop body is rejected at compile time).
-// Every `perform` (builtin or user-declared op) boxes its args, spills the
-// args cell to a frame slot, and walks the continuation chain for a handler.
-// With no handler in the chain the effect reaches the host (which interprets
-// it via the op table `compileWithOps` returns) and the rest-of-site
-// fragment continues with the resumed value. `handle` installs a K_HDL
-// continuation cell whose case table dispatches performed ops to per-case
-// T_KABI functions running over the handler's shared hframe (§4.4); every
-// perform/handle site ends the inline body and reifies the code after it as
-// a rest-of-site fragment via the compile-time split protocol below. Resume
-// as a value (§4.6): the resume binder is a TAG_CLO cell over the shared
-// resume fn plus a per-perform-site capture record; every call copies the
-// captured slice afresh, re-chains the copy's bottom to a fresh HDL whose
-// next is the k the closure was invoked with, and dispatches the resumed
-// value through that chain (terminating at the caller's continuation).
+// Every `perform` (builtin or user-declared op) boxes its args into an
+// $ELEMS array, spills the args cell to a frame slot, and walks the
+// continuation chain for a handler. With no handler in the chain the
+// effect reaches the host (which interprets it via the op table
+// `compileWithOps` returns) and the rest-of-site fragment continues with
+// the resumed value. `handle` installs a K_HDL continuation cell whose
+// case table dispatches performed ops to per-case T_KABI functions running
+// over the handler's shared hframe (§4.4); every perform/handle site ends
+// the inline body and reifies the code after it as a rest-of-site fragment
+// via the compile-time split protocol below. Resume as a value (§4.6): the
+// resume binder is a $CLO closure over the shared resume fn plus a
+// per-perform-site capture record; every call copies the captured slice
+// afresh, re-chains the copy's bottom to a fresh HDL whose next is the k
+// the closure was invoked with, and dispatches the resumed value through
+// that chain (terminating at the caller's continuation).
 //
-// Representation:
-// - Value = 16-byte cell {tag: i32, pad: i32, data: 8B} where data holds an
-//   f64 (num/bool) or an i32 heap pointer (str/arr/clo). Tags: 0 unit,
-//   1 num, 2 bool, 3 str, 4 arr, 5 clo. Bump allocator, never freed.
-// - Strings are UTF-16 code-unit arrays (matches JS strlen/char/Out).
-// - Every call frame is a heap block {parent, argc, slots...}; closures
-//   capture their defining frame pointer, so escaping/mutable capture works
-//   exactly like the interpreter's env chain. Variables resolve statically
-//   to (frame depth, slot).
-// - All ef functions have uniform signature (i32 frame) -> i32 and dispatch
-//   through one funcref table via call_indirect. Builtins are trampolines;
-//   map/each/flatmap are compiled loops calling callbacks the same way.
-// - Static literals (nums, strings, bools, unit, builtin closures) are baked
-//   into a data segment; the heap pointer starts after them.
+// Representation (WasmGC — every wasm operand value is an anyref):
+// - unit = ref.null any; bool = i31ref 0/1; number = $NUM {f64} (immutable
+//   struct); string = $STR (mut i16 array, UTF-16 code units, matches JS
+//   strlen/char/Out); array/tuple/list = $ARR wrapper {mut (ref null
+//   $ELEMS)} over a backing $ELEMS array (growth repoints the wrapper's
+//   backing, so aliases share the wrapper and see growth); closure =
+//   immutable $CLO {i31 fnIdx, (ref null $FRAME) env, i31 fsize}.
+// - Every call frame is a $FRAME {mut (ref null $FRAME) parent, mut (ref
+//   null $ELEMS) slots} with slot array length max(fsize, argc); closures
+//   capture their defining frame, so escaping/mutable capture works exactly
+//   like the interpreter's env chain. Variables resolve statically to
+//   (frame depth, slot); a slot read is struct.get $FRAME 1 + array.get.
+// - Continuations are $K cells {mut i31 kind, mut a, mut b, mut (ref null
+//   $K) next}, mirroring the old 4-word k-cell layout: K_RET{a = i31
+//   thunk funcref index, b = frame}, K_HDL{a = $ELEMS case table of flat
+//   [opid, fnIdx, fsize, nparams] i31 quadruples (Return case = opid -1),
+//   b = hframe}, K_SPILL{a = frozen $FRAME snapshot, b unused}. k = ref.null
+//   $K is the final return.
+// - All ef functions have uniform T_KABI signature ((ref null $FRAME),
+//   (ref null $K)) -> anyref and dispatch through one funcref table via
+//   call_indirect. Builtins are trampolines; map/each/flatmap are compiled
+//   CPS loops calling callbacks the same way; tail positions keep
+//   return_call/return_call_indirect.
+// - Static literals (nums, strings, bools, unit, builtin closures, PI,
+//   per-handle case tables) are built once by $init into (mut anyref)
+//   globals initialized ref.null any; run() calls $init, then main.
+// - JS cannot read GC struct fields directly, so the host boundary is 12
+//   exported accessor functions (__tag, __num, __str_len, __str_get,
+//   __arr_len, __arr_get, __mk_num, __mk_bool, __str_new, __str_set,
+//   __arr_new, __arr_set); the host runtime rebuilds interpreter Values
+//   through them. Host imports (7): ef_perform, ef_char, ef_number,
+//   ef_args, ef_cos, ef_sin, ef_fail — tree-shaken to the live set
+//   (ef_fail always live); effects reaching the host flow back through
+//   ef_perform and are interpreted by builtins.ts's builtinEffectHosts.
 //
 // Known deviations vs the interpreter (degenerate programs only):
-// - Arithmetic/comparison on non-numbers produces garbage instead of throwing.
+// - Arithmetic/comparison on non-numbers traps (ref.cast failure) instead
+//   of producing a garbage number — frozen decision, pinned by a
+//   wasm.test.ts test; the checker rejects non-num arithmetic statically,
+//   so well-typed programs never hit it.
 // - `set` growing an array fills holes with unit (interpreter: undefined).
 // - Closures always display as [fn] (interpreter may show an inferred type).
 // - Stack overflow surfaces as a wasm RuntimeError, not a JS RangeError.
-// - No GC: every call (tail or not) bump-allocates a frame block that is never
-//   reclaimed, so recursion depth N costs O(N) heap (100M tail calls ≈ 1.6 GB).
-//   The wasm stack itself stays O(1): calls in tail position use
-//   return_call_indirect.
+// - Heap reclamation is the host GC's job (the old bump heap was never
+//   freed; recursion depth no longer costs O(N) unreclaimed bytes).
 
 // (The eval⇄builtins import cycle is runtime-only on both sides — apply is
 // called from builtin closures, eval reads the effect interps lazily — so
@@ -110,17 +132,37 @@ const g = (b: Buf, i: number) => { b.u8(0x20); b.lebU(i); };  // local.get
 const st = (b: Buf, i: number) => { b.u8(0x21); b.lebU(i); }; // local.set
 const i32c = (b: Buf, n: number) => { b.u8(0x41); b.lebS(n); };
 const f64c = (b: Buf, x: number) => { b.u8(0x44); b.f64(x); };
-const ld = (b: Buf, off = 0) => { b.u8(0x28); b.lebU(2); b.lebU(off); };   // i32.load
-const ld64 = (b: Buf, off = 0) => { b.u8(0x2b); b.lebU(3); b.lebU(off); }; // f64.load
-const ld16 = (b: Buf, off = 0) => { b.u8(0x2f); b.lebU(1); b.lebU(off); }; // i32.load16_u
-const strd = (b: Buf, off = 0) => { b.u8(0x36); b.lebU(2); b.lebU(off); }; // i32.store
-const st64 = (b: Buf, off = 0) => { b.u8(0x39); b.lebU(3); b.lebU(off); }; // f64.store
-const st16 = (b: Buf, off = 0) => { b.u8(0x3b); b.lebU(1); b.lebU(off); }; // i32.store16
-const drp = (b: Buf) => op(b, 0x1a);
+// GC emit helpers. Heap types are single bytes (i31 0x6c, eq 0x6d, any
+// 0x6e) or small type indices — both fit b.u8; never pass them through the
+// sleb writer. struct.new pops fields in declaration order; array.set pops
+// (arrayref, index, value); array.copy pops (dst, dstOff, src, srcOff, len).
+const snew = (b: Buf, t: number) => { b.u8(GC); b.u8(STRUCT_NEW); b.lebU(t); };
+const sget = (b: Buf, t: number, fi: number) => { b.u8(GC); b.u8(STRUCT_GET); b.lebU(t); b.u8(fi); };
+const sset = (b: Buf, t: number, fi: number) => { b.u8(GC); b.u8(STRUCT_SET); b.lebU(t); b.u8(fi); };
+const anew = (b: Buf, t: number) => { b.u8(GC); b.u8(ARRAY_NEW_DEFAULT); b.lebU(t); };
+const aget = (b: Buf, t: number) => { b.u8(GC); b.u8(ARRAY_GET); b.lebU(t); };
+const agetu = (b: Buf, t: number) => { b.u8(GC); b.u8(ARRAY_GET_U); b.lebU(t); };
+const aset = (b: Buf, t: number) => { b.u8(GC); b.u8(ARRAY_SET); b.lebU(t); };
+const alen = (b: Buf) => { b.u8(GC); b.u8(ARRAY_LEN); };
+const acopy = (b: Buf, d: number, s: number) => { b.u8(GC); b.u8(ARRAY_COPY); b.lebU(d); b.lebU(s); };
+const i31ref = (b: Buf) => { b.u8(GC); b.u8(REF_I31); };
+const i31get = (b: Buf) => { b.u8(GC); b.u8(I31_GET_S); };
+const rnull = (b: Buf, ht: number) => { b.u8(REF_NULL); b.u8(ht); };
+const refeq = (b: Buf) => op(b, REF_EQ);
+const rtestn = (b: Buf, ht: number) => { b.u8(GC); b.u8(REF_TEST); b.u8(ht); };   // ref.test (ref ht)
+const rtest = (b: Buf, ht: number) => { b.u8(GC); b.u8(REF_TEST_NULL); b.u8(ht); }; // ref.test (ref null ht)
+const rcastn = (b: Buf, ht: number) => { b.u8(GC); b.u8(REF_CAST); b.u8(ht); };   // ref.cast (ref ht)
+const rcast = (b: Buf, ht: number) => { b.u8(GC); b.u8(REF_CAST_NULL); b.u8(ht); }; // ref.cast (ref null ht)
+const gget = (b: Buf, gi: number) => { b.u8(0x23); b.lebU(gi); }; // global.get
+const selt = (b: Buf, vt: number[] = [ANYREF]) => { // typed select
+  b.u8(0x1c);
+  b.lebU(vt.length);
+  for (const v of vt) b.u8(v);
+};
 // i32 arithmetic/comparison
 const ADD = 0x6a, SUB = 0x6b, MUL = 0x6c, SHL = 0x74, SHRU = 0x76;
 const EQZ = 0x45, EQ = 0x46, NE = 0x47, LTS = 0x48, OR = 0x72, AND = 0x71;
-const GTU = 0x4b, LEU = 0x4d, GEU = 0x4f;
+const GTU = 0x4b, LEU = 0x4d, GEU = 0x4f, DIVU = 0x6e;
 // f64 arithmetic/comparison
 const FABS = 0x99, FNEG = 0x9a, FCEIL = 0x9b, FFLOOR = 0x9c, FTRUNC = 0x9d, FSQRT = 0x9f;
 const FADD = 0xa0, FSUB = 0xa1, FMUL = 0xa2, FDIV = 0xa3;
@@ -130,29 +172,105 @@ const CALL = 0x10, CALL_INDIRECT = 0x11, RETURN_CALL = 0x12, RETURN_CALL_INDIREC
 const BR = 0x0c, BR_IF = 0x0d, IF = 0x04, ELSE = 0x05, END = 0x0b, LOOP = 0x03, BLOCK = 0x02;
 const RETURN = 0x0f, UNREACHABLE = 0x00;
 
+
+// --- WasmGC substrate (step 1, additive) -------------------------------------
+
+// Abstract heap types are single valtype bytes, never passed through the sleb
+// writer; a concrete (ref null $t) would be 0x63 <sleb $t> (not needed yet).
+// Nothing below is consumed by assemble() yet — the GC probe module in
+// wasm.test.ts is the sole caller until step 2 wires these into the emitters.
+export const ANYREF = 0x6e, EQREF = 0x6d, I31REF = 0x6c, NONEREF = 0x71, FUNCREF = 0x70;
+
+// GC opcodes: 0xFB-prefixed instructions carry a sub-opcode (single byte for
+// the values here) followed by typeidx/heaptype immediates. REF_NULL/REF_EQ/
+// SELECT_TYPED are plain (unprefixed) opcodes; SELECT_TYPED takes a vec of
+// valtypes instead of the untyped 0x1b form.
+export const GC = 0xfb;
+export const STRUCT_NEW = 0x00, STRUCT_GET = 0x02, STRUCT_SET = 0x05;
+export const ARRAY_NEW_DEFAULT = 0x07, ARRAY_GET = 0x0b, ARRAY_GET_U = 0x0d,
+  ARRAY_SET = 0x0e, ARRAY_LEN = 0x0f, ARRAY_COPY = 0x11;
+export const REF_TEST = 0x14, REF_TEST_NULL = 0x15, REF_CAST = 0x16, REF_CAST_NULL = 0x17;
+export const REF_I31 = 0x1c, I31_GET_S = 0x1d, I31_GET_U = 0x1e;
+export const REF_NULL = 0xd0, REF_EQ = 0xd3, SELECT_TYPED = 0x1c;
+
+// GC-only type builder with structural dedup: identical struct/array/func
+// shapes share one type index. Arrays have NO field count — 0x5E <st> <mut>.
+// assemble()'s hand-written emitType calls are untouched; step 2 unifies.
+export class GcTypes {
+  private byt = new Map<string, number>();
+  private ents: Buf[] = [];
+  private intern(emit: (b: Buf) => void): number {
+    const b = new Buf();
+    emit(b);
+    const key = b.b.join(",");
+    const hit = this.byt.get(key);
+    if (hit !== undefined) return hit;
+    this.byt.set(key, this.ents.length);
+    this.ents.push(b);
+    return this.ents.length - 1;
+  }
+  struct(fields: [number, boolean][]): number {
+    return this.intern(b => {
+      b.u8(0x5f).lebU(fields.length);
+      for (const [st, mut] of fields) b.u8(st).u8(mut ? 1 : 0);
+    });
+  }
+  array(st: number, mut: boolean): number {
+    return this.intern(b => b.u8(0x5e).u8(st).u8(mut ? 1 : 0));
+  }
+  func(params: number[], results: number[]): number {
+    return this.intern(b => {
+      b.u8(0x60).lebU(params.length);
+      for (const p of params) b.u8(p);
+      b.lebU(results.length);
+      for (const r of results) b.u8(r);
+    });
+  }
+  section(): Buf {
+    const s = new Buf();
+    s.lebU(this.ents.length);
+    for (const e of this.ents) s.bytes(e.b);
+    return s;
+  }
+}
+
+// $init scaffolding (§5 statics): mutable anyref globals initialized
+// ref.null any, plus an empty $init function envelope the caller fills. Step
+// 2 wires both into assemble() ($init runs at the top of run()).
+export class GcStatics {
+  readonly init = new Fn(0);
+  private gs: Buf[] = [];
+  global(): number {
+    this.gs.push(new Buf().u8(ANYREF).u8(1).u8(REF_NULL).u8(ANYREF).u8(0x0b));
+    return this.gs.length - 1;
+  }
+  section(): Buf {
+    const s = new Buf();
+    s.lebU(this.gs.length);
+    for (const gl of this.gs) s.bytes(gl.b);
+    return s;
+  }
+}
+
 // --- module-level constants -------------------------------------------------
 
-const TAG_UNIT = 0, TAG_NUM = 1, TAG_BOOL = 2, TAG_STR = 3, TAG_ARR = 4, TAG_CLO = 5;
-// k-cell kinds: cells are 16 bytes {kind@0, a@4, b@8, next@12}. K_RET: a = land
-// thunk funcref index, b = frame the thunk runs over. K_HDL: a = case-table byte
-// offset in the data section, b = the handler frame (hframe).
-// K_SPILL: a = frozen frame-image block (per-capture operand snapshot),
-// b = 0; it sits between a split site's RET cell and the ambient chain so
-// only that site's rest fragment sees it (its prologue loads a and skips
-// the cell before dispatching).
-const K_RET = 0, K_HDL = 1, K_SPILL = 2;
-// Static cells live at fixed offsets so the host can read them too.
-const TRUE_CELL = 0, FALSE_CELL = 16, UNIT_CELL = 32, STATIC_FIXED = 48;
 
-// Function indices: 0..liveImports.length-1 host imports, then helpers,
-// lambdas, builtins, main.
+// k-cell kinds (i31 in the $K.kind field). K_RET: a = i31 thunk funcref
+// index, b = the frame the thunk runs over. K_HDL: a = $ELEMS case table of
+// flat [opid, fnIdx, fsize, nparams] i31 quadruples (the Return case is
+// opid -1), b = the handler frame (hframe). K_SPILL: a = frozen $FRAME
+// snapshot (per-capture operand snapshot), b unused; it sits between a
+// split site's RET cell and the ambient chain so only that site's rest
+// fragment sees it (its prologue loads a and skips the cell before
+// dispatching).
+const K_RET = 0, K_HDL = 1, K_SPILL = 2;
 
 // map/each/flatmap invoke user callbacks, so they are called land-style: a
 // map-like call site is a landCalls split site (§3) and the builtin loops
 // through per-iteration thunks instead of an inline wasm loop.
 const MAP_LIKE = new Set(["map", "each", "flatmap"]);
 // Extra entry-frame words a map-like builtin needs beyond its args: the
-// result/tmp block pointer (except each) and the iteration counter.
+// result/tmp array (except each) and the iteration counter.
 const mapLikeFrameWords = (name: string): number =>
   name === "each" ? 1 : MAP_LIKE.has(name) ? 2 : 0;
 
@@ -161,25 +279,37 @@ const HOST_IMPORTS = [
   "ef_char", "ef_number", "ef_args", "ef_cos", "ef_sin", "ef_fail",
 ];
 
-// Type section indices. T_KABI is the uniform CPS ABI of every defined
-// function (frame, k) -> i32; T_III_I is the land-thunk ABI (frame, v, k) -> i32.
-const T_I_I = 0, T_V_I = 1, T_IIFF_I = 2, T_F_I = 3, T_II_I = 4,
-  T_KABI = 5, T_III_I = 6;
+// Type section indices — assemble() emits exactly this order: structs/
+// arrays 0..6 ($NUM, $ELEMS, $STR, $ARR, $FRAME, $K, $CLO), then func
+// types 7..23. Shared shapes dedupe by position: 7 () -> anyref (run +
+// ef_args), 8 () -> (), 9 (i32, anyref) -> anyref (ef_perform), 10 (i32,
+// anyref, f64, f64) -> () (ef_fail), 11 (anyref) -> anyref (ef_char/
+// number/cos/sin), 12 (i32) -> anyref (__mk_bool/__str_new/__arr_new),
+// 13 (f64) -> anyref (fBox/__mk_num), 14 (anyref) -> i32 (fTruthy/__tag/
+// __str_len/__arr_len), 15 (anyref, anyref) -> anyref (fEq), 16 ((ref null
+// $K), (ref null $K)) -> (ref null $K) (fCapture), 17 T_KABI ((ref null
+// $FRAME), (ref null $K)) -> anyref, 18 T_III_I ((ref null $FRAME), anyref,
+// (ref null $K)) -> anyref; 19..23 are accessor-only shapes named in
+// assemble().
+const T_RUN = 7, T_INIT = 8, T_PERFORM = 9, T_FAIL = 10, T_STRNUM = 11,
+  T_BOX = 13, T_TRUTHY = 14, T_EQ = 15, T_CAPTURE = 16, T_KABI = 17,
+  T_III_I = 18;
 
 function impType(n: string): number {
-  if (n === "ef_perform") return T_II_I;
-  if (n === "ef_fail") return T_IIFF_I;
-  if (n === "ef_args") return T_V_I;
-  return T_I_I;
+  if (n === "ef_perform") return T_PERFORM;
+  if (n === "ef_fail") return T_FAIL;
+  if (n === "ef_args") return T_RUN;
+  return T_STRNUM;
 }
 
 // debug emitter tracing: run with DBGEMIT=1 to log split/thunk internals
 // during compile; off (and free) otherwise.
 const DBGEMIT = process.env.DBGEMIT === "1";
 
+
 // --- per-function emitter ---------------------------------------------------
 
-class Fn {
+export class Fn {
   body = new Buf();
   locals: number[] = []; // extra locals in allocation order (valtype bytes)
   typeIdx = T_KABI; // program functions share (frame, k) -> i32; helpers may differ
@@ -188,6 +318,7 @@ class Fn {
   constructor(public params: number) {}
   i32(): number { this.locals.push(0x7f); return this.params + this.locals.length - 1; }
   f64(): number { this.locals.push(0x7c); return this.params + this.locals.length - 1; }
+  anyref(): number { this.locals.push(ANYREF); return this.params + this.locals.length - 1; }
 }
 
 // Emission context: which local holds the ambient continuation cell (1 = a
@@ -223,12 +354,14 @@ const INLINE: Ctx = {kL: 1};
 //    (handle, while, the dispatch-shape if) the difference is structural —
 //    the split changes the site itself, not just its children; forcing one
 //    shape there would move complexity, not remove it (stage-3/4 ruling).
+
 type ValueRef =
-  | {k: "const", off: number} // immediate cell (literal / unit / bool / placed closure)
-  | {k: "local", l: number}   // wasm local index holding the cell pointer (single-use)
-  | {k: "slot", off: number}  // frame slot: cell pointer at $fp + off
-  | {k: "snapSlot", snap: number, off: number}; // frozen frame-image slot
-const REF_UNIT: ValueRef = {k: "const", off: UNIT_CELL};
+  | {k: "g", gi: number}   // static anyref global (filled by $init)
+  | {k: "bool", v: 0 | 1}  // i31 bool
+  | {k: "local", l: number}   // anyref local (single-use)
+  | {k: "slot", i: number}    // frame slot i of local 0's frame
+  | {k: "snapSlot", snap: number, i: number}; // frozen-frame slot (fragment re-emission)
+
 
 // Compile-time split signal: a perform/handle site or a non-builtin call
 // site ended the inline wasm body (return_call into a case function, the
@@ -287,10 +420,11 @@ type RawBinaryen = typeof binaryen & {
   _BinaryenModuleDispose(ptr: number): void,
 };
 
-// Feature set to read with: exactly what the emitter emits — funcref table
-// (reference-types) + return_call_indirect (tail-call) + MVP basics.
+// Feature set to read with: exactly what the emitter emits — WasmGC value
+// plane (structs/arrays/i31), funcref table (reference-types) +
+// return_call_indirect (tail-call) + MVP basics.
 const BIN_FEATURES = binaryen.Features.MVP | binaryen.Features.ReferenceTypes |
-  binaryen.Features.TailCall | binaryen.Features.BulkMemory |
+  binaryen.Features.GC | binaryen.Features.TailCall |
   binaryen.Features.SignExt | binaryen.Features.MutableGlobals;
 
 // Shrink every compiled module through binaryen (wasm-opt in-process; the
@@ -301,13 +435,20 @@ const BIN_FEATURES = binaryen.Features.MVP | binaryen.Features.ReferenceTypes |
 // the emitter's invalid-module bugs — so a failed pass is normalized into a
 // WasmError. The aborted binaryen heap is not reusable in-process afterwards;
 // every current caller either recovers by process exit or never hits this.
-function optimizeBinary(bytes: Uint8Array): Uint8Array {
+// extraFeatures extends the read mask without touching the production set
+// (the GC probe test passes binaryen.Features.GC; the rewrite flips the mask
+// for real in step 2).
+// EF_SKIP_WASM_OPT=1 bypasses the shrink pass: a binaryen abort is total
+// (every compile fails until process exit), so there must be an escape
+// hatch from day one.
+export function optimizeBinary(bytes: Uint8Array, extraFeatures = 0): Uint8Array {
+  if (process.env.EF_SKIP_WASM_OPT === "1") return bytes;
   const m = binaryen as RawBinaryen;
   try {
     const latin = Buffer.from(bytes).toString("latin1");
     const ptr = m._malloc(latin.length + 1); // +1: stringToAscii appends a NUL
     m.stringToAscii(latin, ptr);
-    const modPtr = m._BinaryenModuleReadWithFeatures(ptr, bytes.length, BIN_FEATURES);
+    const modPtr = m._BinaryenModuleReadWithFeatures(ptr, bytes.length, BIN_FEATURES | extraFeatures);
     try {
       if (modPtr === 0) throw new WasmError("binaryen: failed to read compiled module");
       const mod = m.wrapModule(modPtr);
@@ -330,10 +471,13 @@ class Compiler {
   scopes = new Map<ExprID, Scope>();
   globalFrame = {slots: 0};
   globalScope: Scope = {frame: this.globalFrame, parent: null, map: new Map()};
-  data = new Buf();
-  numLits = new Map<number, number>();    // literal value → static cell offset
-  strLits = new Map<string, number>();    // literal value → static cell offset
-  cloOffsets = new Map<string, number>(); // builtin name → static clo offset
+  // Statics: (mut anyref) globals built once by $init (§5). gcount = global
+  // count; initBody = the $init code layoutStatics appends to.
+  gcount = 0;
+  initBody = new Buf();
+  numLits = new Map<number, number>();    // literal value → static global idx
+  strLits = new Map<string, number>();    // literal value → static global idx
+  cloOffsets = new Map<string, number>(); // builtin name → static $CLO global idx
   funcs: Fn[] = [];
   thunks: Fn[] = []; // land thunks (T_III_I), emitted between builtins and main
   thunk0 = 0;        // funcref table index of the first land thunk
@@ -346,9 +490,10 @@ class Compiler {
   effOpIds = new Map<string, number>(EFFECT_OPS.map((op, i) => [op, i]));
   // Handler machinery (§4.4): per `handle` node, its op cases (each a
   // T_KABI function over the handler's shared hframe), the explicit Return
-  // case if any, the offset of its dispatch table in static data (set by
-  // layoutStatics), and the hframe scope discover() bound the case
-  // params/resume names into. Filled by discover().
+  // case if any, the static global idx of its dispatch table (set by
+  // layoutStatics; a $ELEMS of flat [opid, fnIdx, fsize, nparams] i31s),
+  // and the hframe scope discover() bound the case params/resume names
+  // into. Filled by discover().
   hdlCases = new Map<ExprID, {
     cases: {op: string, opid: number, fn: Fn, fsize: number, nparams: number, body: ExprID}[],
     retCase: {fn: Fn, fsize: number, nparams: number, body: ExprID} | null,
@@ -371,7 +516,11 @@ class Compiler {
   // fn every perform site's boxed resume binder points at.
   resumeFn: Fn | null = null;
   caseFnTotal = 0;
-  piOff = 0;
+  // Unit/bool statics (unit = the global's initial ref.null any).
+  unitRef: ValueRef = {k: "g", gi: 0};
+  trueRef: ValueRef = {k: "g", gi: 0};
+  falseRef: ValueRef = {k: "g", gi: 0};
+  piG = -1; // PI constant global (only when the program references PI)
   // Builtins the program references as values (OPT_PASSES:
   // treeShakeBuiltins): layoutStatics/emitBuiltins emit only these.
   usedBuiltins = new Set<string>();
@@ -382,13 +531,11 @@ class Compiler {
   // handler case functions, builtins, main.
   liveImports = [...HOST_IMPORTS];
   impIdx = new Map(HOST_IMPORTS.map((n, i): [string, number] => [n, i]));
-  fAlloc = HOST_IMPORTS.length;
-  fTruthy = HOST_IMPORTS.length + 1;
-  fEq = HOST_IMPORTS.length + 2;
-  fBox = HOST_IMPORTS.length + 3;
-  fCapture = HOST_IMPORTS.length + 4;
-  fLambda0 = HOST_IMPORTS.length + 5;
-  hp0 = 0;
+  fTruthy = HOST_IMPORTS.length;
+  fEq = HOST_IMPORTS.length + 1;
+  fBox = HOST_IMPORTS.length + 2;
+  fCapture = HOST_IMPORTS.length + 3;
+  fLambda0 = HOST_IMPORTS.length + 4;
   // Perform spilling (§4.2): perform node → frame slot of its args cell.
   // The cell must survive the handler walk and stay reachable from the
   // after-perform fragment through the RET cell's frame pointer (cell.b).
@@ -464,12 +611,11 @@ class Compiler {
     for (const pass of OPT_PASSES)
       pass(this);
     // 2b. Helper funcref indices: helpers always follow the live imports.
-    this.fAlloc = this.liveImports.length;
-    this.fTruthy = this.fAlloc + 1;
-    this.fEq = this.fAlloc + 2;
-    this.fBox = this.fAlloc + 3;
-    this.fCapture = this.fAlloc + 4;
-    this.fLambda0 = this.fAlloc + 5;
+    this.fTruthy = this.liveImports.length;
+    this.fEq = this.fTruthy + 1;
+    this.fBox = this.fTruthy + 2;
+    this.fCapture = this.fTruthy + 3;
+    this.fLambda0 = this.fTruthy + 4;
     // 2c. Function index assignment (deterministic AST order).
     for (const it of this.prog.items) {
       if ("e" in it) this.assignLambdas(it.e);
@@ -486,11 +632,11 @@ class Compiler {
     const builtin0 = this.fLambda0 + this.lambdaIdx.size + this.caseFnTotal;
     // Land thunks occupy the table slots between builtins and main.
     this.thunk0 = builtin0 + builtins.length;
-    // 3. Static layout (heap pointer starts after it).
+    // 3. Static layout: assign global indices + $init code (§5).
     this.layoutStatics(builtin0);
-    this.hp0 = (this.data.b.length + 7) & ~7;
     // 4. Emit code: helpers (right after the live imports), lambdas, builtin
-    //    trampolines, then main (last).
+    //    trampolines, then main (last; run/$init/accessors follow in
+    //    assemble()).
     this.funcs.push(...this.emitHelpers());
     for (const it of this.prog.items) {
       if ("e" in it) this.emitLambdas(it.e);
@@ -500,7 +646,8 @@ class Compiler {
     const main = new Fn(2);
     this.emitMain(main);
     // Thunks are appended after all emission (emitMain's top-level calls
-    // create thunks too); main stays the last function (exported as run).
+    // create thunks too); main stays the last program function (exported
+    // as run — the run wrapper is assembled after it).
     this.funcs.push(...this.thunks);
     this.funcs.push(main);
     // 5. Assemble.
@@ -724,7 +871,18 @@ class Compiler {
     }
   }
 
+
   // --- body-level split protocol ---------------------------------------------
+
+  // 4b. Handler case function bodies (§4.4). Each case body runs over the
+  // handler's shared hframe (its frame param) with k = HDL.next — the
+  // two-k rule: the ambient continuation is the one captured OUTSIDE the
+  // handler, so a perform inside a case body walks from there and never
+  // re-enters its own handler, and a case body finishing normally
+  // dispatches straight through it (no Return re-wrap). The identity fns
+  // dispatch their frame's Return value (slot 1 for the shared npMax=0 fn,
+  // slot npMax+1 for a per-handler fn — where emitDispatch stashes it for
+  // the matching nparams) through their k — eval.ts:132's (v, k2) => k2(v).
 
   // 4b. Handler case function bodies (§4.4). Each case body runs over the
   // handler's shared hframe (its frame param) with k = HDL.next — the
@@ -739,9 +897,11 @@ class Compiler {
     const idf = this.identityRet!;
     {
       const b = idf.body;
-      const v = idf.i32();
+      const v = idf.anyref();
       g(b, 0);
-      ld(b, 12); // hframe slot 1: the Return value
+      sget(b, 4, 1);
+      i32c(b, 1);
+      aget(b, 1); // hframe slot 1: the Return value
       st(b, v);
       this.emitDispatch(idf, v);
     }
@@ -757,62 +917,70 @@ class Compiler {
       } else if (info.idRet !== null) {
         const idr = info.idRet;
         const b = idr.body;
-        const v = idr.i32();
+        const v = idr.anyref();
         g(b, 0);
-        ld(b, 8 + 4 * (info.npMax + 1)); // hframe Return slot (nparams = npMax)
+        sget(b, 4, 1);
+        i32c(b, info.npMax + 1); // hframe Return slot (nparams = npMax)
+        aget(b, 1);
         st(b, v);
         this.emitDispatch(idr, v);
         this.funcs.push(idr);
       }
     }
-    // The shared resume closure fn (§4.6): (frame, k) -> cell. frame's
-    // parent is the perform site's capture record {arg0 = captured slice,
-    // arg1 = matched HDL}; frame's arg0 is the resumed value. Copies the
-    // slice afresh (originals untouched — multi-shot safe), re-chains the
-    // copy's bottom to a fresh HDL {case table, hframe, next = this call's
-    // k} and dispatches the resumed value through the fresh chain: RET
-    // cells run the segment's fragments, the fresh HDL's Return entry
-    // fires, and dispatch terminates at the caller's continuation.
+    // The shared resume closure fn (§4.6): (frame, k) -> anyref. frame's
+    // parent is the perform site's capture record {slot 1 = captured slice,
+    // slot 2 = matched HDL, slot 3 = the invocation's hframe copy}; frame's
+    // slot 0 is the resumed value. Copies the slice afresh (originals
+    // untouched — multi-shot safe), re-chains the copy's bottom to a fresh
+    // HDL {case table, hframe, next = this call's k} and dispatches the
+    // resumed value through the fresh chain: RET cells run the segment's
+    // fragments, the fresh HDL's Return entry fires, and dispatch
+    // terminates at the caller's continuation.
     const rf = this.resumeFn!;
     {
       const b = rf.body;
-      const v = rf.i32(), slice = rf.i32(), hdl = rf.i32();
-      const copy = rf.i32(), fresh = rf.i32(), cur = rf.i32();
+      const v = rf.anyref(), rec = rf.anyref(), slice = rf.anyref(), hdl = rf.anyref();
+      const copy = rf.anyref(), fresh = rf.anyref(), cur = rf.anyref();
       g(b, 0);
-      ld(b, 8);
-      st(b, v); // the resumed value: the closure call frame's arg0
+      sget(b, 4, 1);
+      i32c(b, 0);
+      aget(b, 1);
+      st(b, v); // the resumed value: the closure call frame's slot 0
       g(b, 0);
-      ld(b, 0);
-      ld(b, 12);
+      sget(b, 4, 0); // the capture record (env frame)
+      st(b, rec);
+      g(b, rec);
+      rcast(b, 4);
+      sget(b, 4, 1);
+      i32c(b, 1);
+      aget(b, 1);
       st(b, slice);
-      g(b, 0);
-      ld(b, 0);
-      ld(b, 16);
+      g(b, rec);
+      rcast(b, 4);
+      sget(b, 4, 1);
+      i32c(b, 2);
+      aget(b, 1);
       st(b, hdl);
       g(b, slice);
+      rcast(b, 5);
       g(b, hdl);
+      rcast(b, 5);
       op(b, CALL);
       b.lebU(this.fCapture);
       st(b, copy);
-      i32c(b, 16);
-      op(b, CALL);
-      b.lebU(this.fAlloc);
-      st(b, fresh);
-      g(b, fresh);
       i32c(b, K_HDL);
-      strd(b, 0);
-      g(b, fresh);
+      i31ref(b);
       g(b, hdl);
-      ld(b, 4);
-      strd(b, 4); // a = the matched handler's case-table offset
-      g(b, fresh);
-      g(b, 0);
-      ld(b, 0);
-      ld(b, 20);
-      strd(b, 8); // b = the invocation's hframe copy (rec arg2)
-      g(b, fresh);
+      rcast(b, 5);
+      sget(b, 5, 1); // a = the matched handler's case table
+      g(b, rec);
+      rcast(b, 4);
+      sget(b, 4, 1);
+      i32c(b, 3);
+      aget(b, 1); // b = the invocation's hframe copy (rec slot 3)
       g(b, 1); // next = the k this closure was invoked with
-      strd(b, 12);
+      snew(b, 5);
+      st(b, fresh);
       g(b, copy);
       st(b, cur);
       op(b, BLOCK);
@@ -820,34 +988,36 @@ class Compiler {
       op(b, LOOP);
       b.u8(0x40);
       g(b, cur);
-      ld(b, 12);
+      rcast(b, 5);
+      sget(b, 5, 3);
       g(b, hdl);
-      op(b, EQ);
+      rcast(b, 5);
+      refeq(b);
       op(b, BR_IF);
       b.lebU(1); // cur is the bottom copy (its next is the old HDL)
       g(b, cur);
-      ld(b, 12);
+      rcast(b, 5);
+      sget(b, 5, 3);
       st(b, cur);
       op(b, BR);
       b.lebU(0);
       op(b, END);
       op(b, END);
       g(b, cur);
+      rcast(b, 5);
       g(b, fresh);
-      strd(b, 12);
+      rcast(b, 5);
+      sset(b, 5, 3);
       this.emitDispatch(rf, v, copy); // k = the closure's own k param
     }
     this.funcs.push(rf);
   }
 
-  // One statement of a body sequence; the sequence completes by dispatching
-  // its last value (or unit) through the ambient continuation `ctx.kL`.
-  // A perform/handle site inside ends the body via a thrown Split.
   emitStmtSeq(stmts: ExprID[], f: Fn, sc: Scope, tail: boolean, ctx: Ctx): void {
     const b = f.body;
     if (stmts.length === 0) {
-      const v = f.i32();
-      i32c(b, UNIT_CELL);
+      const v = f.anyref();
+      this.pushRef(f, this.unitRef);
       st(b, v);
       this.emitDispatch(f, v, ctx.kL);
       return;
@@ -856,7 +1026,7 @@ class Compiler {
       const r = this.expr(stmts[k], f, sc, tail && k === stmts.length - 1, ctx);
       if (k === stmts.length - 1) {
         this.pushRef(f, r);
-        const v = f.i32();
+        const v = f.anyref();
         st(b, v);
         this.emitDispatch(f, v, ctx.kL);
       }
@@ -896,7 +1066,7 @@ class Compiler {
   // re-emission chains another fragment off this one's split site.
   fillRest(sp: Split, root: ExprID[], sc: Scope, tail: boolean): void {
     const gf = sp.restFn;
-    if (DBGEMIT) console.log("FILL_REST fn=", gf.idx, "root=", root.length, "chain=", sp.chain.length, "tail=", tail);
+    if (DBGEMIT) console.log("FILL_REST fn=", gf.idx, "root=", root.length, "chain=", sp.chain.length, "types=", "[" + sp.chain.map((x) => this.nodes[x]?.t).join(",") + "]", "tail=", tail);
     // A shared after-rest fragment (e.g. a handle's) may be routed here
     // again by a later re-emission of the same site; its content is already
     // correct, so re-filling would only append a duplicate tail.
@@ -907,28 +1077,33 @@ class Compiler {
     // — load its frozen frame-image pointer into the `snap` local (pre-cut
     // operand reloads read it) and continue with the cell's own next. A
     // plain cell (nested-chained fragments whose site ran synchronously)
-    // means snap = 0: no operand-spill reload can happen in a fragment
-    // whose site never froze one, because such fragments re-emit only
-    // post-cut code and pure children re-emit instead of reloading.
-    const snap = gf.i32();
+    // means snap = the live frame (local 0): no operand-spill reload can
+    // happen in a fragment whose site never froze one, because such
+    // fragments re-emit only post-cut code and pure children re-emit
+    // instead of reloading.
+    const snap = gf.anyref();
     g(b, 2);
-    op(b, EQZ);
+    op(b, 0xd1); // ref.is_null: k = null → nothing froze a snapshot
     op(b, IF);
     b.u8(0x40);
-    i32c(b, 0);
+    g(b, 0); // live frame: snapSlot reads hit the frame param
     st(b, snap);
     op(b, ELSE);
     g(b, 2);
-    ld(b, 0);
+    rcast(b, 5);
+    sget(b, 5, 0);
+    i31get(b);
     i32c(b, K_SPILL);
     op(b, EQ);
     op(b, IF);
     b.u8(0x40);
     g(b, 2);
-    ld(b, 4);
+    rcast(b, 5);
+    sget(b, 5, 1); // a = the frozen $FRAME snapshot
     st(b, snap);
     g(b, 2);
-    ld(b, 12);
+    rcast(b, 5);
+    sget(b, 5, 3);
     st(b, 2);
     op(b, END);
     op(b, END);
@@ -943,7 +1118,7 @@ class Compiler {
           : this.expr(root[k], gf, sc, tail && k === root.length - 1, {kL: 2, snap});
         if (k === root.length - 1) {
           this.pushRef(gf, r);
-          const v = gf.i32();
+          const v = gf.anyref();
           st(gf.body, v);
           this.emitDispatch(gf, v, 2); // kNext param
         }
@@ -968,7 +1143,7 @@ class Compiler {
   // Returns the last statement's ref; pushRef it where the caller needs the
   // legacy stack operand (handle/while-cut do, block-cut returns it).
   emitStmtsFrom(stmts: ExprID[], f: Fn, s: Scope, ctx: Ctx, ci: number, cut: ExprID[], tail: boolean): ValueRef {
-    let r: ValueRef = REF_UNIT;
+    let r: ValueRef = this.unitRef;
     for (let k = ci; k < stmts.length; k++) {
       r = (k === ci)
         ? this.expr(stmts[k], f, s, tail && k === stmts.length - 1, {kL: ctx.kL, cut: cut.slice(1)})
@@ -977,325 +1152,311 @@ class Compiler {
     return r;
   }
 
-  // --- helper functions (fixed indices 11..14) -------------------------------
+  // --- helper functions (fixed indices after the live imports) ---------------
 
   emitHelpers(): Fn[] {
-    // $alloc(n: i32) -> i32: bump-allocate n (rounded to 8) bytes, growing
-    // memory as needed. $hp is the module's mutable heap-pointer global.
-    const alloc = new Fn(1);
-    alloc.typeIdx = T_I_I; // internal helper, not part of the CPS ABI
-    {
-      const b = alloc.body;
-      const old = alloc.i32(), need = alloc.i32();
-      op(b, 0x23); // global.get $hp
-      b.lebU(0);
-      st(b, old);
-      g(b, old);
-      g(b, 0);
-      op(b, ADD);
-      st(b, need);
-      g(b, need);
-      op(b, 0x3f); // memory.size
-      b.lebU(0);
-      i32c(b, 16);
-      op(b, SHL);
-      op(b, GTU);
-      op(b, IF);
-      b.u8(0x40);
-      g(b, need);
-      op(b, 0x3f);
-      b.lebU(0);
-      i32c(b, 16);
-      op(b, SHL);
-      op(b, SUB);
-      i32c(b, 65535);
-      op(b, ADD);
-      i32c(b, 16);
-      op(b, SHRU);
-      op(b, 0x40); // memory.grow
-      b.lebU(0);
-      drp(b);
-      op(b, END);
-      g(b, old);
-      g(b, 0);
-      op(b, ADD);
-      op(b, 0x24); // global.set $hp
-      b.lebU(0);
-      g(b, old);
-    }
-    // $truthy(cell: i32) -> i32: JS truthiness — false only for unit and
-    // the bool payload 0 (matches `c !== false && c !== null`).
+    // $truthy(v: anyref) -> i32: JS truthiness — 0 only for unit (ref.null
+    // any) and the bool i31 0 (matches `c !== false && c !== null`); every
+    // $NUM (including 0.0), $STR, $ARR and $CLO is truthy.
     const truthy = new Fn(1);
-    truthy.typeIdx = T_I_I; // internal helper, not part of the CPS ABI
+    truthy.typeIdx = T_TRUTHY;
     {
       const b = truthy.body;
       g(b, 0);
-      ld(b, 0);
-      i32c(b, 0);
-      op(b, EQ);
+      op(b, 0xd1); // ref.is_null
       op(b, IF);
       b.u8(0x7f);
       i32c(b, 0);
       op(b, ELSE);
       g(b, 0);
-      ld(b, 0);
-      i32c(b, TAG_BOOL);
-      op(b, EQ);
+      rtest(b, I31REF); // ref.test (ref null i31)
       op(b, IF);
       b.u8(0x7f);
       g(b, 0);
-      ld64(b, 8);
-      f64c(b, 0);
-      op(b, 0x62); // f64.ne
+      rcastn(b, I31REF);
+      i31get(b); // i31.get_u
       op(b, ELSE);
       i32c(b, 1);
       op(b, END);
       op(b, END);
     }
-    // $eq(a: i32, b: i32) -> i32: JS === — numbers/bools by payload, strings
-    // by content, arrays/closures by identity, unit always equal.
+    // $eq(a: anyref, b: anyref) -> anyref bool: JS === — nums by f64
+    // payload, bools by i31 payload, strings by i16 content, arrays/
+    // tuples/closures by identity (ref.cast (ref null eq) + ref.eq;
+    // identity survives `set` growth because growth repoints the wrapper's
+    // backing, not the wrapper), unit (null) equal only to unit.
     const eq = new Fn(2);
-    eq.typeIdx = T_II_I;
+    eq.typeIdx = T_EQ;
     {
       const b = eq.body;
-      const at = eq.i32(), bt = eq.i32();
+      const res = eq.i32();
+      // decided: a typed path (or the null mismatch) already answered.
+      const decided = eq.i32();
+      i32c(b, 0);
+      st(b, decided);
+      // null ladder: equal nulls → true, one null → false.
       g(b, 0);
-      ld(b, 0);
-      st(b, at);
+      op(b, 0xd1);
       g(b, 1);
-      ld(b, 0);
-      st(b, bt);
-      g(b, at);
-      g(b, bt);
-      op(b, NE);
-      op(b, IF);
-      b.u8(0x7f);
-      i32c(b, FALSE_CELL);
-      op(b, ELSE);
-      g(b, at);
-      i32c(b, TAG_UNIT);
+      op(b, 0xd1);
       op(b, EQ);
       op(b, IF);
       b.u8(0x7f);
-      i32c(b, TRUE_CELL);
-      op(b, ELSE);
-      g(b, at);
-      i32c(b, TAG_NUM);
-      op(b, EQ);
-      g(b, at);
-      i32c(b, TAG_BOOL);
-      op(b, EQ);
-      op(b, OR);
-      op(b, IF);
-      b.u8(0x7f);
-      this.selectBool(eq, () => {
-        g(b, 0);
-        ld64(b, 8);
-        g(b, 1);
-        ld64(b, 8);
-        op(b, FEQ);
-      });
-      op(b, ELSE);
-      g(b, at);
-      i32c(b, TAG_STR);
-      op(b, EQ);
-      op(b, IF);
-      b.u8(0x7f);
-      const ab = eq.i32(), bb = eq.i32(), la = eq.i32(), lb = eq.i32(), res = eq.i32();
       g(b, 0);
-      ld(b, 8);
-      st(b, ab);
-      g(b, 1);
-      ld(b, 8);
-      st(b, bb);
-      g(b, ab);
-      ld(b, 0);
-      st(b, la);
-      g(b, bb);
-      ld(b, 0);
-      st(b, lb);
-      i32c(b, 1);
+      op(b, 0xd1);
+      op(b, ELSE);
+      i32c(b, 0);
+      op(b, END);
       st(b, res);
+      // one null, one not: the ladder answered (false).
+      g(b, 0);
+      op(b, 0xd1);
+      g(b, 1);
+      op(b, 0xd1);
+      op(b, EQ);
+      op(b, EQZ);
+      st(b, decided);
+      // bool == bool: i31 payloads.
+      g(b, 0);
+      rtest(b, I31REF);
+      g(b, 1);
+      rtest(b, I31REF);
+      op(b, AND);
+      op(b, IF);
+      b.u8(0x40);
+      g(b, 0);
+      rcastn(b, I31REF);
+      i31get(b);
+      g(b, 1);
+      rcastn(b, I31REF);
+      i31get(b);
+      op(b, EQ);
+      st(b, res);
+      // decided: the bool path answered.
+      g(b, 0);
+      rtest(b, I31REF);
+      g(b, 1);
+      rtest(b, I31REF);
+      op(b, AND);
+      g(b, decided);
+      op(b, 0x78); // i32.or
+      st(b, decided);
+      op(b, END);
+      // num == num: f64 payloads.
+      g(b, 0);
+      rtest(b, 0);
+      g(b, 1);
+      rtest(b, 0);
+      op(b, AND);
+      op(b, IF);
+      b.u8(0x40);
+      g(b, 0);
+      rcast(b, 0);
+      sget(b, 0, 0);
+      g(b, 1);
+      rcast(b, 0);
+      sget(b, 0, 0);
+      op(b, FEQ);
+      st(b, res);
+      // decided: the num path answered.
+      g(b, 0);
+      rtest(b, 0);
+      g(b, 1);
+      rtest(b, 0);
+      op(b, AND);
+      g(b, decided);
+      op(b, 0x78); // i32.or
+      st(b, decided);
+      op(b, END);
+      // str == str: i16 content.
+      g(b, 0);
+      rtest(b, 2);
+      g(b, 1);
+      rtest(b, 2);
+      op(b, AND);
+      op(b, IF);
+      b.u8(0x40);
+      const la = eq.i32(), lb = eq.i32();
+      g(b, 0);
+      rcast(b, 2);
+      alen(b);
+      st(b, la);
+      g(b, 1);
+      rcast(b, 2);
+      alen(b);
+      st(b, lb);
       g(b, la);
       g(b, lb);
       op(b, EQ);
-      op(b, EQZ);
-      op(b, IF);
-      b.u8(0x40);
-      i32c(b, 0);
       st(b, res);
-      op(b, END);
       this.loop(eq, () => {
         g(b, la);
       }, i => {
         g(b, res);
-        g(b, ab);
-        i32c(b, 4);
-        op(b, ADD);
+        g(b, 0);
+        rcast(b, 2);
         g(b, i);
-        i32c(b, 2);
-        op(b, MUL);
-        op(b, ADD);
-        ld16(b, 0);
-        g(b, bb);
-        i32c(b, 4);
-        op(b, ADD);
+        agetu(b, 2);
+        g(b, 1);
+        rcast(b, 2);
         g(b, i);
-        i32c(b, 2);
-        op(b, MUL);
-        op(b, ADD);
-        ld16(b, 0);
+        agetu(b, 2);
         op(b, EQ);
         op(b, AND);
         st(b, res);
       });
-      this.selectBool(eq, () => {
-        g(b, res);
-      });
-      op(b, ELSE);
-      // arr/clo: identity — compare the data pointers.
-      this.selectBool(eq, () => {
-        g(b, 0);
-        ld(b, 8);
-        g(b, 1);
-        ld(b, 8);
-        op(b, EQ);
-      });
-      op(b, END); // str
-      op(b, END); // num/bool
-      op(b, END); // unit
-      op(b, END); // at != bt
-    }
-    // $box(x: f64) -> i32: allocate a num cell.
-    const box = new Fn(1);
-    box.typeIdx = T_F_I;
-    {
-      const b = box.body;
-      const cell = box.i32();
-      i32c(b, 16);
-      op(b, CALL);
-      b.lebU(this.fAlloc);
-      st(b, cell);
-      g(b, cell);
-      i32c(b, TAG_NUM);
-      strd(b, 0);
-      g(b, cell);
-      g(b, 0); // f64 param
-      st64(b, 8);
-      g(b, cell);
-    }
-    // $captureSlice(k: i32, until: i32) -> i32: reify the slice of
-    // continuation cells strictly above `until` (the matched K_HDL) as a
-    // FRESH cell chain — originals untouched (cells are immutable; the
-    // resume closure copies again). The head is a copy of the cell at `k`
-    // (the perform's just-pushed RET); each copy keeps {kind, a, b} verbatim
-    // and chains to the next copy; the last copy's next points at `until`.
-    const capture = new Fn(2);
-    {
-      const b = capture.body;
-      const n = capture.i32(), cur = capture.i32(), base = capture.i32();
-      const i = capture.i32(), src = capture.i32(), dst = capture.i32();
-      // Pass 1: n = number of cells from k up to (excluding) until.
-      i32c(b, 0);
-      st(b, n);
-      g(b, 0);
-      st(b, cur);
-      op(b, BLOCK);
-      b.u8(0x40);
-      op(b, LOOP);
-      b.u8(0x40);
-      g(b, cur);
-      g(b, 1);
-      op(b, EQ);
-      op(b, BR_IF);
-      b.lebU(1);
-      g(b, n);
-      i32c(b, 1);
-      op(b, ADD);
-      st(b, n);
-      g(b, cur);
-      ld(b, 12);
-      st(b, cur);
-      op(b, BR);
-      b.lebU(0);
       op(b, END);
-      op(b, END);
-      // Pass 2: one contiguous fresh block, cell i at base + 16*i.
-      g(b, n);
-      i32c(b, 16);
-      op(b, MUL);
-      op(b, CALL);
-      b.lebU(this.fAlloc);
-      st(b, base);
-      g(b, 0);
-      st(b, src);
-      i32c(b, 0);
-      st(b, i);
-      op(b, BLOCK);
-      b.u8(0x40);
-      op(b, LOOP);
-      b.u8(0x40);
-      g(b, base);
-      g(b, i);
-      i32c(b, 16);
-      op(b, MUL);
-      op(b, ADD);
-      st(b, dst);
-      g(b, dst);
-      g(b, src);
-      ld(b, 0);
-      strd(b, 0); // kind
-      g(b, dst);
-      g(b, src);
-      ld(b, 4);
-      strd(b, 4); // a
-      g(b, dst);
-      g(b, src);
-      ld(b, 8);
-      strd(b, 8); // b
-      g(b, i);
-      i32c(b, 1);
-      op(b, ADD);
-      st(b, i);
-      g(b, i);
-      g(b, n);
-      op(b, EQ);
+      // Mixed/same-shape-arr/clo → identity (both operands cast through
+      // (ref null eq); a nullable cast accepts null but the null ladder
+      // already left). Only runs when no typed path answered.
+      g(b, decided);
+      op(b, EQZ);
       op(b, IF);
       b.u8(0x40);
-      // Last copy chains to the matched handler cell (the resume closure
-      // replaces that pointer with a fresh HDL chained to the resume-site k).
-      g(b, dst);
+      g(b, 0);
+      rcast(b, EQREF);
       g(b, 1);
-      strd(b, 12);
-      op(b, ELSE);
-      g(b, dst);
-      g(b, base);
-      g(b, i);
-      i32c(b, 16);
-      op(b, MUL);
-      op(b, ADD);
-      strd(b, 12);
+      rcast(b, EQREF);
+      refeq(b);
+      st(b, res);
       op(b, END);
-      g(b, i);
-      g(b, n);
-      op(b, EQ);
+      g(b, res);
+      i31ref(b);
+    }
+    // $box(x: f64) -> anyref: number struct.
+    const box = new Fn(1);
+    box.typeIdx = T_BOX;
+    g(box.body, 0);
+    snew(box.body, 0);
+    // $captureSlice(k: (ref null $K), until: (ref null $K)) -> (ref null $K):
+    // fresh copies of the cells from k up to (excluding) until, each
+    // {kind, a, b} verbatim; the bottom copy chains to `until`. Two passes:
+    // count (n ≥ 1: the slice always starts at a RET cell), then allocate
+    // n cells into a temp $ELEMS and link them (a $K cell is singly linked
+    // forward, so the copies are chained bottom-up out of the temp array).
+    const capture = new Fn(2);
+    capture.typeIdx = T_CAPTURE;
+    {
+      const b = capture.body;
+      const n = capture.i32(), cur = capture.anyref(), tmp = capture.anyref();
+      const i = capture.i32(), src = capture.anyref();
+      i32c(b, 0);
+      st(b, n);
+      g(b, 0);
+      st(b, cur);
+      op(b, BLOCK);
+      b.u8(0x40);
+      op(b, LOOP);
+      b.u8(0x40);
+      g(b, cur);
+      rcast(b, 5);
+      g(b, 1);
+      refeq(b);
       op(b, BR_IF);
       b.lebU(1);
+      g(b, n);
+      i32c(b, 1);
+      op(b, ADD);
+      st(b, n);
+      g(b, cur);
+      rcast(b, 5);
+      sget(b, 5, 3);
+      st(b, cur);
+      op(b, BR);
+      b.lebU(0);
+      op(b, END);
+      op(b, END);
+      g(b, n);
+      anew(b, 1);
+      st(b, tmp);
+      g(b, 0);
+      st(b, src);
+      i32c(b, 0);
+      st(b, i);
+      op(b, BLOCK);
+      b.u8(0x40);
+      op(b, LOOP);
+      b.u8(0x40);
+      g(b, i);
+      g(b, n);
+      op(b, GEU);
+      op(b, BR_IF);
+      b.lebU(1);
+      g(b, tmp);
+      rcast(b, 1);
+      g(b, i);
       g(b, src);
-      ld(b, 12);
+      rcast(b, 5);
+      sget(b, 5, 0);
+      g(b, src);
+      rcast(b, 5);
+      sget(b, 5, 1);
+      g(b, src);
+      rcast(b, 5);
+      sget(b, 5, 2);
+      rnull(b, 5);
+      snew(b, 5);
+      aset(b, 1);
+      g(b, i);
+      i32c(b, 1);
+      op(b, ADD);
+      st(b, i);
+      g(b, src);
+      rcast(b, 5);
+      sget(b, 5, 3);
       st(b, src);
       op(b, BR);
       b.lebU(0);
       op(b, END);
       op(b, END);
-      g(b, base);
+      i32c(b, 0);
+      st(b, i);
+      op(b, BLOCK);
+      b.u8(0x40);
+      op(b, LOOP);
+      b.u8(0x40);
+      g(b, i);
+      g(b, n);
+      op(b, GEU);
+      op(b, BR_IF);
+      b.lebU(1);
+      g(b, tmp);
+      rcast(b, 1);
+      g(b, i);
+      aget(b, 1);
+      rcast(b, 5);
+      g(b, i);
+      i32c(b, 1);
+      op(b, ADD);
+      st(b, i);
+      g(b, i);
+      g(b, n);
+      op(b, GEU);
+      op(b, IF);
+      b.u8(0x63);
+      b.u8(5); // next = until (the bottom of the slice)
+      g(b, 1);
+      op(b, ELSE);
+      g(b, tmp);
+      rcast(b, 1);
+      g(b, i);
+      aget(b, 1);
+      rcast(b, 5);
+      op(b, END);
+      sset(b, 5, 3);
+      op(b, BR);
+      b.lebU(0);
+      op(b, END);
+      op(b, END);
+      g(b, tmp);
+      rcast(b, 1);
+      i32c(b, 0);
+      aget(b, 1);
+      rcast(b, 5);
     }
-    return [alloc, truthy, eq, box, capture];
+    return [truthy, eq, box, capture];
   }
 
-  // Whether emitting this subtree can throw a Split: a perform or handle
-  // site whose split escapes the enclosing body (lambda bodies catch their
-  // own, so they do not propagate). Drives operand-spill allocation.
   splits(id: ExprID): boolean {
     const e = this.nodes[id];
     switch (e.t) {
@@ -1493,73 +1654,89 @@ class Compiler {
     this.caseFnTotal = next - idf.idx;
   }
 
+
   // --- static layout ---------------------------------------------------------
 
-  place(bytes: number[], align: number): number {
-    const off = (this.data.b.length + (align - 1)) & ~(align - 1);
-    while (this.data.b.length < off) this.data.b.push(0);
-    this.data.bytes(bytes);
-    return off;
-  }
-
-  placeCell(tag: number, dataF64: number, dataI32: number): number {
-    const ab = new ArrayBuffer(16);
-    const dv = new DataView(ab);
-    dv.setInt32(0, tag, true);
-    if (tag === TAG_NUM || tag === TAG_BOOL) dv.setFloat64(8, dataF64, true);
-    else dv.setInt32(8, dataI32, true);
-    return this.place([...new Uint8Array(ab)], 8);
-  }
-
-  placeStrBlock(s: string): number {
-    const off = this.place([s.length & 0xff, (s.length >> 8) & 0xff, 0, 0], 4);
-    for (let i = 0; i < s.length; i++) {
-      const u = s.charCodeAt(i);
-      this.data.b.push(u & 0xff, (u >> 8) & 0xff);
-    }
-    return off;
+  // Statics live in (mut anyref) globals initialized ref.null any and are
+  // built once by $init at run() start (§5): deduped number literals, PI,
+  // string literals, true/false i31s, unit, one $CLO per surviving builtin,
+  // and per-handle case tables ($ELEMS of flat [opid, fnIdx, fsize,
+  // nparams] i31 quadruples). Every static allocates one global index and
+  // appends $init code filling it.
+  newStatic(): number {
+    this.gcount++;
+    return this.gcount - 1;
   }
 
   layoutStatics(builtin0: number): void {
-    // Fixed cells first (the host knows these offsets).
-    this.placeCell(TAG_BOOL, 1, 0); // TRUE_CELL = 0
-    this.placeCell(TAG_BOOL, 0, 0); // FALSE_CELL = 16
-    this.placeCell(TAG_UNIT, 0, 0); // UNIT_CELL = 32
-    // PI constant cell (only when the program references PI).
-    if (this.usedBuiltins.has("PI")) {
-      this.piOff = this.placeCell(TAG_NUM, Math.PI, 0);
+    // Unit: the global's initial ref.null any IS the unit value.
+    this.unitRef = {k: "g", gi: this.newStatic()};
+    // Bools: i31(0/1), built by $init.
+    this.trueRef = {k: "g", gi: this.newStatic()};
+    this.falseRef = {k: "g", gi: this.newStatic()};
+    const b = this.initBody;
+    const gset = (gi: number) => { b.u8(0x24); b.lebU(gi); };
+    i32c(b, 1);
+    i31ref(b);
+    gset(this.trueRef.gi);
+    i32c(b, 0);
+    i31ref(b);
+    gset(this.falseRef.gi);
+    // Number literals (deduped by value).
+    for (const [v] of this.numLits) {
+      const gi = this.newStatic();
+      f64c(b, v);
+      snew(b, 0);
+      gset(gi);
+      this.numLits.set(v, gi);
     }
-    // Builtin closures: clo block {fn_idx, frame: 0, fsize} + a cell per name.
-    // Only referenced builtins get a cell (OPT_PASSES: treeShakeBuiltins).
+    // PI constant (only when the program references it).
+    if (this.usedBuiltins.has("PI")) {
+      this.piG = this.newStatic();
+      f64c(b, Math.PI);
+      snew(b, 0);
+      gset(this.piG);
+    }
+    // String literals (field names included — same constant pool).
+    for (const [v] of this.strLits) {
+      const gi = this.newStatic();
+      i32c(b, v.length);
+      anew(b, 2);
+      gset(gi);
+      for (let i = 0; i < v.length; i++) {
+        gget(b, gi);
+        rcast(b, 2);
+        i32c(b, i);
+        i32c(b, v.charCodeAt(i));
+        aset(b, 2);
+      }
+      this.strLits.set(v, gi);
+    }
+    // Builtin closures: $CLO {fnIdx, env = null, fsize = params + map-like
+    // extras} — only referenced builtins get one (OPT_PASSES:
+    // treeShakeBuiltins). `list` keeps fsize 0: its slot count is exactly
+    // argc, which the trampoline reads back via array.len.
     let i = 0;
     for (const bi of BUILTINS) {
       if (!this.usedBuiltins.has(bi.name)) continue;
       const fni = builtin0 + i++;
-
-      const blk = this.place([
-        fni & 0xff, (fni >> 8) & 0xff, (fni >> 16) & 0xff, (fni >> 24) & 0xff,
-        0, 0, 0, 0,
-        // fsize: map-like entries keep their result block + counter in the
-        // frame the per-iteration thunks reload after a suspension.
-        (bi.params + mapLikeFrameWords(bi.name)) & 0xff, 0, 0, 0,
-      ], 4);
-      this.cloOffsets.set(bi.name, this.placeCell(TAG_CLO, 0, blk));
+      const gi = this.newStatic();
+      i32c(b, fni);
+      i31ref(b);
+      rnull(b, 4); // env: builtins run over the call frame itself
+      i32c(b, bi.params + mapLikeFrameWords(bi.name));
+      i31ref(b);
+      snew(b, 6);
+      gset(gi);
+      this.cloOffsets.set(bi.name, gi);
     }
-    // PI is a float *value* (the checker types it `float`, not `() -> float`),
-    // so bind the name to the constant cell, not to a closure.
+    // PI is a float *value* (the checker types it `float`, not
+    // `() -> float`), so bind the name to the constant global, not to a
+    // closure.
     if (this.usedBuiltins.has("PI")) {
-      this.cloOffsets.set("PI", this.piOff);
+      this.cloOffsets.set("PI", this.piG);
     }
-    // Number literals.
-    for (const [v] of this.numLits) {
-      this.numLits.set(v, this.placeCell(TAG_NUM, v, 0));
-    }
-    // String literals (field names included — same constant pool).
-    for (const [v] of this.strLits) {
-      const blk = this.placeStrBlock(v);
-      this.strLits.set(v, this.placeCell(TAG_STR, 0, blk));
-    }
-    // Handler case tables (§4.4): [n: i32][opid, fnIdx, fsize, nparams]*.
+    // Handler case tables (§4.4): flat [opid, fnIdx, fsize, nparams]* i31s.
     // The Return entry (opid -1) always goes last — an explicit case fn when
     // the handler declares one (its nparams = npMax puts the value at slot
     // npMax+1), otherwise an identity fn with matching nparams (the shared
@@ -1576,11 +1753,21 @@ class Compiler {
       } else {
         entries.push({opid: -1, fn: info.idRet!, fsize: this.frameSizeOf(info.scope), nparams: info.npMax});
       }
-      const words = [entries.length];
+      const words: number[] = [];
       for (const en of entries) words.push(en.opid, en.fn.idx, en.fsize, en.nparams);
-      const bytes = words.flatMap(w => [w & 0xff, (w >> 8) & 0xff, (w >> 16) & 0xff, (w >> 24) & 0xff]);
-      const off = this.place(bytes, 4);
-      this.hdlCases.get(hdlId)!.tableOff = off;
+      const gi = this.newStatic();
+      i32c(b, words.length);
+      anew(b, 1);
+      gset(gi);
+      for (let k = 0; k < words.length; k++) {
+        gget(b, gi);
+        rcast(b, 1);
+        i32c(b, k);
+        i32c(b, words[k]);
+        i31ref(b);
+        aset(b, 1);
+      }
+      this.hdlCases.get(hdlId)!.tableOff = gi;
     }
   }
 
@@ -1599,22 +1786,26 @@ class Compiler {
   }
 
   // Returns the cell pointer of `name` as a ValueRef: a frame slot for the
+
+  // Returns the anyref value of `name` as a ValueRef: a frame slot for the
   // current frame, a fresh local for parent frames (the frame walk balances
-  // its own stack), or an immediate for placed closures.
+  // its own stack), or a static global for placed closures.
   emitSym(f: Fn, sc: Scope, name: string): ValueRef {
     const b = f.body;
     const r = this.resolve(sc, name);
     if (r !== null) {
-      if (r.d === 0) return {k: "slot", off: 8 + 4 * r.i};
-      const v = f.i32();
+      if (r.d === 0) return {k: "slot", i: r.i};
+      const v = f.anyref();
       g(b, 0);
-      for (let k = 0; k < r.d; k++) ld(b, 0); // walk parent frames
-      ld(b, 8 + 4 * r.i);
+      for (let k = 0; k < r.d; k++) sget(b, 4, 0); // walk parent frames (typed field)
+      sget(b, 4, 1);
+      i32c(b, r.i);
+      aget(b, 1);
       st(b, v);
       return {k: "local", l: v};
     }
     const clo = this.cloOffsets.get(name);
-    if (clo !== undefined) return {k: "const", off: clo};
+    if (clo !== undefined) return {k: "g", gi: clo};
     throw new WasmError(`Unbound symbol: ${name}`);
   }
 
@@ -1636,27 +1827,20 @@ class Compiler {
   // 0). `nextE` pushes the cell's next-pointer operand. Returns the cell.
   retCell(f: Fn, fragIdx: number, nextE: () => void): number {
     const b = f.body;
-    const cell = f.i32();
-    i32c(b, 16);
-    op(b, CALL);
-    b.lebU(this.fAlloc);
-    st(b, cell);
-    g(b, cell);
+    const cell = f.anyref();
     i32c(b, K_RET);
-    strd(b, 0);
-    g(b, cell);
+    i31ref(b);
     i32c(b, fragIdx);
-    strd(b, 4);
-    g(b, cell);
+    i31ref(b);
     g(b, 0); // b = the frame the fragment runs over
-    strd(b, 8);
-    g(b, cell);
     nextE();
-    strd(b, 12);
+    rcast(b, 5);
+    snew(b, 5);
+    st(b, cell);
     return cell;
   }
 
-  // A K_SPILL cell {K_SPILL, snapshot, 0, next} chained in front of a
+  // A K_SPILL cell {K_SPILL, snapshot, null, next} chained in front of a
   // split site's rest fragment. The snapshot freezes the values the rest
   // fragment reloads from operand-spill slots: on the fresh path it is a
   // copy of the current frame image taken at the split site (per capture —
@@ -1668,92 +1852,77 @@ class Compiler {
   // not re-freeze the already-mutated frame).
   snapWrap(f: Fn, sc: Scope, ctx: Ctx, nextE: () => void): number {
     const b = f.body;
-    const ksp = f.i32(), snapv = f.i32();
+    const ksp = f.anyref(), snapv = f.anyref();
     if (ctx.snap !== undefined) {
       g(b, ctx.snap);
       st(b, snapv);
     } else {
-      const total = this.frameSizeOf(sc);
-      i32c(b, 8 + 4 * total);
-      op(b, CALL);
-      b.lebU(this.fAlloc);
+      // Fresh $FRAME {same parent, slots array copied via array.copy} — the
+      // per-capture freeze (shallow slot copy, same as the old block copy).
+      g(b, 0); sget(b, 4, 1); alen(b);
+      anew(b, 1);
       st(b, snapv);
-      this.loop(f, () => {
-        i32c(b, 2 + total);
-      }, i => {
-        g(b, snapv);
-        g(b, i);
-        i32c(b, 4);
-        op(b, MUL);
-        op(b, ADD);
-        g(b, 0);
-        g(b, i);
-        i32c(b, 4);
-        op(b, MUL);
-        op(b, ADD);
-        ld(b, 0);
-        strd(b, 0);
-      });
+      g(b, snapv);
+      rcast(b, 1);
+      i32c(b, 0);
+      g(b, 0); sget(b, 4, 1);
+      i32c(b, 0);
+      g(b, 0); sget(b, 4, 1); alen(b);
+      acopy(b, 1, 1);
+      g(b, 0); sget(b, 4, 0);
+      g(b, snapv);
+      rcast(b, 1);
+      snew(b, 4);
+      st(b, snapv);
     }
-    i32c(b, 16);
-    op(b, CALL);
-    b.lebU(this.fAlloc);
-    st(b, ksp);
-    g(b, ksp);
     i32c(b, K_SPILL);
-    strd(b, 0);
-    g(b, ksp);
+    i31ref(b);
     g(b, snapv);
-    strd(b, 4);
-    g(b, ksp);
-    i32c(b, 0);
-    strd(b, 8);
-    g(b, ksp);
+    rnull(b, ANYREF); // b unused (was UNIT_CELL)
     nextE();
-    strd(b, 12);
+    rcast(b, 5);
+    snew(b, 5);
+    st(b, ksp);
     return ksp;
   }
 
   emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false, landA?: number, sc?: Scope, ctx?: Ctx): void {
     const b = f.body;
-    const clob = f.i32(), idx = f.i32(), cf = f.i32(), fs = f.i32(), ffp = f.i32();
+    const clob = f.anyref(), idx = f.i32(), cf = f.anyref(), fs = f.i32(),
+      maxL = f.i32(), slots = f.anyref(), ffp = f.anyref();
     g(b, fc);
-    ld(b, 8);
     st(b, clob);
-    g(b, clob);
-    ld(b, 0);
+    g(b, clob); rcast(b, 6); sget(b, 6, 0); i31get(b);
     st(b, idx);
-    g(b, clob);
-    ld(b, 4);
+    g(b, clob); rcast(b, 6); sget(b, 6, 1);
     st(b, cf);
-    g(b, clob);
-    ld(b, 8);
+    g(b, clob); rcast(b, 6); sget(b, 6, 2); i31get(b);
     st(b, fs);
-    // size = 8 + 4 * max(fs, argc) — fs/argc pushed twice: once as the
-    // select operands, once for the comparison.
+    // Slot count = max(fs, argc) — the slots array holds the params and the
+    // body's lets (fs) or all the args, whichever is longer. (argc readers
+    // use array.len instead of a stored argc field — valid only because the
+    // sole argc reader is `list`, whose fsize is 0.)
     g(b, fs);
     i32c(b, argc);
     g(b, fs);
     i32c(b, argc);
     op(b, GTU);
     op(b, SELECT);
-    i32c(b, 4);
-    op(b, MUL);
-    i32c(b, 8);
-    op(b, ADD);
-    op(b, CALL);
-    b.lebU(this.fAlloc);
-    st(b, ffp);
-    g(b, ffp);
+    st(b, maxL);
+    g(b, maxL);
+    anew(b, 1);
+    st(b, slots);
     g(b, cf);
-    strd(b, 0); // parent
-    g(b, ffp);
-    i32c(b, argc);
-    strd(b, 4); // argc
+    rcast(b, 4);
+    g(b, slots);
+    rcast(b, 1);
+    snew(b, 4); // {parent, slots}
+    st(b, ffp);
     for (let k = 0; k < argc; k++) argEmit(k, ffp);
     g(b, ffp);
+    rcast(b, 4); // the call's frame param (ffp is an anyref local)
     let splitAt: Split | null = null;
-    if (tail) g(b, kL); // tail call: pass the ambient continuation through
+    if (tail) { g(b, kL); rcast(b, 5); } // tail call: pass the ambient continuation through
     else if (land) {
       if (noSplit) {
         // Land-style RET cell ending the caller's body: used inside
@@ -1764,6 +1933,7 @@ class Compiler {
         // (never returns here), and a terminal k=0 return must unwind past
         // the whole loop to the caller's own call site.
         g(b, this.retCell(f, landA!, () => g(b, kL))); // next = ambient k
+        rcast(b, 5);
       } else {
         // Non-tail lambda call (§3 emitCall): the caller's body ENDS at
         // the call — return_call_indirect with the continuation in the
@@ -1783,10 +1953,11 @@ class Compiler {
         const rest = this.makeRestThunk("handle:after-handle");
         const ksp = this.snapWrap(f, sc!, ctx!, () => g(b, kL));
         g(b, this.retCell(f, rest.idx, () => g(b, ksp))); // next = K_SPILL{frozen frame, ambient k}
+        rcast(b, 5);
         if (DBGEMIT) console.log("THROW handle-split cutStack=", this.cutStack.length);
         splitAt = new Split(rest, [...this.cutStack]);
       }
-    } else i32c(b, 0); // k=0: the callee's dispatch(0, v) returns its value inline
+    } else rnull(b, 5); // k=0 (ref.null $K): the callee's dispatch returns its value inline
     g(b, idx);
     op(b, tail || land ? RETURN_CALL_INDIRECT : CALL_INDIRECT); // noSplit land calls tail too (see above)
     b.lebU(T_KABI);
@@ -1812,56 +1983,50 @@ class Compiler {
   // that catches this site's Split (bodyCatch/emitMain/fillRest).
   makeRestThunk(role?: string): Fn {
     const f = new Fn(3);
-    if (DBGEMIT && role !== undefined) console.log("THUNK", f.idx, role);
     f.typeIdx = T_III_I;
     f.idx = this.thunk0 + this.thunks.length;
+    if (DBGEMIT && role !== undefined) console.log("THUNK", f.idx, role);
     this.thunks.push(f);
     return f;
   }
 
-  // End-of-body dispatch: completes a T_KABI function whose result cell sits
-  // in local `v`; `k` is the function's second parameter. k == 0 → the value
-  // is the result. K_RET cell → tail-call the land thunk over its frame.
-  // K_HDL cell → scan the case table at k.a for the Return entry (opid -1):
-  // found → write v into the hframe's Return param slot (nparams + 1) and
-  // tail-call the Return case body with (hframe, k.next); not found →
-  // identity default, propagate the value through k.next (eval.ts:135).
-  // `k` is the local holding the continuation cell: 1 = the k parameter of
-  // the (frame, k) -> i32 ABI, 2 = the k parameter of a land thunk.
   emitDispatch(f: Fn, v: number, k = 1): void {
     const b = f.body;
-    const nL = f.i32(), iL = f.i32(), found = f.i32(), fnIdx = f.i32(),
-      nparams = f.i32(), ent = f.i32();
+    const kind = () => { g(b, k); rcast(b, 5); sget(b, 5, 0); i31get(b); };
+    const i31of = () => { rcastn(b, I31REF); i31get(b); }; // anyref → i32 (i31 payload)
     op(b, BLOCK);
-    b.u8(0x7f); // block (result i32)
+    b.u8(ANYREF); // block (result anyref)
     op(b, LOOP);
     b.u8(0x40);
-    g(b, k); i32c(b, 0); op(b, EQ);
+    g(b, k);
+    op(b, 0xd1); // ref.is_null: final return → the value itself
     op(b, IF);
     b.u8(0x40);
     g(b, v);
     op(b, BR); b.lebU(2); // leave the block with v
     op(b, END);
-    g(b, k); ld(b, 0); i32c(b, K_RET); op(b, EQ);
+    kind(); i32c(b, K_RET); op(b, EQ);
     op(b, IF);
     b.u8(0x40);
-    // RET: tail-call the land thunk (frame, v, next); funcref index last.
-    g(b, k); ld(b, 8);
+    const tbl = f.anyref(), nL = f.i32(), iL = f.i32(), found = f.i32(),
+      fnIdx = f.i32(), nparams = f.i32(), ent = f.i32();
+    g(b, k); rcast(b, 5); sget(b, 5, 2); rcast(b, 4);
     g(b, v);
-    g(b, k); ld(b, 12);
-    g(b, k); ld(b, 4);
+    g(b, k); rcast(b, 5); sget(b, 5, 3);
+    g(b, k); rcast(b, 5); sget(b, 5, 1); i31of();
     op(b, RETURN_CALL_INDIRECT);
     b.lebU(T_III_I);
     b.lebU(0);
     op(b, END);
-    // K_HDL: scan the case table at k.a (a data-section byte offset, laid out
-    // [n][opid, fnIdx, fsize, nparams]*; the Return case, opid -1, goes last).
+    // K_HDL: scan the case table at k.a (a $ELEMS of flat [opid, fnIdx,
+    // fsize, nparams] i31 quadruples; the Return case, opid -1, goes last).
     // A K_SPILL cell (a rest fragment's frozen-frame marker) is transparent:
     // it carries no handler — skip it and walk on. Only kind==K_HDL scans.
-    g(b, k); ld(b, 0); i32c(b, K_HDL); op(b, EQ);
+    kind(); i32c(b, K_HDL); op(b, EQ);
     op(b, IF);
     b.u8(0x40);
-    g(b, k); ld(b, 4); ld(b, 0); st(b, nL);
+    g(b, k); rcast(b, 5); sget(b, 5, 1); st(b, tbl);
+    g(b, tbl); rcast(b, 1); alen(b); i32c(b, 4); op(b, DIVU); st(b, nL);
     i32c(b, 0); st(b, found);
     i32c(b, 0); st(b, iL);
     op(b, BLOCK);
@@ -1869,14 +2034,14 @@ class Compiler {
     op(b, LOOP);
     b.u8(0x40);
     g(b, iL); g(b, nL); op(b, GEU); op(b, BR_IF); b.lebU(1);
-    g(b, k); ld(b, 4); i32c(b, 4); op(b, ADD);
-    g(b, iL); i32c(b, 16); op(b, MUL); op(b, ADD); st(b, ent);
-    g(b, ent); ld(b, 0); i32c(b, -1); op(b, EQ);
+    g(b, iL); i32c(b, 4); op(b, MUL); st(b, ent);
+    g(b, tbl); rcast(b, 1); g(b, ent); aget(b, 1); i31of();
+    i32c(b, -1); op(b, EQ);
     op(b, IF);
     b.u8(0x40);
     i32c(b, 1); st(b, found);
-    g(b, ent); ld(b, 4); st(b, fnIdx);
-    g(b, ent); ld(b, 12); st(b, nparams);
+    g(b, tbl); rcast(b, 1); g(b, ent); i32c(b, 1); op(b, ADD); aget(b, 1); i31of(); st(b, fnIdx);
+    g(b, tbl); rcast(b, 1); g(b, ent); i32c(b, 3); op(b, ADD); aget(b, 1); i31of(); st(b, nparams);
     op(b, BR); b.lebU(2); // exit the scan block
     op(b, END);
     g(b, iL); i32c(b, 1); op(b, ADD); st(b, iL);
@@ -1888,13 +2053,12 @@ class Compiler {
     b.u8(0x40);
     // Return case: store v into the hframe's Return param slot, then
     // tail-call the case body as (hframe, k.next); funcref index last.
-    g(b, k); ld(b, 8);
-    g(b, nparams); i32c(b, 1); op(b, ADD); i32c(b, 4); op(b, MUL); i32c(b, 8); op(b, ADD);
-    op(b, ADD);
+    g(b, k); rcast(b, 5); sget(b, 5, 2); rcast(b, 4); sget(b, 4, 1);
+    g(b, nparams); i32c(b, 1); op(b, ADD);
     g(b, v);
-    strd(b, 0);
-    g(b, k); ld(b, 8);
-    g(b, k); ld(b, 12);
+    aset(b, 1);
+    g(b, k); rcast(b, 5); sget(b, 5, 2); rcast(b, 4);
+    g(b, k); rcast(b, 5); sget(b, 5, 3);
     g(b, fnIdx);
     op(b, RETURN_CALL_INDIRECT);
     b.lebU(T_KABI);
@@ -1902,18 +2066,20 @@ class Compiler {
     op(b, END);
     op(b, END); // kind==K_HDL guard
     // No Return case (or a skipped K_SPILL): k = k.next and dispatch again.
-    g(b, k); ld(b, 12); st(b, k);
+    g(b, k); rcast(b, 5); sget(b, 5, 3); st(b, k);
     op(b, BR); b.lebU(0);
     op(b, END); // loop
     op(b, 0x00); // unreachable: the loop exits only through the k==0 branch
     op(b, END); // block
   }
 
-  // Calls ef_fail(code, namePtr, a, b); the import throws, so unreachable.
-  emitFail(f: Fn, code: number, namePtr: number, pushA: () => void, pushB: () => void): void {
+  // Calls ef_fail(code, name, a, b); the import throws, so unreachable.
+  // `name` is a $STR static global index (field-access failures) or null.
+  emitFail(f: Fn, code: number, nameG: number | null, pushA: () => void, pushB: () => void): void {
     const b = f.body;
     i32c(b, code);
-    i32c(b, namePtr);
+    if (nameG === null) rnull(b, ANYREF);
+    else gget(b, nameG);
     pushA();
     pushB();
     op(b, CALL);
@@ -1923,82 +2089,31 @@ class Compiler {
 
   constF64 = (f: Fn, x: number) => () => f64c(f.body, x);
 
-  // String concatenation of cells in locals a, b → new str cell on stack.
+  // String concatenation of $STR locals a, b → new $STR on the stack.
   emitStrCat(f: Fn, a: number, b: number): void {
     const body = f.body;
-    const ab = f.i32(), bb = f.i32(), la = f.i32(), lb = f.i32(), blk = f.i32(), cell = f.i32();
-    g(body, a);
-    ld(body, 8);
-    st(body, ab);
-    g(body, b);
-    ld(body, 8);
-    st(body, bb);
-    g(body, ab);
-    ld(body, 0);
-    st(body, la);
-    g(body, bb);
-    ld(body, 0);
-    st(body, lb);
-    // str block: {len: la+lb, units...}
-    i32c(body, 4);
-    g(body, la);
-    g(body, lb);
+    const res = f.anyref();
+    g(body, a); rcast(body, 2); alen(body);
+    g(body, b); rcast(body, 2); alen(body);
     op(body, ADD);
-    i32c(body, 2);
-    op(body, MUL);
-    op(body, ADD);
-    op(body, CALL);
-    body.lebU(this.fAlloc);
-    st(body, blk);
-    g(body, blk);
-    g(body, la);
-    g(body, lb);
-    op(body, ADD);
-    strd(body, 0);
+    anew(body, 2);
+    st(body, res);
     // copy a then b (b starts at unit offset la)
-    const copy = (src: number, dstUnits: number | null, len: number) => {
-      this.loop(f, () => {
-        g(f.body, len);
-      }, i => {
-        // dst unit address: blk + 4 + 2*(dst + i)
-        g(f.body, blk);
-        i32c(f.body, 4);
-        op(f.body, ADD);
-        if (dstUnits !== null) {
-          g(f.body, dstUnits);
-          i32c(f.body, 2);
-          op(f.body, MUL);
-          op(f.body, ADD);
-        }
-        g(f.body, i);
-        i32c(f.body, 2);
-        op(f.body, MUL);
-        op(f.body, ADD);
-        // src unit address: src + 4 + 2*i
-        g(f.body, src);
-        i32c(f.body, 4);
-        op(f.body, ADD);
-        g(f.body, i);
-        i32c(f.body, 2);
-        op(f.body, MUL);
-        op(f.body, ADD);
-        ld16(f.body, 0);
-        st16(f.body, 0);
-      });
-    };
-    copy(ab, null, la);
-    copy(bb, la, lb);
-    i32c(body, 16);
-    op(body, CALL);
-    body.lebU(this.fAlloc);
-    st(body, cell);
-    g(body, cell);
-    i32c(body, TAG_STR);
-    strd(body, 0);
-    g(body, cell);
-    g(body, blk);
-    strd(body, 8);
-    g(body, cell);
+    g(body, res);
+    rcast(body, 2);
+    i32c(body, 0);
+    g(body, a); rcast(body, 2);
+    i32c(body, 0);
+    g(body, a); rcast(body, 2); alen(body);
+    acopy(body, 2, 2);
+    g(body, res);
+    rcast(body, 2);
+    g(body, a); rcast(body, 2); alen(body);
+    g(body, b); rcast(body, 2);
+    i32c(body, 0);
+    g(body, b); rcast(body, 2); alen(body);
+    acopy(body, 2, 2);
+    g(body, res);
   }
 
   // for (i = 0; i < n; i++) iter(i) — n pushed by pushN (const or local).
@@ -2028,85 +2143,58 @@ class Compiler {
     op(b, END);
   }
 
-  // Address of element i (local) of array block local `blk` on the stack.
+  // Pushes (arrayref, index) of element i (local) of raw $ELEMS local
+  // `blk`; callers finish with aget (read) or push the value + aset (write).
   elemAddr(f: Fn, blk: number, i: number): void {
-    const b = f.body;
-    g(b, blk);
-    i32c(b, 8);
-    op(b, ADD);
-    g(b, i);
-    i32c(b, 4);
-    op(b, MUL);
-    op(b, ADD);
+    g(f.body, blk);
+    rcast(f.body, 1);
+    g(f.body, i);
   }
 
-  // Allocates an array block of length local `n`; returns the block local.
+  // Allocates a raw $ELEMS array of length local `n`; returns the local.
   allocArrBlk(f: Fn, n: number): number {
-    const b = f.body;
-    const blk = f.i32();
-    g(b, n);
-    i32c(b, 4);
-    op(b, MUL);
-    i32c(b, 8);
-    op(b, ADD);
-    op(b, CALL);
-    b.lebU(this.fAlloc);
-    st(b, blk);
-    g(b, blk);
-    g(b, n);
-    strd(b, 0);
+    const blk = f.anyref();
+    g(f.body, n);
+    anew(f.body, 1);
+    st(f.body, blk);
     return blk;
   }
 
-  // Boxes the array block local `blk` → new arr cell on the stack.
+  // Wraps the raw $ELEMS local `blk` → new $ARR wrapper on the stack.
+  // Growth (`set`) repoints the wrapper's backing array, so every alias
+  // sharing the wrapper sees the growth (§7.1).
   boxArr(f: Fn, blk: number): void {
-    const b = f.body;
-    const cell = f.i32();
-    i32c(b, 16);
-    op(b, CALL);
-    b.lebU(this.fAlloc);
-    st(b, cell);
-    g(b, cell);
-    i32c(b, TAG_ARR);
-    strd(b, 0);
-    g(b, cell);
-    g(b, blk);
-    strd(b, 8);
-    g(b, cell);
+    g(f.body, blk);
+    rcast(f.body, 1);
+    snew(f.body, 3);
   }
 
   // Copies n (local) elements from srcBlk's elements starting at srcOff into
-  // a fresh array block; leaves the boxed cell on the stack.
+  // a fresh array; leaves the boxed $ARR wrapper on the stack.
   emitArrCopy(f: Fn, srcBlk: number, srcOff: number, n: number): void {
     const b = f.body;
     const blk = this.allocArrBlk(f, n);
-    this.loop(f, () => {
-      g(b, n);
-    }, i => {
-      this.elemAddr(f, blk, i);
-      g(b, srcBlk);
-      i32c(b, 8 + 4 * srcOff);
-      op(b, ADD);
-      g(b, i);
-      i32c(b, 4);
-      op(b, MUL);
-      op(b, ADD);
-      ld(b, 0);
-      strd(b, 0);
-    });
+    g(b, blk);
+    rcast(b, 1);
+    i32c(b, 0);
+    g(b, srcBlk);
+    rcast(b, 1);
+    i32c(b, srcOff);
+    g(b, n);
+    acopy(b, 1, 1);
     this.boxArr(f, blk);
   }
 
-  // true_cell/false_cell selected by the i32 condition emitted by emitCond.
+  // true/false i31 selected by the i32 condition emitted by emitCond.
   selectBool(f: Fn, emitCond: () => void): void {
     const b = f.body;
     const t = f.i32();
     emitCond();
     st(b, t);
-    i32c(b, TRUE_CELL);
-    i32c(b, FALSE_CELL);
+    this.pushRef(f, this.trueRef);
+    this.pushRef(f, this.falseRef);
     g(b, t);
-    op(b, SELECT);
+    selt(b); // typed select (result anyref)
   }
 
   // Materialize a ValueRef onto the operand stack, at its consume point.
@@ -2114,10 +2202,11 @@ class Compiler {
   // emitter boundary (the helper fully balances the stack per ref).
   pushRef(f: Fn, r: ValueRef): void {
     const b = f.body;
-    if (r.k === "const") i32c(b, r.off);
+    if (r.k === "g") gget(b, r.gi);
+    else if (r.k === "bool") { i32c(b, r.v); i31ref(b); }
     else if (r.k === "local") g(b, r.l);
-    else if (r.k === "snapSlot") { g(b, r.snap); ld(b, r.off); }
-    else { g(b, 0); ld(b, r.off); }
+    else if (r.k === "snapSlot") { g(b, r.snap); rcast(b, 4); sget(b, 4, 1); i32c(b, r.i); aget(b, 1); }
+    else { g(b, 0); sget(b, 4, 1); i32c(b, r.i); aget(b, 1); }
   }
 
   // Persist a ref into the operand spill slot computeSpills allocated for
@@ -2128,27 +2217,17 @@ class Compiler {
     if (sp === undefined) return r;
     const b = f.body;
     this.pushRef(f, r);
-    const t = f.i32();
+    const t = f.anyref();
     st(b, t);
-    g(b, 0);
-    g(b, t);
-    strd(b, 8 + 4 * sp);
-    return {k: "slot", off: 8 + 4 * sp};
+    g(b, 0); sget(b, 4, 1); i32c(b, sp); g(b, t); aset(b, 1);
+    return {k: "slot", i: sp};
   }
 
-  // Value of a child that already ran before a split deeper among its
-  // siblings: a slot ref to its spilled value — from the fragment's frozen
-  // frame-image snapshot when re-emitting a fragment (multi-shot resumes
-  // re-run the fragment against a mutated frame; the interpreter froze the
-  // pre-perform value in its CPS acc, so we reload the frozen copy), or
-  // from the live frame on the fresh path (identical there). Pure children
-  // have spill slots too since the multi-shot freeze (computeSpills), so
-  // the re-emit fallback only fires for shapes without a mapped slot.
   preCut(id: ExprID, f: Fn, s: Scope, ctx: Ctx): ValueRef {
     const sp = this.operandSpill.get(id) ?? this.valSpill.get(id);
     if (sp !== undefined) {
-      if (ctx.snap !== undefined) return {k: "snapSlot", snap: ctx.snap, off: 8 + 4 * sp};
-      return {k: "slot", off: 8 + 4 * sp};
+      if (ctx.snap !== undefined) return {k: "snapSlot", snap: ctx.snap, i: sp};
+      return {k: "slot", i: sp};
     }
     return this.expr(id, f, s, false, {kL: ctx.kL, snap: ctx.snap});
   }
@@ -2176,6 +2255,7 @@ class Compiler {
   // The main expression emitter. Returns the expression's cell as a
   // ValueRef — never leaves an implicit operand on the stack (see the
   // value-explicit invariants above the ValueRef type).
+
   expr(id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = INLINE): ValueRef {
     const e = this.nodes[id];
     // Lambda/block nodes carry their own scope; other nodes inherit sc.
@@ -2199,81 +2279,70 @@ class Compiler {
     try {
     switch (e.t) {
       case "num":
-        return {k: "const", off: this.numLits.get(e.v)!};
+        return {k: "g", gi: this.numLits.get(e.v)!};
       case "str":
-        return {k: "const", off: this.strLits.get(e.v)!};
+        return {k: "g", gi: this.strLits.get(e.v)!};
       case "bool":
-        return {k: "const", off: e.v ? TRUE_CELL : FALSE_CELL};
+        return {k: "bool", v: e.v ? 1 : 0};
       case "unit":
-        return REF_UNIT;
+        return this.unitRef;
       case "sym":
         return this.emitSym(f, s, e.v);
       case "lambda": {
-        // clo block {fn_idx, frame, fsize} then cell {TAG_CLO, clo}
-        const blk = f.i32(), cell = f.i32();
-        i32c(b, 12);
-        op(b, CALL);
-        b.lebU(this.fAlloc);
-        st(b, blk);
-        g(b, blk);
+        // immutable $CLO {fnIdx, env = current frame, fsize}
+        const clo = f.anyref();
         i32c(b, this.lambdaIdx.get(id)!);
-        strd(b, 0);
-        g(b, blk);
-        g(b, 0); // captured frame = current $fp
-        strd(b, 4);
-        g(b, blk);
+        i31ref(b);
+        g(b, 0); // captured frame = the frame param
         i32c(b, this.frameSizeOf(this.scopes.get(id)!)); // params + body lets + perform spills
-        strd(b, 8);
-        i32c(b, 16);
-        op(b, CALL);
-        b.lebU(this.fAlloc);
-        st(b, cell);
-        g(b, cell);
-        i32c(b, TAG_CLO);
-        strd(b, 0);
-        g(b, cell);
-        g(b, blk);
-        strd(b, 8);
-        g(b, cell);
-        const v = f.i32();
-        st(b, v);
-        return {k: "local", l: v};
+        i31ref(b);
+        snew(b, 6);
+        st(b, clo);
+        return {k: "local", l: clo};
       }
       case "let": {
         // Binds in the current frame (mirrors the interpreter: the binding
-        // exists before the value is computed, so `let x = x` sees null).
+        // exists before the value is computed, so `let x = x` sees null —
+        // a null slot read normalizes to unit inside the module).
         const slot = s.map.get(e.name)!;
         const vr = this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
-        g(b, 0); // frame address
+        g(b, 0); sget(b, 4, 1);
+        i32c(b, slot);
         this.pushRef(f, vr);
-        strd(b, 8 + 4 * slot);
-        return REF_UNIT;
+        aset(b, 1);
+        return this.unitRef;
       }
       case "dlet": {
-        const blk = f.i32();
+        const blk = f.anyref();
         const vr = this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
         this.pushRef(f, vr);
-        ld(b, 8);
+        rcast(b, 3);
+        sget(b, 3, 0);
         st(b, blk);
         for (let k = 0; k < e.fields.length; k++) {
           const slot = s.map.get(e.fields[k].name)!;
-          // cellAt(blk, 8+4k) → frame slot (balances its stack in place)
-          g(b, 0);
+          // tuple element k → frame slot (balances its stack in place)
+          g(b, 0); sget(b, 4, 1);
+          i32c(b, slot);
           g(b, blk);
-          ld(b, 8 + 4 * k);
-          strd(b, 8 + 4 * slot);
+          rcast(b, 1);
+          i32c(b, k);
+          aget(b, 1);
+          aset(b, 1);
         }
-        return REF_UNIT;
+        return this.unitRef;
       }
       case "assign": {
         const r = this.resolve(s, e.name);
         if (r === null) throw new WasmError(`Assignment to unbound symbol: ${e.name}`);
         const vr = this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
         g(b, 0);
-        for (let k = 0; k < r.d; k++) ld(b, 0);
+        for (let k = 0; k < r.d; k++) sget(b, 4, 0);
+        sget(b, 4, 1);
+        i32c(b, r.i);
         this.pushRef(f, vr);
-        strd(b, 8 + 4 * r.i);
-        return REF_UNIT;
+        aset(b, 1);
+        return this.unitRef;
       }
       case "if": {
         if (cut !== undefined && cut.length === 0) {
@@ -2298,7 +2367,7 @@ class Compiler {
           ? (ci !== 0 || this.splits(e.a) || this.splits(e.b))
           : (this.splits(e.a) || this.splits(e.b))) {
           this.emitIfDispatch(id, e, f, s, ctx, ci);
-          return REF_UNIT; // unreachable: the dispatch-shape if throws Split
+          return this.unitRef; // unreachable: the dispatch-shape if throws Split
         }
         // Value shape — shared by fresh emission (ci undefined) and
         // fragment re-emission (no arm can split): condition and both arms
@@ -2309,12 +2378,12 @@ class Compiler {
         op(b, CALL);
         b.lebU(this.fTruthy);
         op(b, IF);
-        b.u8(0x7f); // result i32
+        b.u8(0x6e); // result anyref
         this.pushRef(f, this.cutChildRef(e.a, f, s, ctx, ci === undefined ? "post" : ci === 1 ? "cut" : ci === 2 ? "pre" : "post", at));
         op(b, ELSE);
         this.pushRef(f, this.cutChildRef(e.b, f, s, ctx, ci === undefined ? "post" : ci === 2 ? "cut" : "post", at));
         op(b, END);
-        const v = f.i32();
+        const v = f.anyref();
         st(b, v);
         return this.keepRef(id, f, {k: "local", l: v});
       }
@@ -2325,7 +2394,7 @@ class Compiler {
         }
         if (this.splits(e.c) || this.splits(e.body)) {
           this.emitWhileCPS(id, e, f, s, ctx, cut);
-          return REF_UNIT; // unreachable: the split-mode while throws Split
+          return this.unitRef; // unreachable: the split-mode while throws Split
         }
         if (cut !== undefined) throw new WasmError("internal: split crossing a while");
         op(b, BLOCK);
@@ -2343,11 +2412,11 @@ class Compiler {
         b.lebU(0);
         op(b, END);
         op(b, END);
-        return REF_UNIT;
+        return this.unitRef;
       }
       case "block": {
         if (cut === undefined) {
-          let last: ValueRef = REF_UNIT;
+          let last: ValueRef = this.unitRef;
           for (let k = 0; k < e.stmts.length; k++) {
             // Dropped statements leave nothing on the stack.
             last = this.expr(e.stmts[k], f, s, tail && k === e.stmts.length - 1, ctx);
@@ -2362,14 +2431,10 @@ class Compiler {
         return this.emitStmtsFrom(e.stmts, f, s, ctx, ci, cut, tail);
       }
       case "arr": {
-        const blk = f.i32();
-        i32c(b, 8 + 4 * e.elems.length);
-        op(b, CALL);
-        b.lebU(this.fAlloc);
-        st(b, blk);
-        g(b, blk);
+        const blk = f.anyref();
         i32c(b, e.elems.length);
-        strd(b, 0);
+        anew(b, 1);
+        st(b, blk);
         const ci = cut === undefined ? -1 : e.elems.indexOf(cut[0]);
         if (cut !== undefined && ci < 0) throw new WasmError("internal: split chain root mismatch");
         for (let k = 0; k < e.elems.length; k++) {
@@ -2382,26 +2447,28 @@ class Compiler {
           const r = this.cutChildRef(e.elems[k], f, s, ctx,
             cut === undefined ? "post" : k === ci ? "cut" : k < ci ? "pre" : "post");
           g(b, blk);
-          i32c(b, 8 + 4 * k);
-          op(b, ADD);
+          rcast(b, 1);
+          i32c(b, k);
           this.pushRef(f, r);
-          strd(b, 0);
+          aset(b, 1);
         }
-        this.boxArr(f, blk);
-        const v = f.i32();
+        g(b, blk);
+        rcast(b, 1);
+        snew(b, 3); // $ARR wrapper
+        const v = f.anyref();
         st(b, v);
         return {k: "local", l: v};
       }
       case "field": {
-        const o = f.i32(), blk = f.i32();
+        const o = f.anyref(), blk = f.anyref();
         this.pushRef(f, this.expr(e.obj, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)}));
-        st(b, o);
-        g(b, o);
-        ld(b, 8);
+        rcast(b, 3);
+        sget(b, 3, 0);
         st(b, blk);
         // len <= idx → out of bounds
         g(b, blk);
-        ld(b, 0);
+        rcast(b, 1);
+        alen(b);
         i32c(b, e.idx!);
         op(b, LEU);
         op(b, IF);
@@ -2413,8 +2480,10 @@ class Compiler {
         );
         op(b, END);
         g(b, blk);
-        ld(b, 8 + 4 * e.idx!);
-        const v = f.i32();
+        rcast(b, 1);
+        i32c(b, e.idx!);
+        aget(b, 1);
+        const v = f.anyref();
         st(b, v);
         return {k: "local", l: v};
       }
@@ -2426,7 +2495,7 @@ class Compiler {
           return this.fragV(id, f);
         }
         this.emitPerform(id, e, f, s, ctx);
-        return REF_UNIT; // unreachable: perform always ends at its split site
+        return this.unitRef; // unreachable: perform always ends at its split site
       case "handle":
         if (cut !== undefined && cut.length === 0) {
           // The split site itself inside a fragment: its value is the
@@ -2446,7 +2515,7 @@ class Compiler {
           const ci = stmts.indexOf(cut[0]);
           if (ci < 0) throw new WasmError("internal: split chain root mismatch");
           this.pushRef(f, this.emitStmtsFrom(stmts, f, bsc, ctx, ci, cut, false));
-          const v = f.i32();
+          const v = f.anyref();
           st(b, v);
           this.emitDispatch(f, v, ctx.kL);
           // The dispatch tail-calls away (every table carries a Return
@@ -2454,7 +2523,7 @@ class Compiler {
           throw new Split(this.hdlRest.get(id)!, [...this.cutStack]);
         }
         this.emitHandle(id, e, f, s, ctx);
-        return REF_UNIT; // unreachable: the body's dispatch tail-calls away
+        return this.unitRef; // unreachable: the body's dispatch tail-calls away
       case "app": {
         if (cut !== undefined && cut.length === 0) {
           // The split site itself inside a fragment: the call's result is
@@ -2475,11 +2544,15 @@ class Compiler {
           // operand (ci >= 1). Value-explicit operand order: both child
           // refs are computed (and spilled) before either is materialized,
           // so a split inside a child aborts on a clean operand stack.
+          // A non-number operand traps at the ref.cast (frozen deviation —
+          // the checker rejects non-num arithmetic statically).
           if (ci === 0) throw new WasmError("internal: split chain root mismatch");
           this.pushRef(f, this.cutChildRef(e.args[0], f, s, ctx, ci === 1 ? "cut" : ci < 0 ? "post" : "pre"));
-          ld64(b, 8);
+          rcastn(b, 0);
+          sget(b, 0, 0);
           this.pushRef(f, this.cutChildRef(e.args[1], f, s, ctx, ci === 2 ? "cut" : "post"));
-          ld64(b, 8);
+          rcastn(b, 0);
+          sget(b, 0, 0);
           op(b, FDIV);
           if (e.div === "int") op(b, FTRUNC);
           // Fresh + tail: the boxed value is the caller's return value;
@@ -2487,7 +2560,7 @@ class Compiler {
           op(b, cut === undefined && tail ? RETURN_CALL : CALL); // return_call / call
           b.lebU(this.fBox);
         } else {
-          const fc = f.i32();
+          const fc = f.anyref();
           this.pushRef(f, this.cutChildRef(e.fn, f, s, ctx, ci === 0 ? "cut" : ci < 0 ? "post" : "pre"));
           st(b, fc);
           this.emitCallClosure(f, fc, e.args.length, (k, ffp) => {
@@ -2497,11 +2570,10 @@ class Compiler {
             // by construction).
             const r = this.cutChildRef(e.args[k], f, s, ctx,
               k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
-            g(b, ffp);
-            i32c(b, 8 + 4 * k);
-            op(b, ADD);
+            g(b, ffp); rcast(b, 4); sget(b, 4, 1);
+            i32c(b, k);
             this.pushRef(f, r);
-            strd(b, 0);
+            aset(b, 1);
           }, cut === undefined && tail,
           // Builtins never perform or capture, so they keep the k=0
           // trampoline convention; every other (lambda) call site lands
@@ -2515,7 +2587,7 @@ class Compiler {
         }
         // emitCallClosure leaves the landed result on the stack (or
         // tail-returns, making this capture unreachable). Bridge to a ref.
-        const v = f.i32();
+        const v = f.anyref();
         st(b, v);
         return {k: "local", l: v};
       }
@@ -2529,36 +2601,12 @@ class Compiler {
     }
   }
 
-  // §4.2 perform. Package the op's args as an array cell (same layout as an
-  // `arr` literal) and spill it to the frame slot computeSpills allocated:
-  // the cell must survive the handler walk and stay reachable from the
-  // after-perform fragment through the RET cell's frame pointer (cell.b).
-  // Then scan-first: walk the continuation chain (the ambient continuation,
-  // ctx.kL) BEFORE pushing anything, looking for the first K_HDL whose case
-  // table contains the performed opid.
-  // - Handler found: push this perform's RET cell {K_RET, rest-of-site
-  //   fragment, frame, ambient k}, capture the slice (every cell strictly
-  //   above the handler, INCLUDING the just-pushed RET, reified as a fresh
-  //   cell chain), bind the case params from the args cell plus the boxed
-  //   resume closure as the resume binder, and tail-call the matched case
-  //   body with (hframe, hdl.next) — the two-k rule: the case body's ambient
-  //   continuation is OUTSIDE the handler, never a chain containing it.
-  // - No handler (the walk reaches k=0): bare ef_perform host call, then
-  //   the SAME rest-of-site fragment the RET cell carries tail-calls with
-  //   (fp, v, ambient k) — one copy of the after-perform code, no
-  //   allocation on the host path.
-  // Either way the inline body ends here; the enclosing body-level catcher
-  // (bodyCatch/emitMain/fillRest) fills the fragment afterwards.
   emitPerform(id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: Scope, ctx: Ctx): void {
     const b = f.body;
-    const blk = f.i32(), cell = f.i32();
-    i32c(b, 8 + 4 * e.args.length);
-    op(b, CALL);
-    b.lebU(this.fAlloc);
-    st(b, blk);
-    g(b, blk);
+    const blk = f.anyref(), cell = f.anyref();
     i32c(b, e.args.length);
-    strd(b, 0);
+    anew(b, 1);
+    st(b, blk);
     // Cut path: the split site is inside one of the args. Args before it
     // already ran (reload spilled / re-emit pure), the cut arg continues
     // with the fragment's v, args after it re-emit inline; then the walk
@@ -2576,27 +2624,32 @@ class Compiler {
           ? this.cutChildRef(e.args[k], f, s, ctx, "pre")
           : this.cutChildRef(e.args[k], f, s, ctx, "post");
       g(b, blk);
-      i32c(b, 8 + 4 * k);
-      op(b, ADD);
+      rcast(b, 1);
+      i32c(b, k);
       this.pushRef(f, r);
-      strd(b, 0);
+      aset(b, 1);
     }
-    this.boxArr(f, blk);
+    g(b, blk);
+    rcast(b, 1);
+    snew(b, 3); // $ARR wrapper
     st(b, cell);
     const spillSlot = this.spillOf.get(id)!;
-    g(b, 0);
+    g(b, 0); sget(b, 4, 1);
+    i32c(b, spillSlot);
     g(b, cell);
-    strd(b, 8 + 4 * spillSlot);
+    aset(b, 1);
     // Handler walk: kL walks the k chain; the first K_HDL whose case table
-    // ([n][opid, fnIdx, fsize, nparams]*) contains opid wins. The pre-walk
-    // ambient continuation (amb) is what the RET cell carries: fragments
-    // re-dispatch through their kNext, so a resumed segment follows the
-    // fresh §4.6 chain (copied HDLs + kCaller) instead of skipping it.
+    // (flat [opid, fnIdx, fsize, nparams]* i31s) contains opid wins. The
+    // pre-walk ambient continuation (amb) is what the RET cell carries:
+    // fragments re-dispatch through their kNext, so a resumed segment
+    // follows the fresh §4.6 chain (copied HDLs + kCaller) instead of
+    // skipping it.
     const opid = this.effOpIds.get(e.op)!;
     const restFn = this.makeRestThunk("perform:rest op=" + e.op);
-    const kL = f.i32(), hdl = f.i32(), found = f.i32();
-    const nL = f.i32(), ent = f.i32();
-    const fnIdx = f.i32(), nparams = f.i32(), amb = f.i32();
+    const kL = f.anyref(), hdl = f.anyref(), found = f.i32();
+    const tbl = f.anyref(), nL = f.i32(), iL = f.i32(), ent = f.i32();
+    const fnIdx = f.i32(), fsz = f.i32(), nparams = f.i32(), amb = f.anyref();
+    const i31of = () => { rcastn(b, I31REF); i31get(b); }; // anyref → i32 (i31 payload)
     g(b, ctx.kL); // the ambient continuation
     st(b, kL);
     g(b, ctx.kL);
@@ -2608,34 +2661,24 @@ class Compiler {
     op(b, LOOP);
     b.u8(0x40);
     g(b, kL);
-    i32c(b, 0);
-    op(b, EQ);
+    op(b, 0xd1); // ref.is_null: k=0 → no handler anywhere → host fallback
     op(b, BR_IF);
-    b.lebU(1); // k=0: no handler anywhere → host fallback
-    g(b, kL);
-    ld(b, 0);
+    b.lebU(1);
+    g(b, kL); rcast(b, 5); sget(b, 5, 0); i31get(b);
     i32c(b, K_HDL);
     op(b, EQ);
     op(b, IF);
     b.u8(0x40);
-    g(b, kL);
-    ld(b, 4);
-    ld(b, 0);
+    g(b, kL); rcast(b, 5); sget(b, 5, 1);
+    st(b, tbl);
+    g(b, tbl); rcast(b, 1); alen(b); i32c(b, 4); op(b, DIVU);
     st(b, nL);
     this.loop(f, () => {
       g(b, nL);
-    }, iL => {
-      g(b, kL);
-      ld(b, 4);
-      i32c(b, 4);
-      op(b, ADD);
-      g(b, iL);
-      i32c(b, 16);
-      op(b, MUL);
-      op(b, ADD);
+    }, i => {
+      g(b, i); i32c(b, 4); op(b, MUL);
       st(b, ent);
-      g(b, ent);
-      ld(b, 0);
+      g(b, tbl); rcast(b, 1); g(b, ent); aget(b, 1); i31of();
       i32c(b, opid);
       op(b, EQ);
       op(b, IF);
@@ -2644,11 +2687,11 @@ class Compiler {
       st(b, found);
       g(b, kL);
       st(b, hdl);
-      g(b, ent);
-      ld(b, 4);
+      g(b, tbl); rcast(b, 1); g(b, ent); i32c(b, 1); op(b, ADD); aget(b, 1); i31of();
       st(b, fnIdx);
-      g(b, ent);
-      ld(b, 12);
+      g(b, tbl); rcast(b, 1); g(b, ent); i32c(b, 2); op(b, ADD); aget(b, 1); i31of();
+      st(b, fsz);
+      g(b, tbl); rcast(b, 1); g(b, ent); i32c(b, 3); op(b, ADD); aget(b, 1); i31of();
       st(b, nparams);
       op(b, BR);
       b.lebU(2); // exit the table scan
@@ -2658,8 +2701,7 @@ class Compiler {
     op(b, BR_IF);
     b.lebU(2); // matched handler → leave the walk
     op(b, END);
-    g(b, kL);
-    ld(b, 12);
+    g(b, kL); rcast(b, 5); sget(b, 5, 3);
     st(b, kL);
     op(b, BR);
     b.lebU(0);
@@ -2681,40 +2723,31 @@ class Compiler {
     // its own params/spills — the interpreter gives every case invocation a
     // fresh env, so the shared hframe must not be re-bound under an
     // in-flight outer invocation (its fragments re-read scope slots). Copy
-    // the hframe; the matched entry's fsize (word @8) sizes the copy, and
-    // the resume capture records a fresh HDL over the copy so the fresh
+    // the hframe; the matched entry's fsize (table word @2) sizes the copy,
+    // and the resume capture records a fresh HDL over the copy so the fresh
     // chain's Return lands in this invocation's frame.
-    const hfc = f.i32(), fsz = f.i32();
-    g(b, ent);
-    ld(b, 8);
-    st(b, fsz);
-    i32c(b, 8);
+    const hfc = f.anyref(), hfsrc = f.anyref(), hfs = f.anyref();
+    g(b, hdl); rcast(b, 5); sget(b, 5, 2); rcast(b, 4);
+    st(b, hfsrc);
+    g(b, hfsrc); rcast(b, 4); sget(b, 4, 0); // parent (unchanged)
     g(b, fsz);
-    i32c(b, 4);
-    op(b, MUL);
-    op(b, ADD);
-    op(b, CALL);
-    b.lebU(this.fAlloc);
-    st(b, hfc);
+    anew(b, 1);
+    st(b, hfs);
     this.loop(f, () => {
       g(b, fsz);
-      i32c(b, 2);
-      op(b, ADD);
     }, i => {
-      g(b, hfc);
+      g(b, hfs);
+      rcast(b, 1);
       g(b, i);
-      i32c(b, 4);
-      op(b, MUL);
-      op(b, ADD);
-      g(b, hdl);
-      ld(b, 8);
+      g(b, hfsrc); rcast(b, 4); sget(b, 4, 1);
       g(b, i);
-      i32c(b, 4);
-      op(b, MUL);
-      op(b, ADD);
-      ld(b, 0);
-      strd(b, 0);
+      aget(b, 1);
+      aset(b, 1);
     });
+    g(b, hfs);
+    rcast(b, 1);
+    snew(b, 4);
+    st(b, hfc);
     // Push this perform's RET cell; the slice below is captured as if this
     // cell had been pushed before the walk (scan-first). Its next is the
     // K_SPILL cell (the rest fragment's prologue loads the snapshot and
@@ -2725,106 +2758,66 @@ class Compiler {
     }); // b = the current frame (holds the spilled args cell)
     // Capture the slice above the handler into fresh cells (originals
     // untouched; the resume closure copies again on every call).
-    const slice = f.i32();
+    const slice = f.anyref();
     g(b, ret);
+    rcast(b, 5);
     g(b, hdl);
+    rcast(b, 5);
     op(b, CALL);
     b.lebU(this.fCapture);
     st(b, slice);
-    // Box the resume binder (§4.6): a TAG_CLO cell over the shared resume
-    // fn and a capture record {arg0 = the slice, arg1 = the matched HDL
-    // (the capture sentinel), arg2 = this invocation's hframe copy}. The
-    // resume fn copies the slice afresh per call (sentinel = arg1) and
-    // re-chains its bottom to a fresh HDL {arg1's table, arg2's frame,
+    // The resume binder (§4.6): a $CLO over the shared resume fn and a
+    // capture-record frame {slot 1 = the slice, slot 2 = the matched HDL
+    // (the capture sentinel), slot 3 = this invocation's hframe copy}. The
+    // resume fn copies the slice afresh per call (sentinel = slot 2) and
+    // re-chains its bottom to a fresh HDL {slot 2's table, slot 3's frame,
     // next = the k the closure was invoked with}, so the resumed segment
     // runs against the caller's continuation and its Return lands in the
     // invocation's frame copy.
-    const rec = f.i32(), rblk = f.i32(), rclo = f.i32();
-    i32c(b, 24);
-    op(b, CALL);
-    b.lebU(this.fAlloc);
+    const recs = f.anyref(), rec = f.anyref(), rclo = f.anyref();
+    i32c(b, 4);
+    anew(b, 1);
+    st(b, recs);
+    g(b, recs); rcast(b, 1); i32c(b, 0); rnull(b, ANYREF); aset(b, 1); // slot 0 unused
+    g(b, recs); rcast(b, 1); i32c(b, 1); g(b, slice); aset(b, 1); // slot 1: the captured slice
+    g(b, recs); rcast(b, 1); i32c(b, 2); g(b, hdl); aset(b, 1); // slot 2: the matched HDL (sentinel)
+    g(b, recs); rcast(b, 1); i32c(b, 3); g(b, hfc); aset(b, 1); // slot 3: this invocation's hframe copy
+    rnull(b, 4); // parent = none
+    g(b, recs);
+    rcast(b, 1);
+    snew(b, 4);
     st(b, rec);
-    g(b, rec);
-    i32c(b, 0);
-    strd(b, 0); // parent = none
-    g(b, rec);
-    i32c(b, 2);
-    strd(b, 4); // argc
-    g(b, rec);
-    g(b, slice);
-    strd(b, 12); // arg0: the captured slice
-    g(b, rec);
-    g(b, hdl);
-    strd(b, 16); // arg1: the matched HDL cell (the capture sentinel)
-    g(b, rec);
-    g(b, hfc);
-    strd(b, 20); // arg2: this invocation's hframe copy
-    i32c(b, 12);
-    op(b, CALL);
-    b.lebU(this.fAlloc);
-    st(b, rblk);
-    g(b, rblk);
     i32c(b, this.resumeFn!.idx);
-    strd(b, 0);
-    g(b, rblk);
+    i31ref(b);
     g(b, rec);
-    strd(b, 4);
-    g(b, rblk);
-    i32c(b, 1);
-    strd(b, 8); // fsize (call frame size hint)
-    i32c(b, 16);
-    op(b, CALL);
-    b.lebU(this.fAlloc);
+    rcast(b, 4); // env = the resume record's $FRAME (rec is an anyref local)
+    i32c(b, 1); // fsize (call frame size hint: slot 0 = the resumed value)
+    i31ref(b);
+    snew(b, 6);
     st(b, rclo);
-    g(b, rclo);
-    i32c(b, TAG_CLO);
-    strd(b, 0);
-    g(b, rclo);
-    g(b, rblk);
-    strd(b, 8);
-    // Case invocation over the handler's shared hframe (hdl.b): bind the
-    // case params from the args cell, the resume binder to the boxed
+    // Case invocation over the handler's shared hframe copy (hdl.b): bind
+    // the case params from the args cell, the resume binder to the boxed
     // resume closure, then tail-call the case body
     // with (hframe, hdl.next) — its continuation never contains this
     // handler (two-k rule).
-    const hf = f.i32(), argsBlk = f.i32();
-    g(b, hfc); // run the case body over the invocation's frame copy
-    st(b, hf);
-    g(b, cell);
-    ld(b, 8); // the args cell's block: element ptrs live at blk+8+4i, not cell+8+4i
-    st(b, argsBlk);
+    g(b, hfc); rcast(b, 4); sget(b, 4, 1);
     this.loop(f, () => {
       g(b, nparams);
     }, i2 => {
-      g(b, hf);
+      g(b, hfc); rcast(b, 4); sget(b, 4, 1);
       g(b, i2);
-      i32c(b, 4);
-      op(b, MUL);
-      i32c(b, 8);
-      op(b, ADD);
-      op(b, ADD);
-      g(b, argsBlk);
+      g(b, cell); rcast(b, 3); sget(b, 3, 0);
       g(b, i2);
-      i32c(b, 4);
-      op(b, MUL);
-      i32c(b, 8);
-      op(b, ADD);
-      op(b, ADD);
-      ld(b, 0);
-      strd(b, 0);
+      aget(b, 1);
+      aset(b, 1);
     });
-    g(b, hf);
+    g(b, hfc); rcast(b, 4); sget(b, 4, 1);
     g(b, nparams);
-    i32c(b, 4);
-    op(b, MUL);
-    i32c(b, 8);
-    op(b, ADD);
-    op(b, ADD);
     g(b, rclo);
-    strd(b, 0);
-    g(b, hf);
-    g(b, hdl);
-    ld(b, 12);
+    aset(b, 1);
+    g(b, hfc);
+    rcast(b, 4);
+    g(b, hdl); rcast(b, 5); sget(b, 5, 3);
     g(b, fnIdx);
     op(b, RETURN_CALL_INDIRECT);
     b.lebU(T_KABI);
@@ -2834,19 +2827,19 @@ class Compiler {
     // the SAME fragment the RET cell carries — continues with the resumed
     // value over this frame and the ambient continuation. The args cell is
     // reloaded from its spill slot, the pattern the fragment itself uses.
-    const v = f.i32();
+    const v = f.anyref();
     i32c(b, opid);
-    g(b, 0);
-    ld(b, 8 + 4 * spillSlot);
+    g(b, 0); sget(b, 4, 1); i32c(b, spillSlot); aget(b, 1);
     op(b, CALL);
     b.lebU(this.impIdx.get("ef_perform")!);
     st(b, v);
-    g(b, 0);
+    g(b, 0); sget(b, 4, 1); i32c(b, this.valSpill.get(id)!);
     g(b, v);
-    strd(b, 8 + 4 * this.valSpill.get(id)!);
+    aset(b, 1);
     g(b, 0);
     g(b, v);
     g(b, ksp);
+    rcast(b, 5);
     i32c(b, restFn.idx);
     op(b, RETURN_CALL_INDIRECT);
     b.lebU(T_III_I);
@@ -2865,7 +2858,7 @@ class Compiler {
   // - RET cell for the after-handle rest: {K_RET, restFn, $fp, ambient k} —
   //   the continuation OUTSIDE the handler; the Return case (and the
   //   identity default) delivers the handle's value through it.
-  // - K_HDL cell: {K_HDL, case-table offset, hframe, next = the RET cell}.
+  // - K_HDL cell: {K_HDL, case-table global, hframe, next = the RET cell}.
   // The cell is spilled to the handle's frame slot so a perform inside the
   // body (whose split re-emits this node in fragment mode) reloads the
   // installed handler instead of reinstalling it. The body's completion
@@ -2877,14 +2870,12 @@ class Compiler {
     const info = this.hdlCases.get(id)!;
     const restFn = this.makeRestThunk("handle:restFn");
     this.hdlRest.set(id, restFn);
-    const hf = f.i32(), hdl = f.i32();
-    i32c(b, 8 + 4 * this.frameSizeOf(info.scope));
-    op(b, CALL);
-    b.lebU(this.fAlloc);
+    const hf = f.anyref(), hdl = f.anyref();
+    g(b, 0); // parent = the frame at the handle site
+    i32c(b, this.frameSizeOf(info.scope));
+    anew(b, 1);
+    snew(b, 4);
     st(b, hf);
-    g(b, hf);
-    g(b, 0);
-    strd(b, 0); // parent = the frame at the handle site
     // K_SPILL cell freezing the pre-handle frame image: the after-handle
     // rest's pre-cut operand reloads (chain levels above the handle, e.g.
     // sibling operands of `s + handle {...}`) must see the values as of
@@ -2898,27 +2889,19 @@ class Compiler {
     const ret = this.retCell(f, restFn.idx, () => {
       g(b, ksp);
     });
-    i32c(b, 16);
-    op(b, CALL);
-    b.lebU(this.fAlloc);
-    st(b, hdl);
-    g(b, hdl);
     i32c(b, K_HDL);
-    strd(b, 0);
-    g(b, hdl);
-    i32c(b, info.tableOff);
-    strd(b, 4);
-    g(b, hdl);
+    i31ref(b);
+    gget(b, info.tableOff); // a = the case table
     g(b, hf);
-    strd(b, 8);
-    g(b, hdl);
-    g(b, ret);
-    strd(b, 12);
+    g(b, ret); rcast(b, 5);
+    snew(b, 5);
+    st(b, hdl);
     const sp = this.valSpill.get(id);
     if (sp !== undefined) {
-      g(b, 0);
+      g(b, 0); sget(b, 4, 1);
+      i32c(b, sp);
       g(b, hdl);
-      strd(b, 8 + 4 * sp);
+      aset(b, 1);
     }
     // Body with the handler cell as the ambient continuation: no tail calls
     // through the k param here — every value flows through the handler.
@@ -2959,34 +2942,87 @@ class Compiler {
     const ifk = this.retCell(f, restAfterIf.idx, () => {
       g(b, ksp); // next = K_SPILL{frozen frame image, ambient k}
     });
-    if (ci === undefined) this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, "post"));
-    else this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, ci === 0 ? "cut" : "pre"));
+    // Inside the dispatch shape the arms' ambient continuation is the arm
+    // completion cell: every split site in an arm (perform/land/...) must
+    // chain its rest fragment through ifk, or the resumed value bypasses
+    // the after-if rest entirely. The condition keeps the outer kL — its
+    // completion is the fTruthy call, not the arm dispatch.
+    const ctxArm: Ctx = {...ctx, kL: ifk};
+    let condSplit: Split | null = null;
+    try {
+      if (ci === undefined) this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, "post"));
+      else this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, ci === 0 ? "cut" : "pre"));
+    } catch (spC) {
+      if (!(spC instanceof Split)) throw spC;
+      condSplit = spC;
+    }
+    if (condSplit !== null) {
+      // The condition/cut-child split: ifk already references restAfterIf in
+      // the emitted code, and under multi-shot resume the condition can still
+      // complete and dispatch an arm through it — so the post-if fragment
+      // must exist. Fill it along the if's own chain (the same content the
+      // trailing throw below would have carried), then let the condition's
+      // Split propagate; its own rest is filled by the enclosing catcher.
+      this.cutStack.pop(); // fragments must not see the if's own frame
+      const rootC = this.bodyRoots[this.bodyRoots.length - 1];
+      const savedCutC = this.cutStack;
+      this.cutStack = [...rootC.savedCut];
+      try {
+        this.fillRest(new Split(restAfterIf, chainToIf), rootC.stmts, rootC.sc, rootC.tail);
+      } finally {
+        this.cutStack = savedCutC;
+      }
+      op(b, UNREACHABLE); // close the aborted fragment (the condition never falls through)
+      throw condSplit;
+    }
     op(b, CALL);
     b.lebU(this.fTruthy);
     op(b, IF);
     b.u8(0x40); // void: each arm ends in dispatch + return
     const arm = (armE: ExprID, cutArm: boolean): Split | null => {
-      const va = f.i32();
+      const va = f.anyref();
       let sp: Split | null = null;
       try {
         if (cutArm) {
-          this.pushRef(f, this.cutChildRef(armE, f, s, ctx, "cut"));
+          this.pushRef(f, this.cutChildRef(armE, f, s, ctxArm, "cut"));
         } else {
           // The other arm re-emits without the cut: the cut path belongs to
           // the cut arm's subtree only.
-          this.pushRef(f, this.cutChildRef(armE, f, s, ctx, "post"));
+          this.pushRef(f, this.cutChildRef(armE, f, s, ctxArm, "post"));
         }
         st(b, va);
       } catch (sp2) {
         if (!(sp2 instanceof Split)) throw sp2;
         sp = sp2;
       }
-      if (sp !== null) op(b, UNREACHABLE);
-      else {
-        this.emitDispatch(f, va, ifk);
-        op(b, RETURN); // the dispatch's result is this function's result
+      if (sp !== null) {
+        if (!cutArm) {
+          // The non-cut arm re-emits fresh; a split site inside it must not
+          // re-root its fragment at the body root — filling from there would
+          // re-emit this if (with the arms' roles swapped), regenerating the
+          // sibling arm's split forever. Fill against the arm subtree:
+          // the fragment continues the arm's remainder and its kNext is the
+          // site's snap-wrapped ambient continuation (ifk), so the after-if
+          // rest still receives the if's value. The synthetic root is the
+          // first frame under this if on the split's chain (the arm body
+          // node itself when it pushed one, the split site's parent
+          // otherwise), so the re-emission root and chain stay consistent.
+          if (sp.chain.length < 2) throw new WasmError("internal: arm split chain too short");
+          this.cutStack.pop(); // the synthetic root is the arm, not this if
+          const savedCutA = this.cutStack;
+          this.cutStack = [];
+          try {
+            this.fillRest(new Split(sp.restFn, sp.chain.slice(1)), [sp.chain[1]], s, false);
+          } finally {
+            this.cutStack = savedCutA;
+          }
+        }
+        op(b, UNREACHABLE);
+        return cutArm ? sp : null; // fresh arm: filled locally, arm "completes"
       }
-      return sp;
+      this.emitDispatch(f, va, ifk);
+      op(b, RETURN); // the dispatch's result is this function's result
+      return null;
     };
     const spA = arm(e.a, ci === 1);
     op(b, ELSE);
@@ -3053,8 +3089,8 @@ class Compiler {
       const loopk = this.retCell(f, loopEntry.idx, () => {
         g(b, ifk); // next = the after-while cell
       });
-      const u = f.i32();
-      i32c(b, UNIT_CELL);
+      const u = f.anyref();
+      this.pushRef(f, this.unitRef);
       st(b, u);
       this.emitDispatch(f, u, loopk); // enter the loop (tail call)
       // The loop pass's emission ends at a split site inside it (that is
@@ -3096,7 +3132,7 @@ class Compiler {
       if (ci < 0) throw new WasmError("internal: split chain root mismatch");
       this.pushRef(f, this.emitStmtsFrom(stmts, f, bsc, ctx, ci, cut, false));
     }
-    const v = f.i32();
+    const v = f.anyref();
     st(b, v);
     this.emitDispatch(f, v, ctx.kL); // loop back through the k chain
     op(b, UNREACHABLE);
@@ -3160,28 +3196,35 @@ class Compiler {
       if (!(sp instanceof Split)) throw sp;
       op(b, UNREACHABLE); // the body never completes inline at this site
       op(b, END);
-      const u = f.i32();
-      i32c(b, UNIT_CELL);
+      const u = f.anyref();
+      this.pushRef(f, this.unitRef);
       st(b, u);
       this.emitDispatch(f, u, kNext); // condition false: exit
       throw sp;
     }
     op(b, END);
-    const u = f.i32();
-    i32c(b, UNIT_CELL);
+    const u = f.anyref();
+    this.pushRef(f, this.unitRef);
     st(b, u);
     this.emitDispatch(f, u, kNext); // condition false: exit
   }
 
+  // Frame slot i (anyref) of the current frame (local 0) — the args/builtin
+  // access path. Writes push (arrayref, index) + value + aset at the caller.
   slot(f: Fn, i: number): void {
     g(f.body, 0);
-    ld(f.body, 8 + 4 * i);
+    sget(f.body, 4, 1);
+    i32c(f.body, i);
+    aget(f.body, 1);
   }
 
+  // f64 payload of slot i's number; ref.cast traps on non-numbers (the
+  // frozen §7.7 deviation — unreachable in well-typed programs).
   slotF64(f: Fn, i: number): number {
     const l = f.f64();
     this.slot(f, i);
-    ld64(f.body, 8);
+    rcastn(f.body, 0);
+    sget(f.body, 0, 0);
     st(f.body, l);
     return l;
   }
@@ -3191,6 +3234,7 @@ class Compiler {
     for (const {name} of BUILTINS) {
       if (!this.usedBuiltins.has(name)) continue;
       const f = new Fn(2); // (frame, k): builtins are T_KABI trampolines
+      f.typeIdx = T_KABI;
       const b = f.body;
       const box = () => {
         op(b, CALL);
@@ -3198,45 +3242,37 @@ class Compiler {
       };
       switch (name) {
         case "+": {
-          const a = f.i32(), bv = f.i32(), at = f.i32(), bt = f.i32();
+          const a = f.anyref(), bv = f.anyref();
           this.slot(f, 0);
           st(b, a);
           this.slot(f, 1);
           st(b, bv);
           g(b, a);
-          ld(b, 0);
-          st(b, at);
+          rtestn(b, 0);
           g(b, bv);
-          ld(b, 0);
-          st(b, bt);
-          g(b, at);
-          i32c(b, TAG_NUM);
-          op(b, EQ);
-          g(b, bt);
-          i32c(b, TAG_NUM);
-          op(b, EQ);
+          rtestn(b, 0);
           op(b, AND);
           op(b, IF);
-          b.u8(0x7f);
+          b.u8(0x6e); // result anyref
           g(b, a);
-          ld64(b, 8);
+          rcastn(b, 0);
+          sget(b, 0, 0);
           g(b, bv);
-          ld64(b, 8);
+          rcastn(b, 0);
+          sget(b, 0, 0);
           op(b, FADD);
           box();
           op(b, ELSE);
-          g(b, at);
-          i32c(b, TAG_STR);
-          op(b, EQ);
-          g(b, bt);
-          i32c(b, TAG_STR);
-          op(b, EQ);
+          g(b, a);
+          rtestn(b, 2);
+          g(b, bv);
+          rtestn(b, 2);
           op(b, AND);
           op(b, IF);
-          b.u8(0x7f);
+          b.u8(0x6e);
           this.emitStrCat(f, a, bv);
           op(b, ELSE);
-          i32c(b, UNIT_CELL);
+          rnull(b, ANYREF);
           op(b, END);
           op(b, END);
           break;
@@ -3305,15 +3341,10 @@ class Compiler {
           this.slot(f, 1);
           op(b, CALL);
           b.lebU(this.fEq);
-          ld64(b, 8); // eq result cell's bool payload
-          f64c(b, 0);
-          op(b, FEQ); // 1 when $eq said false
-          op(b, IF);
-          b.u8(0x7f);
-          i32c(b, TRUE_CELL);
-          op(b, ELSE);
-          i32c(b, FALSE_CELL);
-          op(b, END);
+          rcastn(b, I31REF); // eq result's i31 bool payload
+          i31get(b);
+          op(b, EQZ); // 1 when $eq said false
+          this.selectBool(f, () => {});
           break;
         }
         case "not": {
@@ -3325,50 +3356,53 @@ class Compiler {
           break;
         }
         case "list": {
+          // The frame has fsize 0, so the slots array length IS argc — the
+          // only argc reader in the backend (do not generalize).
           const n = f.i32();
           g(b, 0);
-          ld(b, 4); // argc
+          sget(b, 4, 1);
+          alen(b);
           st(b, n);
           const blk = this.allocArrBlk(f, n);
           this.loop(f, () => {
             g(b, n);
           }, i => {
             this.elemAddr(f, blk, i);
-            g(b, 0); // $fp
-            g(b, i);
-            i32c(b, 4);
-            op(b, MUL);
-            i32c(b, 8);
-            op(b, ADD);
-            ld(b, 0);
-            strd(b, 0);
+            this.slot(f, i);
+            aset(b, 1);
           });
           this.boxArr(f, blk);
           break;
         }
         case "head": {
-          const blk = f.i32();
+          const blk = f.anyref();
           this.slot(f, 0);
-          ld(b, 8);
+          rcast(b, 3);
+          sget(b, 3, 0);
           st(b, blk);
           g(b, blk);
-          ld(b, 0);
+          rcast(b, 1);
+          alen(b);
           op(b, EQZ);
           op(b, IF);
           b.u8(0x40);
-          this.emitFail(f, 0, 0, this.constF64(f, 0), this.constF64(f, 0));
+          this.emitFail(f, 0, null, this.constF64(f, 0), this.constF64(f, 0));
           op(b, END);
           g(b, blk);
-          ld(b, 8);
+          rcast(b, 1);
+          i32c(b, 0);
+          aget(b, 1);
           break;
         }
         case "tail": {
-          const blk = f.i32(), len = f.i32(), n1 = f.i32();
+          const blk = f.anyref(), len = f.i32(), n1 = f.i32();
           this.slot(f, 0);
-          ld(b, 8);
+          rcast(b, 3);
+          sget(b, 3, 0);
           st(b, blk);
           g(b, blk);
-          ld(b, 0);
+          rcast(b, 1);
+          alen(b);
           st(b, len);
           g(b, len);
           op(b, EQZ);
@@ -3385,18 +3419,22 @@ class Compiler {
           break;
         }
         case "concat": {
-          const aBlk = f.i32(), bBlk = f.i32(), la = f.i32(), lb = f.i32(), n = f.i32();
+          const aBlk = f.anyref(), bBlk = f.anyref(), la = f.i32(), lb = f.i32(), n = f.i32();
           this.slot(f, 0);
-          ld(b, 8);
+          rcast(b, 3);
+          sget(b, 3, 0);
           st(b, aBlk);
           this.slot(f, 1);
-          ld(b, 8);
+          rcast(b, 3);
+          sget(b, 3, 0);
           st(b, bBlk);
           g(b, aBlk);
-          ld(b, 0);
+          rcast(b, 1);
+          alen(b);
           st(b, la);
           g(b, bBlk);
-          ld(b, 0);
+          rcast(b, 1);
+          alen(b);
           st(b, lb);
           g(b, la);
           g(b, lb);
@@ -3408,31 +3446,31 @@ class Compiler {
           }, i => {
             this.elemAddr(f, blk, i);
             this.elemAddr(f, aBlk, i);
-            ld(b, 0);
-            strd(b, 0);
+            aget(b, 1);
+            aset(b, 1);
           });
           this.loop(f, () => {
             g(b, lb);
           }, i => {
             this.elemAddr(f, blk, i);
             g(b, la);
-            i32c(b, 4);
-            op(b, MUL);
             op(b, ADD);
             this.elemAddr(f, bBlk, i);
-            ld(b, 0);
-            strd(b, 0);
+            aget(b, 1);
+            aset(b, 1);
           });
           this.boxArr(f, blk);
           break;
         }
         case "flat": {
-          const xss = f.i32(), n = f.i32(), total = f.i32();
+          const xss = f.anyref(), n = f.i32(), total = f.i32();
           this.slot(f, 0);
-          ld(b, 8);
+          rcast(b, 3);
+          sget(b, 3, 0);
           st(b, xss);
           g(b, xss);
-          ld(b, 0);
+          rcast(b, 1);
+          alen(b);
           st(b, n);
           i32c(b, 0);
           st(b, total);
@@ -3442,19 +3480,19 @@ class Compiler {
           this.loop(f, () => {
             g(b, n);
           }, k => {
-            const cell = f.i32();
+            const cell = f.anyref();
             this.elemAddr(f, xss, k);
-            ld(b, 0); // element cell
+            aget(b, 1);
             st(b, cell);
             g(b, cell);
-            ld(b, 0); // tag
-            i32c(b, TAG_ARR);
-            op(b, EQ);
+            rtestn(b, 3); // is $ARR?
             op(b, IF);
             b.u8(0x40);
             g(b, cell);
-            ld(b, 8); // inner block
-            ld(b, 0); // inner len
+            rcast(b, 3);
+            sget(b, 3, 0);
+            rcast(b, 1);
+            alen(b); // inner len
             g(b, total);
             op(b, ADD);
             st(b, total);
@@ -3472,29 +3510,29 @@ class Compiler {
           this.loop(f, () => {
             g(b, n);
           }, k => {
-            const cell = f.i32(), xb = f.i32(), xl = f.i32();
+            const cell = f.anyref(), xb = f.anyref(), xl = f.i32();
             this.elemAddr(f, xss, k);
-            ld(b, 0);
+            aget(b, 1);
             st(b, cell);
             g(b, cell);
-            ld(b, 0);
-            i32c(b, TAG_ARR);
-            op(b, EQ);
+            rtestn(b, 3);
             op(b, IF);
             b.u8(0x40);
             g(b, cell);
-            ld(b, 8);
+            rcast(b, 3);
+            sget(b, 3, 0);
             st(b, xb);
             g(b, xb);
-            ld(b, 0);
+            rcast(b, 1);
+            alen(b);
             st(b, xl);
             this.loop(f, () => {
               g(b, xl);
             }, j => {
               this.elemAddr(f, blk, w);
               this.elemAddr(f, xb, j);
-              ld(b, 0);
-              strd(b, 0);
+              aget(b, 1);
+              aset(b, 1);
               g(b, w);
               i32c(b, 1);
               op(b, ADD);
@@ -3503,7 +3541,7 @@ class Compiler {
             op(b, ELSE);
             this.elemAddr(f, blk, w);
             g(b, cell);
-            strd(b, 0);
+            aset(b, 1);
             g(b, w);
             i32c(b, 1);
             op(b, ADD);
@@ -3515,22 +3553,24 @@ class Compiler {
         }
         case "len": {
           this.slot(f, 0);
-          ld(b, 8);
-          ld(b, 0);
+          rcast(b, 3);
+          sget(b, 3, 0);
+          rcast(b, 1);
+          alen(b);
           op(b, CONV_I32);
           box();
           break;
         }
         case "strlen": {
           this.slot(f, 0);
-          ld(b, 8);
-          ld(b, 0);
+          rcast(b, 2);
+          alen(b);
           op(b, CONV_I32);
           box();
           break;
         }
         case "PI":
-          i32c(b, this.piOff);
+          gget(b, this.piG);
           break;
         case "cos":
           this.slot(f, 0);
@@ -3609,7 +3649,7 @@ class Compiler {
             op(b, FMUL);
             op(b, FADD);
             box();
-            strd(b, 0);
+            aset(b, 1);
           });
           this.boxArr(f, blk);
           break;
@@ -3629,13 +3669,15 @@ class Compiler {
           b.lebU(this.impIdx.get("ef_args")!);
           break;
         case "get": {
-          const blk = f.i32(), len = f.i32(), idx = f.i32();
+          const blk = f.anyref(), len = f.i32(), idx = f.i32();
           const idxF = this.slotF64(f, 1);
           this.slot(f, 0);
-          ld(b, 8);
+          rcast(b, 3);
+          sget(b, 3, 0);
           st(b, blk);
           g(b, blk);
-          ld(b, 0);
+          rcast(b, 1);
+          alen(b);
           st(b, len);
           g(b, idxF);
           op(b, TRUNC_F64);
@@ -3649,7 +3691,7 @@ class Compiler {
           op(b, OR);
           op(b, IF);
           b.u8(0x40);
-          this.emitFail(f, 1, 0, () => {
+          this.emitFail(f, 1, null, () => {
             g(b, idxF);
           }, () => {
             g(b, len);
@@ -3657,19 +3699,21 @@ class Compiler {
           });
           op(b, END);
           this.elemAddr(f, blk, idx);
-          ld(b, 0);
+          aget(b, 1);
           break;
         }
         case "set": {
-          const xs = f.i32(), blk = f.i32(), len = f.i32(), idx = f.i32(), v = f.i32();
+          const xs = f.anyref(), blk = f.anyref(), len = f.i32(), idx = f.i32(), v = f.anyref();
           const idxF = this.slotF64(f, 1);
           this.slot(f, 0);
           st(b, xs);
           g(b, xs);
-          ld(b, 8);
+          rcast(b, 3);
+          sget(b, 3, 0);
           st(b, blk);
           g(b, blk);
-          ld(b, 0);
+          rcast(b, 1);
+          alen(b);
           st(b, len);
           g(b, idxF);
           op(b, TRUNC_F64);
@@ -3683,49 +3727,49 @@ class Compiler {
           b.u8(0x40);
           this.elemAddr(f, blk, idx);
           g(b, v);
-          strd(b, 0);
+          aset(b, 1);
           op(b, ELSE);
-          // grow: new block of len idx+1, copy old, fill holes with unit
-          const nb = f.i32(), nlen = f.i32();
+          // grow: fresh slots array of len idx+1, copy old, fill holes with
+          // unit, repoint the wrapper's backing (aliases share the wrapper,
+          // so they all see the growth — §7.1).
+          const nb = f.anyref(), nlen = f.i32();
           g(b, idx);
           i32c(b, 1);
           op(b, ADD);
           st(b, nlen);
           g(b, nlen);
-          i32c(b, 4);
-          op(b, MUL);
-          i32c(b, 8);
-          op(b, ADD);
-          op(b, CALL);
-          b.lebU(this.fAlloc);
+          anew(b, 1);
           st(b, nb);
-          g(b, nb);
-          g(b, nlen);
-          strd(b, 0);
           this.loop(f, () => {
             g(b, nlen);
           }, k => {
-            this.elemAddr(f, nb, k);
+            g(b, nb);
+            rcast(b, 1);
+            g(b, k);
             g(b, k);
             g(b, len);
             op(b, 0x49); // k < old len → copy
             op(b, IF);
-            b.u8(0x7f);
+            b.u8(0x6e); // result anyref
             this.elemAddr(f, blk, k);
-            ld(b, 0);
+            aget(b, 1);
             op(b, ELSE);
-            i32c(b, UNIT_CELL);
+            rnull(b, ANYREF);
             op(b, END);
-            strd(b, 0);
+            aset(b, 1);
           });
-          this.elemAddr(f, nb, idx);
-          g(b, v);
-          strd(b, 0);
-          g(b, xs);
           g(b, nb);
-          strd(b, 8); // point the cell at the new block
+          rcast(b, 1);
+          g(b, idx);
+          g(b, v);
+          aset(b, 1);
+          g(b, xs);
+          rcast(b, 3);
+          g(b, nb);
+          rcast(b, 1);
+          sset(b, 3, 0); // point the wrapper at the new backing
           op(b, END);
-          i32c(b, UNIT_CELL);
+          rnull(b, ANYREF);
           break;
         }
         case "map":
@@ -3737,8 +3781,8 @@ class Compiler {
           throw new WasmError(`internal: builtin ${name} not implemented`);
       }
       // Complete with the ABI's dispatch: builtins are called with k=0, so
-      // dispatch(0, v) just returns the computed cell.
-      const v = f.i32();
+      // dispatch(0, v) just returns the computed value.
+      const v = f.anyref();
       st(b, v);
       this.emitDispatch(f, v);
       out.push(f);
@@ -3749,13 +3793,15 @@ class Compiler {
   // map/each/flatmap CPS (§3): a map-like call site is a landCalls split
   // site, so the entry (this builtin Fn) runs with the caller's RET cell as
   // its k and its result dispatches through the caller's continuation. The
-  // entry reads the array, allocates the result block into its own frame,
+  // entry reads the array, allocates the result array into its own frame,
   // and tail-calls the loop-entry thunk; each iteration calls the callback
   // with a RET cell {K_RET, iter-land, entry frame, ambient k} — so a
   // performing callback walks the caller's handler chain, and a completed
   // callback lands in the per-iteration thunk (res[i] = v, i+1, loop-entry).
-  // All loop state (result/tmp block, counter) lives in the entry frame
-  // slots, so the loop survives suspension.
+  // All loop state (result/tmp array, counter) lives in the entry frame
+  // slots, so the loop survives suspension. The counter slot holds a boxed
+  // number (slots are anyref); it is unboxed for comparisons and boxed
+  // again when passed to the callback as the iteration index.
   emitMapLike(f: Fn, name: string): void {
     const b = f.body;
     const resSlot = name === "each" ? -1 : 2; // map: res, flatmap: tmp
@@ -3768,71 +3814,107 @@ class Compiler {
     {
       const t = iterLand, tb = t.body;
       if (name !== "each") {
-        const blk = t.i32(), iL = t.i32();
+        const blk = t.anyref(), iL = t.i32();
         this.slot(t, resSlot);
+        rcast(tb, 3);
+        sget(tb, 3, 0);
         st(tb, blk);
         this.slot(t, iSlot);
+        rcastn(tb, 0);
+        sget(tb, 0, 0);
+        op(tb, TRUNC_F64);
         st(tb, iL);
         this.elemAddr(t, blk, iL);
         g(tb, 1);
-        strd(tb, 0);
+        aset(tb, 1);
       }
-      g(tb, 0);
+      // counter += 1 (boxed back into the slot)
+      g(tb, 0); sget(tb, 4, 1);
+      i32c(tb, iSlot);
       this.slot(t, iSlot);
-      i32c(tb, 1);
-      op(tb, ADD);
-      strd(tb, 8 + 4 * iSlot);
+      rcastn(tb, 0);
+      sget(tb, 0, 0);
+      f64c(tb, 1);
+      op(tb, FADD);
+      op(tb, CALL);
+      tb.lebU(this.fBox);
+      aset(tb, 1);
       g(tb, 0);
-      i32c(tb, UNIT_CELL);
+      this.pushRef(t, this.unitRef);
       g(tb, 2);
       op(tb, RETURN_CALL);
       tb.lebU(loopEntry.idx);
     }
+
     // Loop entry: done → finalize (box the result / flatmap copy) and
     // dispatch through this thunk's k; else call the callback on element i.
     {
       const t = loopEntry, tb = t.body;
-      const xb = t.i32(), n = t.i32(), iL = t.i32(), fc = t.i32();
-      this.slot(t, 1); // the xs cell (arg 1) → its block pointer and length
-      ld(tb, 8);
+      const xb = t.anyref(), n = t.i32(), iL = t.i32(), fc = t.anyref();
+      this.slot(t, 1); // the xs wrapper (arg 1) → its backing array and length
+      rcast(tb, 3);
+      sget(tb, 3, 0);
       st(tb, xb);
       g(tb, xb);
-      ld(tb, 0);
+      rcast(tb, 1);
+      alen(tb);
       st(tb, n);
       this.slot(t, iSlot);
+      rcastn(tb, 0);
+      sget(tb, 0, 0);
+      op(tb, TRUNC_F64);
       st(tb, iL);
       g(tb, iL);
       g(tb, n);
       op(tb, GEU);
       op(tb, IF);
       tb.u8(0x40);
-      const v = t.i32();
+      const v = t.anyref();
       if (name === "map") {
-        const res = t.i32();
+        const res = t.anyref();
         this.slot(t, resSlot);
+        rcast(tb, 3);
+        sget(tb, 3, 0);
         st(tb, res);
         this.boxArr(t, res);
       } else if (name === "each") {
-        i32c(tb, UNIT_CELL);
+        this.pushRef(t, this.unitRef);
       } else {
         // flatmap: total = Σ per-element lengths; allocate; copy; box.
-        const tmp = t.i32(), total = t.i32();
+        const tmp = t.anyref(), total = t.i32();
         this.slot(t, resSlot);
+        rcast(tb, 3);
+        sget(tb, 3, 0);
         st(tb, tmp);
         i32c(tb, 0);
         st(tb, total);
         this.loop(t, () => {
           g(tb, n);
         }, i => {
-          // total += len of callback result i: elem cell → its block → len
-          // (the cell's word @0 is the TAG, not the length).
+          // total += len of callback result i: elem → its backing array →
+          // len (scalar elements count as 1 — the tag test, not the value).
+          const cell = t.anyref();
           this.elemAddr(t, tmp, i);
-          ld(tb, 0);
-          ld(tb, 8);
-          ld(tb, 0);
+          aget(tb, 1);
+          st(tb, cell);
+          g(tb, cell);
+          rtestn(tb, 3);
+          op(tb, IF);
+          tb.u8(0x40);
+          g(tb, cell);
+          rcast(tb, 3);
+          sget(tb, 3, 0);
+          rcast(tb, 1);
+          alen(tb);
           g(tb, total);
           op(tb, ADD);
           st(tb, total);
+          op(tb, ELSE);
+          g(tb, total);
+          i32c(tb, 1);
+          op(tb, ADD);
+          st(tb, total);
+          op(tb, END);
         });
         const res = this.allocArrBlk(t, total);
         const w = t.i32();
@@ -3841,28 +3923,46 @@ class Compiler {
         this.loop(t, () => {
           g(tb, n);
         }, i => {
-          const xb2 = t.i32(), xl = t.i32();
+          const xb2 = t.anyref(), xl = t.i32();
+          const cell = t.anyref();
           this.elemAddr(t, tmp, i);
-          ld(tb, 0);
-          ld(tb, 8);
+          aget(tb, 1);
+          st(tb, cell);
+          g(tb, cell);
+          rtestn(tb, 3);
+          op(tb, IF);
+          tb.u8(0x40);
+          g(tb, cell);
+          rcast(tb, 3);
+          sget(tb, 3, 0);
           st(tb, xb2);
           g(tb, xb2);
-          ld(tb, 0);
+          rcast(tb, 1);
+          alen(tb);
           st(tb, xl);
           this.loop(t, () => {
             g(tb, xl);
           }, j => {
-            // dst = res + 8 + 4*w (element cell pointers, same layout the
-            // box/collect path reads back), src = xb2[j].
+            // dst = res[w], src = xb2[j] (element values, same layout the
+            // box/collect path reads back).
             this.elemAddr(t, res, w);
             this.elemAddr(t, xb2, j);
-            ld(tb, 0);
-            strd(tb, 0);
+            aget(tb, 1);
+            aset(tb, 1);
             g(tb, w);
             i32c(tb, 1);
             op(tb, ADD);
             st(tb, w);
           });
+          op(tb, ELSE);
+          this.elemAddr(t, res, w);
+          g(tb, cell);
+          aset(tb, 1);
+          g(tb, w);
+          i32c(tb, 1);
+          op(tb, ADD);
+          st(tb, w);
+          op(tb, END);
         });
         this.boxArr(t, res);
       }
@@ -3874,16 +3974,15 @@ class Compiler {
       // (landA) over this thunk's frame, with next = this thunk's k.
       this.slot(t, 0);
       st(tb, fc);
-      const elem = t.i32();
+      const elem = t.anyref();
       this.elemAddr(t, xb, iL);
-      ld(tb, 0);
+      aget(tb, 1);
       st(tb, elem);
       this.emitCallClosure(t, fc, name === "map" ? 1 : 2, (k, ffp) => {
         // Suspension-safe as-is: elem/iL are locals set before the call, and
         // fBox cannot suspend, so no operand spans a suspension point.
-        g(tb, ffp);
-        i32c(tb, 8 + 4 * k);
-        op(tb, ADD);
+        g(tb, ffp); rcast(tb, 4); sget(tb, 4, 1);
+        i32c(tb, k);
         if (k === 0) g(tb, elem);
         else {
           g(tb, iL);
@@ -3891,32 +3990,40 @@ class Compiler {
           op(tb, CALL);
           tb.lebU(this.fBox);
         }
-        strd(tb, 0);
+        aset(tb, 1);
       }, false, true, 2, true, iterLand.idx);
       op(tb, UNREACHABLE); // the callback always tails into iterLand
       op(tb, END);
       op(tb, UNREACHABLE); // both if arms diverge; keep the implicit end typed
     }
-    // Entry (this builtin Fn): allocate the result block, init the counter,
+    // Entry (this builtin Fn): allocate the result array, init the counter,
     // tail-call the loop entry.
-    const xb = f.i32(), n = f.i32();
+    const xb = f.anyref(), n = f.i32();
     this.slot(f, 1);
-    ld(b, 8);
+    rcast(b, 3);
+    sget(b, 3, 0);
     st(b, xb);
     g(b, xb);
-    ld(b, 0);
+    rcast(b, 1);
+    alen(b);
     st(b, n);
     if (resSlot >= 0) {
       const res = this.allocArrBlk(f, n);
-      g(b, 0);
-      g(b, res);
-      strd(b, 8 + 4 * resSlot);
+      g(b, 0); sget(b, 4, 1);
+      i32c(b, resSlot);
+      this.boxArr(f, res); // the slot holds the $ARR wrapper (iterLand + the
+                           // done path read it back as a wrapper)
+      aset(b, 1);
     }
-    g(b, 0);
+    g(b, 0); sget(b, 4, 1);
+    i32c(b, iSlot);
     i32c(b, 0);
-    strd(b, 8 + 4 * iSlot);
+    op(b, CONV_I32);
+    op(b, CALL);
+    b.lebU(this.fBox);
+    aset(b, 1);
     g(b, 0);
-    i32c(b, UNIT_CELL);
+    this.pushRef(f, this.unitRef);
     g(b, 1);
     op(b, RETURN_CALL);
     b.lebU(loopEntry.idx);
@@ -3926,21 +4033,11 @@ class Compiler {
 
   emitMain(f: Fn): void {
     const b = f.body;
-    // Allocate the global frame into local 0 ($fp convention).
-    i32c(b, 8 + 4 * this.frameSizeOf(this.globalScope));
-    op(b, CALL);
-    b.lebU(this.fAlloc);
-    st(b, 0);
-    g(b, 0);
-    i32c(b, 0);
-    strd(b, 0); // parent = 0
-    g(b, 0);
-    i32c(b, 0);
-    strd(b, 4); // argc = 0
+    // The global frame is allocated by run() (the frame param is local 0).
     const exprs = this.prog.items.filter((it): it is {e: ExprID} => "e" in it);
-    const v = f.i32();
+    const v = f.anyref();
     if (exprs.length === 0) {
-      i32c(b, UNIT_CELL);
+      this.pushRef(f, this.unitRef);
       st(b, v);
     } else {
       // Same split protocol as bodyCatch: a perform/handle at the top level
@@ -3966,29 +4063,205 @@ class Compiler {
         this.bodyRoots.pop();
       }
     }
-    // The JS caller invokes run() with no args; the frame and k params coerce
-    // to 0, so dispatch(0, v) returns the top-level value.
+    // run() calls main with k = ref.null $K, so dispatch(null, v) returns
+    // the top-level value.
     this.emitDispatch(f, v);
   }
 
+  // $init (statics, §5 — the body was built by layoutStatics), run (calls
+  // $init, allocates the global frame, calls main with k = null), and the
+  // 12 host accessors (§4 — JS cannot read GC fields directly). Appended
+  // after main; indices computed here.
+  emitInits(): void {
+    const mainIdx = this.liveImports.length + this.funcs.length - 1; // main is last
+    const init = new Fn(0);
+    init.typeIdx = T_INIT;
+    init.idx = mainIdx + 1;
+    init.body.bytes(this.initBody.b);
+    this.funcs.push(init);
+    const run = new Fn(0);
+    run.typeIdx = T_RUN;
+    run.idx = mainIdx + 2;
+    {
+      const b = run.body;
+      op(b, CALL);
+      b.lebU(init.idx);
+      rnull(b, 4); // global frame parent = null
+      i32c(b, this.frameSizeOf(this.globalScope));
+      anew(b, 1);
+      snew(b, 4);
+      rnull(b, 5); // k = null: main's dispatch returns its value
+      op(b, CALL);
+      b.lebU(mainIdx);
+    }
+    this.funcs.push(run);
+    const acc = (params: number, typeIdx: number, emit: (b: Buf, f: Fn) => void): Fn => {
+      const f = new Fn(params);
+      f.typeIdx = typeIdx;
+      f.idx = this.liveImports.length + this.funcs.length;
+      emit(f.body, f);
+      this.funcs.push(f);
+      return f;
+    };
+    // __tag(v) -> i32: 0 unit (null) 1 num 2 bool 3 str 4 arr 5 clo
+    acc(1, 14, (b) => {
+      g(b, 0);
+      op(b, 0xd1);
+      op(b, IF);
+      b.u8(0x7f);
+      i32c(b, 0);
+      op(b, ELSE);
+      const tag = (ht: number, t: number) => {
+        g(b, 0);
+        rtestn(b, ht);
+        op(b, IF);
+        b.u8(0x7f);
+        i32c(b, t);
+        op(b, ELSE);
+      };
+      tag(I31REF, 2);
+      tag(0, 1); // $NUM
+      tag(2, 3); // $STR
+      tag(3, 4); // $ARR
+      g(b, 0);
+      rtestn(b, 6); // $CLO
+      op(b, IF);
+      b.u8(0x7f);
+      i32c(b, 5);
+      op(b, ELSE);
+      op(b, UNREACHABLE);
+      op(b, END);
+      op(b, END);
+      op(b, END);
+      op(b, END);
+      op(b, END);
+      op(b, END);
+    });
+    // __num(v) -> f64
+    acc(1, 19, (b) => {
+      g(b, 0);
+      rcastn(b, 0);
+      sget(b, 0, 0);
+    });
+    // __str_len(v) -> i32
+    acc(1, 14, (b) => {
+      g(b, 0);
+      rcastn(b, 2);
+      alen(b);
+    });
+    // __str_get(v, i) -> i32
+    acc(2, 20, (b) => {
+      g(b, 0);
+      rcastn(b, 2);
+      g(b, 1);
+      agetu(b, 2);
+    });
+    // __arr_len(v) -> i32
+    acc(1, 14, (b) => {
+      g(b, 0);
+      rcastn(b, 3);
+      sget(b, 3, 0);
+      alen(b);
+    });
+    // __arr_get(v, i) -> anyref
+    acc(2, 22, (b) => {
+      g(b, 0);
+      rcastn(b, 3);
+      sget(b, 3, 0);
+      g(b, 1);
+      aget(b, 1);
+    });
+    // __mk_num(x) -> anyref
+    acc(1, 13, (b) => {
+      g(b, 0);
+      snew(b, 0);
+    });
+    // __mk_bool(b) -> anyref
+    acc(1, 12, (b) => {
+      g(b, 0);
+      i31ref(b);
+    });
+    // __str_new(n) -> anyref
+    acc(1, 12, (b) => {
+      g(b, 0);
+      anew(b, 2);
+    });
+    // __str_set(v, i, u) -> ()
+    acc(3, 21, (b) => {
+      g(b, 0);
+      rcastn(b, 2);
+      g(b, 1);
+      g(b, 2);
+      aset(b, 2);
+    });
+    // __arr_new(n) -> anyref
+    acc(1, 12, (b) => {
+      g(b, 0);
+      anew(b, 1);
+      snew(b, 3);
+    });
+    // __arr_set(v, i, x) -> ()
+    acc(3, 23, (b) => {
+      g(b, 0);
+      rcastn(b, 3);
+      sget(b, 3, 0);
+      g(b, 1);
+      g(b, 2);
+      aset(b, 1);
+    });
+  }
+
   assemble(): Uint8Array {
-    // type section
+    this.emitInits();
+    // type section: GC structs/arrays 0..6 then func types 7..23 (§1).
     const typeSection = new Buf();
-    typeSection.lebU(7);
-    const emitType = (params: number[]) => {
+    typeSection.lebU(24);
+    // 0 $NUM: struct (field f64)
+    typeSection.u8(0x5f).lebU(1).u8(0x7c).u8(0);
+    // 1 $ELEMS: array (mut anyref)
+    typeSection.u8(0x5e).u8(ANYREF).u8(1);
+    // 2 $STR: array (mut i16)
+    typeSection.u8(0x5e).u8(0x77).u8(1);
+    // 3 $ARR: struct (field (mut (ref null $ELEMS)))
+    typeSection.u8(0x5f).lebU(1).u8(0x63).lebU(1).u8(1);
+    // 4 $FRAME: struct (field (mut (ref null $FRAME))) (field (mut (ref null $ELEMS)))
+    typeSection.u8(0x5f).lebU(2).u8(0x63).lebU(4).u8(1).u8(0x63).lebU(1).u8(1);
+    // 5 $K: struct (field (mut i31)) (field (mut anyref))*2 (field (mut (ref null $K)))
+    typeSection.u8(0x5f).lebU(4).u8(I31REF).u8(1).u8(ANYREF).u8(1).u8(ANYREF).u8(1).u8(0x63).lebU(5).u8(1);
+    // 6 $CLO: struct (field i31) (field (ref null $FRAME)) (field i31) — immutable
+    typeSection.u8(0x5f).lebU(3).u8(I31REF).u8(0).u8(0x63).lebU(4).u8(0).u8(I31REF).u8(0);
+    const emitType = (params: (number | number[])[], result: number | number[] | null) => {
       typeSection.u8(0x60);
       typeSection.lebU(params.length);
-      for (const p of params) typeSection.u8(p);
-      typeSection.lebU(1);
-      typeSection.u8(0x7f);
+      for (const p of params) {
+        if (Array.isArray(p)) typeSection.u8(0x63).lebU(p[1]); // (ref null $t)
+        else typeSection.u8(p);
+      }
+      if (result === null) typeSection.lebU(0);
+      else {
+        typeSection.lebU(1);
+        if (Array.isArray(result)) typeSection.u8(0x63).lebU(result[1]);
+        else typeSection.u8(result);
+      }
     };
-    emitType([0x7f]);                   // T0 (i32) -> i32
-    emitType([]);                       // T1 () -> i32
-    emitType([0x7f, 0x7f, 0x7c, 0x7c]); // T2 (i32,i32,f64,f64) -> i32
-    emitType([0x7c]);                   // T3 (f64) -> i32
-    emitType([0x7f, 0x7f]);             // T4 (i32,i32) -> i32
-    emitType([0x7f, 0x7f]);             // T5 T_KABI: (frame, k) -> i32
-    emitType([0x7f, 0x7f, 0x7f]);       // T6 T_III_I: (frame, v, k) -> i32
+    const ANY = ANYREF, I32 = 0x7f, F64 = 0x7c, K = [0x63, 5], FR = [0x63, 4];
+    emitType([], ANY);                    // 7 T_RUN: () -> anyref
+    emitType([], null);                   // 8 T_INIT: () -> ()
+    emitType([I32, ANY], ANY);            // 9 T_PERFORM
+    emitType([I32, ANY, F64, F64], null); // 10 T_FAIL
+    emitType([ANY], ANY);                 // 11 T_STRNUM (char/number/cos/sin)
+    emitType([I32], ANY);                 // 12 (__mk_bool/__str_new/__arr_new)
+    emitType([F64], ANY);                 // 13 T_BOX / __mk_num
+    emitType([ANY], I32);                 // 14 T_TRUTHY / __tag / __str_len / __arr_len
+    emitType([ANY, ANY], ANY);            // 15 T_EQ
+    emitType([K, K], K);                  // 16 T_CAPTURE
+    emitType([FR, K], ANY);               // 17 T_KABI
+    emitType([FR, ANY, K], ANY);          // 18 T_III_I
+    emitType([ANY], F64);                 // 19 __num
+    emitType([ANY, I32], I32);            // 20 __str_get
+    emitType([ANY, I32, I32], null);      // 21 __str_set
+    emitType([ANY, I32], ANY);            // 22 __arr_get
+    emitType([ANY, I32, ANY], null);      // 23 __arr_set
 
     // import section
     const impSection = new Buf();
@@ -4012,35 +4285,29 @@ class Compiler {
     tableSection.u8(0x00);
     tableSection.lebU(this.liveImports.length + this.funcs.length);
 
-    // memory
-    const pages = Math.max(1, Math.ceil(this.hp0 / 65536)) + 16;
-    const memSection = new Buf();
-    memSection.lebU(1);
-    memSection.u8(0x00);
-    memSection.lebU(pages);
-
-    // global $hp
+    // global section: (mut anyref) statics initialized ref.null any, filled
+    // by $init at run() start (§5).
     const globalSection = new Buf();
-    globalSection.lebU(1);
-    globalSection.u8(0x7f);
-    globalSection.u8(0x01);
-    globalSection.u8(0x41);
-    globalSection.lebS(this.hp0);
-    globalSection.u8(0x0b);
+    globalSection.lebU(this.gcount);
+    for (let i = 0; i < this.gcount; i++) {
+      globalSection.u8(ANYREF);
+      globalSection.u8(0x01);
+      globalSection.u8(REF_NULL);
+      globalSection.u8(ANYREF);
+      globalSection.u8(0x0b);
+    }
 
-    // exports: mem, run, __hp
-    const mainIdx = this.liveImports.length + this.funcs.length - 1;
+    // exports: run + the 12 accessors (§4)
+    const expNames = ["run", "__tag", "__num", "__str_len", "__str_get",
+      "__arr_len", "__arr_get", "__mk_num", "__mk_bool", "__str_new",
+      "__str_set", "__arr_new", "__arr_set"];
     const expSection = new Buf();
-    expSection.lebU(3);
-    expSection.name("mem");
-    expSection.u8(0x02);
-    expSection.lebU(0);
-    expSection.name("run");
-    expSection.u8(0x00);
-    expSection.lebU(mainIdx);
-    expSection.name("__hp");
-    expSection.u8(0x03);
-    expSection.lebU(0);
+    expSection.lebU(expNames.length);
+    for (let i = 0; i < expNames.length; i++) {
+      expSection.name(expNames[i]);
+      expSection.u8(0x00);
+      expSection.lebU(this.liveImports.length + this.funcs.length - expNames.length + i);
+    }
 
     // element segment: identity mapping table slot i → func i
     const total = this.liveImports.length + this.funcs.length;
@@ -4081,16 +4348,6 @@ class Compiler {
       codeSection.bytes(body.b);
     }
 
-    // data section
-    const dataSection = new Buf();
-    dataSection.lebU(1);
-    dataSection.u8(0x00);
-    dataSection.u8(0x41);
-    dataSection.lebS(0);
-    dataSection.u8(0x0b);
-    dataSection.lebU(this.data.b.length);
-    dataSection.bytes(this.data.b);
-
     const mod = new Buf();
     mod.bytes([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
     const sec = (id: number, payload: Buf) => {
@@ -4102,12 +4359,10 @@ class Compiler {
     sec(2, impSection);
     sec(3, fnSection);
     sec(4, tableSection);
-    sec(5, memSection);
     sec(6, globalSection);
     sec(7, expSection);
     sec(9, elemSection);
     sec(10, codeSection);
-    sec(11, dataSection);
     return new Uint8Array(mod.b);
   }
 }
@@ -4159,122 +4414,137 @@ function dropDeadHostImports(c: Compiler): void {
 
 // --- host runtime ------------------------------------------------------------
 
-function hostBox(inst: WebAssembly.Instance, v: Value): number {
-  const mem = new DataView((inst.exports.mem as WebAssembly.Memory).buffer);
-  const hpGlobal = inst.exports.__hp as WebAssembly.Global;
-  const alloc = (n: number): number => {
-    const p = hpGlobal.value as number;
-    hpGlobal.value = p + ((n + 7) & ~7);
-    return p;
+
+// --- host runtime ------------------------------------------------------------
+
+// The §4 accessor ABI: 12 exported functions — the only way JS can touch GC
+// structs. hostBox/hostUnbox rebuild interpreter Values through them.
+type Accessors = {
+  tag: (v: unknown) => number,
+  num: (v: unknown) => number,
+  strLen: (v: unknown) => number,
+  strGet: (v: unknown, i: number) => number,
+  arrLen: (v: unknown) => number,
+  arrGet: (v: unknown, i: number) => unknown,
+  mkNum: (x: number) => unknown,
+  mkBool: (b: number) => unknown,
+  strNew: (n: number) => unknown,
+  strSet: (v: unknown, i: number, u: number) => void,
+  arrNew: (n: number) => unknown,
+  arrSet: (v: unknown, i: number, x: unknown) => void,
+};
+
+const accessorsOf = (inst: WebAssembly.Instance): Accessors => {
+  const ex = inst.exports as unknown as {
+    __tag(v: unknown): number,
+    __num(v: unknown): number,
+    __str_len(v: unknown): number,
+    __str_get(v: unknown, i: number): number,
+    __arr_len(v: unknown): number,
+    __arr_get(v: unknown, i: number): unknown,
+    __mk_num(x: number): unknown,
+    __mk_bool(b: number): unknown,
+    __str_new(n: number): unknown,
+    __str_set(v: unknown, i: number, u: number): void,
+    __arr_new(n: number): unknown,
+    __arr_set(v: unknown, i: number, x: unknown): void,
   };
-  if (v === null) return UNIT_CELL;
-  if (typeof v === "boolean")
-    return v ? TRUE_CELL : FALSE_CELL;
-  if (typeof v === "number") {
-    const cell = alloc(16);
-    mem.setInt32(cell, TAG_NUM, true);
-    mem.setFloat64(cell + 8, v, true);
-    return cell;
-  }
+  return {
+    tag: (v) => ex.__tag(v),
+    num: (v) => ex.__num(v),
+    strLen: (v) => ex.__str_len(v),
+    strGet: (v, i) => ex.__str_get(v, i),
+    arrLen: (v) => ex.__arr_len(v),
+    arrGet: (v, i) => ex.__arr_get(v, i),
+    mkNum: (x) => ex.__mk_num(x),
+    mkBool: (b) => ex.__mk_bool(b),
+    strNew: (n) => ex.__str_new(n),
+    strSet: (v, i, u) => ex.__str_set(v, i, u),
+    arrNew: (n) => ex.__arr_new(n),
+    arrSet: (v, i, x) => ex.__arr_set(v, i, x),
+  };
+};
+
+// Interpreter Value → anyref (via the accessors).
+function hostBox(ex: Accessors, v: Value): unknown {
+  if (v === null) return null;
+  if (typeof v === "boolean") return ex.mkBool(v ? 1 : 0);
+  if (typeof v === "number") return ex.mkNum(v);
   if (typeof v === "string") {
-    const cell = alloc(16);
-    const blk = alloc(4 + 2 * v.length);
-    mem.setInt32(blk, v.length, true);
-    for (let i = 0; i < v.length; i++) mem.setUint16(blk + 4 + 2 * i, v.charCodeAt(i), true);
-    mem.setInt32(cell, TAG_STR, true);
-    mem.setInt32(cell + 8, blk, true);
-    return cell;
+    const s = ex.strNew(v.length);
+    for (let i = 0; i < v.length; i++) ex.strSet(s, i, v.charCodeAt(i));
+    return s;
   }
   if (Array.isArray(v)) {
-    const cell = alloc(16);
-    const elems = v.map(x => hostBox(inst, x));
-    const blk = alloc(8 + 4 * elems.length);
-    mem.setInt32(blk, elems.length, true);
-    for (let i = 0; i < elems.length; i++) mem.setInt32(blk + 8 + 4 * i, elems[i], true);
-    mem.setInt32(cell, TAG_ARR, true);
-    mem.setInt32(cell + 8, blk, true);
-    return cell;
+    const a = ex.arrNew(v.length);
+    for (let i = 0; i < v.length; i++) ex.arrSet(a, i, hostBox(ex, v[i]));
+    return a;
   }
   throw new Error("wasm host: cannot box value " + show(v));
 }
 
-// Read a cell out of module memory into a JS Value (mirror of the runtime
-// representation). Closures come back as an interpreter-Closure-shaped
-// marker so show() prints [fn].
-function hostUnbox(inst: WebAssembly.Instance, cell: number): Value {
-  const mem = new DataView((inst.exports.mem as WebAssembly.Memory).buffer);
-  const tag = mem.getInt32(cell, true);
-  switch (tag) {
-    case TAG_UNIT:
-      return null;
-    case TAG_NUM:
-      return mem.getFloat64(cell + 8, true);
-    case TAG_BOOL:
-      return mem.getFloat64(cell + 8, true) !== 0;
-    case TAG_STR: {
-      const blk = mem.getInt32(cell + 8, true);
-      const len = mem.getInt32(blk, true);
+// anyref → interpreter Value (via the accessors; i31 bools cross the JS
+// boundary as Numbers).
+function hostUnbox(ex: Accessors, v: unknown): Value {
+  if (v === null) return null;
+  switch (ex.tag(v)) {
+    case 1: return ex.num(v);
+    case 2: return (v as number) !== 0;
+    case 3: {
+      const n = ex.strLen(v);
       let s = "";
-      for (let i = 0; i < len; i++) s += String.fromCharCode(mem.getUint16(blk + 4 + 2 * i, true));
+      for (let i = 0; i < n; i++) s += String.fromCharCode(ex.strGet(v, i));
       return s;
     }
-    case TAG_ARR: {
-      const blk = mem.getInt32(cell + 8, true);
-      const len = mem.getInt32(blk, true);
+    case 4: {
+      const n = ex.arrLen(v);
       const out: Value[] = [];
-      for (let i = 0; i < len; i++) out.push(hostUnbox(inst, mem.getInt32(blk + 8 + 4 * i, true)));
+      for (let i = 0; i < n; i++) out.push(hostUnbox(ex, ex.arrGet(v, i)));
       return out;
     }
-    case TAG_CLO:
-      return {tag: "fn"} as Value;
+    case 5: return {tag: "fn"} as Value; // closures display as [fn]
   }
-  throw new Error(`wasm host: unknown cell tag ${tag}`);
+  throw new Error(`wasm host: unknown anyref tag ${ex.tag(v)}`);
 }
 
-function hostStr(inst: WebAssembly.Instance, cell: number): string {
-  return hostUnbox(inst, cell) as string;
+function hostStr(ex: Accessors, v: unknown): string {
+  const n = ex.strLen(v);
+  let s = "";
+  for (let i = 0; i < n; i++) s += String.fromCharCode(ex.strGet(v, i));
+  return s;
 }
 
-// One-shot host-side effect interpretation comes from builtins.ts
-// (builtinEffectHosts — direct style, derived from the CPS interps; the
-// wasm boundary has no continuations to resume): maps an op name to an
-// implementation that
-// receives the performed args and returns the value to resume with. Overrides
-// the builtin interpretation; unhandled ops throw the interpreter's error.
 export type EffectInterp = Partial<Record<string, (args: Value[]) => Value>>;
 
-// compile+instantiate+run: the wasm-target twin of eval.ts's run().
 export function runWasm(src: string, interp?: EffectInterp): Value {
   const {bytes, ops} = compileWithOps(src);
   const mod = new WebAssembly.Module(bytes);
-  // Assigned after the imports are built (they close over the instance).
   // eslint-disable-next-line prefer-const
   let inst!: WebAssembly.Instance;
+  const ex = () => accessorsOf(inst);
   const imports = {
-    ef_perform: (opid: number, argsCell: number) => {
+    ef_perform: (opid: number, args: unknown) => {
       const op = (ops as (string | undefined)[])[opid];
       if (op === undefined) throw new Error(`wasm host: unknown effect opid ${opid}`);
-      const args = hostUnbox(inst, argsCell) as Value[];
+      const argv = hostUnbox(ex(), args) as Value[];
       const custom = interp?.[op];
-      if (custom !== undefined) return hostBox(inst, custom(args));
-      const bi = (builtinEffectHosts as
-        Record<string, ((args: Value[]) => Value) | undefined>)[op];
+      if (custom !== undefined) return hostBox(ex(), custom(argv));
+      const bi = (builtinEffectHosts as Record<string, ((args: Value[]) => Value) | undefined>)[op];
       if (bi === undefined) throw new Error("Unhandled effect: " + op);
-      return hostBox(inst, bi(args));
+      return hostBox(ex(), bi(argv));
     },
-    ef_char: (cell: number) =>
-      hostBox(inst, String.fromCodePoint((hostUnbox(inst, cell) as number) | 0)),
-    ef_number: (cell: number) => hostBox(inst, parseFloat(hostStr(inst, cell))),
-    ef_args: () => hostBox(inst, process.argv.slice(2)),
-    ef_cos: (cell: number) => hostBox(inst, Math.cos(hostUnbox(inst, cell) as number)),
-    ef_sin: (cell: number) => hostBox(inst, Math.sin(hostUnbox(inst, cell) as number)),
-    ef_fail: (code: number, namePtr: number, a: number, bnum: number) => {
+    ef_char: (v: unknown) => hostBox(ex(), String.fromCodePoint(ex().num(v) | 0)),
+    ef_number: (v: unknown) => hostBox(ex(), parseFloat(hostStr(ex(), v))),
+    ef_args: () => hostBox(ex(), process.argv.slice(2)),
+    ef_cos: (v: unknown) => hostBox(ex(), Math.cos(ex().num(v))),
+    ef_sin: (v: unknown) => hostBox(ex(), Math.sin(ex().num(v))),
+    ef_fail: (code: number, name: unknown, a: number, b: number) => {
       if (code === 0) throw new Error("head of empty array");
-      if (code === 1) throw new Error(`get: index ${a} out of bounds [0, ${bnum})`);
-      throw new Error(`.${hostStr(inst, namePtr)}: index ${a} out of bounds [0, ${bnum})`);
+      if (code === 1) throw new Error(`get: index ${a} out of bounds [0, ${b})`);
+      throw new Error(`.${hostStr(ex(), name)}: index ${a} out of bounds [0, ${b})`);
     },
   };
   inst = new WebAssembly.Instance(mod, {env: imports});
-  const result = (inst.exports.run as () => number)();
-  return hostUnbox(inst, result);
+  const result = (inst.exports.run as () => unknown)();
+  return hostUnbox(ex(), result);
 }

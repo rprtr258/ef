@@ -517,7 +517,9 @@ ef repl                   # interactive REPL; bindings persist across lines
 
 The result of the last expression is printed via `show` unless the program calls `Exit!(...)` itself. Programs that loop forever (animations) run until killed.
 
-`ef runwasm` compiles the whole program to a binary `.wasm` module (`wasm.ts`, no external toolchain) and executes it in the host's WebAssembly engine. Output matches `ef run` for the supported subset: values, control flow, closures, arrays/strings, and the builtin effects (which become host import calls). Not supported: `handle`/user effect ops (rejected at compile time — multi-shot continuations have no wasm primitive), and `Exit!` semantics differ slightly (the host import calls `process.exit`).
+`ef runwasm` compiles the whole program to a binary `.wasm` module (`wasm.ts`, no external toolchain) and executes it in the host's WebAssembly engine. Output matches `ef run` for the supported subset: values, control flow, closures, arrays/strings, `handle` with multi-shot `resume`, and user effect ops. An effect with no matching handler in the chain — builtin or user — reaches the host through the `ef_perform` import and is interpreted by the same builtin host table `ef run` uses (optionally overridden via `runWasm`'s `interp` argument), so `Exit!` behaves identically: it terminates the process. Not supported: a perform or handle site inside an `if` branch or `while` body (rejected at compile time — suspension across those control-flow blocks).
+
+ABI: every value is a WasmGC `anyref` (unit = null ref, bool = i31, number/string/array/tuple/closure = structs/arrays). The module exports `run` plus 12 accessor functions — `__tag`, `__num`, `__str_len`, `__str_get`, `__arr_len`, `__arr_get`, `__mk_num`, `__mk_bool`, `__str_new`, `__str_set`, `__arr_new`, `__arr_set` — the only way JS touches GC structs. It imports 7 host functions — `ef_perform`, `ef_char`, `ef_number`, `ef_args`, `ef_cos`, `ef_sin`, `ef_fail` — tree-shaken down to the live set (`ef_fail` always stays).
 
 `ef lint <file>` runs a sequence of lint passes over the parsed program and prints each finding as `rule: message`. The current passes are:
 
@@ -529,6 +531,6 @@ Type `:q` to quit.
 ## 9. Examples on disk
 
 - `examples/newton.ef` — Newton's method square root (`while` + assignment).
-- `examples/tco.ef` — recursion probe. The CPS evaluator is fully tail-call-structured, so Bun/JSC's TCO keeps the stack O(1) for both tail and non-tail calls; non-tail recursion costs heap allocation (linear time), not stack overflow. The wasm target also runs it: calls in tail position compile to `return_call_indirect` (O(1) wasm stack), but each call still bump-allocates a frame block, so very deep recursion grows the heap linearly (100M depth ≈ 1.6 GB, no GC).
+- `examples/tco.ef` — recursion probe. The CPS evaluator is fully tail-call-structured, so Bun/JSC's TCO keeps the stack O(1) for both tail and non-tail calls; non-tail recursion costs heap allocation (linear time), not stack overflow. The wasm target also runs it: calls in tail position compile to `return_call_indirect` (O(1) wasm stack); each call still allocates a frame block, but the host GC reclaims them (the old linear-memory backend exhausted the heap at ~100M depth).
 - `examples/star.ef` — rotating 3D star polygon (port of `ink/samples/star.ink`).
   Run: `ef run examples/star.ef <vertices> <step>` where `0 < step < vertices/2`.
