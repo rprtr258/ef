@@ -7,9 +7,13 @@ with **algebraic effects and effect handlers**, C/Go-flavored syntax, and a
 Hindley-Milner-flavoured type system with effect tracking.
 
 - Modules: `lexer.ts`, `parser.ts`, `types.ts` (checker), `env.ts` (runtime
-  values), `builtins.ts` (the one builtin table), `eval.ts` (evaluator +
-  pipeline), `lint.ts`, `prims.ts`, frontends `cli.ts`/`repl.ts`.
-- Tests: `index.test.ts` + `lint.test.ts` (`bun:test`).
+  values), `builtins.ts` (the one builtin table), `analysis.ts` (frontend
+  passes: builtin surface, op discovery, builtin-ref tree-shaking — shared
+  by the wasm backend, parser-types-only leaf module), `eval.ts` (evaluator
+  + pipeline), `wasm.ts` (wasm backend: CPS→wasm codegen, binaryen shrink
+  pass, host runtime), `lint.ts`, `prims.ts`, frontends `cli.ts`/`repl.ts`.
+- Tests: `index.test.ts` + `lint.test.ts` + `wasm.test.ts` +
+  `analysis.test.ts` (`bun:test`).
 - Run a file: `bun run cli.ts run <file>` (subcommands: `run`, `types`,
   `lint`, `repl`).
 - Gates: `bun run ci` = typecheck + eslint + tests; all three must stay clean.
@@ -38,17 +42,35 @@ Hindley-Milner-flavoured type system with effect tracking.
    `Read`/`Write`/`Println`/`Out`/`Exit`/`Wait`/`Random`). Operators
    (`+ - * / % == neg` ...) stay in `env.ts`: the checker special-cases them
    structurally, and no honest type signature exists for them.
-6. **`eval.ts`** — CPS evaluator (`evalE`/`apply`), multi-shot resume via
+6. **`analysis.ts`** — frontend analysis passes over a parsed program, a
+   parser-types-only leaf module importable by both backends (module init
+   order is order-independent — see the eval⇄builtins note under
+   `eval.ts`): `BUILTINS`/`EFFECT_OPS` surface
+   tables (static, sync enforced by `analysis.test.ts`), `performsAnyOp`,
+   `collectEffectOps` (op discovery in wasm op-table order), `builtinRefs`
+   (shadowing-correct builtin references; binding order mirrors the
+   checker). Consumed by wasm.ts's OPT_PASSES; future interpreter wiring
+   ideas live in its header comment.
+7. **`eval.ts`** — CPS evaluator (`evalE`/`apply`), multi-shot resume via
    plain JS functions; `Op!(...)` walks up to a matching handler and calls
    its `resume` (the captured continuation `k`). `runTop(out, interp?)`
    interprets unhandled effects; `interp` optionally overrides builtin
-   interpretations (tests inject fake fs/time/randomness there). This module
+   interpretations (tests inject fake fs/time/randomness there). The
+   eval⇄builtins import cycle is runtime-only on eval's side (`apply` is
+   called from builtin closures; unhandled effects read builtins.ts's
+   top-level `builtinInterps`, which is entry-order safe because it is
+   derived in the same module as the `builtins` array), so every module
+   initializes cleanly regardless of entry point. This module
    also owns the pipeline shared by the REPL and `run`: `newCtx(interp?)`
    seeds state, `exec(prog, ctx)` checks then evaluates and returns
    `{value, lastType, lastIsExpr}`; `run(src, interp?)` is a one-shot `exec`.
-7. **`lint.ts`** — lint passes over a parsed program (`LINT_PASSES`);
+8. **`wasm.ts`** — WebAssembly backend: CPS→wasm codegen over the same
+   parser/types output, OPT_PASSES seam (tree-shaking, dead host-import
+   elimination), in-process binaryen shrink pass, direct-style host runtime
+   (effect interpretation comes from builtins.ts's `builtinEffectHosts`).
+9. **`lint.ts`** — lint passes over a parsed program (`LINT_PASSES`);
    currently one rule (`unused-arg`).
-8. **Frontends** — `cli.ts` (`ef run|types|lint|repl <file>`) and `repl.ts`
+10. **Frontends** — `cli.ts` (`ef run|types|lint|repl <file>`) and `repl.ts`
    (line loop over `newCtx`/`exec`; bindings accumulate across lines).
 ## Working rules
 

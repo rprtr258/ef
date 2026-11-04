@@ -6,7 +6,7 @@
 import {checkProgram, type Checked, type Type} from "./types.ts";
 import {Env, show, type Cont, type Native, type Outcome, type Value, num, globalEnv, type Closure} from "./env.ts";
 import {Parser, type Expr, type ExprID, type HandlerCase, type Program} from "./parser.ts";
-import {builtins} from "./builtins.ts";
+import {builtinInterps} from "./builtins.ts";
 
 function isNative(v: Value): v is Native {
   return v !== null && typeof v === "object" && !Array.isArray(v) && v.tag === "native";
@@ -154,7 +154,11 @@ function handle(body: ExprID, nodes: Expr[], cases: HandlerCase[], env: Env, k: 
 // through to the builtin table's default interpretation.
 export type EffectInterp = Partial<Record<string, (args: Value[], k: Cont) => Outcome>>;
 
-const builtinInterps: Record<string, (args: Value[], k: Cont) => Outcome> = Object.fromEntries(builtins.filter(b => b.kind === "effect").map(b => [b.name, b.interp]));
+// Unhandled builtin effects fall through to the one table's default
+// interpretation, keyed by op name (builtins.ts `builtinInterps`). The map
+// is a top-level const there — entry-order safe only same-module; deriving
+// it here instead would read `builtins` during eval's own init and be TDZ-
+// sensitive in the eval⇄builtins import cycle.
 
 export function runTop(out: Outcome, interp?: EffectInterp): Value {
   while (true) {

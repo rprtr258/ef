@@ -1,11 +1,12 @@
 // wasm.ts — WebAssembly backend for ef.
 //
-// Pipeline: parse → typecheck (types.ts, reused as-is) → emit a binary .wasm
-// module (self-contained, no WasmGC) → binaryen shrink pass (optimizeBinary:
-// in-process npm `binaryen`, no external tools) → instantiate against host
-// imports and run. No types needed at emission time: the only checker output
-// the backend consumes is the runtime stamps the checker leaves on nodes
-// (`e.div` for division, `e.idx` for field access).
+// Pipeline: parse → typecheck (types.ts, reused as-is) → frontend analysis
+// (analysis.ts: builtin tree-shaking, op discovery, live imports) → emit a
+// binary .wasm module (self-contained, no WasmGC) → binaryen shrink pass
+// (optimizeBinary: in-process npm `binaryen`, no external tools) →
+// imports and run. No types needed at emission time: the only checker
+// output the backend consumes is the runtime stamps the checker leaves on
+// nodes (`e.div` for division, `e.idx` for field access).
 //
 // Subset: everything except suspension across `if`/`while` (a perform or
 // handle site inside a branch or loop body is rejected at compile time).
@@ -49,15 +50,14 @@
 //   The wasm stack itself stays O(1): calls in tail position use
 //   return_call_indirect.
 
-// Cycle-breaker: builtins.ts imports `apply` from eval.ts at runtime, so the
-// eval↔builtins cluster only initializes cleanly if eval.ts is entered first
-// (same as cli.ts). Must precede parser.ts/types.ts — both reach the cycle.
-import "./eval.ts";
+// (The eval⇄builtins import cycle is runtime-only on both sides — apply is
+// called from builtin closures, eval reads the effect interps lazily — so
+// module init order is free; no entry-order breaker import needed.)
 import {Parser, type Expr, type ExprID, type Program} from "./parser.ts";
 import {checkProgram} from "./types.ts";
 import {type Value, show} from "./env.ts";
-import {readFileSync, writeFileSync} from "node:fs";
-import {sleepSync} from "bun";
+import {builtinEffectHosts} from "./builtins.ts";
+import {BUILTINS, EFFECT_OPS, builtinRefs, collectEffectOps, performsAnyOp} from "./analysis.ts";
 import binaryen from "binaryen";
 
 // --- binary encoding helpers -----------------------------------------------
@@ -147,44 +147,6 @@ const TRUE_CELL = 0, FALSE_CELL = 16, UNIT_CELL = 32, STATIC_FIXED = 48;
 // Function indices: 0..liveImports.length-1 host imports, then helpers,
 // lambdas, builtins, main.
 
-// Every builtin ef programs can name (the interpreter's global env).
-const BUILTINS: {name: string, params: number}[] = [
-  {name: "+", params: 2},
-  {name: "-", params: 2},
-  {name: "*", params: 2},
-  {name: "%", params: 2},
-  {name: "neg", params: 1},
-  {name: "<", params: 2},
-  {name: ">", params: 2},
-  {name: "<=", params: 2},
-  {name: ">=", params: 2},
-  {name: "==", params: 2},
-  {name: "!=", params: 2},
-  {name: "not", params: 1},
-  {name: "list", params: 0}, // variadic
-  {name: "head", params: 1},
-  {name: "tail", params: 1},
-  {name: "concat", params: 2},
-  {name: "flat", params: 1},
-  {name: "len", params: 1},
-  {name: "strlen", params: 1},
-  {name: "PI", params: 0},
-  {name: "cos", params: 1},
-  {name: "sin", params: 1},
-  {name: "abs", params: 1},
-  {name: "round", params: 1},
-  {name: "sqrt", params: 1},
-  {name: "range", params: 3},
-  {name: "char", params: 1},
-  {name: "number", params: 1},
-  {name: "args", params: 0},
-  {name: "get", params: 2},
-  {name: "set", params: 3},
-  {name: "map", params: 2},
-  {name: "each", params: 2},
-  {name: "flatmap", params: 2},
-];
-
 // map/each/flatmap invoke user callbacks, so they are called land-style: a
 // map-like call site is a landCalls split site (§3) and the builtin loops
 // through per-iteration thunks instead of an inline wasm loop.
@@ -193,11 +155,6 @@ const MAP_LIKE = new Set(["map", "each", "flatmap"]);
 // result/tmp block pointer (except each) and the iteration counter.
 const mapLikeFrameWords = (name: string): number =>
   name === "each" ? 1 : MAP_LIKE.has(name) ? 2 : 0;
-
-// Builtin effects in op-table order. User-declared ops (from `effect` decls)
-// follow them: `effOpIds` interns every op performed in the program, and the
-// host maps an opid back to its name via the table `compileWithOps` returns.
-const BUILTIN_EFFECT_OPS = ["Read", "Write", "Println", "Out", "Exit", "Wait", "Random"];
 
 const HOST_IMPORTS = [
   "ef_perform",
@@ -382,9 +339,11 @@ class Compiler {
   thunk0 = 0;        // funcref table index of the first land thunk
   lambdaIdx = new Map<ExprID, number>();
   // Effect op table: opid (table index) → op name. Seeded with the builtin
-  // effects; discover() interns user-declared ops at perform sites.
-  effOps: string[] = [...BUILTIN_EFFECT_OPS];
-  effOpIds = new Map<string, number>(BUILTIN_EFFECT_OPS.map((op, i) => [op, i]));
+  // effects (analysis.ts EFFECT_OPS, builtins.ts table order); compile()
+  // interns the program's performed/handled ops after them, and the host
+  // maps an opid back to its name via the table `compileWithOps` returns.
+  effOps: string[] = [...EFFECT_OPS];
+  effOpIds = new Map<string, number>(EFFECT_OPS.map((op, i) => [op, i]));
   // Handler machinery (§4.4): per `handle` node, its op cases (each a
   // T_KABI function over the handler's shared hframe), the explicit Return
   // case if any, the offset of its dispatch table in static data (set by
@@ -485,6 +444,14 @@ class Compiler {
     // markers this backend reads (`div` on applications of `/`, `idx` on
     // field accesses).
     checkProgram(this.prog);
+    // Effect op discovery (analysis.ts): builtin ops are pre-seeded (field
+    // init); the program's performed/handled ops intern in first-appearance
+    // AST order — before discover(), whose handler records read effOpIds.
+    for (const op of collectEffectOps(this.prog))
+      if (!this.effOpIds.has(op)) {
+        this.effOpIds.set(op, this.effOps.length);
+        this.effOps.push(op);
+      }
     // 1. Scope discovery: scopes per lambda/block, slot numbering, literals.
     for (const it of this.prog.items) {
       if ("e" in it) this.discover(it.e, this.globalScope);
@@ -493,8 +460,7 @@ class Compiler {
     //    analysis results; each pass records facts the emitters consume.
     //    They run before index assignment because helper/lambda/builtin
     //    funcref indices derive from the live import count. (Planned for
-    //    this seam: helper-function reachability, function-body dedup,
-    //    wasm-opt post-pass.)
+    //    this seam: helper-function reachability, function-body dedup.)
     for (const pass of OPT_PASSES)
       pass(this);
     // 2b. Helper funcref indices: helpers always follow the live imports.
@@ -615,25 +581,17 @@ class Compiler {
         this.strLits.set(e.name, -1); // for the out-of-bounds message
         break;
       case "perform":
-        if (!this.effOpIds.has(e.op)) {
-          this.effOpIds.set(e.op, this.effOps.length);
-          this.effOps.push(e.op);
-        }
         for (const a of e.args) this.discover(a, sc);
         break;
       case "handle": {
-        // Intern the handler's ops (case tables reference opids) and size
-        // the shared hframe: op params at slots 0..npMax-1 (per matched
+        // Size the shared hframe: op params at slots 0..npMax-1 (per matched
         // case, unit-padded), each case's resume binder at slot nparams,
         // the Return param at slot npMax+1 (emitDispatch writes it there
-        // via the Return entry's nparams = npMax), spill slots after.
+        // via the Return entry's nparams = npMax), spill slots after. (Op
+        // ids were interned by collectEffectOps before the passes ran.)
         let npMax = 0;
         for (const c of e.cases) {
           if (c.op === "Return") continue;
-          if (!this.effOpIds.has(c.op)) {
-            this.effOpIds.set(c.op, this.effOps.length);
-            this.effOps.push(c.op);
-          }
           npMax = Math.max(npMax, c.params.length);
         }
         const frame = {slots: 0};
@@ -4159,87 +4117,19 @@ class Compiler {
 // Ordered passes after the analysis phase and before index assignment (run
 // in compile()); each records facts the emitters consume, and index
 // assignment derives helper/lambda/builtin funcref indices from the live
-// import count. Planned for this seam: helper-function reachability,
-// function-body dedup, wasm-opt post-pass.
+// import count. The AST walks themselves live in analysis.ts (shared with
+// interpreter-side consumers); planned for this seam: helper-function
+// reachability, function-body dedup.
 const OPT_PASSES: ((c: Compiler) => void)[] = [
   treeShakeBuiltins,
   dropDeadHostImports,
 ];
 
-// Marks every builtin the program references as a value: a bare sym that
-// resolves to no user binding — the same resolve the emitters use, so a user
-// `let` shadowing a builtin name keeps the builtin unreferenced. Any
-// reference (call site, argument, lambda body) marks it used; user code is
-// not dead-code-eliminated in this pass.
+// Marks every builtin the program references as a value (analysis.ts
+// builtinRefs — shadowing-correct, checker-mirroring binding order):
+// layoutStatics/emitBuiltins emit only these.
 function treeShakeBuiltins(c: Compiler): void {
-  const walk = (id: ExprID, sc: Scope): void => {
-    const e = c.nodes[id];
-    // Lambda/block nodes carry their own scope (bound by discover()).
-    const s = c.scopes.get(id) ?? sc;
-    switch (e.t) {
-      case "sym":
-        if (c.resolve(s, e.v) === null && BUILTINS.some(b => b.name === e.v))
-          c.usedBuiltins.add(e.v);
-        break;
-      case "lambda":
-        walk(e.body, s);
-        break;
-      case "block":
-        for (const stmt of e.stmts)
-          walk(stmt, s);
-        break;
-      case "let":
-      case "dlet":
-        // The binding is already in s (discover() binds before the value),
-        // mirroring emission: `let len = len` reads the slot, not the builtin.
-        walk(e.val, s);
-        break;
-      case "assign":
-        walk(e.val, s);
-        break;
-      case "if":
-        walk(e.c, s);
-        walk(e.a, s);
-        walk(e.b, s);
-        break;
-      case "while":
-        walk(e.c, s);
-        walk(e.body, s);
-        break;
-      case "app":
-        walk(e.fn, s);
-        for (const a of e.args)
-          walk(a, s);
-        break;
-      case "arr":
-        for (const el of e.elems)
-          walk(el, s);
-        break;
-      case "field":
-        walk(e.obj, s);
-        break;
-      case "perform":
-        for (const a of e.args)
-          walk(a, s);
-        break;
-      case "handle": {
-        walk(e.body, s);
-        // Case bodies run over the handler's hframe scope (bound in discover()).
-        const hs = c.hdlCases.get(id)!.scope;
-        for (const cse of e.cases)
-          walk(cse.body, hs);
-        break;
-      }
-      case "num":
-      case "str":
-      case "bool":
-      case "unit":
-        break;
-    }
-  };
-  for (const it of c.prog.items)
-    if ("e" in it)
-      walk(it.e, c.globalScope);
+  c.usedBuiltins = builtinRefs(c.prog);
 }
 
 // Import names that serve exactly one builtin each (import → builtin).
@@ -4250,45 +4140,16 @@ const BUILTIN_IMPORTS: Record<string, string> = {
 
 // Drops dead host imports: a builtin-served import is live iff its builtin
 // is in usedBuiltins (treeShakeBuiltins — shadowing-correct); ef_perform is
-// live iff the program contains any perform node (any op, even inside a
-// handler's body or a case body — handlers don't prove non-performance);
-// ef_fail stays live unconditionally — proving it dead needs reachability
-// analysis over the bounds checks in get/len/head/tail/set AND the inline
-// index/field-access bounds checks (deferred to the helper-reachability
-// pass). Live imports keep their HOST_IMPORTS order.
+// live iff the program contains any perform node (analysis.ts performsAnyOp
+// — any op, even inside a handler's body or a case body; handlers don't
+// prove non-performance); ef_fail stays live unconditionally — proving it
+// dead needs reachability analysis over the bounds checks in
+// get/len/head/tail/set AND the inline index/field-access bounds checks
+// (deferred to the helper-reachability pass). Live imports keep their
+// HOST_IMPORTS order.
 function dropDeadHostImports(c: Compiler): void {
-  const performsOp = (id: ExprID): boolean => {
-    const e = c.nodes[id];
-    switch (e.t) {
-      case "perform":
-        return true;
-      case "lambda":
-        return performsOp(e.body);
-      case "block":
-        return e.stmts.some(performsOp);
-      case "let":
-      case "dlet":
-      case "assign":
-        return performsOp(e.val);
-      case "if":
-        return performsOp(e.c) || performsOp(e.a) || performsOp(e.b);
-      case "while":
-        return performsOp(e.c) || performsOp(e.body);
-      case "app":
-        return performsOp(e.fn) || e.args.some(performsOp);
-      case "arr":
-        return e.elems.some(performsOp);
-      case "field":
-        return performsOp(e.obj);
-      case "handle":
-        return performsOp(e.body) || e.cases.some(cse => performsOp(cse.body));
-      default:
-        return false; // sym/num/str/bool/unit
-    }
-  };
-  const hasPerform = c.prog.items.some(it => "e" in it && performsOp(it.e));
   const live = HOST_IMPORTS.filter(n =>
-    n === "ef_perform" ? hasPerform :
+    n === "ef_perform" ? performsAnyOp(c.prog) :
     n === "ef_fail" ? true :
     Object.hasOwn(BUILTIN_IMPORTS, n) &&
       c.usedBuiltins.has(BUILTIN_IMPORTS[n]));
@@ -4374,36 +4235,13 @@ function hostStr(inst: WebAssembly.Instance, cell: number): string {
   return hostUnbox(inst, cell) as string;
 }
 
-// One-shot host-side effect interpretation (direct style — the wasm boundary
-// has no continuations to resume): maps an op name to an implementation that
+// One-shot host-side effect interpretation comes from builtins.ts
+// (builtinEffectHosts — direct style, derived from the CPS interps; the
+// wasm boundary has no continuations to resume): maps an op name to an
+// implementation that
 // receives the performed args and returns the value to resume with. Overrides
 // the builtin interpretation; unhandled ops throw the interpreter's error.
 export type EffectInterp = Partial<Record<string, (args: Value[]) => Value>>;
-
-// The 7 builtin effects' default interpretation (mirrors builtins.ts, direct
-// style — interp entries in wasm land return a value, never an Outcome).
-const builtinEffectHosts: Record<string, (args: Value[]) => Value> = {
-  Read: (args) => readFileSync(args[0] as string, "utf8"),
-  Write: (args) => {
-    writeFileSync(args[0] as string, args[1] as string);
-    return null;
-  },
-  Println: (args) => {
-    console.log(show(args[0] ?? null));
-    return null;
-  },
-  Out: (args) => {
-    process.stdout.write(args[0] as string);
-    return null;
-  },
-  // Exit terminates the process by default (never resumes).
-  Exit: (args) => process.exit(args[0] as number),
-  Wait: (args) => {
-    sleepSync((args[0] as number) * 1000);
-    return null;
-  },
-  Random: () => Math.random(),
-};
 
 // compile+instantiate+run: the wasm-target twin of eval.ts's run().
 export function runWasm(src: string, interp?: EffectInterp): Value {

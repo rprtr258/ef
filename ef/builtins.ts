@@ -159,3 +159,27 @@ export const builtins: Builtin[] = [
     // `Random(): float` resumes with a random number in [0, 1).
     {kind: "effect", name: "Random", sig: {params: [], ret: TFLOAT}, interp: (_args, k) => k(Math.random())},
 ];
+
+// Direct-style default interpretation of the builtin effects, derived from
+// the CPS `interp` entries above: every builtin effect calls k exactly once
+// and synchronously, so the wrapper just unwraps the outcome (Exit never
+// returns). Used by the wasm host boundary (wasm.ts), where there are no
+// continuations to resume; runTop consumes the CPS interps directly.
+export const builtinEffectHosts: Record<string, (args: Value[]) => Value> =
+  Object.fromEntries(builtins
+    .filter(b => b.kind === "effect")
+    .map(b => [b.name, (args: Value[]): Value => {
+      const out = b.interp(args, v => ({tag: "done", value: v}));
+      if (out.tag !== "done")
+        throw new Error(`builtin effect ${b.name} suspended`);
+      return out.value;
+    }]));
+
+// The builtin effects' default CPS interpretations by op name — identity
+// over the effect entries — consumed by eval.ts's runTop for unhandled
+// effects. Top-level const is entry-order safe only because it lives in the
+// same module as the `builtins` array (a same-module read always follows
+// the array's initialization; deriving this in eval.ts instead would be
+// TDZ-sensitive there, since builtins.ts imports eval.ts back).
+export const builtinInterps: Record<string, (args: Value[], k: Cont) => Outcome> =
+  Object.fromEntries(builtins.filter(b => b.kind === "effect").map(b => [b.name, b.interp]));
