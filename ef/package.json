@@ -6,7 +6,7 @@
   "scripts": {
     "lint": "eslint '**/*.{ts,json}'",
     "typecheck": "bun check",
-    "ci": "bun run typecheck && bun run lint && bun test"
+    "ci": "bun run typecheck && bun run lint && bun test --parallel"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
