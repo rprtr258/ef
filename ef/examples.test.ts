@@ -1,0 +1,196 @@
+// Every file in examples/ is exercised by a test: one entry per file in the
+// EXAMPLES table below, keyed by the example filename. The test bodies are
+// generated from the table, and the coverage guard at the bottom asserts
+// that the table's keys are exactly the .ef files on disk — so a new example
+// file without a table entry (and the real test body the entry carries)
+// fails the run, and a stale entry for a deleted file fails too.
+//
+// Tests run the real CLI (`bun run cli.ts run <file>`) so args handling and
+// top-level printing are covered end to end. Each test also runs the wasm
+// backend (`bun run cli.ts runwasm <file>`) and asserts the wasm result
+// coincides with the interpreter's (runExample). runCli pins EF_RANDOM_SEED
+// for every invocation, so Random!-driven examples (approx_pi.ef) are
+// reproducible and parity-checked exactly like the rest.
+//
+// star.ef is the exception in shape, not in coverage: it is an infinite
+// animation loop, so instead of runExample it is compared against the
+// interpreter over a bounded output prefix (compile health for every
+// example, star included, is asserted in wasm.test.ts).
+import {test, expect, describe} from "bun:test";
+import {execFileSync} from "node:child_process";
+import {readdirSync} from "node:fs";
+import {join} from "node:path";
+
+const workspaceDir = import.meta.dir;
+
+type RunResult = {stdout: string, code: number};
+
+// execFileSync throws on non-zero exit; the catch recovers stdout + code.
+// EF_RANDOM_SEED is pinned so every run (both backends) draws the same
+// Random! sequence — parity stays exact even for stochastic examples.
+function runCli(sub: string, example: string, args: string[]): RunResult {
+  const file = join(workspaceDir, "examples", example);
+  const env = {...process.env, EF_RANDOM_SEED: "42"};
+  try {
+    const stdout = execFileSync("bun", ["run", "cli.ts", sub, file, ...args], {encoding: "utf8", timeout: 60_000, env});
+    return {stdout, code: 0};
+  } catch (e) {
+    const err = e as {stdout?: string | Buffer, status?: number | null};
+    return {stdout: String(err.stdout ?? ""), code: err.status ?? 1};
+  }
+}
+
+// Runs the example through both backends and asserts the wasm result
+// coincides with the interpreter's (stdout + exit code); returns the
+// interpreter result.
+function runExample(example: string, args: string[] = []): RunResult {
+  const interp = runCli("run", example, args);
+  const wasm = runCli("runwasm", example, args);
+  expect(wasm).toEqual(interp);
+  return interp;
+}
+
+// One entry per examples/*.ef: the table IS the test suite. The test bodies
+// are generated from it (the loop below), and the coverage guard at the
+// bottom asserts that the table's keys are exactly the .ef files in
+// examples/ — a new example file without an entry (and the real test body
+// the entry carries) fails the run, and a stale entry for a deleted file
+// fails too. A body receives the interpreter's run result (the wasm backend
+// has already been run and parity-checked against it inside runExample);
+// `self: true` bodies instead receive the filename and do their own running
+// — used only by star.ef, whose infinite animation loop can never run to
+// completion. Multiple cases per file are allowed (approx_pi.ef, star.ef);
+// only star.ef needs a custom timeout.
+type ExampleCase = {
+  label: string,
+  timeout?: number,
+} & (
+| {
+  // `self?: undefined` + `self: true` is a proper TS discriminant: it
+  // lets contextual typing pick the branch for each table entry (and
+  // `c.self === true` narrow it in the loop below).
+  self?: undefined,
+  args?: string[],
+  body: (res: RunResult) => void | Promise<void>,
+}
+| {
+  self: true,
+  body: (file: string) => void | Promise<void>,
+});
+
+const EXAMPLES: Record<string, ExampleCase[]> = {
+  "amb.ef": [{
+    label: "nondeterministic search finds Pythagorean triples",
+    body: res => expect(res.stdout).toBe("[3, 4, 5]\n[5, 12, 13]\n[6, 8, 10]\nunit\n"),
+  }],
+  "apply.ef": [{
+    label: "polymorphic apply calls functions stored in values",
+    body: res => expect(res.stdout).toBe("42\n\"n=7\"\n99\nunit\n"),
+  }],
+  "approx_pi.ef": [{
+    label: "Monte Carlo pi estimate (Random!) needs an n argument",
+    body: res => expect(res).toEqual({code: 1, stdout: "Usage: ef run examples/approx_pi.ef <n>\n"}),
+  }, {
+    label: "converges toward pi for large n",
+    args: ["10000"],
+    body: res => {
+      // runCli pins EF_RANDOM_SEED, so both backends sample the same points
+      // and must print the same estimate (checked by runExample's parity).
+      const pi = Number(res.stdout.split("\n")[0]);
+      expect(pi).toBeCloseTo(3.14, 1);
+    },
+  }],
+  "example.ef": [{
+    label: "handler loops over a whole search space",
+    body: res => expect(res.stdout).toBe("[[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]\n"),
+  }],
+  "fib.ef": [{
+    label: "exponential recursion through the CPS evaluator",
+    body: res => expect(res.stdout).toBe("196418\nunit\n"),
+  }],
+  "incA.ef": [{
+    label: "mutable state via a state effect",
+    body: res => expect(res.stdout).toBe("9\nunit\n"),
+  }],
+  "newton.ef": [{
+    label: "iterative numeric effect loop",
+    body: res => expect(res.stdout).toMatch(/^1\.4142\d*\nunit\n$/),
+  }],
+  "poly_id_breaks.ef": [{
+    label: "deliberately ill-typed, but runs under `any`",
+    body: res => expect(res.stdout).toBe("5\nunit\n"),
+  }],
+  "sieve.ef": [{
+    label: "effectful pipeline produces primes up to 100",
+    body: res => expect(res.stdout).toBe(`${[
+      2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47,
+      53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
+    ].join("\n")}\nunit\n`),
+  }],
+  "simple_add.ef": [{
+    label: "Apply effect via the default host interpretation",
+    body: res => expect(res.stdout).toBe("2\nunit\n"),
+  }],
+  "squares_sum.ef": [{
+    label: "final expression evaluates to 30",
+    body: res => expect(res.stdout).toBe("30\n"),
+  }],
+  // star.ef is an infinite animation loop: it cannot run to completion, so
+  // its self: true body (moved here from wasm.test.ts's split re-emission
+  // regressions) does its own running — a bounded (timeout + output cap)
+  // cross-backend comparison. Compile health for every example (star
+  // included) is asserted in wasm.test.ts via assertModule.
+  "star.ef": [{
+    label: "renders identically in interpreter and wasm (bounded prefix)",
+    self: true,
+    body: async file => {
+      const runBounded = async (mode: string): Promise<string> => {
+        const p = Bun.spawn(
+          ["sh", "-c", `timeout 8 bun run cli.ts ${mode} examples/${file} 6 2 2>/dev/null | head -c 3000`],
+          {cwd: workspaceDir, stdout: "pipe", stderr: "ignore"},
+        );
+        const out = await new Response(p.stdout).text();
+        await p.exited;
+        return out;
+      };
+      const [interp, wasm] = [await runBounded("run"), await runBounded("runwasm")];
+      // The first frame is deterministic; later frames diverge only by wall
+      // clock (the animation spins unbounded), so compare a prefix inside it.
+      const prefixLen = Math.min(interp.length, wasm.length);
+      expect(prefixLen).toBeGreaterThanOrEqual(1000);
+      expect(wasm.slice(0, prefixLen)).toBe(interp.slice(0, prefixLen));
+    },
+    timeout: 25000,
+  }],
+  "tco.ef": [{
+    label: "deep tail recursion does not overflow",
+    body: res => expect(res.stdout).toBe("0\nunit\n"),
+  }],
+  "unify.ef": [{
+    label: "type unifier picks the right branch",
+    body: res => expect(res.stdout).toBe("2\nunit\n"),
+  }],
+};
+
+for (const [file, cases] of Object.entries(EXAMPLES)) {
+  describe(file, () => {
+    for (const c of cases) {
+      if (c.self === true) {
+        const {body, timeout} = c;
+        test(c.label, () => body(file), timeout);
+      } else {
+        const {body, args, timeout} = c;
+        test(c.label, () => body(runExample(file, args)), timeout);
+      }
+    }
+  });
+}
+
+// Coverage guard: the EXAMPLES table above must name exactly the .ef files
+// in examples/. A newly added example without a table entry fails here, and
+// so does a stale entry after a file is deleted. (Non-.ef files, e.g. .wasm
+// artifacts dropped next to the sources by `buildwasm`, are not examples.)
+test("every file in examples/ is exercised by a test", () => {
+  const files = readdirSync(join(workspaceDir, "examples"));
+  expect(files.sort()).toEqual(Object.keys(EXAMPLES).sort());
+});

@@ -45,6 +45,25 @@ export type Builtin =
   }
 ;
 
+// Random source for the `Random` effect: `Math.random()` by default; when
+// EF_RANDOM_SEED is set to an integer, a mulberry32 PRNG seeded with it, so
+// runs are reproducible (both backends interpret `Random` through this host,
+// each starting from the same seed per process).
+const random: () => number = (() => {
+  const seed = process.env.EF_RANDOM_SEED;
+  if (seed === undefined || seed === "")
+    return Math.random;
+  if (!/^-?\d+$/.test(seed.trim()))
+    throw new Error(`EF_RANDOM_SEED must be an integer, got: ${JSON.stringify(seed)}`);
+  let a = Number(seed) | 0;
+  return () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+})();
+
 // The one shared table: polymorphic `t` thunks instantiate fresh vars per use,
 // so entries are immutable and safe to share across programs.
 export const builtins: Builtin[] = [
@@ -156,8 +175,9 @@ export const builtins: Builtin[] = [
       sleepSync(num(args[0]) * 1000);
       return k(null);
     }},
-    // `Random(): float` resumes with a random number in [0, 1).
-    {kind: "effect", name: "Random", sig: {params: [], ret: TFLOAT}, interp: (_args, k) => k(Math.random())},
+    // `Random(): float` resumes with a random number in [0, 1) — from
+    // `nextRandom` above: `Math.random()` unless EF_RANDOM_SEED pins a seed.
+    {kind: "effect", name: "Random", sig: {params: [], ret: TFLOAT}, interp: (_args, k) => k(random())},
 ];
 
 // Direct-style default interpretation of the builtin effects, derived from

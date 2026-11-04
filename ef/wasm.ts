@@ -119,8 +119,8 @@ const selt = (b: Buf, vt: number[] = [ANYREF]) => { // typed select
   for (const v of vt) b.u8(v);
 };
 // i32 arithmetic/comparison
-const ADD = 0x6a, SUB = 0x6b, MUL = 0x6c, SHL = 0x74, SHRU = 0x76;
-const EQZ = 0x45, EQ = 0x46, NE = 0x47, LTS = 0x48, OR = 0x72, AND = 0x71;
+const ADD = 0x6a, SUB = 0x6b, MUL = 0x6c;
+const EQZ = 0x45, EQ = 0x46, LTS = 0x48, OR = 0x72, AND = 0x71;
 const GTU = 0x4b, LEU = 0x4d, GEU = 0x4f, DIVU = 0x6e;
 // f64 arithmetic/comparison
 const FABS = 0x99, FNEG = 0x9a, FCEIL = 0x9b, FFLOOR = 0x9c, FTRUNC = 0x9d, FSQRT = 0x9f;
@@ -136,80 +136,19 @@ const RETURN = 0x0f, UNREACHABLE = 0x00;
 
 // Abstract heap types are single valtype bytes, never passed through the sleb
 // writer; a concrete (ref null $t) would be 0x63 <sleb $t> (not needed yet).
-// Nothing below is consumed by assemble() yet — the GC probe module in
-// wasm.test.ts is the sole caller until step 2 wires these into the emitters.
-export const ANYREF = 0x6e, EQREF = 0x6d, I31REF = 0x6c, NONEREF = 0x71, FUNCREF = 0x70;
+const ANYREF = 0x6e, EQREF = 0x6d, I31REF = 0x6c;
 
 // GC opcodes: 0xFB-prefixed instructions carry a sub-opcode (single byte for
 // the values here) followed by typeidx/heaptype immediates. REF_NULL/REF_EQ/
 // SELECT_TYPED are plain (unprefixed) opcodes; SELECT_TYPED takes a vec of
 // valtypes instead of the untyped 0x1b form.
-export const GC = 0xfb;
-export const STRUCT_NEW = 0x00, STRUCT_GET = 0x02, STRUCT_SET = 0x05;
-export const ARRAY_NEW_DEFAULT = 0x07, ARRAY_GET = 0x0b, ARRAY_GET_U = 0x0d,
+const GC = 0xfb;
+const STRUCT_NEW = 0x00, STRUCT_GET = 0x02, STRUCT_SET = 0x05;
+const ARRAY_NEW_DEFAULT = 0x07, ARRAY_GET = 0x0b, ARRAY_GET_U = 0x0d,
   ARRAY_SET = 0x0e, ARRAY_LEN = 0x0f, ARRAY_COPY = 0x11;
-export const REF_TEST = 0x14, REF_TEST_NULL = 0x15, REF_CAST = 0x16, REF_CAST_NULL = 0x17;
-export const REF_I31 = 0x1c, I31_GET_S = 0x1d, I31_GET_U = 0x1e;
-export const REF_NULL = 0xd0, REF_EQ = 0xd3, SELECT_TYPED = 0x1c;
-
-// GC-only type builder with structural dedup: identical struct/array/func
-// shapes share one type index. Arrays have NO field count — 0x5E <st> <mut>.
-// assemble()'s hand-written emitType calls are untouched; step 2 unifies.
-export class GcTypes {
-  private byt = new Map<string, number>();
-  private ents: Buf[] = [];
-  private intern(emit: (b: Buf) => void): number {
-    const b = new Buf();
-    emit(b);
-    const key = b.b.join(",");
-    const hit = this.byt.get(key);
-    if (hit !== undefined) return hit;
-    this.byt.set(key, this.ents.length);
-    this.ents.push(b);
-    return this.ents.length - 1;
-  }
-  struct(fields: [number, boolean][]): number {
-    return this.intern(b => {
-      b.u8(0x5f).lebU(fields.length);
-      for (const [st, mut] of fields) b.u8(st).u8(mut ? 1 : 0);
-    });
-  }
-  array(st: number, mut: boolean): number {
-    return this.intern(b => b.u8(0x5e).u8(st).u8(mut ? 1 : 0));
-  }
-  func(params: number[], results: number[]): number {
-    return this.intern(b => {
-      b.u8(0x60).lebU(params.length);
-      for (const p of params) b.u8(p);
-      b.lebU(results.length);
-      for (const r of results) b.u8(r);
-    });
-  }
-  section(): Buf {
-    const s = new Buf();
-    s.lebU(this.ents.length);
-    for (const e of this.ents) s.bytes(e.b);
-    return s;
-  }
-}
-
-// $init scaffolding (§5 statics): mutable anyref globals initialized
-// ref.null any, plus an empty $init function envelope the caller fills. Step
-// 2 wires both into assemble() ($init runs at the top of run()).
-export class GcStatics {
-  readonly init = new Fn(0);
-  private gs: Buf[] = [];
-  global(): number {
-    this.gs.push(new Buf().u8(ANYREF).u8(1).u8(REF_NULL).u8(ANYREF).u8(0x0b));
-    return this.gs.length - 1;
-  }
-  section(): Buf {
-    const s = new Buf();
-    s.lebU(this.gs.length);
-    for (const gl of this.gs) s.bytes(gl.b);
-    return s;
-  }
-}
+const REF_TEST = 0x14, REF_TEST_NULL = 0x15, REF_CAST = 0x16, REF_CAST_NULL = 0x17;
+const REF_I31 = 0x1c, I31_GET_S = 0x1d;
+const REF_NULL = 0xd0, REF_EQ = 0xd3;
 
 // --- module-level constants -------------------------------------------------
 
@@ -230,8 +169,7 @@ const K_RET = 0, K_HDL = 1, K_SPILL = 2;
 const MAP_LIKE = new Set(["map", "each", "flatmap"]);
 // Extra entry-frame words a map-like builtin needs beyond its args: the
 // result/tmp array (except each) and the iteration counter.
-const mapLikeFrameWords = (name: string): number =>
-  name === "each" ? 1 : MAP_LIKE.has(name) ? 2 : 0;
+const mapLikeFrameWords = (name: string): number => name === "each" ? 1 : MAP_LIKE.has(name) ? 2 : 0;
 
 // Operators compile inline at call sites (like the checker-stamped `/`):
 // operands unbox to f64 (or dispatch to $eq/$truthy) right in the caller,
@@ -274,7 +212,7 @@ const DBGEMIT = process.env.DBGEMIT === "1";
 
 // --- per-function emitter ---------------------------------------------------
 
-export class Fn {
+class Fn {
   body = new Buf();
   locals: number[] = []; // extra locals in allocation order (valtype bytes)
   typeIdx = T_KABI; // program functions share (frame, k) -> i32; helpers may differ
@@ -388,7 +326,7 @@ type RawBinaryen = typeof binaryen & {
 // Feature set to read with: exactly what the emitter emits — WasmGC value
 // plane (structs/arrays/i31), funcref table (reference-types) +
 // return_call_indirect (tail-call) + MVP basics.
-const BIN_FEATURES = binaryen.Features.MVP | binaryen.Features.ReferenceTypes |
+export const BIN_FEATURES = binaryen.Features.MVP | binaryen.Features.ReferenceTypes |
   binaryen.Features.GC | binaryen.Features.TailCall |
   binaryen.Features.SignExt | binaryen.Features.MutableGlobals;
 
@@ -406,7 +344,7 @@ const BIN_FEATURES = binaryen.Features.MVP | binaryen.Features.ReferenceTypes |
 // EF_SKIP_WASM_OPT=1 bypasses the shrink pass: a binaryen abort is total
 // (every compile fails until process exit), so there must be an escape
 // hatch from day one.
-export function optimizeBinary(bytes: Uint8Array, extraFeatures = 0): Uint8Array {
+function optimizeBinary(bytes: Uint8Array, extraFeatures = 0): Uint8Array {
   if (process.env.EF_SKIP_WASM_OPT === "1") return bytes;
   const m = binaryen as RawBinaryen;
   try {

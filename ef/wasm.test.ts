@@ -1,44 +1,86 @@
 import {test, expect, describe} from "bun:test";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
-import {readFileSync, writeFileSync} from "node:fs";
-import {run} from "./eval.ts";
+import {readFileSync, readdirSync, writeFileSync} from "node:fs";
 import binaryen from "binaryen";
-import {
-  compile, runWasm, WasmError, optimizeBinary,
-  GcTypes, GcStatics, Fn,
-  GC, STRUCT_NEW, STRUCT_GET, STRUCT_SET, ARRAY_NEW_DEFAULT, ARRAY_GET,
-  ARRAY_GET_U, ARRAY_SET, ARRAY_LEN, ARRAY_COPY, REF_TEST, REF_TEST_NULL,
-  REF_CAST, REF_CAST_NULL, REF_I31, I31_GET_S, I31_GET_U, REF_NULL, REF_EQ,
-  SELECT_TYPED, ANYREF, EQREF, I31REF, NONEREF, FUNCREF,
-} from "./wasm.ts";
+import {run} from "./eval.ts";
+import {BIN_FEATURES, compile, runWasm} from "./wasm.ts";
 import {show} from "./env.ts";
+
+// binaryen's typings lag its runtime (see wasm.ts RawBinaryen): readBinary's features argument is untyped in the .d.ts.
+const bin = binaryen as typeof binaryen & {
+  readBinary(bytes: Uint8Array, features: number): ReturnType<typeof binaryen.wrapModule>,
+};
+
+const workspaceDir = import.meta.dir;
 
 // The wasm target must be observationally equivalent to the interpreter:
 // for every program below, `run(src)` and `runWasm(src)` produce the same
 // `show()` rendering (values AND error messages).
-const both = (src: string): [string, string] => {
-  let interp: string, wasm: string;
-  try { interp = show(run(src)); } catch (e) { interp = "ERR: " + (e as Error).message; }
-  try { wasm = show(runWasm(src)); } catch (e) { wasm = "ERR: " + (e as Error).message; }
-  return [interp, wasm];
-};
-
-const parity = (src: string) => {
-  const [interp, wasm] = both(src);
+function parity(src: string) {
+  const interp = ((): string => {
+    try {
+      return show(run(src));
+    } catch (e) {
+      return "ERR: " + (e as Error).message;
+    }
+  })();
+  const wasm = ((): string => {
+    try {
+      return show(runWasm(src));
+    } catch (e) {
+      return "ERR: " + (e as Error).message;
+    }
+  })();
   expect(wasm).toBe(interp);
   return interp;
-};
+}
+
+// Health check for every compiled module in this file: the module must
+// validate, and no function may have an empty body (root expression Nop —
+// in the binary, just `locals decl + end`) while declaring a result: such
+// a body is an orphaned rest thunk that cannot return its result type.
+// Empty VOID bodies are legitimate (the backend emits them as terminal
+// rest thunks, e.g. for `args()`), so they pass.
+function assertModule(bytes: Uint8Array): void {
+  const mod = bin.readBinary(bytes, BIN_FEATURES);
+  try {
+    expect(mod.validate()).toBe(1);
+    const nopId: number = bin.NopId; // getExpressionId returns a plain number
+    const fns = Array.from({length: mod.getNumFunctions()}, (_, i) =>
+      bin.getFunctionInfo(mod.getFunctionByIndex(i)));
+    expect(fns.filter(info =>
+      bin.getExpressionId(info.body) === nopId && info.results !== bin.none)).toBeEmpty();
+  } finally {
+    mod.dispose();
+  }
+}
 
 // Host import names of the module compile(src) declares, in order.
-const importsOf = (src: string): string[] =>
-  WebAssembly.Module.imports(new WebAssembly.Module(compile(src))).map(i => i.name);
+function importsOf(src: string): string[] {
+  const bytes = compile(src);
+  assertModule(bytes);
+  return WebAssembly.Module.imports(new WebAssembly.Module(bytes)).map(i => i.name);
+}
 
 describe("wasm backend", () => {
   test("emits a valid module", () => {
-    expect(WebAssembly.validate(compile("1 + 2"))).toBe(true);
-    expect(WebAssembly.validate(compile("let f = fn(x: int): int { x }; f(1)"))).toBe(true);
+    assertModule(compile("1 + 2"));
+    assertModule(compile("let f = fn(x: int): int { x }; f(1)"));
   });
+
+  test("every example compiles to a valid module with no empty function bodies", () => {
+    // Generalized from a star.ef-only check (moved here from
+    // examples.test.ts): the invariant holds for any compiled program, so
+    // it runs over every file in examples/. Compiling all examples takes
+    // ~11s (star.ef alone ~3s), well over the 5s default timeout.
+    const dir = join(workspaceDir, "examples");
+    for (const bin of readdirSync(dir)
+      .map(file => join(dir, file))
+      .map(f => readFileSync(f).toString())
+      .map(compile)) 
+      assertModule(bin);
+  }, 30000);
 
   test("arithmetic: int / float division, neg, mod", () => {
     expect(parity("7 / 2")).toBe("3"); // int division truncates
@@ -113,8 +155,7 @@ describe("wasm backend", () => {
 
   test("recursion: non-tail and tail (return_call_indirect, O(1) wasm stack)", () => {
     expect(parity("let fib = fn(n) { if (n < 2) { n } else { fib(n-1) + fib(n-2) } }; fib(15)")).toBe("610");
-    expect(parity("let lp = fn(n, acc) { if (n == 0) { acc } else { lp(n - 1, acc + n) } }; lp(100000, 0)"))
-      .toBe("5000050000");
+    expect(parity("let lp = fn(n, acc) { if (n == 0) { acc } else { lp(n - 1, acc + n) } }; lp(100000, 0)")).toBe("5000050000");
   });
 
   test("math builtins", () => {
@@ -182,8 +223,7 @@ a + b`)).toBe("6");
     // Same unhandled-effect error message as the interpreter.
     parity("effect Foo(n: int): int; Foo!(1) + 2");
     // One-shot interp injection overrides the default interpretation.
-    expect(show(runWasm("effect Foo(n: int): int; Foo!(21) * 2", {Foo: args => (args[0] as number) + 1})))
-      .toBe("44");
+    expect(show(runWasm("effect Foo(n: int): int; Foo!(21) * 2", {Foo: args => (args[0] as number) + 1}))).toBe("44");
   });
 
   test("handlers: user ops, resume, deep nesting, multi-shot", () => {
@@ -203,44 +243,37 @@ a + b`)).toBe("6");
     expect(parity(`effect Choose(opts: [int]): int;
       handle { let x = Choose!([1,2,3]); let y = Choose!([10,20]); [x, y] }
       case Return(v) => k { [v] }
-      case Choose(opts) => k { flat(map(k, opts)) }`))
-      .toBe("[[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]");
+      case Choose(opts) => k { flat(map(k, opts)) }`)).toBe("[[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]");
     // Non-resuming case aborts the rest of the body.
     expect(parity(`effect Div(a: int, b: int): int;
       handle { let r = Div!(10, 0); [r] }
-      case Div(a, b) => k { if (b == 0) { ["div by zero"] } else { k(a / b) } }`))
-      .toBe("[\"div by zero\"]");
+      case Div(a, b) => k { if (b == 0) { ["div by zero"] } else { k(a / b) } }`)).toBe("[\"div by zero\"]");
     // Deep handlers: a log threaded through nested resumes (resume in a
     // non-tail position inside concat).
     expect(parity(`effect Log(msg: string): unit;
       effect Result(v: string): unit;
       handle { Log!("a"); Log!("b"); Result!("42") }
       case Log(msg) => k { concat([msg], k(unit)) }
-      case Result(v) => k { [v] }`))
-      .toBe("[\"a\", \"b\", \"42\"]");
+      case Result(v) => k { [v] }`)).toBe("[\"a\", \"b\", \"42\"]");
     // Propagation from inside a case body to the next handler.
     expect(parity(`effect Emit(m: string): unit;
       effect Other(m: string): unit;
       handle { handle { Emit!("hi") } case Other(m) => k { ["should-not-match"] } }
-      case Emit(m) => k { [m] }`))
-      .toBe("[\"hi\"]");
+      case Emit(m) => k { [m] }`)).toBe("[\"hi\"]");
     // Inner handler with a Return case stays live around the resumed segment:
     // outer case resumes 3, segment yields 4, inner Return case wraps it.
     expect(parity(`effect A(): int;
-      handle { handle { A!() + 1 } case Return(v) => k { [v] } } case A() => k { k(3) }`))
-      .toBe("[4]");
+      handle { handle { A!() + 1 } case Return(v) => k { [v] } } case A() => k { k(3) }`)).toBe("[4]");
     // Builtin effect intercepted by a user handler.
     expect(parity("effect Read(): int; handle { Read!() + 1 } case Read() => k { 41 }")).toBe("41");
     // Exit! intercepted without resuming: the code after it never runs.
     expect(parity(`handle { Out!("pre"); Exit!(42); Out!("post") }
       case Exit(c) => k { c }
-      case Out(s) => k { Println!(s); k(unit) }`))
-      .toBe("42");
+      case Out(s) => k { Println!(s); k(unit) }`)).toBe("42");
     // Perform inside call arguments: two invocations get independent frames.
     expect(parity(`effect Op(): int;
       handle { let f = fn(a: int, b: int): int { a + b }; f(Op!(), Op!()) }
-      case Op() => k { k(3) }`))
-      .toBe("6");
+      case Op() => k { k(3) }`)).toBe("6");
   });
 
   test("interp injection overrides builtin effects (Read mock)", () => {
@@ -256,55 +289,40 @@ a + b`)).toBe("6");
 describe("wasm effect codegen regressions", () => {
   test("multi-param op: two-shot resume of a 2-param continuation", () => {
     // Return slots for a multi-param op must not alias across resumes.
-    expect(parity(
-      "effect T(a: int, b: int): int; handle { T!(1, 2) } case T(a, b) => k { let x = k(a); let y = k(b); x + y }",
-    )).toBe("3");
+    expect(parity("effect T(a: int, b: int): int; handle { T!(1, 2) } case T(a, b) => k { let x = k(a); let y = k(b); x + y }")).toBe("3");
   });
 
   test("single-param op: two-shot resume, no call_indirect trap", () => {
-    expect(parity(
-      "effect T(n: int): int; handle { T!(5) } case T(n) => k { let x = k(n); let y = k(n); x + y }",
-    )).toBe("10");
+    expect(parity("effect T(n: int): int; handle { T!(5) } case T(n) => k { let x = k(n); let y = k(n); x + y }")).toBe("10");
   });
 
   test("flat: scalar passthrough under a resuming handler", () => {
     // k resumes to a plain scalar; flat must pass scalars through instead of
     // treating them as single-element arrays (broke every flatmap before).
-    expect(parity(
-      "effect T(): int; handle { T!() } case T() => k { flat(map(k, [7, 8])) }",
-    )).toBe("[7, 8]");
+    expect(parity("effect T(): int; handle { T!() } case T() => k { flat(map(k, [7, 8])) }")).toBe("[7, 8]");
   });
 
   test("flatmap over ints under no handler", () => {
-    expect(parity(
-      "flat(map(fn(x: int): [int] { [x, x * 10] }, [1, 2, 3]))",
-    )).toBe("[1, 10, 2, 20, 3, 30]");
+    expect(parity("flat(map(fn(x: int): [int] { [x, x * 10] }, [1, 2, 3]))")).toBe("[1, 10, 2, 20, 3, 30]");
   });
 
   test("array literal elements survive suspension", () => {
     // Elements emitted before/after a perform inside the same array literal.
-    expect(parity("effect Op(): int; handle { [Op!(), Op!()] } case Op() => k { k(7) }"))
-      .toBe("[7, 7]");
-    expect(parity("effect Op(): int; handle { [1, 2, Op!(), Op!()] } case Op() => k { k(7) }"))
-      .toBe("[1, 2, 7, 7]");
-    expect(parity("effect Op(): int; handle { [[Op!(), 1], [2, [Op!()]]] } case Op() => k { k(7) }"))
-      .toBe("[[7, 1], [2, [7]]]");
+    expect(parity("effect Op(): int; handle { [Op!(), Op!()] } case Op() => k { k(7) }")).toBe("[7, 7]");
+    expect(parity("effect Op(): int; handle { [1, 2, Op!(), Op!()] } case Op() => k { k(7) }")).toBe("[1, 2, 7, 7]");
+    expect(parity("effect Op(): int; handle { [[Op!(), 1], [2, [Op!()]]] } case Op() => k { k(7) }")).toBe("[[7, 1], [2, [7]]]");
   });
 
   test("handle as an operator operand compiles to a valid module", () => {
     const src = "effect Op(): int; 1 + handle { Op!() } case Op() => k { 7 }";
-    expect(WebAssembly.validate(compile(src))).toBe(true);
+    assertModule(compile(src));
     expect(parity(src)).toBe("8");
   });
 
   test("div cut modes: performs in both div operand positions", () => {
     // The divisor's cut mode was mis-emitted, silently yielding wrong values.
-    expect(parity(
-      "effect P(): float; effect Q(): float; handle { (7.0 / P!()) / Q!() } case P() => k { k(2.0) } case Q() => k { k(7.0) }",
-    )).toBe("0.5");
-    expect(parity(
-      "effect P(): int; effect Q(): int; handle { (7 + P!()) / Q!() } case P() => k { k(2) } case Q() => k { k(7) }",
-    )).toBe("1");
+    expect(parity("effect P(): float; effect Q(): float; handle { (7.0 / P!()) / Q!() } case P() => k { k(2.0) } case Q() => k { k(7.0) }")).toBe("0.5");
+    expect(parity("effect P(): int; effect Q(): int; handle { (7 + P!()) / Q!() } case P() => k { k(2) } case Q() => k { k(7) }")).toBe("1");
   });
 
   test("perform inside a while condition", () => {
@@ -312,42 +330,30 @@ describe("wasm effect codegen regressions", () => {
     // re-runs one pass with the resumed value).
     // A resuming handler drives the loop: the case body returns the live i,
     // so the cond sees 0,1,2 then 3 and the loop exits.
-    expect(parity(
-      "effect Op(): int; let i = 0; handle { while (Op!() < 3) { i = i + 1 }; i } case Op() => k { k(i) }",
-    )).toBe("3");
+    expect(parity("effect Op(): int; let i = 0; handle { while (Op!() < 3) { i = i + 1 }; i } case Op() => k { k(i) }")).toBe("3");
     // A non-resuming case body abandons the loop: its value is the handle
     // block's value (the continuation is discarded).
-    expect(parity(
-      "effect Op(): int; let i = 0; handle { while (Op!() < 3) { i = i + 1 }; i } case Op() => k { i }",
-    )).toBe("0");
+    expect(parity("effect Op(): int; let i = 0; handle { while (Op!() < 3) { i = i + 1 }; i } case Op() => k { i }")).toBe("0");
     // Perform in the cond AND a body perform whose case body abandons the
     // continuation (finite: the cond resumes with the live i via the Op arm).
-    expect(parity(
-      "effect Op(): int; effect Twice(): int; let i = 0; handle { let s = 0; while (Op!() < 3) { s = s + Twice!(); i = i + 1 }; s } case Op() => k { k(i) } case Twice() => k { 7 }",
-    )).toBe("7");
-    expect(parity(
-      "effect Op(): int; handle { let s = 0; let i = 0; while (i < 2) { s = s + Op!(); i = i + 1 }; s } case Op() => k { k(2) }",
-    )).toBe("4");
+    expect(parity("effect Op(): int; effect Twice(): int; let i = 0; handle { let s = 0; while (Op!() < 3) { s = s + Twice!(); i = i + 1 }; s } case Op() => k { k(i) } case Twice() => k { 7 }")).toBe("7");
+    expect(parity("effect Op(): int; handle { let s = 0; let i = 0; while (i < 2) { s = s + Op!(); i = i + 1 }; s } case Op() => k { k(2) }")).toBe("4");
   });
 
   test("handle as a statement inside a while body", () => {
-    expect(parity(
-      "effect Op(): int; handle { let s = 0; let i = 0; while (i < 2) { s = s + handle { Op!() } case Op() => k2 { k2(10) }; i = i + 1 }; s } case Op() => k { k(3) }",
-    )).toBe("20");
+    expect(parity("effect Op(): int; handle { let s = 0; let i = 0; while (i < 2) { s = s + handle { Op!() } case Op() => k2 { k2(10) }; i = i + 1 }; s } case Op() => k { k(3) }")).toBe("20");
   });
 
   test("dlet destructuring whose bound expressions perform", () => {
     // Two performs inside dlet bindings, one resumed non-trivially (k(k(4))).
-    expect(parity(
-      "effect Op(): int; handle { let [x, y, z] = [1, Op!(), 3]; let [w] = [x + z + Op!()]; w + y } case Op() => k { k(k(4)) }",
-    )).toBe("52");
+    expect(parity("effect Op(): int; handle { let [x, y, z] = [1, Op!(), 3]; let [w] = [x + z + Op!()]; w + y } case Op() => k { k(k(4)) }")).toBe("52");
   });
 });
 
 describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () => {
   test("effect-free program with no served builtins: no host imports", () => {
     const src = "let x = 1; let i = 0; while (i < 5) { x = x + i; i = i + 1 }; x";
-    expect(WebAssembly.validate(compile(src))).toBe(true);
+    assertModule(compile(src));
     const imp = importsOf(src);
     expect(imp.length).toBeLessThan(7);
     expect(imp).not.toContain("ef_perform");
@@ -389,11 +395,8 @@ describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () =>
   });
 
   test("a program using everything keeps all 7 imports in original order", () => {
-    const src =
-      "let x = round(cos(0) * 10) + round(sin(0) * 10) + strlen(char(97)) + number(\"2\") + len(args()); Println!(x); x";
-    expect(importsOf(src)).toEqual([
-      "ef_perform", "ef_char", "ef_number", "ef_args", "ef_cos", "ef_sin", "ef_fail",
-    ]);
+    const src = "let x = round(cos(0) * 10) + round(sin(0) * 10) + strlen(char(97)) + number(\"2\") + len(args()); Println!(x); x";
+    expect(importsOf(src)).toEqual(["ef_perform", "ef_char", "ef_number", "ef_args", "ef_cos", "ef_sin", "ef_fail"]);
     parity(src);
   });
 });
@@ -402,12 +405,17 @@ describe("wasm binaryen shrink pass (optimizeBinary)", () => {
   test("keeps host ABI exports/imports and semantics after the shrink pass", () => {
     // effectful program: ef_perform must survive the optimizer via the table
     const src = "Println!(\"hi\"); let f = fn(x: int): int ! { Println } { Println!(x); x * 2 }; f(21)";
-    const mod = new WebAssembly.Module(compile(src));
+    const bytes = compile(src);
+    assertModule(bytes);
+    const mod = new WebAssembly.Module(bytes);
     const exports = WebAssembly.Module.exports(mod).map(e => e.name);
     // §4/§6: no memory/$hp in the GC plane — run + the 12 accessors only.
-    for (const e of ["run", "__tag", "__num", "__str_len", "__str_get",
+    for (const e of [
+      "run", "__tag", "__num", "__str_len", "__str_get",
       "__arr_len", "__arr_get", "__mk_num", "__mk_bool", "__str_new",
-      "__str_set", "__arr_new", "__arr_set"]) expect(exports).toContain(e);
+      "__str_set", "__arr_new", "__arr_set",
+    ])
+      expect(exports).toContain(e);
     expect(exports).not.toContain("mem");
     expect(exports).not.toContain("__hp");
     expect(importsOf(src)).toContain("ef_perform");
@@ -416,231 +424,6 @@ describe("wasm binaryen shrink pass (optimizeBinary)", () => {
 
   test("output is deterministic", () => {
     expect(Buffer.from(compile("len(range(1, 10, 1))")).equals(Buffer.from(compile("len(range(1, 10, 1))")))).toBe(true);
-  });
-});
-
-describe("wasm GC substrate", () => {
-  // Section framing for the probe module: the GC helpers in wasm.ts cover
-  // types/globals/function bodies; the rest of the section plumbing stays
-  // local to the test (Buf is module-private).
-  class Bin {
-    b: number[] = [];
-    u8(...x: number[]): this { this.b.push(...x); return this; }
-    bytes(x: number[]): this { this.b.push(...x); return this; }
-    lebU(n: number): this {
-      for (;;) {
-        const x = n & 0x7f; n >>>= 7;
-        if (n !== 0) { this.b.push(x | 0x80); } else { this.b.push(x); return this; }
-      }
-    }
-    lebS(n: number): this {
-      for (;;) {
-        const x = n & 0x7f; n >>= 7;
-        if ((n === 0 && (x & 0x40) === 0) || (n === -1 && (x & 0x40) !== 0)) {
-          this.b.push(x); return this;
-        }
-        this.b.push(x | 0x80);
-      }
-    }
-    name(s: string): this { this.lebU(s.length); for (const c of s) this.b.push(c.charCodeAt(0)); return this; }
-  }
-  const sect = (m: Bin, id: number, payload: Bin) => {
-    m.u8(id); m.lebU(payload.b.length); m.bytes(payload.b);
-  };
-
-  test("GC probe: struct/array/i31/global/call_indirect/array.copy validate+run in Bun, survive binaryen GC", () => {
-    const I32T = 0x7f, F64T = 0x7c, I16T = 0x77; // valtype / packed storage bytes
-    // Type section through the GC builder: one $NUM struct, one $ELEMS
-    // array, one $STR array (+ func types), structurally deduped.
-    const T = new GcTypes();
-    const NUM = T.struct([[F64T, false]]);       // $NUM (struct (field f64))
-    const ELEMS = T.array(ANYREF, true);         // $ELEMS (array (mut anyref))
-    const STR = T.array(I16T, true);             // $STR (array (mut i16))
-    const T_VOID_ANY = T.func([], [ANYREF]);     // run/f1/f2/ci/rc
-    const T_F64_ANY = T.func([F64T], [ANYREF]);  // mk_num
-    const T_ANY_F64 = T.func([ANYREF], [F64T]);  // num_get
-    const T_I32_ANY = T.func([I32T], [ANYREF]);  // efp import
-    const T_I32 = T.func([], [I32T]);            // t1/g_get
-    const T_VOID = T.func([], []);               // $init
-    // structural dedup: identical shapes reuse the first type index
-    expect(T.func([], [ANYREF])).toBe(T_VOID_ANY);
-    expect(T.array(ANYREF, true)).toBe(ELEMS);
-    expect(T.struct([[F64T, false]])).toBe(NUM);
-
-    // Globals + $init scaffolding: one (mut anyref) global, initialized
-    // ref.null any; $init seeds it with an i31 bool (true).
-    const st = new GcStatics();
-    const G = st.global();
-    expect(G).toBe(0);
-    st.init.body.u8(0x41).lebS(1).u8(GC).u8(REF_I31).u8(0x24).lebU(G);
-
-    // Defined funcs (defidx -> abs funcidx = defidx + 1 for the efp import):
-    // 0:$init 1:run 2:t1 3:f1 4:f2 5:num_get 6:mk_num 7:ci 8:rc 9:g_get
-    // built on the emitter's Fn (locals via i32()/anyref(); params come from
-    // the func type, e.g. num_get/mk_num's single local IS their param).
-    const codeEntry = (f: Fn): number[] => {
-      const locals = new Bin();
-      locals.lebU(f.locals.length);
-      for (const ty of f.locals) locals.lebU(1).u8(ty);
-      return new Bin().bytes(locals.b).bytes(f.body.b).u8(0x0B).b;
-    };
-    const init = st.init;
-    const run = new Fn(0);
-    const t1 = new Fn(0);
-    const f1 = new Fn(0);
-    const f2 = new Fn(0);
-    const numGet = new Fn(1);   // local 0 = anyref param
-    const mkNum = new Fn(1);    // local 0 = f64 param
-    const ci = new Fn(0);
-    const rc = new Fn(0);
-    const gGet = new Fn(0);
-
-    // run: the efp import builds a $NUM via the exported mk_num constructor;
-    // run reads f64 field, adds 0.5, reallocs (JS sees the result as opaque).
-    run.anyref(); // local 0
-    run.body
-      .u8(0x41).lebS(7).u8(0x10).lebU(0).u8(0x21).lebU(0)          // efp(7) -> local 0
-      .u8(0x20).lebU(0).u8(GC).u8(REF_CAST).lebU(NUM)                  // ref.cast (ref $NUM)
-      .u8(GC).u8(STRUCT_GET).lebU(NUM).lebU(0)                         // struct.get .0
-      .u8(0x44).bytes([0, 0, 0, 0, 0, 0, 0xE0, 0x3F]).u8(0xA0)      // + 0.5
-      .u8(GC).u8(STRUCT_NEW).lebU(NUM);                                // struct.new $NUM
-
-    // t1: the value-plane gauntlet, everything folds into one i32 sum.
-    t1.i32(); t1.anyref(); t1.anyref(); t1.anyref();                // locals 0..3
-    t1.body
-      // ref.test null: a null anyref is not (ref $NUM)
-      .u8(REF_NULL).u8(ANYREF).u8(GC).u8(REF_TEST_NULL).lebU(NUM)         // +1: null matches (ref null $NUM)
-      // $ELEMS: i31 bools stored through anyref, typed select (0x1C) picks
-      // the i31 true over ref.null none (false) at runtime
-      .u8(0x41).lebS(2).u8(GC).u8(ARRAY_NEW_DEFAULT).lebU(ELEMS).u8(0x21).lebU(1)
-      .u8(0x20).lebU(1).u8(GC).u8(REF_CAST_NULL).lebU(ELEMS).u8(0x41).lebS(0)
-      .u8(0x41).lebS(42).u8(GC).u8(REF_I31)
-      .u8(GC).u8(ARRAY_SET).lebU(ELEMS)                                // (arr, idx, val)
-      .u8(0x20).lebU(1).u8(GC).u8(REF_CAST_NULL).lebU(ELEMS).u8(0x41).lebS(0)
-      .u8(GC).u8(ARRAY_GET).lebU(ELEMS)
-      .u8(GC).u8(REF_TEST).u8(I31REF)                                     // i31: true
-      .u8(0x6A)                                                     // fold the ref.test-null 1 in
-      .u8(0x41).lebS(99).u8(GC).u8(REF_I31)                            // i31 true bool
-      .u8(REF_NULL).u8(NONEREF)                                        // false bool
-      .u8(0x41).lebS(1)
-      .u8(SELECT_TYPED).lebU(1).u8(ANYREF)                          // typed select
-      .u8(GC).u8(REF_CAST).u8(I31REF).u8(GC).u8(I31_GET_U).u8(0x6A)          // +99
-      // global roundtrip: overwrite $init's bool with i31(55), read it back
-      .u8(0x41).lebS(55).u8(GC).u8(REF_I31).u8(0x24).lebU(G)
-      .u8(0x23).lebU(G).u8(GC).u8(REF_CAST).u8(I31REF).u8(GC).u8(I31_GET_S).u8(0x6A)
-      // $STR UTF-16 code unit via array.get_u, then array.len
-      .u8(0x41).lebS(3).u8(GC).u8(ARRAY_NEW_DEFAULT).lebU(STR).u8(0x21).lebU(1)
-      .u8(0x20).lebU(1).u8(GC).u8(REF_CAST_NULL).lebU(STR).u8(0x41).lebS(1)
-      .u8(0x41).lebS(0x263A).u8(GC).u8(ARRAY_SET).lebU(STR)
-      .u8(0x20).lebU(1).u8(GC).u8(REF_CAST_NULL).lebU(STR).u8(0x41).lebS(1)
-      .u8(GC).u8(ARRAY_GET_U).lebU(STR).u8(0x6A)                       // +0x263A
-      .u8(0x41).lebS(3).u8(GC).u8(ARRAY_NEW_DEFAULT).lebU(STR)
-      .u8(GC).u8(ARRAY_LEN).u8(0x6A)                                   // +3
-      // ref.eq on i31s (i31ref <: eqref)
-      .u8(0x41).lebS(5).u8(GC).u8(REF_I31).u8(0x41).lebS(5).u8(GC).u8(REF_I31)
-      .u8(REF_EQ).u8(0x6A)                                          // +1
-      // ref.eq via eqref casts on struct refs: distinct -> 0, same -> 1
-      .u8(0x44).bytes([0, 0, 0, 0, 0, 0, 0xF0, 0x3F]).u8(0x10).lebU(7).u8(0x21).lebU(2)  // mk_num(1)
-      .u8(0x44).bytes([0, 0, 0, 0, 0, 0, 0xF0, 0x3F]).u8(0x10).lebU(7).u8(0x21).lebU(3)
-      .u8(0x20).lebU(2).u8(GC).u8(REF_CAST_NULL).u8(EQREF)
-      .u8(0x20).lebU(3).u8(GC).u8(REF_CAST_NULL).u8(EQREF)
-      .u8(REF_EQ).u8(0x6A)                                          // +0
-      .u8(0x20).lebU(2).u8(GC).u8(REF_CAST_NULL).u8(EQREF)
-      .u8(0x20).lebU(2).u8(GC).u8(REF_CAST_NULL).u8(EQREF)
-      .u8(REF_EQ).u8(0x6A)                                          // +1
-      // array.copy: src[0..2) -> dst[1..), then read dst[2] == 20
-      .u8(0x41).lebS(3).u8(GC).u8(ARRAY_NEW_DEFAULT).lebU(ELEMS).u8(0x21).lebU(2)
-      .u8(0x20).lebU(2).u8(GC).u8(REF_CAST_NULL).lebU(ELEMS).u8(0x41).lebS(0)
-      .u8(0x41).lebS(10).u8(GC).u8(REF_I31).u8(GC).u8(ARRAY_SET).lebU(ELEMS)
-      .u8(0x20).lebU(2).u8(GC).u8(REF_CAST_NULL).lebU(ELEMS).u8(0x41).lebS(1)
-      .u8(0x41).lebS(20).u8(GC).u8(REF_I31).u8(GC).u8(ARRAY_SET).lebU(ELEMS)
-      .u8(0x41).lebS(4).u8(GC).u8(ARRAY_NEW_DEFAULT).lebU(ELEMS).u8(0x21).lebU(3)
-      .u8(0x20).lebU(3).u8(GC).u8(REF_CAST_NULL).lebU(ELEMS).u8(0x41).lebS(1)  // dst ref, dst idx
-      .u8(0x20).lebU(2).u8(GC).u8(REF_CAST_NULL).lebU(ELEMS).u8(0x41).lebS(0).u8(0x41).lebS(2)
-      .u8(GC).u8(ARRAY_COPY).lebU(ELEMS).lebU(ELEMS)                   // src ref, src idx, len
-      .u8(0x20).lebU(3).u8(GC).u8(REF_CAST_NULL).lebU(ELEMS).u8(0x41).lebS(2)
-      .u8(GC).u8(ARRAY_GET).lebU(ELEMS)
-      .u8(GC).u8(REF_CAST).u8(I31REF).u8(GC).u8(I31_GET_U).u8(0x6A);         // +20
-
-    // f1: return_call_indirect through the funcref table (slot 4 = f2)
-    f1.body.u8(0x41).lebS(4).u8(0x13).lebU(T_VOID_ANY).u8(0x00);
-    f2.body.u8(0x41).lebS(77).u8(GC).u8(REF_I31);
-    // num_get / mk_num: the JS<->GC struct boundary
-    numGet.body
-      .u8(0x20).lebU(0).u8(GC).u8(REF_CAST).lebU(NUM)
-      .u8(GC).u8(STRUCT_GET).lebU(NUM).lebU(0);
-    mkNum.body.u8(0x20).lebU(0).u8(GC).u8(STRUCT_NEW).lebU(NUM);
-    // ci: plain call_indirect (slot 4 = f2); rc: direct return_call to f2
-    ci.body.u8(0x41).lebS(4).u8(0x11).lebU(T_VOID_ANY).u8(0x00);
-    rc.body.u8(0x12).lebU(5);
-    gGet.body
-      .u8(0x23).lebU(G).u8(GC).u8(REF_CAST).u8(I31REF).u8(GC).u8(I31_GET_S);
-
-    const m = new Bin().bytes([0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00]);
-    sect(m, 1, T.section());
-    sect(m, 2, new Bin().lebU(1).name("env").name("efp").u8(0x00).lebU(T_I32_ANY));
-    const fnSec = new Bin().lebU(10);
-    for (const ty of [T_VOID, T_VOID_ANY, T_I32, T_VOID_ANY, T_VOID_ANY,
-      T_ANY_F64, T_F64_ANY, T_VOID_ANY, T_VOID_ANY, T_I32]) fnSec.lebU(ty);
-    sect(m, 3, fnSec);
-    sect(m, 4, new Bin().lebU(1).u8(FUNCREF, 0x00).lebU(10));
-    sect(m, 6, st.section());
-    const expSec = new Bin().lebU(8);
-    const exports: [string, number][] = [["run", 2], ["t1", 3], ["f1", 4], ["num_get", 6],
-      ["mk_num", 7], ["ci", 8], ["rc", 9], ["g_get", 10]];
-    for (const [nm, fi] of exports) {
-      expSec.name(nm).u8(0x00).lebU(fi);
-    }
-    sect(m, 7, expSec);
-    // start section: $init (abs funcidx 1) runs at instantiation, seeding the
-    // global before any export is callable (step 2 instead calls $init at the
-    // top of run())
-    sect(m, 8, new Bin().lebU(1));
-    // identity mapping: elem slot i holds abs funcidx i (import takes slot 0's
-    // neighbor: defined funcs start at abs idx 1)
-    const elem = new Bin().lebU(1).u8(0x00).u8(0x41).lebS(0).u8(0x0B).lebU(10);
-    for (let i = 1; i <= 10; i++) elem.lebU(i);
-    sect(m, 9, elem);
-    const code = new Bin().lebU(10);
-    for (const f of [init, run, t1, f1, f2, numGet, mkNum, ci, rc, gGet]) {
-      const c = codeEntry(f);
-      code.lebU(c.length); code.bytes(c);
-    }
-    sect(m, 10, code);
-    const bytes = new Uint8Array(m.b);
-
-    expect(WebAssembly.validate(bytes)).toBe(true);
-    // efp builds a $NUM through the exported mk_num constructor (the probe's
-    // host-boundary case); the holder breaks the inst<->import cycle
-    const host = {ex: undefined as unknown as Record<string, (...a: unknown[]) => unknown>};
-    const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), {
-      env: {efp: (_n: number) => (host.ex.mk_num as (v: number) => object)(9.5)},
-    });
-    const ex = inst.exports as Record<string, (...a: unknown[]) => unknown>;
-    host.ex = ex;
-    // $init ran before any export call: the global holds i31(true)
-    expect(ex.g_get()).toBe(1);
-    expect(ex.t1()).toBe(9967);
-    expect(ex.g_get()).toBe(55);        // t1 overwrote the global
-    expect(ex.num_get(ex.run() as object)).toBe(10);  // 9.5 (host-built) + 0.5
-    expect(ex.ci()).toBe(77);
-    expect(ex.rc()).toBe(77);
-    expect(ex.f1()).toBe(77);
-
-    // binaryen shrink pass with GC read features added LOCALLY in this test
-    // (production BIN_FEATURES stays MVP+reference-types+tail-call until the
-    // rewrite flips it)
-    const opt = optimizeBinary(bytes, binaryen.Features.GC);
-    expect(WebAssembly.validate(opt)).toBe(true);
-    const host2 = {ex: undefined as unknown as Record<string, (...a: unknown[]) => unknown>};
-    const inst2 = new WebAssembly.Instance(new WebAssembly.Module(opt), {
-      env: {efp: (_n: number) => (host2.ex.mk_num as (v: number) => object)(9.5)},
-    });
-    const ex2 = inst2.exports as Record<string, (...a: unknown[]) => unknown>;
-    host2.ex = ex2;
-    expect(ex2.t1()).toBe(9967);
-    expect(ex2.num_get(ex2.run() as object)).toBe(10);
-    expect(ex2.f1()).toBe(77);
   });
 });
 // --- split re-emission regressions -----------------------------------------
@@ -668,52 +451,4 @@ if (x < 1) { Println!("then") } else { Println!("else") };
 Println!("tail")`);
   });
 
-  test("star.ef compiles to a valid module with no empty function bodies", () => {
-    const src = readFileSync(join(import.meta.dir, "examples/star.ef")).toString();
-    const bytes = compile(src); // binaryen shrink aborts on invalid modules
-    expect(bytes[0]).toBe(0x00);
-    expect(bytes[1]).toBe(0x61); // \0asm sanity
-    // Walk the code section: a 2-byte body (locals decl + end) is an orphaned
-    // rest thunk — it cannot return its result type, so the module is broken.
-    let p = 8;
-    const lebU = (): number => {
-      let r = 0, s = 0, by;
-      do { by = bytes[p++]; r |= (by & 0x7f) << s; s += 7; } while ((by & 0x80) !== 0);
-      return r;
-    };
-    let empty = 0;
-    while (p < bytes.length) {
-      const id = bytes[p++];
-      const size = lebU();
-      const end = p + size;
-      if (id === 10) {
-        const n = lebU();
-        for (let i = 0; i < n; i++) {
-          const sz = lebU();
-          if (sz <= 2) empty++;
-          p += sz;
-        }
-        break;
-      }
-      p = end;
-    }
-    expect(empty).toBe(0);
-  });
-
-  test("star.ef renders identically in interpreter and wasm (bounded prefix)", async () => {
-    const runBounded = async (mode: string): Promise<string> => {
-      const p = Bun.spawn(
-        ["sh", "-c", `timeout 8 bun run cli.ts ${mode} examples/star.ef 6 2 2>/dev/null | head -c 3000`],
-        {cwd: import.meta.dir, stdout: "pipe", stderr: "ignore"},
-      );
-      const out = await new Response(p.stdout).text();
-      await p.exited;
-      return out;
-    };
-    const [interp, wasm] = [await runBounded("run"), await runBounded("runwasm")];
-    // The first frame is deterministic; later frames diverge only by wall
-    // clock (the animation spins unbounded), so compare a prefix inside it.
-    expect(interp.length).toBeGreaterThanOrEqual(1000);
-    expect(wasm.slice(0, 1000)).toBe(interp.slice(0, 1000));
-  }, 25000);
 });

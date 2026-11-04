@@ -554,7 +554,14 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
     const f = join(tmpdir(), "ef-types-test.ef");
     writeFileSync(f, `effect T(x: int): int; Println!("a"); handle { T!(1) } case T(n) => k { n }`);
     try {
-      const out = execSync(`bun run cli.ts types ${f}`, {encoding: "utf8", timeout: 20000}).trim();
+      const out = execSync(`bun run cli.ts types ${f}`, {
+        encoding: "utf8",
+        timeout: 20000,
+        // styleText grays the `_` label; FORCE_COLOR=0 overrides any
+        // inherited FORCE_COLOR so piped output stays unstyled (NO_COLOR
+        // loses to an inherited FORCE_COLOR in bun).
+        env: {...process.env, FORCE_COLOR: "0"},
+      }).trim();
       // No lets -> only the result line. Println escapes to the runner; T is
       // handled internally, so the row lists only Println.
       expect(out.split("\n")).toEqual(["_ : int ! { Println }"]);
