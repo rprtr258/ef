@@ -22,6 +22,10 @@ const parity = (src: string) => {
   return interp;
 };
 
+// Host import names of the module compile(src) declares, in order.
+const importsOf = (src: string): string[] =>
+  WebAssembly.Module.imports(new WebAssembly.Module(compile(src))).map(i => i.name);
+
 describe("wasm backend", () => {
   test("emits a valid module", () => {
     expect(WebAssembly.validate(compile("1 + 2"))).toBe(true);
@@ -302,5 +306,47 @@ describe("wasm effect codegen regressions", () => {
     expect(parity(
       "effect Op(): int; handle { let [x, y, z] = [1, Op!(), 3]; let [w] = [x + z + Op!()]; w + y } case Op() => k { k(k(4)) }",
     )).toBe("52");
+  });
+});
+
+describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () => {
+  test("effect-free program with no served builtins: only ef_fail is imported", () => {
+    const src = "let x = 1; let i = 0; while (i < 5) { x = x + i; i = i + 1 }; x";
+    expect(WebAssembly.validate(compile(src))).toBe(true);
+    const imp = importsOf(src);
+    expect(imp.length).toBeLessThan(7);
+    expect(imp).not.toContain("ef_perform");
+    expect(imp).not.toContain("ef_char");
+    expect(imp).toEqual(["ef_fail"]); // ef_fail stays live unconditionally
+  });
+
+  test("an effect use keeps ef_perform imported (any op, even under a handler)", () => {
+    expect(importsOf("Println!(1)")).toContain("ef_perform");
+    expect(importsOf("effect Op(): int; handle { Op!() } case Op() => k { 7 }"))
+      .toContain("ef_perform");
+  });
+
+  test("live served builtins keep their imports, with interpreter parity", () => {
+    expect(importsOf("char(97)")).toContain("ef_char");
+    expect(importsOf("round(cos(0) * 100)")).toContain("ef_cos");
+    expect(importsOf("args()")).toContain("ef_args");
+    expect(parity("char(97)")).toBe("\"a\"");
+    expect(parity("round(cos(0) * 100)")).toBe("100");
+    expect(parity("len(args())")).toBe(String(process.argv.slice(2).length));
+  });
+
+  test("a user binding shadowing a served builtin keeps its import dead", () => {
+    const src = "let char = fn(x: int): int { x }; char(97)";
+    expect(importsOf(src)).not.toContain("ef_char");
+    expect(parity(src)).toBe("97");
+  });
+
+  test("a program using everything keeps all 7 imports in original order", () => {
+    const src =
+      "let x = round(cos(0) * 10) + round(sin(0) * 10) + strlen(char(97)) + number(\"2\") + len(args()); Println!(x); x";
+    expect(importsOf(src)).toEqual([
+      "ef_perform", "ef_char", "ef_number", "ef_args", "ef_cos", "ef_sin", "ef_fail",
+    ]);
+    parity(src);
   });
 });

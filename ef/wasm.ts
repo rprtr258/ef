@@ -142,7 +142,7 @@ const K_RET = 0, K_HDL = 1, K_SPILL = 2;
 // Static cells live at fixed offsets so the host can read them too.
 const TRUE_CELL = 0, FALSE_CELL = 16, UNIT_CELL = 32, STATIC_FIXED = 48;
 
-// Function indices: 0..HOST_IMPORTS.length-1 host imports, then helpers,
+// Function indices: 0..liveImports.length-1 host imports, then helpers,
 // lambdas, builtins, main.
 
 // Every builtin ef programs can name (the interpreter's global env).
@@ -201,12 +201,6 @@ const HOST_IMPORTS = [
   "ef_perform",
   "ef_char", "ef_number", "ef_args", "ef_cos", "ef_sin", "ef_fail",
 ];
-
-// Defined-function indices: helpers first, then lambdas, then handler case
-// functions, builtins, main.
-const F_ALLOC = HOST_IMPORTS.length, F_TRUTHY = F_ALLOC + 1, F_EQ = F_ALLOC + 2,
-  F_BOX = F_ALLOC + 3, F_CAPTURE = F_ALLOC + 4,
-  F_LAMBDA0 = F_ALLOC + 5;
 
 // Type section indices. T_KABI is the uniform CPS ABI of every defined
 // function (frame, k) -> i32; T_III_I is the land-thunk ABI (frame, v, k) -> i32.
@@ -365,6 +359,19 @@ class Compiler {
   // Builtins the program references as values (OPT_PASSES:
   // treeShakeBuiltins): layoutStatics/emitBuiltins emit only these.
   usedBuiltins = new Set<string>();
+  // Live host imports (OPT_PASSES: dropDeadHostImports) — a subset of
+  // HOST_IMPORTS in original order — each name's funcref index, and the
+  // helper indices derived from the live count. Defined-function indices:
+  // helpers first (they always follow the imports), then lambdas, then
+  // handler case functions, builtins, main.
+  liveImports = [...HOST_IMPORTS];
+  impIdx = new Map(HOST_IMPORTS.map((n, i): [string, number] => [n, i]));
+  fAlloc = HOST_IMPORTS.length;
+  fTruthy = HOST_IMPORTS.length + 1;
+  fEq = HOST_IMPORTS.length + 2;
+  fBox = HOST_IMPORTS.length + 3;
+  fCapture = HOST_IMPORTS.length + 4;
+  fLambda0 = HOST_IMPORTS.length + 5;
   hp0 = 0;
   // Perform spilling (§4.2): perform node → frame slot of its args cell.
   // The cell must survive the handler walk and stay reachable from the
@@ -425,33 +432,41 @@ class Compiler {
     for (const it of this.prog.items) {
       if ("e" in it) this.discover(it.e, this.globalScope);
     }
-    // 2. Function index assignment (deterministic AST order).
+    // 2. Module-level optimization pipeline: ordered passes over the
+    //    analysis results; each pass records facts the emitters consume.
+    //    They run before index assignment because helper/lambda/builtin
+    //    funcref indices derive from the live import count. (Planned for
+    //    this seam: helper-function reachability, function-body dedup,
+    //    wasm-opt post-pass.)
+    for (const pass of OPT_PASSES)
+      pass(this);
+    // 2b. Helper funcref indices: helpers always follow the live imports.
+    this.fAlloc = this.liveImports.length;
+    this.fTruthy = this.fAlloc + 1;
+    this.fEq = this.fAlloc + 2;
+    this.fBox = this.fAlloc + 3;
+    this.fCapture = this.fAlloc + 4;
+    this.fLambda0 = this.fAlloc + 5;
+    // 2c. Function index assignment (deterministic AST order).
     for (const it of this.prog.items) {
       if ("e" in it) this.assignLambdas(it.e);
     }
-    // 2b. Spill slots for perform/handle sites (§4.2/§4.4): each perform
+    // 2d. Spill slots for perform/handle sites (§4.2/§4.4): each perform
     // gets an args-cell slot and a result-value slot, each handle a
     // result-value slot, folded into the enclosing frame's size (case-body
     // spills go into the handler's hframe).
     this.computeSpills();
-    // 2c. Handler case functions: funcref indices + hframe sizes, plus the
+    // 2e. Handler case functions: funcref indices + hframe sizes, plus the
     // shared default-Return identity function.
     this.assignCaseFns();
-    // 2d. Module-level optimization pipeline: ordered passes between the
-    // analysis phase and static layout/emission; each pass records facts the
-    // emitters consume. (Planned for this seam: dead host-import
-    // elimination, helper-function reachability, function-body dedup,
-    // wasm-opt post-pass.)
-    for (const pass of OPT_PASSES)
-      pass(this);
     const builtins = BUILTINS.filter(b => this.usedBuiltins.has(b.name));
-    const builtin0 = F_LAMBDA0 + this.lambdaIdx.size + this.caseFnTotal;
+    const builtin0 = this.fLambda0 + this.lambdaIdx.size + this.caseFnTotal;
     // Land thunks occupy the table slots between builtins and main.
     this.thunk0 = builtin0 + builtins.length;
     // 3. Static layout (heap pointer starts after it).
     this.layoutStatics(builtin0);
     this.hp0 = (this.data.b.length + 7) & ~7;
-    // 4. Emit code: helpers (fixed indices 11..14), lambdas, builtin
+    // 4. Emit code: helpers (right after the live imports), lambdas, builtin
     //    trampolines, then main (last).
     this.funcs.push(...this.emitHelpers());
     for (const it of this.prog.items) {
@@ -605,7 +620,7 @@ class Compiler {
     const e = this.nodes[id];
     switch (e.t) {
       case "lambda":
-        this.lambdaIdx.set(id, F_LAMBDA0 + this.lambdaIdx.size);
+        this.lambdaIdx.set(id, this.fLambda0 + this.lambdaIdx.size);
         this.assignLambdas(e.body);
         break;
       case "let":
@@ -762,11 +777,11 @@ class Compiler {
       g(b, slice);
       g(b, hdl);
       op(b, CALL);
-      b.lebU(F_CAPTURE);
+      b.lebU(this.fCapture);
       st(b, copy);
       i32c(b, 16);
       op(b, CALL);
-      b.lebU(F_ALLOC);
+      b.lebU(this.fAlloc);
       st(b, fresh);
       g(b, fresh);
       i32c(b, K_HDL);
@@ -1144,7 +1159,7 @@ class Compiler {
       const cell = box.i32();
       i32c(b, 16);
       op(b, CALL);
-      b.lebU(F_ALLOC);
+      b.lebU(this.fAlloc);
       st(b, cell);
       g(b, cell);
       i32c(b, TAG_NUM);
@@ -1195,7 +1210,7 @@ class Compiler {
       i32c(b, 16);
       op(b, MUL);
       op(b, CALL);
-      b.lebU(F_ALLOC);
+      b.lebU(this.fAlloc);
       st(b, base);
       g(b, 0);
       st(b, src);
@@ -1440,7 +1455,7 @@ class Compiler {
   // hframe, so every case of one handler shares its fsize.
   assignCaseFns(): void {
     const idf = new Fn(2);
-    idf.idx = F_LAMBDA0 + this.lambdaIdx.size;
+    idf.idx = this.fLambda0 + this.lambdaIdx.size;
     this.identityRet = idf;
     let next = idf.idx + 1;
     for (const info of this.hdlCases.values()) {
@@ -1609,7 +1624,7 @@ class Compiler {
     const cell = f.i32();
     i32c(b, 16);
     op(b, CALL);
-    b.lebU(F_ALLOC);
+    b.lebU(this.fAlloc);
     st(b, cell);
     g(b, cell);
     i32c(b, K_RET);
@@ -1646,7 +1661,7 @@ class Compiler {
       const total = this.frameSizeOf(sc);
       i32c(b, 8 + 4 * total);
       op(b, CALL);
-      b.lebU(F_ALLOC);
+      b.lebU(this.fAlloc);
       st(b, snapv);
       this.loop(f, () => {
         i32c(b, 2 + total);
@@ -1667,7 +1682,7 @@ class Compiler {
     }
     i32c(b, 16);
     op(b, CALL);
-    b.lebU(F_ALLOC);
+    b.lebU(this.fAlloc);
     st(b, ksp);
     g(b, ksp);
     i32c(b, K_SPILL);
@@ -1712,7 +1727,7 @@ class Compiler {
     i32c(b, 8);
     op(b, ADD);
     op(b, CALL);
-    b.lebU(F_ALLOC);
+    b.lebU(this.fAlloc);
     st(b, ffp);
     g(b, ffp);
     g(b, cf);
@@ -1887,7 +1902,7 @@ class Compiler {
     pushA();
     pushB();
     op(b, CALL);
-    b.lebU(HOST_IMPORTS.indexOf("ef_fail"));
+    b.lebU(this.impIdx.get("ef_fail")!);
     op(b, 0x00); // unreachable
   }
 
@@ -1918,7 +1933,7 @@ class Compiler {
     op(body, MUL);
     op(body, ADD);
     op(body, CALL);
-    body.lebU(F_ALLOC);
+    body.lebU(this.fAlloc);
     st(body, blk);
     g(body, blk);
     g(body, la);
@@ -1960,7 +1975,7 @@ class Compiler {
     copy(bb, la, lb);
     i32c(body, 16);
     op(body, CALL);
-    body.lebU(F_ALLOC);
+    body.lebU(this.fAlloc);
     st(body, cell);
     g(body, cell);
     i32c(body, TAG_STR);
@@ -2020,7 +2035,7 @@ class Compiler {
     i32c(b, 8);
     op(b, ADD);
     op(b, CALL);
-    b.lebU(F_ALLOC);
+    b.lebU(this.fAlloc);
     st(b, blk);
     g(b, blk);
     g(b, n);
@@ -2034,7 +2049,7 @@ class Compiler {
     const cell = f.i32();
     i32c(b, 16);
     op(b, CALL);
-    b.lebU(F_ALLOC);
+    b.lebU(this.fAlloc);
     st(b, cell);
     g(b, cell);
     i32c(b, TAG_ARR);
@@ -2183,7 +2198,7 @@ class Compiler {
         const blk = f.i32(), cell = f.i32();
         i32c(b, 12);
         op(b, CALL);
-        b.lebU(F_ALLOC);
+        b.lebU(this.fAlloc);
         st(b, blk);
         g(b, blk);
         i32c(b, this.lambdaIdx.get(id)!);
@@ -2196,7 +2211,7 @@ class Compiler {
         strd(b, 8);
         i32c(b, 16);
         op(b, CALL);
-        b.lebU(F_ALLOC);
+        b.lebU(this.fAlloc);
         st(b, cell);
         g(b, cell);
         i32c(b, TAG_CLO);
@@ -2277,7 +2292,7 @@ class Compiler {
         const at = ci === undefined && tail;
         this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, ci === undefined ? "post" : ci === 0 ? "cut" : "pre"));
         op(b, CALL);
-        b.lebU(F_TRUTHY);
+        b.lebU(this.fTruthy);
         op(b, IF);
         b.u8(0x7f); // result i32
         this.pushRef(f, this.cutChildRef(e.a, f, s, ctx, ci === undefined ? "post" : ci === 1 ? "cut" : ci === 2 ? "pre" : "post", at));
@@ -2304,7 +2319,7 @@ class Compiler {
         b.u8(0x40);
         this.pushRef(f, this.expr(e.c, f, s, false, ctx));
         op(b, CALL);
-        b.lebU(F_TRUTHY);
+        b.lebU(this.fTruthy);
         op(b, EQZ);
         op(b, BR_IF);
         b.lebU(1);
@@ -2335,7 +2350,7 @@ class Compiler {
         const blk = f.i32();
         i32c(b, 8 + 4 * e.elems.length);
         op(b, CALL);
-        b.lebU(F_ALLOC);
+        b.lebU(this.fAlloc);
         st(b, blk);
         g(b, blk);
         i32c(b, e.elems.length);
@@ -2455,7 +2470,7 @@ class Compiler {
           // Fresh + tail: the boxed value is the caller's return value;
           // fragment re-emission: the value continues inside the fragment.
           op(b, cut === undefined && tail ? RETURN_CALL : CALL); // return_call / call
-          b.lebU(F_BOX);
+          b.lebU(this.fBox);
         } else {
           const fc = f.i32();
           this.pushRef(f, this.cutChildRef(e.fn, f, s, ctx, ci === 0 ? "cut" : ci < 0 ? "post" : "pre"));
@@ -2524,7 +2539,7 @@ class Compiler {
     const blk = f.i32(), cell = f.i32();
     i32c(b, 8 + 4 * e.args.length);
     op(b, CALL);
-    b.lebU(F_ALLOC);
+    b.lebU(this.fAlloc);
     st(b, blk);
     g(b, blk);
     i32c(b, e.args.length);
@@ -2664,7 +2679,7 @@ class Compiler {
     op(b, MUL);
     op(b, ADD);
     op(b, CALL);
-    b.lebU(F_ALLOC);
+    b.lebU(this.fAlloc);
     st(b, hfc);
     this.loop(f, () => {
       g(b, fsz);
@@ -2689,7 +2704,7 @@ class Compiler {
     // cell had been pushed before the walk (scan-first). Its next is the
     // K_SPILL cell (the rest fragment's prologue loads the snapshot and
     // skips the cell before dispatching, so K_SPILL stays invisible to
-    // every other dispatch and to F_CAPTURE's slice walk).
+    // every other dispatch and to fCapture's slice walk).
     const ret = this.retCell(f, restFn.idx, () => {
       g(b, ksp); // next = K_SPILL{frozen frame image, pre-walk ambient}
     }); // b = the current frame (holds the spilled args cell)
@@ -2699,7 +2714,7 @@ class Compiler {
     g(b, ret);
     g(b, hdl);
     op(b, CALL);
-    b.lebU(F_CAPTURE);
+    b.lebU(this.fCapture);
     st(b, slice);
     // Box the resume binder (§4.6): a TAG_CLO cell over the shared resume
     // fn and a capture record {arg0 = the slice, arg1 = the matched HDL
@@ -2712,7 +2727,7 @@ class Compiler {
     const rec = f.i32(), rblk = f.i32(), rclo = f.i32();
     i32c(b, 24);
     op(b, CALL);
-    b.lebU(F_ALLOC);
+    b.lebU(this.fAlloc);
     st(b, rec);
     g(b, rec);
     i32c(b, 0);
@@ -2731,7 +2746,7 @@ class Compiler {
     strd(b, 20); // arg2: this invocation's hframe copy
     i32c(b, 12);
     op(b, CALL);
-    b.lebU(F_ALLOC);
+    b.lebU(this.fAlloc);
     st(b, rblk);
     g(b, rblk);
     i32c(b, this.resumeFn!.idx);
@@ -2744,7 +2759,7 @@ class Compiler {
     strd(b, 8); // fsize (call frame size hint)
     i32c(b, 16);
     op(b, CALL);
-    b.lebU(F_ALLOC);
+    b.lebU(this.fAlloc);
     st(b, rclo);
     g(b, rclo);
     i32c(b, TAG_CLO);
@@ -2809,7 +2824,7 @@ class Compiler {
     g(b, 0);
     ld(b, 8 + 4 * spillSlot);
     op(b, CALL);
-    b.lebU(HOST_IMPORTS.indexOf("ef_perform"));
+    b.lebU(this.impIdx.get("ef_perform")!);
     st(b, v);
     g(b, 0);
     g(b, v);
@@ -2850,7 +2865,7 @@ class Compiler {
     const hf = f.i32(), hdl = f.i32();
     i32c(b, 8 + 4 * this.frameSizeOf(info.scope));
     op(b, CALL);
-    b.lebU(F_ALLOC);
+    b.lebU(this.fAlloc);
     st(b, hf);
     g(b, hf);
     g(b, 0);
@@ -2870,7 +2885,7 @@ class Compiler {
     });
     i32c(b, 16);
     op(b, CALL);
-    b.lebU(F_ALLOC);
+    b.lebU(this.fAlloc);
     st(b, hdl);
     g(b, hdl);
     i32c(b, K_HDL);
@@ -2932,7 +2947,7 @@ class Compiler {
     if (ci === undefined) this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, "post"));
     else this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, ci === 0 ? "cut" : "pre"));
     op(b, CALL);
-    b.lebU(F_TRUTHY);
+    b.lebU(this.fTruthy);
     op(b, IF);
     b.u8(0x40); // void: each arm ends in dispatch + return
     const arm = (armE: ExprID, cutArm: boolean): Split | null => {
@@ -3085,7 +3100,7 @@ class Compiler {
   emitLoopPass(f: Fn, e: Expr & {t: "while"}, s: Scope, kNext: number, entryIdx: number, condCut?: ExprID[], snap?: number): void {
     const b = f.body;
     // Value-explicit cond: the ref is materialized at its consume point
-    // (F_TRUTHY); keepRef persists it into the operand spill slot when the
+    // (fTruthy); keepRef persists it into the operand spill slot when the
     // fragment machinery mapped one (same discipline as the app case's
     // args). A Split inside the condition (a perform/handle/land call in
     // it) propagates to the enclosing catcher before the IF opens — the
@@ -3109,7 +3124,7 @@ class Compiler {
     }
     this.pushRef(f, condRef);
     op(b, CALL);
-    b.lebU(F_TRUTHY);
+    b.lebU(this.fTruthy);
     op(b, IF);
     b.u8(0x40); // void: the body path tails into the loop-back cell
     try {
@@ -3164,7 +3179,7 @@ class Compiler {
       const b = f.body;
       const box = () => {
         op(b, CALL);
-        b.lebU(F_BOX);
+        b.lebU(this.fBox);
       };
       switch (name) {
         case "+": {
@@ -3267,14 +3282,14 @@ class Compiler {
           this.slot(f, 0);
           this.slot(f, 1);
           op(b, CALL);
-          b.lebU(F_EQ);
+          b.lebU(this.fEq);
           break;
         }
         case "!=": {
           this.slot(f, 0);
           this.slot(f, 1);
           op(b, CALL);
-          b.lebU(F_EQ);
+          b.lebU(this.fEq);
           ld64(b, 8); // eq result cell's bool payload
           f64c(b, 0);
           op(b, FEQ); // 1 when $eq said false
@@ -3289,7 +3304,7 @@ class Compiler {
         case "not": {
           this.slot(f, 0);
           op(b, CALL);
-          b.lebU(F_TRUTHY);
+          b.lebU(this.fTruthy);
           op(b, EQZ);
           this.selectBool(f, () => {});
           break;
@@ -3505,12 +3520,12 @@ class Compiler {
         case "cos":
           this.slot(f, 0);
           op(b, CALL);
-          b.lebU(HOST_IMPORTS.indexOf("ef_cos"));
+          b.lebU(this.impIdx.get("ef_cos")!);
           break;
         case "sin":
           this.slot(f, 0);
           op(b, CALL);
-          b.lebU(HOST_IMPORTS.indexOf("ef_sin"));
+          b.lebU(this.impIdx.get("ef_sin")!);
           break;
         case "sqrt": {
           const x = this.slotF64(f, 0);
@@ -3587,16 +3602,16 @@ class Compiler {
         case "char":
           this.slot(f, 0);
           op(b, CALL);
-          b.lebU(HOST_IMPORTS.indexOf("ef_char"));
+          b.lebU(this.impIdx.get("ef_char")!);
           break;
         case "number":
           this.slot(f, 0);
           op(b, CALL);
-          b.lebU(HOST_IMPORTS.indexOf("ef_number"));
+          b.lebU(this.impIdx.get("ef_number")!);
           break;
         case "args":
           op(b, CALL);
-          b.lebU(HOST_IMPORTS.indexOf("ef_args"));
+          b.lebU(this.impIdx.get("ef_args")!);
           break;
         case "get": {
           const blk = f.i32(), len = f.i32(), idx = f.i32();
@@ -3667,7 +3682,7 @@ class Compiler {
           i32c(b, 8);
           op(b, ADD);
           op(b, CALL);
-          b.lebU(F_ALLOC);
+          b.lebU(this.fAlloc);
           st(b, nb);
           g(b, nb);
           g(b, nlen);
@@ -3850,7 +3865,7 @@ class Compiler {
       st(tb, elem);
       this.emitCallClosure(t, fc, name === "map" ? 1 : 2, (k, ffp) => {
         // Suspension-safe as-is: elem/iL are locals set before the call, and
-        // F_BOX cannot suspend, so no operand spans a suspension point.
+        // fBox cannot suspend, so no operand spans a suspension point.
         g(tb, ffp);
         i32c(tb, 8 + 4 * k);
         op(tb, ADD);
@@ -3859,7 +3874,7 @@ class Compiler {
           g(tb, iL);
           op(tb, CONV_I32);
           op(tb, CALL);
-          tb.lebU(F_BOX);
+          tb.lebU(this.fBox);
         }
         strd(tb, 0);
       }, false, true, 2, true, iterLand.idx);
@@ -3899,7 +3914,7 @@ class Compiler {
     // Allocate the global frame into local 0 ($fp convention).
     i32c(b, 8 + 4 * this.frameSizeOf(this.globalScope));
     op(b, CALL);
-    b.lebU(F_ALLOC);
+    b.lebU(this.fAlloc);
     st(b, 0);
     g(b, 0);
     i32c(b, 0);
@@ -3962,8 +3977,8 @@ class Compiler {
 
     // import section
     const impSection = new Buf();
-    impSection.lebU(HOST_IMPORTS.length);
-    for (const n of HOST_IMPORTS) {
+    impSection.lebU(this.liveImports.length);
+    for (const n of this.liveImports) {
       impSection.name("env");
       impSection.name(n);
       impSection.u8(0x00);
@@ -3980,7 +3995,7 @@ class Compiler {
     tableSection.lebU(1);
     tableSection.u8(0x70); // funcref
     tableSection.u8(0x00);
-    tableSection.lebU(HOST_IMPORTS.length + this.funcs.length);
+    tableSection.lebU(this.liveImports.length + this.funcs.length);
 
     // memory
     const pages = Math.max(1, Math.ceil(this.hp0 / 65536)) + 16;
@@ -3999,7 +4014,7 @@ class Compiler {
     globalSection.u8(0x0b);
 
     // exports: mem, run, __hp
-    const mainIdx = HOST_IMPORTS.length + this.funcs.length - 1;
+    const mainIdx = this.liveImports.length + this.funcs.length - 1;
     const expSection = new Buf();
     expSection.lebU(3);
     expSection.name("mem");
@@ -4013,7 +4028,7 @@ class Compiler {
     expSection.lebU(0);
 
     // element segment: identity mapping table slot i → func i
-    const total = HOST_IMPORTS.length + this.funcs.length;
+    const total = this.liveImports.length + this.funcs.length;
     const elemSection = new Buf();
     elemSection.lebU(1);
     elemSection.u8(0x00);
@@ -4084,12 +4099,14 @@ class Compiler {
 
 // --- module-level optimization pipeline ---------------------------------------
 
-// Ordered passes between the analysis phase and static layout/emission (run
-// in compile()); each records facts the emitters consume. Planned for this
-// seam: dead host-import elimination, helper-function reachability,
+// Ordered passes after the analysis phase and before index assignment (run
+// in compile()); each records facts the emitters consume, and index
+// assignment derives helper/lambda/builtin funcref indices from the live
+// import count. Planned for this seam: helper-function reachability,
 // function-body dedup, wasm-opt post-pass.
 const OPT_PASSES: ((c: Compiler) => void)[] = [
   treeShakeBuiltins,
+  dropDeadHostImports,
 ];
 
 // Marks every builtin the program references as a value: a bare sym that
@@ -4166,6 +4183,60 @@ function treeShakeBuiltins(c: Compiler): void {
   for (const it of c.prog.items)
     if ("e" in it)
       walk(it.e, c.globalScope);
+}
+
+// Import names that serve exactly one builtin each (import → builtin).
+const BUILTIN_IMPORTS: Record<string, string> = {
+  ef_char: "char", ef_number: "number", ef_args: "args",
+  ef_cos: "cos", ef_sin: "sin",
+};
+
+// Drops dead host imports: a builtin-served import is live iff its builtin
+// is in usedBuiltins (treeShakeBuiltins — shadowing-correct); ef_perform is
+// live iff the program contains any perform node (any op, even inside a
+// handler's body or a case body — handlers don't prove non-performance);
+// ef_fail stays live unconditionally — proving it dead needs reachability
+// analysis over the bounds checks in get/len/head/tail/set AND the inline
+// index/field-access bounds checks (deferred to the helper-reachability
+// pass). Live imports keep their HOST_IMPORTS order.
+function dropDeadHostImports(c: Compiler): void {
+  const performsOp = (id: ExprID): boolean => {
+    const e = c.nodes[id];
+    switch (e.t) {
+      case "perform":
+        return true;
+      case "lambda":
+        return performsOp(e.body);
+      case "block":
+        return e.stmts.some(performsOp);
+      case "let":
+      case "dlet":
+      case "assign":
+        return performsOp(e.val);
+      case "if":
+        return performsOp(e.c) || performsOp(e.a) || performsOp(e.b);
+      case "while":
+        return performsOp(e.c) || performsOp(e.body);
+      case "app":
+        return performsOp(e.fn) || e.args.some(performsOp);
+      case "arr":
+        return e.elems.some(performsOp);
+      case "field":
+        return performsOp(e.obj);
+      case "handle":
+        return performsOp(e.body) || e.cases.some(cse => performsOp(cse.body));
+      default:
+        return false; // sym/num/str/bool/unit
+    }
+  };
+  const hasPerform = c.prog.items.some(it => "e" in it && performsOp(it.e));
+  const live = HOST_IMPORTS.filter(n =>
+    n === "ef_perform" ? hasPerform :
+    n === "ef_fail" ? true :
+    Object.hasOwn(BUILTIN_IMPORTS, n) &&
+      c.usedBuiltins.has(BUILTIN_IMPORTS[n]));
+  c.liveImports = live;
+  c.impIdx = new Map(live.map((n, i): [string, number] => [n, i]));
 }
 
 // --- host runtime ------------------------------------------------------------
