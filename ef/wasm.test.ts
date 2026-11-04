@@ -64,6 +64,25 @@ describe("wasm backend", () => {
     expect(parity("1 != 2")).toBe("true");
   });
 
+  test("tail operator after a land call dispatches through the RET cell", () => {
+    // Regression: a lambda whose tail was `/` used to return the boxed
+    // value raw (return_call $box), bypassing the land site's RET cell —
+    // the `let y` binding was never stored and later reads saw unit. The
+    // inlined operators share the fixed shape: the tail value returns to
+    // the enclosing wrapper, which dispatches it through the continuation.
+    expect(parity(`let f = fn(x: int): int { x / 2 };
+      let y = f(10);
+      y + 1`)).toBe("6");
+    expect(parity(`let f = fn(x: int): int { x + 1 };
+      let y = f(10);
+      y * 2`)).toBe("22");
+    // Tail operator with a performing operand: the resumed value must
+    // dispatch through the real handler chain, not just a RET cell.
+    expect(parity(`effect Op(): int;
+      handle { let f = fn(x: int): int { x / 2 }; f(Op!()) + 1 }
+      case Op() => k { k(10) }`)).toBe("6");
+  });
+
   test("strings: concat, len", () => {
     expect(parity("\"ab\" + \"cd\"")).toBe("\"abcd\"");
     parity("len(\"héllo\")"); // len is array-only: both reject identically
@@ -326,14 +345,26 @@ describe("wasm effect codegen regressions", () => {
 });
 
 describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () => {
-  test("effect-free program with no served builtins: only ef_fail is imported", () => {
+  test("effect-free program with no served builtins: no host imports", () => {
     const src = "let x = 1; let i = 0; while (i < 5) { x = x + i; i = i + 1 }; x";
     expect(WebAssembly.validate(compile(src))).toBe(true);
     const imp = importsOf(src);
     expect(imp.length).toBeLessThan(7);
     expect(imp).not.toContain("ef_perform");
     expect(imp).not.toContain("ef_char");
-    expect(imp).toEqual(["ef_fail"]); // ef_fail stays live unconditionally
+    // ef_fail is live at our pass level (dropDeadHostImports), but with
+    // operators compiled inline this program contains no bounds check that
+    // could call it and no call_indirect/table, so the binaryen shrink pass
+    // proves it unreferenced and drops the import.
+    expect(imp).toEqual([]);
+  });
+
+  test("ef_fail stays live when a trapping builtin is used", () => {
+    // head/get trap through ef_fail; len/tail only ref.cast (native traps)
+    // and set on a fresh array literal is in-bounds-eliminable — none of
+    // those reference ef_fail, so binaryen may drop the import.
+    expect(importsOf("head([1])")).toContain("ef_fail");
+    expect(importsOf("get([1], 0)")).toContain("ef_fail");
   });
 
   test("an effect use keeps ef_perform imported (any op, even under a handler)", () => {

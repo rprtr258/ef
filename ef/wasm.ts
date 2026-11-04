@@ -79,7 +79,7 @@ import {Parser, type Expr, type ExprID, type Program} from "./parser.ts";
 import {checkProgram} from "./types.ts";
 import {type Value, show} from "./env.ts";
 import {builtinEffectHosts} from "./builtins.ts";
-import {BUILTINS, EFFECT_OPS, builtinRefs, collectEffectOps, performsAnyOp} from "./analysis.ts";
+import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, performsAnyOp} from "./analysis.ts";
 import binaryen from "binaryen";
 
 // --- binary encoding helpers -----------------------------------------------
@@ -273,6 +273,12 @@ const MAP_LIKE = new Set(["map", "each", "flatmap"]);
 // result/tmp array (except each) and the iteration counter.
 const mapLikeFrameWords = (name: string): number =>
   name === "each" ? 1 : MAP_LIKE.has(name) ? 2 : 0;
+
+// Operators compile inline at call sites (like the checker-stamped `/`):
+// operands unbox to f64 (or dispatch to $eq/$truthy) right in the caller,
+// no call, no frame. A trampoline exists only for operators referenced as
+// values (e.g. passed to foldl) — see treeShakeBuiltins.
+const OPERATOR_OPS = new Set(["+", "-", "*", "%", "neg", "<", ">", "<=", ">=", "==", "!=", "not"]);
 
 const HOST_IMPORTS = [
   "ef_perform",
@@ -529,6 +535,15 @@ class Compiler {
   // Builtins the program references as values (OPT_PASSES:
   // treeShakeBuiltins): layoutStatics/emitBuiltins emit only these.
   usedBuiltins = new Set<string>();
+  // Builtins referenced as VALUES (analysis.ts builtinValueUses — OPT_PASSES:
+  // treeShakeBuiltins): $CLO pool closures are emitted only for these;
+  // call-only builtins are called directly via builtinFnIdx instead, and
+  // operator trampolines exist only when the operator is value-referenced.
+  valueBuiltins = new Set<string>();
+  // Trampoline funcref index per emitted builtin (compile step 2e) — direct
+  // builtin call sites target these instead of loading a $CLO and
+  // dispatching through the table.
+  builtinFnIdx = new Map<string, number>();
   // Live host imports (OPT_PASSES: dropDeadHostImports) — a subset of
   // HOST_IMPORTS in original order — each name's funcref index, and the
   // helper indices derived from the live count. Defined-function indices:
@@ -640,6 +655,10 @@ class Compiler {
     const builtin0 = this.fLambda0 + this.lambdaIdx.size + this.caseFnTotal;
     // Land thunks occupy the table slots between builtins and main.
     this.thunk0 = builtin0 + builtins.length;
+    // Trampoline funcref indices for direct builtin call sites (must match
+    // emitBuiltins' emission order: BUILTINS filtered by usedBuiltins).
+    for (let i = 0; i < builtins.length; i++)
+      this.builtinFnIdx.set(builtins[i].name, builtin0 + i);
     // 3. Static layout: assign global indices + $init code (§5).
     this.layoutStatics(builtin0);
     // 4. Emit code: helpers (right after the live imports), lambdas, builtin
@@ -1721,13 +1740,15 @@ class Compiler {
       this.strLits.set(v, gi);
     }
     // Builtin closures: $CLO {fnIdx, env = null, fsize = params + map-like
-    // extras} — only referenced builtins get one (OPT_PASSES:
-    // treeShakeBuiltins). `list` keeps fsize 0: its slot count is exactly
-    // argc, which the trampoline reads back via array.len.
-    let i = 0;
+    // extras} — only VALUE-referenced builtins get one (OPT_PASSES:
+    // treeShakeBuiltins + builtinValueUses): call-only builtins are called
+    // directly via builtinFnIdx, so no closure object is materialized.
+    // `list` keeps fsize 0: its slot count is exactly argc, which the
+    // trampoline reads back via array.len.
     for (const bi of BUILTINS) {
-      if (!this.usedBuiltins.has(bi.name)) continue;
-      const fni = builtin0 + i++;
+      if (!this.valueBuiltins.has(bi.name)) continue;
+      const fni = this.builtinFnIdx.get(bi.name);
+      if (fni === undefined) throw new WasmError(`internal: no trampoline for builtin ${bi.name}`);
       const gi = this.newStatic();
       i32c(b, fni);
       i31ref(b);
@@ -1894,18 +1915,32 @@ class Compiler {
     return ksp;
   }
 
-  emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false, landA?: number, sc?: Scope, ctx?: Ctx): void {
+  // `direct` (direct builtin call specialization): when set, the callee is
+  // a known builtin trampoline — skip the $CLO load (env = null, static
+  // fsize, funcref index known) and emit a direct call instead of reading
+  // the code index and dispatching through the table. The frame/k
+  // convention is identical in both modes.
+  emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false, landA?: number, sc?: Scope, ctx?: Ctx, direct?: {idx: number, fsize: number}): void {
     const b = f.body;
     const clob = f.anyref(), idx = f.i32(), cf = f.anyref(), fs = f.i32(),
       maxL = f.i32(), slots = f.anyref(), ffp = f.anyref();
-    g(b, fc);
-    st(b, clob);
-    g(b, clob); rcast(b, 6); sget(b, 6, 0); i31get(b);
-    st(b, idx);
-    g(b, clob); rcast(b, 6); sget(b, 6, 1);
-    st(b, cf);
-    g(b, clob); rcast(b, 6); sget(b, 6, 2); i31get(b);
-    st(b, fs);
+    if (direct === undefined) {
+      g(b, fc);
+      st(b, clob);
+      g(b, clob); rcast(b, 6); sget(b, 6, 0); i31get(b);
+      st(b, idx);
+      g(b, clob); rcast(b, 6); sget(b, 6, 1);
+      st(b, cf);
+      g(b, clob); rcast(b, 6); sget(b, 6, 2); i31get(b);
+      st(b, fs);
+    } else {
+      i32c(b, direct.idx);
+      st(b, idx);
+      rnull(b, 4); // env: builtins run over the call frame itself
+      st(b, cf);
+      i32c(b, direct.fsize);
+      st(b, fs);
+    }
     // Slot count = max(fs, argc) — the slots array holds the params and the
     // body's lets (fs) or all the args, whichever is longer. (argc readers
     // use array.len instead of a stored argc field — valid only because the
@@ -1966,10 +2001,15 @@ class Compiler {
         splitAt = new Split(rest, [...this.cutStack]);
       }
     } else rnull(b, 5); // k=0 (ref.null $K): the callee's dispatch returns its value inline
-    g(b, idx);
-    op(b, tail || land ? RETURN_CALL_INDIRECT : CALL_INDIRECT); // noSplit land calls tail too (see above)
-    b.lebU(T_KABI);
-    b.lebU(0);
+    if (direct === undefined) {
+      g(b, idx);
+      op(b, tail || land ? RETURN_CALL_INDIRECT : CALL_INDIRECT); // noSplit land calls tail too (see above)
+      b.lebU(T_KABI);
+      b.lebU(0);
+    } else {
+      op(b, tail || land ? RETURN_CALL : CALL); // direct: fn index is static, not a stack operand
+      b.lebU(direct.idx);
+    }
     if (splitAt !== null) {
       // Fill the rest-of-site fragment directly at the land call site.
       // Cut-stack baseline: the same value the enclosing body-level catcher
@@ -2244,6 +2284,100 @@ class Compiler {
       return {k: "slot", i: sp};
     }
     return this.expr(id, f, s, false, {kL: ctx.kL, snap: ctx.snap});
+  }
+
+  // Inline operator computation (§OPERATOR_OPS): the operands' refs are
+  // computed and spilled first (same discipline as `/`), then the operator
+  // computation runs on the caller's operand stack — no call, no frame.
+  // Mirrors each operator's $-trampoline body in emitBuiltins (same dynamic
+  // dispatch: `+` falls back to string concat then null). Leaves the boxed
+  // result on the stack; the wrapper dispatches it (never return_call $box:
+  // a raw tail return would bypass the caller's RET cell).
+  emitOperatorInline(f: Fn, name: string, e: Expr & {t: "app"}, s: Scope, ctx: Ctx, ci: number): void {
+    const b = f.body;
+    // Operand cut modes, mirroring the `/` path: the arg holding the cut
+    // site continues the fragment ("cut"), an earlier sibling reloads its
+    // spill ("pre"), a later sibling re-emits fresh ("post").
+    const argMode = (i: number): "cut" | "pre" | "post" =>
+      ci === i + 1 ? "cut" : i === 0 && ci > 1 ? "pre" : "post";
+    const pushArg = (i: number): void => {
+      this.pushRef(f, this.cutChildRef(e.args[i], f, s, ctx, argMode(i)));
+    };
+    switch (name) {
+      case "+": {
+        const a = f.anyref(), bv = f.anyref();
+        pushArg(0); st(b, a);
+        pushArg(1); st(b, bv);
+        g(b, a); rtestn(b, 0); g(b, bv); rtestn(b, 0);
+        op(b, AND); op(b, IF); b.u8(ANYREF);
+        g(b, a); rcastn(b, 0); sget(b, 0, 0);
+        g(b, bv); rcastn(b, 0); sget(b, 0, 0);
+        op(b, FADD);
+        op(b, CALL); b.lebU(this.fBox);
+        op(b, ELSE);
+        g(b, a); rtestn(b, 2); g(b, bv); rtestn(b, 2); op(b, AND);
+        op(b, IF); b.u8(ANYREF);
+        this.emitStrCat(f, a, bv);
+        op(b, ELSE); rnull(b, ANYREF); op(b, END); op(b, END);
+        break;
+      }
+      case "-": case "*": case "%": {
+        const x = f.f64(), y = f.f64();
+        pushArg(0); rcastn(b, 0); sget(b, 0, 0); st(b, x);
+        pushArg(1); rcastn(b, 0); sget(b, 0, 0); st(b, y);
+        if (name === "%") {
+          // JS fmod: a - b * trunc(a/b)
+          const t = f.f64();
+          g(b, x); g(b, y); op(b, FDIV); op(b, FTRUNC); st(b, t);
+          g(b, x); g(b, y); g(b, t); op(b, FMUL); op(b, FSUB);
+        } else {
+          g(b, x); g(b, y); op(b, name === "-" ? FSUB : FMUL);
+        }
+        op(b, CALL); b.lebU(this.fBox);
+        break;
+      }
+      case "neg": {
+        pushArg(0); rcastn(b, 0); sget(b, 0, 0);
+        op(b, FNEG);
+        op(b, CALL); b.lebU(this.fBox);
+        break;
+      }
+      case "<": case ">": case "<=": case ">=": {
+        const x = f.anyref(), y = f.anyref();
+        pushArg(0); st(b, x);
+        pushArg(1); st(b, y);
+        const cmp = name === "<" ? FLT : name === ">" ? FGT : name === "<=" ? FLE : FGE;
+        this.selectBool(f, () => {
+          g(b, x); rcastn(b, 0); sget(b, 0, 0);
+          g(b, y); rcastn(b, 0); sget(b, 0, 0);
+          op(b, cmp);
+        });
+        break;
+      }
+      case "==": {
+        pushArg(0); pushArg(1);
+        op(b, CALL); b.lebU(this.fEq);
+        break;
+      }
+      case "!=": {
+        pushArg(0); pushArg(1);
+        op(b, CALL); b.lebU(this.fEq);
+        rcastn(b, I31REF); // eq result's i31 bool payload
+        i31get(b);
+        op(b, EQZ); // 1 when $eq said false
+        this.selectBool(f, () => {});
+        break;
+      }
+      case "not": {
+        pushArg(0);
+        op(b, CALL); b.lebU(this.fTruthy);
+        op(b, EQZ);
+        this.selectBool(f, () => {});
+        break;
+      }
+      default:
+        throw new WasmError(`internal: no inline emitter for operator ${name}`);
+    }
   }
 
   // One child of a cut node, ref-native — also used for fresh emission
@@ -2552,6 +2686,20 @@ class Compiler {
         const kids = [e.fn, ...e.args];
         const ci = cut === undefined ? -1 : kids.indexOf(cut[0]);
         if (cut !== undefined && ci < 0) throw new WasmError("internal: split chain root mismatch");
+        // Direct builtin reference: the callee sym resolves to no user
+        // binding and names a builtin with a trampoline. Operators compile
+        // inline (no call at all, like `/` below); other builtins call their
+        // trampoline directly (no $CLO load, no table dispatch). `/` is
+        // checker-stamped instead (e.div) and keeps its own inline path.
+        const fne = this.nodes[e.fn];
+        const bname = e.div === undefined && fne.t === "sym" &&
+          this.resolve(s, fne.v) === null && BUILTINS.some(bb => bb.name === fne.v) ? fne.v : null;
+        // Inline paths compute right here, so at a tail position the boxed
+        // value must be DISPATCHED through the ambient continuation by the
+        // enclosing wrapper (emitStmtSeq bridges + emitDispatch) — the value
+        // must never return raw past the enclosing function, or a land
+        // site's RET cell would be bypassed (the callee is "supposed" to
+        // dispatch, but there is no callee).
         if (e.div !== undefined) {
           // `/` is stamped by the checker (int vs float truncation); the
           // fn is the `/` sym itself, so the cut site is always in an
@@ -2569,10 +2717,31 @@ class Compiler {
           sget(b, 0, 0);
           op(b, FDIV);
           if (e.div === "int") op(b, FTRUNC);
-          // Fresh + tail: the boxed value is the caller's return value;
-          // fragment re-emission: the value continues inside the fragment.
-          op(b, cut === undefined && tail ? RETURN_CALL : CALL); // return_call / call
+          // Box inline (never return_call $box: at a tail position the raw
+          // return would bypass the caller's RET cell — the wrapper's
+          // dispatch must see the value).
+          op(b, CALL);
           b.lebU(this.fBox);
+        } else if (bname !== null && OPERATOR_OPS.has(bname)) {
+          this.emitOperatorInline(f, bname, e, s, ctx, ci);
+        } else if (bname !== null && this.builtinFnIdx.has(bname)) {
+          // Direct builtin call: static funcref index + fsize, env = null.
+          const bi = BUILTINS.find(bb => bb.name === bname)!;
+          this.emitCallClosure(f, 0, e.args.length, (k, ffp) => {
+            const r = this.cutChildRef(e.args[k], f, s, ctx,
+              k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
+            g(b, ffp); rcast(b, 4); sget(b, 4, 1);
+            i32c(b, k);
+            this.pushRef(f, r);
+            aset(b, 1);
+          }, cut === undefined && tail,
+          this.landCalls.has(id),
+          ctx.kL,
+          undefined,
+          undefined,
+          s,
+          ctx,
+          {idx: this.builtinFnIdx.get(bname)!, fsize: bi.params + mapLikeFrameWords(bname)});
         } else {
           const fc = f.anyref();
           this.pushRef(f, this.cutChildRef(e.fn, f, s, ctx, ci === 0 ? "cut" : ci < 0 ? "post" : "pre"));
@@ -2600,7 +2769,10 @@ class Compiler {
           ctx);
         }
         // emitCallClosure leaves the landed result on the stack (or
-        // tail-returns, making this capture unreachable). Bridge to a ref.
+        // tail-returns, making this capture unreachable); the inline paths
+        // leave the computed value on the stack — at a tail position the
+        // enclosing wrapper (emitStmtSeq / fillRest) dispatches it through
+        // the ambient continuation, exactly like any non-call tail value.
         const v = f.anyref();
         st(b, v);
         return {k: "local", l: v};
@@ -4398,7 +4570,12 @@ const OPT_PASSES: ((c: Compiler) => void)[] = [
 // builtinRefs — shadowing-correct, checker-mirroring binding order):
 // layoutStatics/emitBuiltins emit only these.
 function treeShakeBuiltins(c: Compiler): void {
-  c.usedBuiltins = builtinRefs(c.prog);
+  c.valueBuiltins = builtinValueUses(c.prog);
+  const refs = builtinRefs(c.prog);
+  // Trampolines: every referenced non-operator (their direct call sites
+  // still call them); operators only when used as values, since operator
+  // call sites compile inline.
+  c.usedBuiltins = new Set([...refs].filter(n => c.valueBuiltins.has(n) || !OPERATOR_OPS.has(n)));
 }
 
 // Import names that serve exactly one builtin each (import → builtin).
@@ -4411,10 +4588,12 @@ const BUILTIN_IMPORTS: Record<string, string> = {
 // is in usedBuiltins (treeShakeBuiltins — shadowing-correct); ef_perform is
 // live iff the program contains any perform node (analysis.ts performsAnyOp
 // — any op, even inside a handler's body or a case body; handlers don't
-// prove non-performance); ef_fail stays live unconditionally — proving it
+// prove non-performance); ef_fail stays live at this pass level — proving it
 // dead needs reachability analysis over the bounds checks in
 // get/len/head/tail/set AND the inline index/field-access bounds checks
-// (deferred to the helper-reachability pass). Live imports keep their
+// (deferred to the helper-reachability pass — the binaryen shrink pass
+// performs the proof downstream for modules whose unreferenced code it can
+// see through, e.g. operator-only programs with no bounds checks left). Live imports keep their
 // HOST_IMPORTS order.
 function dropDeadHostImports(c: Compiler): void {
   const live = HOST_IMPORTS.filter(n =>

@@ -195,6 +195,19 @@ export function collectEffectOps(prog: Program): string[] {
 // reference (call site, argument, lambda body) marks it used; user code is
 // not dead-code-eliminated here.
 export function builtinRefs(prog: Program): Set<string> {
+  return classifyBuiltinRefs(prog).refs;
+}
+
+// The subset of builtinRefs referenced as VALUES — anywhere except the
+// callee position of an app (a callee sym that names a builtin is a direct
+// call site, not a value reference). The wasm backend emits $CLO pool
+// closures only for these, and operator trampolines only for these (direct
+// operator call sites compile the computation inline instead).
+export function builtinValueUses(prog: Program): Set<string> {
+  return classifyBuiltinRefs(prog).values;
+}
+
+function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<string>} {
   type Sc = {names: Set<string>, parent: Sc | null};
   const bound = (sc: Sc, name: string): boolean => {
     for (let s: Sc | null = sc; s !== null; s = s.parent)
@@ -202,12 +215,17 @@ export function builtinRefs(prog: Program): Set<string> {
     return false;
   };
   const used = new Set<string>();
-  const walk = (id: ExprID, sc: Sc): void => {
+  const values = new Set<string>();
+  // inCallee: the sym sits in an app's callee position — a direct call
+  // site, not a value reference. Only non-callee positions are value uses.
+  const walk = (id: ExprID, sc: Sc, inCallee = false): void => {
     const e = prog.nodes[id];
     switch (e.t) {
       case "sym":
-        if (!bound(sc, e.v) && BUILTINS.some(b => b.name === e.v))
+        if (!bound(sc, e.v) && BUILTINS.some(b => b.name === e.v)) {
           used.add(e.v);
+          if (!inCallee) values.add(e.v);
+        }
         break;
       case "lambda": {
         const s: Sc = {names: new Set(e.params.map(p => p.name)), parent: sc};
@@ -243,11 +261,16 @@ export function builtinRefs(prog: Program): Set<string> {
         walk(e.c, sc);
         walk(e.body, sc);
         break;
-      case "app":
-        walk(e.fn, sc);
+      case "app": {
+        // A builtin sym in callee position is a direct call, not a value
+        // use; any other callee shape (lambda, app, ...) walks normally.
+        const fn = prog.nodes[e.fn];
+        if (fn.t === "sym") walk(e.fn, sc, true);
+        else walk(e.fn, sc);
         for (const a of e.args)
           walk(a, sc);
         break;
+      }
       case "arr":
         for (const el of e.elems)
           walk(el, sc);
@@ -288,5 +311,5 @@ export function builtinRefs(prog: Program): Set<string> {
   for (const it of prog.items)
     if ("e" in it)
       walk(it.e, root);
-  return used;
+  return {refs: used, values};
 }

@@ -6,9 +6,10 @@ import {describe, expect, test} from "bun:test";
 import {Parser} from "./parser.ts";
 import {globalEnv} from "./env.ts";
 import {builtins} from "./builtins.ts";
-import {BUILTINS, EFFECT_OPS, builtinRefs, collectEffectOps, performsAnyOp} from "./analysis.ts";
+import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, performsAnyOp} from "./analysis.ts";
 
 const refs = (src: string) => builtinRefs(new Parser(src).parseProgram());
+const vals = (src: string) => builtinValueUses(new Parser(src).parseProgram());
 const ops = (src: string) => collectEffectOps(new Parser(src).parseProgram());
 const anyOp = (src: string) => performsAnyOp(new Parser(src).parseProgram());
 
@@ -68,6 +69,34 @@ describe("builtinRefs (tree-shake pass)", () => {
 
   test("builtins inside never-called lambdas still count (no user-code DCE)", () => {
     expect(refs("fn() { sqrt(2) }")).toEqual(new Set(["sqrt"]));
+  });
+});
+
+describe("builtinValueUses (pool-closure / operator-trampoline split)", () => {
+  test("callee position is a call site, not a value use", () => {
+    expect(vals("len(map(fn(x) { x }, [1]))")).toEqual(new Set());
+  });
+
+  test("argument and binding positions are value uses", () => {
+    expect(vals("map(len, [[1]]); let f = head;"))
+      .toEqual(new Set(["len", "head"]));
+  });
+
+  test("both positions mark value use", () => {
+    expect(vals("map(map, [[1]])")).toEqual(new Set(["map"]));
+  });
+
+  test("shadowing keeps the builtin out (mirrors builtinRefs)", () => {
+    expect(vals("let len = 1; len")).toEqual(new Set());
+    expect(vals("let len = len;")).toEqual(new Set());
+    expect(vals("fn(len: int): int { len }")).toEqual(new Set());
+  });
+
+  test("value use inside a non-callee child still counts", () => {
+    // A bare builtin sym inside a lambda body is a value reference, even
+    // when the lambda itself is a call argument; a builtin in the inner
+    // app's callee position would not be.
+    expect(vals("map(fn(xs) { len }, [[1]])")).toEqual(new Set(["len"]));
   });
 });
 
