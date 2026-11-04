@@ -362,6 +362,9 @@ class Compiler {
   resumeFn: Fn | null = null;
   caseFnTotal = 0;
   piOff = 0;
+  // Builtins the program references as values (OPT_PASSES:
+  // treeShakeBuiltins): layoutStatics/emitBuiltins emit only these.
+  usedBuiltins = new Set<string>();
   hp0 = 0;
   // Perform spilling (§4.2): perform node → frame slot of its args cell.
   // The cell must survive the handler walk and stay reachable from the
@@ -434,9 +437,17 @@ class Compiler {
     // 2c. Handler case functions: funcref indices + hframe sizes, plus the
     // shared default-Return identity function.
     this.assignCaseFns();
+    // 2d. Module-level optimization pipeline: ordered passes between the
+    // analysis phase and static layout/emission; each pass records facts the
+    // emitters consume. (Planned for this seam: dead host-import
+    // elimination, helper-function reachability, function-body dedup,
+    // wasm-opt post-pass.)
+    for (const pass of OPT_PASSES)
+      pass(this);
+    const builtins = BUILTINS.filter(b => this.usedBuiltins.has(b.name));
     const builtin0 = F_LAMBDA0 + this.lambdaIdx.size + this.caseFnTotal;
     // Land thunks occupy the table slots between builtins and main.
-    this.thunk0 = builtin0 + BUILTINS.length;
+    this.thunk0 = builtin0 + builtins.length;
     // 3. Static layout (heap pointer starts after it).
     this.layoutStatics(builtin0);
     this.hp0 = (this.data.b.length + 7) & ~7;
@@ -1484,12 +1495,16 @@ class Compiler {
     this.placeCell(TAG_BOOL, 1, 0); // TRUE_CELL = 0
     this.placeCell(TAG_BOOL, 0, 0); // FALSE_CELL = 16
     this.placeCell(TAG_UNIT, 0, 0); // UNIT_CELL = 32
-    // PI constant cell.
-    this.piOff = this.placeCell(TAG_NUM, Math.PI, 0);
+    // PI constant cell (only when the program references PI).
+    if (this.usedBuiltins.has("PI")) {
+      this.piOff = this.placeCell(TAG_NUM, Math.PI, 0);
+    }
     // Builtin closures: clo block {fn_idx, frame: 0, fsize} + a cell per name.
-    for (let i = 0; i < BUILTINS.length; i++) {
-      const bi = BUILTINS[i];
-      const fni = builtin0 + i;
+    // Only referenced builtins get a cell (OPT_PASSES: treeShakeBuiltins).
+    let i = 0;
+    for (const bi of BUILTINS) {
+      if (!this.usedBuiltins.has(bi.name)) continue;
+      const fni = builtin0 + i++;
 
       const blk = this.place([
         fni & 0xff, (fni >> 8) & 0xff, (fni >> 16) & 0xff, (fni >> 24) & 0xff,
@@ -1502,7 +1517,9 @@ class Compiler {
     }
     // PI is a float *value* (the checker types it `float`, not `() -> float`),
     // so bind the name to the constant cell, not to a closure.
-    this.cloOffsets.set("PI", this.piOff);
+    if (this.usedBuiltins.has("PI")) {
+      this.cloOffsets.set("PI", this.piOff);
+    }
     // Number literals.
     for (const [v] of this.numLits) {
       this.numLits.set(v, this.placeCell(TAG_NUM, v, 0));
@@ -3142,6 +3159,7 @@ class Compiler {
   emitBuiltins(builtin0: number): Fn[] {
     const out: Fn[] = [];
     for (const {name} of BUILTINS) {
+      if (!this.usedBuiltins.has(name)) continue;
       const f = new Fn(2); // (frame, k): builtins are T_KABI trampolines
       const b = f.body;
       const box = () => {
@@ -4064,6 +4082,92 @@ class Compiler {
   }
 }
 
+// --- module-level optimization pipeline ---------------------------------------
+
+// Ordered passes between the analysis phase and static layout/emission (run
+// in compile()); each records facts the emitters consume. Planned for this
+// seam: dead host-import elimination, helper-function reachability,
+// function-body dedup, wasm-opt post-pass.
+const OPT_PASSES: ((c: Compiler) => void)[] = [
+  treeShakeBuiltins,
+];
+
+// Marks every builtin the program references as a value: a bare sym that
+// resolves to no user binding — the same resolve the emitters use, so a user
+// `let` shadowing a builtin name keeps the builtin unreferenced. Any
+// reference (call site, argument, lambda body) marks it used; user code is
+// not dead-code-eliminated in this pass.
+function treeShakeBuiltins(c: Compiler): void {
+  const walk = (id: ExprID, sc: Scope): void => {
+    const e = c.nodes[id];
+    // Lambda/block nodes carry their own scope (bound by discover()).
+    const s = c.scopes.get(id) ?? sc;
+    switch (e.t) {
+      case "sym":
+        if (c.resolve(s, e.v) === null && BUILTINS.some(b => b.name === e.v))
+          c.usedBuiltins.add(e.v);
+        break;
+      case "lambda":
+        walk(e.body, s);
+        break;
+      case "block":
+        for (const stmt of e.stmts)
+          walk(stmt, s);
+        break;
+      case "let":
+      case "dlet":
+        // The binding is already in s (discover() binds before the value),
+        // mirroring emission: `let len = len` reads the slot, not the builtin.
+        walk(e.val, s);
+        break;
+      case "assign":
+        walk(e.val, s);
+        break;
+      case "if":
+        walk(e.c, s);
+        walk(e.a, s);
+        walk(e.b, s);
+        break;
+      case "while":
+        walk(e.c, s);
+        walk(e.body, s);
+        break;
+      case "app":
+        walk(e.fn, s);
+        for (const a of e.args)
+          walk(a, s);
+        break;
+      case "arr":
+        for (const el of e.elems)
+          walk(el, s);
+        break;
+      case "field":
+        walk(e.obj, s);
+        break;
+      case "perform":
+        for (const a of e.args)
+          walk(a, s);
+        break;
+      case "handle": {
+        walk(e.body, s);
+        // Case bodies run over the handler's hframe scope (bound in discover()).
+        const hs = c.hdlCases.get(id)!.scope;
+        for (const cse of e.cases)
+          walk(cse.body, hs);
+        break;
+      }
+      case "num":
+      case "str":
+      case "bool":
+      case "unit":
+        break;
+    }
+  };
+  for (const it of c.prog.items)
+    if ("e" in it)
+      walk(it.e, c.globalScope);
+}
+
 // --- host runtime ------------------------------------------------------------
 
 function hostBox(inst: WebAssembly.Instance, v: Value): number {
@@ -4075,7 +4179,8 @@ function hostBox(inst: WebAssembly.Instance, v: Value): number {
     return p;
   };
   if (v === null) return UNIT_CELL;
-  if (typeof v === "boolean") return v ? TRUE_CELL : FALSE_CELL;
+  if (typeof v === "boolean")
+    return v ? TRUE_CELL : FALSE_CELL;
   if (typeof v === "number") {
     const cell = alloc(16);
     mem.setInt32(cell, TAG_NUM, true);

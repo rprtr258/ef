@@ -86,6 +86,32 @@ describe("wasm backend", () => {
     expect(show(runWasm("round(PI * 100)"))).toBe("314");
   });
 
+  test("builtin shadowing: a user binding keeps the builtin unreferenced", () => {
+    // A `let` shadowing a builtin name must resolve to the user binding,
+    // not reach the builtin's closure.
+    expect(parity("let len = fn(xs: [int]): int { 42 }; len([1, 2, 3])")).toBe("42");
+    // Parameter shadowing a builtin name.
+    expect(parity("let f = fn(len: int): int { len * 2 }; f(21)")).toBe("42");
+    // Inner shadow, outer builtin use: only the outer reference is reachable.
+    expect(parity(`let g = fn() {
+  let len = fn(xs: [int]): int { 0 };
+  len([1])
+};
+g() + len([9, 9])`)).toBe("2");
+  });
+
+  test("builtins as values: references beyond call sites keep them emitted", () => {
+    // A builtin passed as an argument still needs its closure cell.
+    expect(parity("let apply1 = fn(f, x) { f(x) }; apply1(round, 2.6)")).toBe("3");
+    // Multiple builtins-as-values, referenced inside lambdas.
+    expect(parity(`let f = fn(f, x) { f(x) };
+let a = f(round, 2.6);
+let b = f(len, [1, 2, 3]);
+a + b`)).toBe("6");
+    // A builtin returned from a lambda and called at the site.
+    expect(parity("let mk = fn() { len }; mk()([7, 8, 9])")).toBe("3");
+  });
+
   test("errors surface identically (typecheck + runtime)", () => {
     parity("nope + 1"); // Unbound: nope
     parity("1 + \"a\""); // type error from checkProgram
