@@ -317,23 +317,38 @@ type Snapshot = {
 
 // Format a type for display. Expects a *deep-resolved* type (see
 // `Unifier.deepRes`): any variable shown is a genuinely unbound one.
+// Type variables display as letters (a, b, ..., z, a1, b1, ...) in order of
+// first appearance, so the same variable always prints the same letter.
 export function showT(t: Type): string {
-  switch (t.tag) {
-    case "prim": return t.name;
-    case "arr": return "[" + showT(t.elem) + "]";
-    case "tup":
-      return "[" + t.fields.map(f =>
-        f.name === null ? showT(f.type) : f.name + ": " + showT(f.type)).join(", ") + "]";
-    case "any": return "any";
-    case "var": return `t${t.id}`;
-    case "fun": {
-      const ps = t.params.map(showT).join(", ");
-      const e = t.effs instanceof Set
-        ? (t.effs.size > 0 ? " ! { " + [...t.effs].join(", ") + " }" : "")
-        : ` ! { e${t.effs.id} }`;
-      return "(" + ps + ") -> " + showT(t.ret) + e;
+  const names = new Map<number, string>();
+  const go = (t: Type): string => {
+    switch (t.tag) {
+      case "prim": return t.name;
+      case "arr": return "[" + go(t.elem) + "]";
+      case "tup":
+        return "[" + t.fields.map(f =>
+          f.name === null ? go(f.type) : f.name + ": " + go(f.type)).join(", ") + "]";
+      case "any": return "any";
+      case "var": {
+        let n = names.get(t.id);
+        if (n === undefined) {
+          const i = names.size;
+          const l = String.fromCharCode(97 + (i % 26));
+          n = i < 26 ? l : `${l}${Math.floor(i / 26)}`;
+          names.set(t.id, n);
+        }
+        return n;
+      }
+      case "fun": {
+        const ps = t.params.map(go).join(", ");
+        const e = t.effs instanceof Set
+          ? (t.effs.size > 0 ? " ! { " + [...t.effs].join(", ") + " }" : "")
+          : ` ! { e${t.effs.id} }`;
+        return "(" + ps + ") -> " + go(t.ret) + e;
+      }
     }
-  }
+  };
+  return go(t);
 }
 
 export class TypeError_ extends Error {}
