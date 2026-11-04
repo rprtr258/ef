@@ -14,8 +14,8 @@ Hindley-Milner-flavoured type system with effect tracking.
   pass, host runtime), `lint.ts`, `prims.ts`, frontends `cli.ts`/`repl.ts`.
 - Tests: `index.test.ts` + `lint.test.ts` + `wasm.test.ts` +
   `analysis.test.ts` (`bun:test`).
-- Run a file: `bun run cli.ts run <file>` (subcommands: `run`, `types`,
-  `lint`, `repl`).
+- Run a file: `bun run cli.ts run <file>` (subcommands: `run`, `buildwasm`,
+  `runwasm`, `types`, `lint`, `repl`).
 - Gates: `bun run ci` = typecheck + eslint + tests; all three must stay clean.
 
 ## Architecture (top to bottom, dependency order)
@@ -81,7 +81,7 @@ Hindley-Milner-flavoured type system with effect tracking.
    (effect interpretation comes from builtins.ts's `builtinEffectHosts`).
 9. **`lint.ts`** — lint passes over a parsed program (`LINT_PASSES`);
    currently one rule (`unused-arg`).
-10. **Frontends** — `cli.ts` (`ef run|runwasm|types|lint <file>`,
+10. **Frontends** — `cli.ts` (`ef run|buildwasm|runwasm|types|lint <file>`,
     `ef repl`) and `repl.ts`
    (line loop over `newCtx`/`exec`; bindings accumulate across lines).
 ## Working rules
@@ -142,4 +142,6 @@ bun run ci                # typecheck + lint + tests
 bun test                  # test suite only
 bun run cli.ts run examples/star.ef
 bun run cli.ts repl       # interactive REPL
+bun run cli.ts buildwasm examples/squares_sum.ef  # emit examples/squares_sum.wasm
+wasm-tools print|validate <file.wasm>  # inspect wasm output (WasmGC) — wabt's wasm2wat can't parse it at any version
 ```
