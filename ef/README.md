@@ -44,7 +44,7 @@ The handler calls `k` once per option, so the computation branches into all path
 | File            | Contents                                       |
 |-----------------|------------------------------------------------|
 | `index.ts`      | The whole language: lexer, parser, type checker, CPS evaluator, builtins, `run`/`show`/`typeOf`. |
-| `cli.ts`        | Frontend: `ef run <file> \| ef runwasm <file> \| ef types <file> \| ef lint <file> \| ef repl`. |
+| `cli.ts`        | Frontend: `ef run <file> \| ef buildwasm <file> [out] \| ef runwasm <file> \| ef types <file> \| ef lint <file> \| ef repl`. |
 | `index.test.ts` | The executable spec — positive and negative tests via `bun:test`. |
 | `AGENTS.md`     | Notes for AI agents working on this repo.      |
 
@@ -509,6 +509,7 @@ handle {
 
 ```
 ef run <file> [args...]   # typecheck then evaluate; extra args reach `args()`
+ef buildwasm <file> [out] # compile to a binary .wasm module and write it to `out`
 ef runwasm <file>         # compile to WebAssembly and run on the embedded host runtime
 ef types <file>           # print every top-level symbol and its inferred type
 ef lint <file>            # run lint passes and report issues (exits 1 on findings)
@@ -516,6 +517,8 @@ ef repl                   # interactive REPL; bindings persist across lines
 ```
 
 The result of the last expression is printed via `show` unless the program calls `Exit!(...)` itself. Programs that loop forever (animations) run until killed.
+
+`ef buildwasm` writes the same module to disk (default: `<file>.ef` → `<file>.wasm`) instead of running it.
 
 `ef runwasm` compiles the whole program to a binary `.wasm` module (`wasm.ts`, no external toolchain) and executes it in the host's WebAssembly engine. Output matches `ef run` for the supported subset: values, control flow, closures, arrays/strings, `handle` with multi-shot `resume`, and user effect ops. An effect with no matching handler in the chain — builtin or user — reaches the host through the `ef_perform` import and is interpreted by the same builtin host table `ef run` uses (optionally overridden via `runWasm`'s `interp` argument), so `Exit!` behaves identically: it terminates the process. Not supported: a perform or handle site inside an `if` branch or `while` body (rejected at compile time — suspension across those control-flow blocks).
 

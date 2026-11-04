@@ -1,15 +1,17 @@
 // ef CLI. `ef run <file>` typechecks then evaluates a source file.
 // `ef runwasm <file>` compiles the file to WebAssembly and runs it on the
 // embedded host runtime (same observable output as `ef run`).
+// `ef buildwasm <file> [out]` compiles the file to a binary .wasm module and
+// writes it to `out` (default: the input path with `.ef` replaced by `.wasm`).
 // `ef types <file>` prints every top-level symbol and its inferred type,
 // then the whole program's result type with its residual effect row (the
 // ops that reach the top level — unhandled builtin effects included,
 // internally-handled ops excluded).
 // `ef repl` starts an interactive REPL with persistent bindings.
-import {readFileSync} from "fs";
+import {readFileSync, writeFileSync} from "fs";
 import {styleText} from "util";
 import {run} from "./eval.ts";
-import {runWasm} from "./wasm.ts";
+import {runWasm, compile} from "./wasm.ts";
 import {type Type, showT, checkProgram} from "./types.ts";
 import {lint} from "./lint.ts";
 import {repl} from "./repl.ts";
@@ -59,6 +61,18 @@ function main(cmd: string, args: string[]) {
     console.log(show(result));
     return;
   }
+  case "buildwasm": {
+    if (args.length === 0) {
+      break;
+    }
+    const src = readFileSync(args[0]).toString();
+    const out = args[1] ??
+      (args[0].endsWith(".ef") ? args[0].slice(0, -3) + ".wasm" : args[0] + ".wasm");
+    const bytes = compile(src);
+    writeFileSync(out, bytes);
+    console.log(`wrote ${out} (${bytes.length} bytes)`);
+    return;
+  }
   case "types": {
     if (args.length === 0) {
       break;
@@ -92,7 +106,7 @@ function main(cmd: string, args: string[]) {
     process.exit(1);
   }
   }
-  console.error("Usage: ef run <file> [args...] | ef runwasm <file> | ef types <file> | ef lint <file> | ef repl");
+  console.error("Usage: ef run <file> [args...] | ef buildwasm <file> [out] | ef runwasm <file> | ef types <file> | ef lint <file> | ef repl");
   process.exit(2);
 }
 
