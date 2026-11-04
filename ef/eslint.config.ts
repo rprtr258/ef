@@ -1,5 +1,4 @@
 import js from "@eslint/js";
-import node from "eslint-plugin-n";
 import {defineConfig} from "eslint/config";
 import globals from "globals";
 import tseslint from "typescript-eslint";
