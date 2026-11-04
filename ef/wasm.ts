@@ -488,6 +488,11 @@ class Compiler {
   // maps an opid back to its name via the table `compileWithOps` returns.
   effOps: string[] = [...EFFECT_OPS];
   effOpIds = new Map<string, number>(EFFECT_OPS.map((op, i) => [op, i]));
+  // True iff the program contains any `handle` node (compile()'s pre-scan).
+  // K_HDL cells are pushed only by handle emission, so a handle-free
+  // program's k chains hold K_RET/K_SPILL cells only and emitDispatch can
+  // skip the handler case-table scan.
+  hasHandle = false;
   // Handler machinery (§4.4): per `handle` node, its op cases (each a
   // T_KABI function over the handler's shared hframe), the explicit Return
   // case if any, the static global idx of its dispatch table (set by
@@ -599,6 +604,9 @@ class Compiler {
         this.effOpIds.set(op, this.effOps.length);
         this.effOps.push(op);
       }
+    // Handler presence pre-scan (see hasHandle): one flag for the whole
+    // module, consulted by every emitDispatch call.
+    this.hasHandle = this.nodes.some((n) => n.t === "handle");
     // 1. Scope discovery: scopes per lambda/block, slot numbering, literals.
     for (const it of this.prog.items) {
       if ("e" in it) this.discover(it.e, this.globalScope);
@@ -2008,8 +2016,6 @@ class Compiler {
     kind(); i32c(b, K_RET); op(b, EQ);
     op(b, IF);
     b.u8(0x40);
-    const tbl = f.anyref(), nL = f.i32(), iL = f.i32(), found = f.i32(),
-      fnIdx = f.i32(), nparams = f.i32(), ent = f.i32();
     g(b, k); rcast(b, 5); sget(b, 5, 2); rcast(b, 4);
     g(b, v);
     g(b, k); rcast(b, 5); sget(b, 5, 3);
@@ -2022,49 +2028,57 @@ class Compiler {
     // fsize, nparams] i31 quadruples; the Return case, opid -1, goes last).
     // A K_SPILL cell (a rest fragment's frozen-frame marker) is transparent:
     // it carries no handler — skip it and walk on. Only kind==K_HDL scans.
-    kind(); i32c(b, K_HDL); op(b, EQ);
-    op(b, IF);
-    b.u8(0x40);
-    g(b, k); rcast(b, 5); sget(b, 5, 1); st(b, tbl);
-    g(b, tbl); rcast(b, 1); alen(b); i32c(b, 4); op(b, DIVU); st(b, nL);
-    i32c(b, 0); st(b, found);
-    i32c(b, 0); st(b, iL);
-    op(b, BLOCK);
-    b.u8(0x40);
-    op(b, LOOP);
-    b.u8(0x40);
-    g(b, iL); g(b, nL); op(b, GEU); op(b, BR_IF); b.lebU(1);
-    g(b, iL); i32c(b, 4); op(b, MUL); st(b, ent);
-    g(b, tbl); rcast(b, 1); g(b, ent); aget(b, 1); i31of();
-    i32c(b, -1); op(b, EQ);
-    op(b, IF);
-    b.u8(0x40);
-    i32c(b, 1); st(b, found);
-    g(b, tbl); rcast(b, 1); g(b, ent); i32c(b, 1); op(b, ADD); aget(b, 1); i31of(); st(b, fnIdx);
-    g(b, tbl); rcast(b, 1); g(b, ent); i32c(b, 3); op(b, ADD); aget(b, 1); i31of(); st(b, nparams);
-    op(b, BR); b.lebU(2); // exit the scan block
-    op(b, END);
-    g(b, iL); i32c(b, 1); op(b, ADD); st(b, iL);
-    op(b, BR); b.lebU(0);
-    op(b, END);
-    op(b, END);
-    g(b, found);
-    op(b, IF);
-    b.u8(0x40);
-    // Return case: store v into the hframe's Return param slot, then
-    // tail-call the case body as (hframe, k.next); funcref index last.
-    g(b, k); rcast(b, 5); sget(b, 5, 2); rcast(b, 4); sget(b, 4, 1);
-    g(b, nparams); i32c(b, 1); op(b, ADD);
-    g(b, v);
-    aset(b, 1);
-    g(b, k); rcast(b, 5); sget(b, 5, 2); rcast(b, 4);
-    g(b, k); rcast(b, 5); sget(b, 5, 3);
-    g(b, fnIdx);
-    op(b, RETURN_CALL_INDIRECT);
-    b.lebU(T_KABI);
-    b.lebU(0);
-    op(b, END);
-    op(b, END); // kind==K_HDL guard
+    // The scan is emitted only when the program contains a handle: K_HDL
+    // cells enter a chain solely via handle emission, so a handle-free
+    // program's scan is dead code — skipping it drops a nested scan loop
+    // (plus ~30 instructions of table probing) from every dispatch site.
+    if (this.hasHandle) {
+      kind(); i32c(b, K_HDL); op(b, EQ);
+      op(b, IF);
+      b.u8(0x40);
+      const tbl = f.anyref(), nL = f.i32(), iL = f.i32(), found = f.i32(),
+        fnIdx = f.i32(), nparams = f.i32(), ent = f.i32();
+      g(b, k); rcast(b, 5); sget(b, 5, 1); st(b, tbl);
+      g(b, tbl); rcast(b, 1); alen(b); i32c(b, 4); op(b, DIVU); st(b, nL);
+      i32c(b, 0); st(b, found);
+      i32c(b, 0); st(b, iL);
+      op(b, BLOCK);
+      b.u8(0x40);
+      op(b, LOOP);
+      b.u8(0x40);
+      g(b, iL); g(b, nL); op(b, GEU); op(b, BR_IF); b.lebU(1);
+      g(b, iL); i32c(b, 4); op(b, MUL); st(b, ent);
+      g(b, tbl); rcast(b, 1); g(b, ent); aget(b, 1); i31of();
+      i32c(b, -1); op(b, EQ);
+      op(b, IF);
+      b.u8(0x40);
+      i32c(b, 1); st(b, found);
+      g(b, tbl); rcast(b, 1); g(b, ent); i32c(b, 1); op(b, ADD); aget(b, 1); i31of(); st(b, fnIdx);
+      g(b, tbl); rcast(b, 1); g(b, ent); i32c(b, 3); op(b, ADD); aget(b, 1); i31of(); st(b, nparams);
+      op(b, BR); b.lebU(2); // exit the scan block
+      op(b, END);
+      g(b, iL); i32c(b, 1); op(b, ADD); st(b, iL);
+      op(b, BR); b.lebU(0);
+      op(b, END);
+      op(b, END);
+      g(b, found);
+      op(b, IF);
+      b.u8(0x40);
+      // Return case: store v into the hframe's Return param slot, then
+      // tail-call the case body as (hframe, k.next); funcref index last.
+      g(b, k); rcast(b, 5); sget(b, 5, 2); rcast(b, 4); sget(b, 4, 1);
+      g(b, nparams); i32c(b, 1); op(b, ADD);
+      g(b, v);
+      aset(b, 1);
+      g(b, k); rcast(b, 5); sget(b, 5, 2); rcast(b, 4);
+      g(b, k); rcast(b, 5); sget(b, 5, 3);
+      g(b, fnIdx);
+      op(b, RETURN_CALL_INDIRECT);
+      b.lebU(T_KABI);
+      b.lebU(0);
+      op(b, END);
+      op(b, END); // kind==K_HDL guard
+    }
     // No Return case (or a skipped K_SPILL): k = k.next and dispatch again.
     g(b, k); rcast(b, 5); sget(b, 5, 3); st(b, k);
     op(b, BR); b.lebU(0);
