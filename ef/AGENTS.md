@@ -32,9 +32,13 @@ Hindley-Milner-flavoured type system with effect tracking.
    `unify`, `infer`, `infer`, and a checker `Env` whose values may be `Scheme` thunks
    (polymorphism). `checkProgram(prog, acc?): Checked` — `acc` is the
    previous result passed back to accumulate bindings (the REPL protocol);
-   `lastType` is returned fully resolved, as is `Env.lookupResolved`.
+   `lastType` is returned fully resolved, as is `Env.lookupResolved`;
+   `Checked.unhandled` carries the items' residual top-level effect rows
+   (performed ops with no matching handler in their subtree) for exec's
+   fail-fast check.
 4. **`env.ts`** — runtime `Value`s, `Outcome`/`Cont` (CPS plumbing), runtime
-   `Env`, `globalEnv()` (the operator natives), `show`.
+   `Env`, `globalEnv(refs?)` / `seedBuiltins(env, refs)` (operator natives
+   + builtin bindings, optionally scoped to referenced builtins), `show`.
 5. **`builtins.ts`** — the single table of builtins; adding a builtin means
    adding one entry here. Three kinds: `fn` (plain, lifted to a native),
    `native` (CPS — calls ef closures: `map`/`each`/`flatmap`), `effect`
@@ -49,8 +53,9 @@ Hindley-Milner-flavoured type system with effect tracking.
    tables (static, sync enforced by `analysis.test.ts`), `performsAnyOp`,
    `collectEffectOps` (op discovery in wasm op-table order), `builtinRefs`
    (shadowing-correct builtin references; binding order mirrors the
-   checker). Consumed by wasm.ts's OPT_PASSES; future interpreter wiring
-   ideas live in its header comment.
+   checker). Consumed by wasm.ts's OPT_PASSES and eval.ts's exec (fail-fast
+   unhandled-op check + per-call env seeding); the rows also surface via
+   `ef types`'s result line.
 7. **`eval.ts`** — CPS evaluator (`evalE`/`apply`), multi-shot resume via
    plain JS functions; `Op!(...)` walks up to a matching handler and calls
    its `resume` (the captured continuation `k`). `runTop(out, interp?)`
@@ -62,15 +67,22 @@ Hindley-Milner-flavoured type system with effect tracking.
    derived in the same module as the `builtins` array), so every module
    initializes cleanly regardless of entry point. This module
    also owns the pipeline shared by the REPL and `run`: `newCtx(interp?)`
-   seeds state, `exec(prog, ctx)` checks then evaluates and returns
-   `{value, lastType, lastIsExpr}`; `run(src, interp?)` is a one-shot `exec`.
+   seeds state (empty runtime env), `exec(prog, ctx)` checks, fails fast
+   on statically unhandled non-builtin ops not covered by `ctx.interp`
+   (via `Checked.unhandled` — the checker's residual top-level effect
+   rows, which do ops-minus-handled matching through calls), seeds
+   `builtinRefs(prog)` into the runtime env (so a later REPL line can
+   reference a previously-unused builtin; user shadows are never
+   overwritten), then evaluates and returns `{value, lastType,
+   lastIsExpr}`; `run(src, interp?)` is a one-shot `exec`.
 8. **`wasm.ts`** — WebAssembly backend: CPS→wasm codegen over the same
    parser/types output, OPT_PASSES seam (tree-shaking, dead host-import
    elimination), in-process binaryen shrink pass, direct-style host runtime
    (effect interpretation comes from builtins.ts's `builtinEffectHosts`).
 9. **`lint.ts`** — lint passes over a parsed program (`LINT_PASSES`);
    currently one rule (`unused-arg`).
-10. **Frontends** — `cli.ts` (`ef run|types|lint|repl <file>`) and `repl.ts`
+10. **Frontends** — `cli.ts` (`ef run|runwasm|types|lint <file>`,
+    `ef repl`) and `repl.ts`
    (line loop over `newCtx`/`exec`; bindings accumulate across lines).
 ## Working rules
 

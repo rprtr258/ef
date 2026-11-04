@@ -4,7 +4,8 @@
 // is a plain JS function — giving true multi-shot `resume`.
 
 import {checkProgram, type Checked, type Type} from "./types.ts";
-import {Env, show, type Cont, type Native, type Outcome, type Value, num, globalEnv, type Closure} from "./env.ts";
+import {Env, show, type Cont, type Native, type Outcome, type Value, num, globalEnv, seedBuiltins, type Closure} from "./env.ts";
+import {builtinRefs} from "./analysis.ts";
 import {Parser, type Expr, type ExprID, type HandlerCase, type Program} from "./parser.ts";
 import {builtinInterps} from "./builtins.ts";
 
@@ -188,7 +189,9 @@ export type Ctx = {
 // newCtx: fresh pipeline state, seeded with the builtins.
 export function newCtx(interp?: EffectInterp): Ctx {
   return {
-    env: globalEnv(),
+    // Seeded empty: exec binds exactly the builtins each program references
+    // (builtinRefs), matching the wasm module's tree-shaken builtin table.
+    env: globalEnv(new Set()),
     checked: checkProgram({nodes: [], items: []}),
     interp,
   };
@@ -200,7 +203,21 @@ export function newCtx(interp?: EffectInterp): Ctx {
 // resolved type, and whether the program ends in a bare expression (the REPL
 // echo rule: declarations print nothing).
 export function exec(prog: Program, ctx: Ctx): {value: Value, lastType: Type, lastIsExpr: boolean} {
-  ctx.checked = checkProgram(prog, ctx.checked);
+  const checked = checkProgram(prog, ctx.checked);
+  // Fail fast on statically unhandled ops before evaluating anything: an op
+  // in `checked.unhandled` (performed with no matching handler in its
+  // subtree) that is neither a builtin effect nor covered by ctx.interp
+  // would only surface in runTop mid-run, after earlier items' side
+  // effects. Assign ctx.checked only after the check so a rejected line
+  // leaves the REPL accumulator untouched, like a type error does.
+  for (const op of checked.unhandled)
+    if (!(op in builtinInterps) && ctx.interp?.[op] === undefined)
+      throw new Error("Unhandled effect: " + op);
+  ctx.checked = checked;
+  // Bind builtins this program references that the env lacks yet (a later
+  // REPL line can use a previously-unreferenced builtin; user shadowing
+  // bindings are never overwritten).
+  seedBuiltins(ctx.env, builtinRefs(prog));
   let value: Value = null;
   let lastIsExpr = false;
   for (const it of prog.items) {

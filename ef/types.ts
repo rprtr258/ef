@@ -706,7 +706,11 @@ function infer(
           ? tFun([env.uni.res(bodyT)], env.uni.fresh(), new Set())
           : tFun([sig!.ret], env.uni.fresh(), new Set());
         n.vars.set(c.resume, resumeT);
-        const ct = infer(c.body, nodes, n, new Set<string>(), effects);
+        // Case bodies run outside this handler (its perform's continuation
+        // resumes past it), so their performed effects forward to the
+        // ambient row — an op they perform unhandled must remain tracked
+        // (a fresh set here would let effects escape untracked).
+        const ct = infer(c.body, nodes, n, effs, effects);
         if (resultT === null)
           resultT = ct;
         else
@@ -809,6 +813,13 @@ export type Checked = {
   effects: Map<string, EffectSig>,
   uni: Unifier,
   lastType: Type,
+  // Union of this call's items' top-level residual effect rows — performed
+  // ops with no matching handler in their subtree (the checker's own
+  // ops-minus-handled bookkeeping; lambdas defer their performs). exec
+  // fails fast on entries that are neither builtin effects nor covered by
+  // an interp override, instead of letting runTop throw mid-run after side
+  // effects. Fresh per checkProgram call (not accumulated from acc).
+  unhandled: Set<string>,
 };
 
 // checkProgram: typecheck `prog`. `acc` is the previous result — the REPL
@@ -840,8 +851,12 @@ export function checkProgram(
     effects.set(it.effect, {params: it.sig.params.map(t => t ?? uni.fresh()), ret: it.sig.ret});
 
   let lastType: Type = TNULL;
+  // One shared sink for all items: infer only ever ADDS residuals to the
+  // ambient set (handler matching happens in each handle's local bodyEffs
+  // before forwarding), so a program-wide unhandled-op set falls out.
+  const unhandled = new Set<string>();
   for (const it of prog.items.filter(it => "e" in it))
-    lastType = infer(it.e, prog.nodes, env, new Set(), effects);
+    lastType = infer(it.e, prog.nodes, env, unhandled, effects);
 
-  return {env, effects, uni, lastType: uni.deepRes(lastType)};
+  return {env, effects, uni, lastType: uni.deepRes(lastType), unhandled};
 }

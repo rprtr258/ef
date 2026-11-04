@@ -92,7 +92,16 @@ export class Env {
   }
 }
 
-export function globalEnv(): Env {
+// The runtime value for one non-effect builtin: `kind: "value"` binds as
+// the value itself (PI), `kind: "fn"` lifts to a CPS native, `kind:
+// "native"` is already CPS — so runtime binding matches the checker, which
+// binds every non-effect builtin by its `t`.
+function builtinValue(b: Exclude<(typeof builtins)[number], {kind: "effect"}>): Value {
+  if (b.kind === "value") return b.fn;
+  return b.kind === "fn" ? lift(b.fn) : {tag: "native", fn: b.fn};
+}
+
+export function globalEnv(refs?: Set<string>): Env {
   const g = new Env(null);
   const bin = (s: string, f: (a: Value, b: Value) => Value) => g.vars.set(s, lift(f));
   bin("+",  (a, b) =>
@@ -110,15 +119,23 @@ export function globalEnv(): Env {
   bin(">=", (a, b) => num(a) >= num(b));
   g.vars.set("neg", lift(a => -num(a)));
   // Named builtins and their impls come from the one table in builtins.ts.
-  // Values (PI) bind as the value itself — `kind: "fn"` lifts to a CPS native,
-  // `kind: "native"` is already CPS — so runtime binding matches the checker,
-  // which binds every non-effect builtin by its `t`.
+  // With `refs`, only referenced builtins bind — exec seeds missing ones
+  // incrementally per call, matching the wasm module's tree-shaken builtin
+  // table; without, all bind.
   for (const b of builtins) {
-    if (b.kind === "effect") continue;
-    if (b.kind === "value")
-      g.vars.set(b.name, b.fn);
-    else
-      g.vars.set(b.name, b.kind === "fn" ? lift(b.fn) : {tag: "native", fn: b.fn});
+    if (b.kind === "effect" || (refs !== undefined && !refs.has(b.name))) continue;
+    g.vars.set(b.name, builtinValue(b));
   }
   return g;
+}
+
+// seedBuiltins: bind builtin names in `refs` that `env` doesn't define yet.
+// exec calls this per program/REPL line so a later line can reference a
+// builtin no earlier line used; existing bindings are never overwritten (a
+// user `let` shadows the builtin for its whole lifetime).
+export function seedBuiltins(env: Env, refs: Set<string>): void {
+  for (const b of builtins) {
+    if (b.kind === "effect" || !refs.has(b.name) || env.vars.has(b.name)) continue;
+    env.vars.set(b.name, builtinValue(b));
+  }
 }

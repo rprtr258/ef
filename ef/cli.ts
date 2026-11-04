@@ -1,7 +1,10 @@
 // ef CLI. `ef run <file>` typechecks then evaluates a source file.
 // `ef runwasm <file>` compiles the file to WebAssembly and runs it on the
 // embedded host runtime (same observable output as `ef run`).
-// `ef types <file>` prints every top-level symbol and its inferred type.
+// `ef types <file>` prints every top-level symbol and its inferred type,
+// then the whole program's result type with its residual effect row (the
+// ops that reach the top level — unhandled builtin effects included,
+// internally-handled ops excluded).
 // `ef repl` starts an interactive REPL with persistent bindings.
 import {readFileSync} from "fs";
 import {styleText} from "util";
@@ -13,18 +16,23 @@ import {repl} from "./repl.ts";
 import {show} from "./env.ts";
 import {Parser, type ExprID} from "./parser.ts";
 
-// types: typecheck a source file and print every top-level symbol (let)
-// along with its inferred type, one per line as `name : type`.
-export function types(src: string): {name: string, type: Type}[] {
+// types: typecheck a source file; return every top-level symbol (let) with
+// its inferred type, plus the whole program's result type and its residual
+// top-level effect row (Checked.unhandled — the ops that reach the runner).
+export function types(src: string): {syms: {name: string, type: Type}[], result: Type, effs: Set<string>} {
   const prog = new Parser(src).parseProgram();
-  const {env} = checkProgram(prog);
+  const checked = checkProgram(prog);
   const names: string[] = [];
   for (const it of prog.items.filter((it): it is {e: ExprID} => "e" in it)) {
     const e = prog.nodes[it.e];
     if (e.t === "let")
       names.push(e.name);
   }
-  return names.map(n => ({name: n, type: env.lookupResolved(n)}));
+  return {
+    syms: names.map(n => ({name: n, type: checked.env.lookupResolved(n)})),
+    result: checked.lastType,
+    effs: checked.unhandled,
+  };
 }
 
 function main(cmd: string, args: string[]) {
@@ -56,7 +64,15 @@ function main(cmd: string, args: string[]) {
       break;
     }
     const src = readFileSync(args[0]).toString();
-    console.log(types(src).map(({name, type}) => styleText("gray", name) + " : " + showT(type)).join("\n"));
+    const {syms, result, effs} = types(src);
+    const lines = syms.map(({name, type}) => styleText("gray", name) + " : " + showT(type));
+    // The whole program's result type, with the residual top-level effect
+    // row rendered in showT's `! { ... }` style. `_` is the placeholder
+    // label — a name no top-level let can shadow it with, so the line can't
+    // be mistaken for a symbol binding.
+    const row = effs.size > 0 ? " ! { " + [...effs].join(", ") + " }" : "";
+    lines.push(styleText("gray", "_") + " : " + showT(result) + row);
+    console.log(lines.join("\n"));
     return;
   }
   case "lint": {

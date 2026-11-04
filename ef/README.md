@@ -44,6 +44,7 @@ The handler calls `k` once per option, so the computation branches into all path
 | File            | Contents                                       |
 |-----------------|------------------------------------------------|
 | `index.ts`      | The whole language: lexer, parser, type checker, CPS evaluator, builtins, `run`/`show`/`typeOf`. |
+| `cli.ts`        | Frontend: `ef run <file> \| ef runwasm <file> \| ef types <file> \| ef lint <file> \| ef repl`. |
 | `index.test.ts` | The executable spec — positive and negative tests via `bun:test`. |
 | `AGENTS.md`     | Notes for AI agents working on this repo.      |
 
@@ -277,7 +278,8 @@ tup-field ::= (name ":")? type               -- named (`x: float`) or unnamed
   - `Op(pi) => k`: `pi` are the effect's declared param types, `k : (ret) -> R` where `ret` is `Op`'s declared return type and `R` is the handle result type; `infer(ob)` unifies with `R`.
   - **No-Return rule:** when `B` is non-empty, `R` is *not* unified with `bodyType` (handlers transform results). When `B` is empty, `R ~ bodyType`.
   - Handled ops are removed from the body's effect set; any remaining (unhandled) ops propagate to the caller.
-- **Top-level effect policy:** effects left over at the top level are either interpreted by a builtin handler (for `Read`/`Write`/`Println`/`Out`) or reported as unhandled.
+  - Handler case bodies run *outside* their handler (a perform in a case body delegates outward), so effects a case body performs propagate to the caller too.
+- **Top-level effect policy:** effects left over at the top level are either interpreted by a builtin handler (for `Read`/`Write`/`Println`/`Out`) or reported as unhandled. Reporting is fail-fast: before running anything, the pipeline rejects a program whose statically-performed residual ops (performed with no matching handler in their subtree, per the checker's effect tracking — including through calls) are neither builtin effects nor covered by an interpreter override. A program that would fail mid-run after side effects instead fails before evaluation begins. `ef types <file>` surfaces exactly these top-level-reaching ops: its final `_ : T ! { ... }` line shows the whole program's result type with the residual effect row (unhandled builtin effects included, internally-handled ops excluded).
 
 ### 3.4 Polymorphism
 

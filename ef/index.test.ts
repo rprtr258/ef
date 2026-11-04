@@ -1,11 +1,11 @@
 import {test, expect, describe} from "bun:test";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
-import {readFileSync, unlinkSync, existsSync} from "node:fs";
+import {readFileSync, unlinkSync, existsSync, writeFileSync} from "node:fs";
 import {execSync} from "node:child_process";
 import {run, newCtx, exec} from "./eval.ts";
 import {checkProgram, showT} from "./types.ts";
-import {show} from "./env.ts";
+import {show, type Value} from "./env.ts";
 import {Parser} from "./parser.ts";
 
 // typeOf: return the inferred type of the last expression, as a string.
@@ -489,4 +489,77 @@ test("REPL: bindings persist across lines", () => {
     {input: "let a = 6\nlet b = 7\na * b\n:q\n", encoding: "utf8", timeout: 20000},
   );
   expect(out).toContain("42 : int");
+});
+
+describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
+  test("unhandled program op throws before any side effect", () => {
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
+    try {
+      expect(() => run(`effect T(x: int): int; Println!("boom"); T!(1)`))
+        .toThrow("Unhandled effect: T");
+    } finally {
+      console.log = orig;
+    }
+    expect(logs).toEqual([]); // Println never ran: rejection precedes evaluation
+  });
+
+  test("an interp override covers a program op (the same path runTop uses)", () => {
+    const seen: Value[][] = [];
+    expect(run(`effect T(x: int): int; 1 + T!(2)`, {
+      T: (args, k) => { seen.push(args); return k((args[0] as number) * 10); },
+    })).toBe(21);
+    expect(seen).toEqual([[2]]);
+  });
+
+  test("handled ops pass; performs inside lambdas are handled at the call site", () => {
+    expect(run(`effect T(x: int): int; handle { T!(2) } case T(n) => k { n * 3 }`)).toBe(6);
+    expect(run(`effect T(x: int): int; let f = fn(y: int): int ! { T } { T!(y) }; handle { f(5) } case T(n) => k { n + 1 }`)).toBe(6);
+  });
+
+  test("an unhandled op through a call is caught statically, not just a bare perform", () => {
+    expect(() => run(`effect T(x: int): int; let f = fn(y: int): int ! { T } { T!(y) }; f(1)`))
+      .toThrow("Unhandled effect: T");
+  });
+
+  test("case bodies run outside their handler: ops they perform must be handled too", () => {
+    expect(() => run(`effect T(x: int): int; effect U(x: int): int; handle { T!(1) } case T(n) => k { U!(2) }`))
+      .toThrow("Unhandled effect: U");
+    expect(run(`effect T(x: int): int; effect U(x: int): int; handle { T!(1) } case T(n) => k { U!(2) }`,
+      {U: (_args, k) => k(7)})).toBe(7);
+  });
+
+  test("builtin effects are never flagged", () => {
+    expect(typeof run(`Random!()`)).toBe("number");
+  });
+});
+
+describe("Env seeding (exec binds referenced builtins per line)", () => {
+  test("a later REPL line can reference a previously-unused builtin", () => {
+    const ctx = newCtx();
+    exec(new Parser(`let x = 1;`).parseProgram(), ctx);
+    expect(ctx.env.vars.has("len")).toBe(false); // not referenced yet -> not bound
+    expect(exec(new Parser(`len([1, 2]);`).parseProgram(), ctx).value).toBe(2);
+    expect(ctx.env.vars.has("len")).toBe(true);
+  });
+
+  test("seeded bindings never overwrite a user shadow", () => {
+    const ctx = newCtx();
+    exec(new Parser(`let len = fn(a, b) { 42 };`).parseProgram(), ctx);
+    expect(exec(new Parser(`len([1], [2])`).parseProgram(), ctx).value).toBe(42);
+  });
+
+  test("ef types prints symbols, then the program result type and effect row", () => {
+    const f = join(tmpdir(), "ef-types-test.ef");
+    writeFileSync(f, `effect T(x: int): int; Println!("a"); handle { T!(1) } case T(n) => k { n }`);
+    try {
+      const out = execSync(`bun run cli.ts types ${f}`, {encoding: "utf8", timeout: 20000}).trim();
+      // No lets -> only the result line. Println escapes to the runner; T is
+      // handled internally, so the row lists only Println.
+      expect(out.split("\n")).toEqual(["_ : int ! { Println }"]);
+    } finally {
+      unlinkSync(f);
+    }
+  });
 });

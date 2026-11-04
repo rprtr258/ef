@@ -1,21 +1,27 @@
 // analysis.ts — frontend analysis passes over a parsed program, shared by
 // the wasm backend (tree-shaking, dead host-import elimination, op-table
-// seeding) and available to interpreter-side consumers (static effect-op
-// discovery, env seeding). Nothing here emits bytecode or touches backend
-// state: pure AST walks plus the builtin-surface tables both backends agree
-// on.
+// seeding) and the interpreter (unhandled-op fail-fast, env seeding).
+// Nothing here emits bytecode or touches backend state: pure AST walks plus
+// the builtin-surface tables both backends agree on.
 //
-// Future interpreter wiring (extraction-only for now):
-// - Fail-fast unhandled ops: `exec`/`run` could reject before running when a
-//   statically performed op has no matching handler in its subtree, is not a
-//   builtin effect, and has no interp override — instead of failing mid-run
-//   in runTop after side effects. Needs ops-minus-handled matching per
-//   subtree (handle cases shadow same-named performs), not just the flat
-//   collectEffectOps list.
-// - Env seeding: globalEnv() could take a builtinRefs(prog) set and bind
-//   only referenced builtins. The REPL must recompute per line (bindings
-//   accumulate, so a later line can reference a previously-unused builtin).
-// - CLI: an `ef ops <file>` listing the effects a program may perform.
+// Interpreter wiring (implemented):
+// - Fail-fast unhandled ops: exec (eval.ts) rejects a program before
+//   evaluating anything when a statically performed op has no matching
+//   handler in its subtree, is not a builtin effect, and has no interp
+//   override. The ops-minus-handled matching itself is NOT an AST walk
+//   (one cannot see through `f()` performing an op) — it reuses the
+//   checker's own bookkeeping: types.ts threads each top-level item's
+//   residual effect row into Checked.unhandled, and exec filters it.
+// - Env seeding: newCtx seeds an empty env; exec binds exactly
+//   builtinRefs(prog) per call — a later REPL line referencing a previously
+//   unused builtin gets it seeded on that line, and existing (user)
+//   bindings are never overwritten. env.ts's globalEnv/seedBuiltins do the
+//   binding.
+// - CLI: `ef types <file>` prints the whole program's result type with the
+//   residual top-level effect rows (types.ts Checked.unhandled) as its
+//   final `_ : T ! { ops }` line — the same set exec's fail-fast
+//   check rejects on, so it shows exactly what the runner must interpret
+//   (or the run fails on).
 
 import type {ExprID, Program} from "./parser.ts";
 
@@ -113,6 +119,11 @@ export function performsAnyOp(prog: Program): boolean {
 // body — the same order the wasm op table uses. Includes builtin op names
 // (consumers filter already-seeded ones); `Return` is a pseudo-case, never
 // an op.
+//
+// Note this is a SYNTACTIC listing — performs inside a handler that catches
+// them still appear. For whole-program semantics (which ops escape to the
+// runner), see types.ts's Checked.unhandled, computed by the checker's own
+// ops-minus-handled tracking; `ef ops` prints that instead.
 export function collectEffectOps(prog: Program): string[] {
   const ops: string[] = [];
   const walk = (id: ExprID): void => {
