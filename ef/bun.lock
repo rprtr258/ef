@@ -4,11 +4,13 @@
   "workspaces": {
     "": {
       "name": "ef",
+      "dependencies": {
+        "binaryen": "^132.0.0",
+      },
       "devDependencies": {
         "@eslint/js": "^10.0.1",
         "@stylistic/eslint-plugin": "^5.10.0",
         "@types/bun": "latest",
-        "binaryen": "^132.0.0",
         "eslint": "^10.10.0",
         "eslint-plugin-import": "^2.32.0",
         "jiti": "^2.7.0",

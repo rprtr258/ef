@@ -16,7 +16,7 @@ Hindley-Milner-flavoured type system with effect tracking.
   `analysis.test.ts` (`bun:test`).
 - Run a file: `bun run cli.ts run <file>` (subcommands: `run`, `buildwasm`,
   `runwasm`, `types`, `lint`, `repl`).
-- Gates: `bun run ci` = typecheck + eslint + tests; all three must stay clean.
+- Gates: `bun run ci` = typecheck + eslint + runtime-deps check + tests; all must stay clean.
 
 ## Architecture (top to bottom, dependency order)
 
@@ -86,8 +86,10 @@ Hindley-Milner-flavoured type system with effect tracking.
    (line loop over `newCtx`/`exec`; bindings accumulate across lines).
 ## Working rules
 
-- **`bun run ci` must pass** — host typecheck (`bun check`), eslint, and
-  the test suite all clean.
+- **`bun run ci` must pass** — host typecheck (`bun check`), eslint, the
+  runtime-deps check (`scripts/check-runtime-deps.ts`: every bare package import
+  reachable from the runtime entries must be a `dependency`, not a
+  `devDependency`), and the test suite all clean.
 - **Tests are the spec's executable form.** When you change the language,
   update `index.test.ts` to match. Self-checks there must stay green.
 - **The single builtins table.** A new builtin is one entry in
@@ -138,7 +140,7 @@ typing rules.
 ## Quick orientation
 
 ```
-bun run ci                # typecheck + lint + tests
+bun run ci                # typecheck + lint + deps check + tests
 bun test                  # test suite only
 bun run cli.ts run examples/star.ef
 bun run cli.ts repl       # interactive REPL
