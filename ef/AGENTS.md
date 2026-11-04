@@ -86,7 +86,7 @@ Hindley-Milner-flavoured type system with effect tracking.
    (line loop over `newCtx`/`exec`; bindings accumulate across lines).
 ## Working rules
 
-- **`bun run ci` must pass** — host typecheck (`tsc --noEmit`), eslint, and
+- **`bun run ci` must pass** — host typecheck (`bun check`), eslint, and
   the test suite all clean.
 - **Tests are the spec's executable form.** When you change the language,
   update `index.test.ts` to match. Self-checks there must stay green.

@@ -3,9 +3,9 @@
 A tiny statically-typed language with **algebraic effects and effect handlers**, C/Go-flavored syntax, and a Hindley-Milner-flavoured type system that tracks effects. Implemented in a single TypeScript file (~900 lines).
 
 ```bash
-bun test              # test suite
-bun run index.ts      # (no self-check block; demos live in the test suite)
-bunx tsc --noEmit     # host typecheck (stays clean)
+bun test         # test suite
+bun run index.ts # (no self-check block; demos live in the test suite)
+bun check        # host typecheck (stays clean)
 ```
 
 ## In one paragraph

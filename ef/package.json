@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "lint": "eslint '**/*.{ts,json}'",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bun check",
     "ci": "bun run typecheck && bun run lint && bun test"
   },
   "devDependencies": {
@@ -19,8 +19,5 @@
     "globals": "^17.12.0",
     "jiti": "^2.7.0",
     "typescript-eslint": "^8.69.0"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
   }
 }
