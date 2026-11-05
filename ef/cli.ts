@@ -11,7 +11,8 @@
 import {readFileSync, writeFileSync} from "fs";
 import {styleText} from "util";
 import {run} from "./eval.ts";
-import {runWasm, compile} from "./wasm.ts";
+import {compile} from "./wasm.ts";
+import {runWasm} from "./wasm_host.ts";
 import {type Type, showT, checkProgram} from "./types.ts";
 import {lint} from "./lint.ts";
 import {repl} from "./repl.ts";

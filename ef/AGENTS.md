@@ -11,7 +11,8 @@ Hindley-Milner-flavoured type system with effect tracking.
   passes: builtin surface, op discovery, builtin-ref tree-shaking — shared
   by the wasm backend, parser-types-only leaf module), `eval.ts` (evaluator
   + pipeline), `wasm.ts` (wasm backend: CPS→wasm codegen, binaryen shrink
-  pass, host runtime), `lint.ts`, `prims.ts`, frontends `cli.ts`/`repl.ts`.
+  pass), `wasm_host.ts` (wasm host runtime: instantiation, GC↔JS boxing,
+  effect interpretation), `lint.ts`, `prims.ts`, frontends `cli.ts`/`repl.ts`.
 - Tests: `index.test.ts` + `lint.test.ts` + `wasm.test.ts` +
   `analysis.test.ts` (`bun:test`).
 - Run a file: `bun run cli.ts run <file>` (subcommands: `run`, `buildwasm`,
@@ -77,8 +78,10 @@ Hindley-Milner-flavoured type system with effect tracking.
    lastIsExpr}`; `run(src, interp?)` is a one-shot `exec`.
 8. **`wasm.ts`** — WebAssembly backend: CPS→wasm codegen over the same
    parser/types output, OPT_PASSES seam (tree-shaking, dead host-import
-   elimination), in-process binaryen shrink pass, direct-style host runtime
-   (effect interpretation comes from builtins.ts's `builtinEffectHosts`).
+   elimination), in-process binaryen shrink pass. Its host runtime lives in
+   **`wasm_host.ts`** (direct-style: instantiation, GC↔JS boxing through the
+   §4 accessor ABI, `runWasm`; effect interpretation comes from builtins.ts's
+   `builtinEffectHosts`).
 9. **`lint.ts`** — lint passes over a parsed program (`LINT_PASSES`);
    currently one rule (`unused-arg`).
 10. **Frontends** — `cli.ts` (`ef run|buildwasm|runwasm|types|lint <file>`,

@@ -4,7 +4,8 @@ import {join} from "node:path";
 import {readFileSync, readdirSync, writeFileSync} from "node:fs";
 import binaryen from "binaryen";
 import {run} from "./eval.ts";
-import {BIN_FEATURES, compile, runWasm} from "./wasm.ts";
+import {BIN_FEATURES, compile} from "./wasm.ts";
+import {runWasm} from "./wasm_host.ts";
 import {show} from "./env.ts";
 
 // binaryen's typings lag its runtime (see wasm.ts RawBinaryen): readBinary's features argument is untyped in the .d.ts.
