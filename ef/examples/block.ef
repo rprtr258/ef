@@ -1,0 +1,12 @@
+# Blocks: a fn body (and every if/handle branch) is a `{ ... }` block of
+# statements. Statements run in order and the block's value is the value
+# of its last statement — so calling f prints 42 and 99, then evaluates
+# to 123.
+
+let f = fn() {
+  Println!(42);
+  Println!(99);
+  123
+};
+
+Println!(f());

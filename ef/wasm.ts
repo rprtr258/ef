@@ -929,49 +929,48 @@ class Fn {
 
   // A K_SPILL cell {K_SPILL, snapshot, null, next} chained in front of a
   // split site's rest fragment. The snapshot freezes the values the rest
-  // fragment reloads from operand-spill slots: on the fresh path it is a
-  // copy of the current frame image taken at the split site (per capture —
-  // this cell is allocated at runtime on every site execution and copied
-  // into every continuation captured here, so multi-shot resumes each see
-  // the pre-perform values, matching the interpreter's CPS accs); on a
-  // fragment re-emission it is the enclosing fragment's snapshot (the same
-  // capture's frozen values — nested split sites inside the fragment must
-  // not re-freeze the already-mutated frame).
-  snapWrap(ctx: Ctx, nextE: () => void): number {
+  // fragment reloads from operand-spill slots: a copy of the current frame
+  // image taken at the split site (per capture — this cell is allocated at
+  // runtime on every site execution and copied into every continuation
+  // captured here, so multi-shot resumes each see the values this execution
+  // had built up, matching the interpreter's CPS accs).
+  // This is correct at a NESTED site too (a split site inside a fragment
+  // re-emission): the frame slots such a fragment reloads
+  // were all written after the outer freeze — fresh emission aborts at the
+  // first split site, so anything after it is only ever computed by
+  // fragment code, which re-runs on every resume and re-persists its spill
+  // slots before reaching the nested site. The outer frozen image predates
+  // those writes (reusing it here handed the nested fragment null for
+  // slots it legitimately reloads), while pre-outer-cut values still sit
+  // unmutated in the live frame, so the live freeze sees them too.
+  snapWrap(nextE: () => void): number {
     // A K_SPILL cell {K_SPILL, snapshot, null, next} chained in front of a
     // split site's rest fragment. The snapshot freezes the values the rest
-    // fragment reloads from operand-spill slots: on the fresh path it is a
-    // copy of the current frame image taken at the split site (per capture —
-    // this cell is allocated at runtime on every site execution and copied
-    // into every continuation captured here, so multi-shot resumes each see
-    // the pre-perform values, matching the interpreter's CPS accs); on a
-    // fragment re-emission it is the enclosing fragment's snapshot (the same
-    // capture's frozen values — nested split sites inside the fragment must
-    // not re-freeze the already-mutated frame).
+    // fragment reloads from operand-spill slots: a copy of the current frame
+    // image taken at the split site (per capture — this cell is allocated at
+    // runtime on every site execution and copied into every continuation
+    // captured here, so multi-shot resumes each see the values this execution
+    // had built up, matching the interpreter's CPS accs). Nested split sites
+    // inside a fragment re-emission freeze the live frame too — see above.
     const b = this.body;
     const ksp = this.anyref(), snapv = this.anyref();
-    if (ctx.snap !== undefined) {
-      b.localGet(ctx.snap);
-      b.localSet(snapv);
-    } else {
-      // Fresh $FRAME {same parent, slots array copied via array.copy} — the
-      // per-capture freeze (shallow slot copy, same as the old block copy).
-      b.localGet(0); b.structGet(4, 1); b.arrayLen();
-      b.arrayNew(1);
-      b.localSet(snapv);
-      b.localGet(snapv);
-      b.refCast(1, true);
-      b.i32Const(0);
-      b.localGet(0); b.structGet(4, 1);
-      b.i32Const(0);
-      b.localGet(0); b.structGet(4, 1); b.arrayLen();
-      b.arrayCopy(1, 1);
-      b.localGet(0); b.structGet(4, 0);
-      b.localGet(snapv);
-      b.refCast(1, true);
-      b.structNew(4);
-      b.localSet(snapv);
-    }
+    // Fresh $FRAME {same parent, slots array copied via array.copy} — the
+    // per-capture freeze (shallow slot copy, same as the old block copy).
+    b.localGet(0); b.structGet(4, 1); b.arrayLen();
+    b.arrayNew(1);
+    b.localSet(snapv);
+    b.localGet(snapv);
+    b.refCast(1, true);
+    b.i32Const(0);
+    b.localGet(0); b.structGet(4, 1);
+    b.i32Const(0);
+    b.localGet(0); b.structGet(4, 1); b.arrayLen();
+    b.arrayCopy(1, 1);
+    b.localGet(0); b.structGet(4, 0);
+    b.localGet(snapv);
+    b.refCast(1, true);
+    b.structNew(4);
+    b.localSet(snapv);
     b.i32Const(w.K_SPILL);
     b.refI31();
     b.localGet(snapv);
@@ -1853,12 +1852,22 @@ function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]): Uint
 // fills its arm fragments against (bodyRoots), the rest fragments already
 // filled (filledRests — a handle's after-rest is thrown to fillRest from
 // every fragment re-emission of that handle, but only the first fill must
-// land), the after-handle rest fragments (hdlRest) and the split-mode while
+// land), the split chains already assigned a rest fragment (restByChain —
+// a site's chain determines its fragment's content: the re-emission from
+// that chain's body root is deterministic, so re-encountering a site during
+// a later re-emission reuses the first fragment instead of re-filling),
+// the re-emission root the innermost in-progress fillRest is filling
+// against (restRoot — a land site discovered inside that re-emission must
+// sync-fill against THIS root, not the bodyRoots top: synthetic arm
+// re-emissions root at the arm, which is not a body-root statement),
+// the after-handle rest fragments (hdlRest) and the split-mode while
 // fragments (ctlLoops). One bundle, one lifetime.
 type Splits = {
   cutStack: ExprID[],
   bodyRoots: {stmts: ExprID[], sc: Scope, tail: boolean, savedCut: ExprID[]}[],
   filledRests: Set<Fn>,
+  restByChain: Map<string, Fn>,
+  restRoot: {stmts: ExprID[], sc: Scope, tail: boolean, cutBase: ExprID[]} | null,
   hdlRest: Map<ExprID, Fn>,
   ctlLoops: Map<ExprID, {entry: Fn, rest: Fn}>,
 };
@@ -1893,6 +1902,8 @@ function emit(prog: Program, d: Discovery, o: Opt, ix: Indices, lay: Layout): Fn
       cutStack: [],
       bodyRoots: [],
       filledRests: new Set(),
+      restByChain: new Map(),
+      restRoot: null,
       hdlRest: new Map(),
       ctlLoops: new Map(),
     },
@@ -2197,6 +2208,12 @@ function fillRest(em: Emit, sp: Split, root: ExprID[], sc: Scope, tail: boolean)
   // correct, so re-filling would only append a duplicate tail.
   if (em.sp.filledRests.has(gf)) return;
   em.sp.filledRests.add(gf);
+  // Publish this fill's root/sc/tail/cutStack-base: a land site discovered
+  // inside the re-emission below sync-fills against THESE (see Splits.restRoot
+  // and emitCallClosure) — the bodyRoots top is wrong for synthetic arm
+  // re-emissions, whose root is the arm subtree.
+  const prevRoot = em.sp.restRoot;
+  em.sp.restRoot = {stmts: root, sc, tail, cutBase: [...em.sp.cutStack]};
   const b = gf.body;
   // Prologue: the k param is the split site's K_SPILL cell (see snapWrap)
   // — load its frozen frame-image pointer into the `snap` local (pre-cut
@@ -2255,10 +2272,12 @@ function fillRest(em: Emit, sp: Split, root: ExprID[], sc: Scope, tail: boolean)
     // complete (it ends at that site's host boundary / case invocation);
     // the rest after it chains into the new site's fragment.
     if (DBGEMIT) console.error("  NESTED_SPLIT in fn=", gf.idx, "-> chain=", "[" + sp2.chain.map((x) => em.nodes[x]?.t).join(",") + "]");
+    em.sp.restRoot = prevRoot;
     fillRest(em, sp2, root, sc, tail);
     return;
   }
   em.sp.cutStack = savedCut;
+  em.sp.restRoot = prevRoot;
 }
 
 // Fragment re-emission of a statement sequence from a cut statement:
@@ -2625,7 +2644,7 @@ function emitSym(em: Emit, f: Fn, sc: Scope, name: string): ValueRef {
 // fsize, funcref index known) and emit a direct call instead of reading
 // the code index and dispatching through the table. The frame/k
 // convention is identical in both modes.
-function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false, landA?: number, ctx?: Ctx, direct?: {idx: number, fsize: number}): void {
+function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false, landA?: number, direct?: {idx: number, fsize: number}): void {
 // `direct` (direct builtin call specialization): when set, the callee is
 // a known builtin trampoline — skip the $CLO load (env = null, static
 // fsize, funcref index known) and emit a direct call instead of reading
@@ -2703,12 +2722,26 @@ function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEmit: (k:
       // fragment's K_SPILL cell freezes the frame image at the call
       // (pre-cut operand reloads — sibling operands of the call — read
       // the frozen values under multi-shot resume).
-      const rest = makeRestThunk(em, "handle:after-handle");
-      const ksp = f.snapWrap(ctx!, () => b.localGet(kL));
+      // Fragments are memoized by chain: the same site re-encountered during
+      // a later fillRest of a sibling site has the same chain and the same
+      // content, so it reuses the first fragment fn (whose fill may still be
+      // in progress — fragments are pure code over their own frame/v/kNext
+      // params, so sharing one fn across invocations, resumptions
+      // included, aliases no state). Without the memo the re-emitted
+      // sibling site would fill a fresh fragment from the same body root,
+      // whose re-emission hits this site again — exponential blowup.
+      const chain = [...em.sp.cutStack];
+      const key = chain.join(",");
+      let rest = em.sp.restByChain.get(key);
+      if (rest === undefined) {
+        rest = makeRestThunk(em, "handle:after-handle");
+        em.sp.restByChain.set(key, rest);
+      }
+      const ksp = f.snapWrap(() => b.localGet(kL));
       b.localGet(f.retCell(rest.idx, () => b.localGet(ksp))); // next = K_SPILL{frozen frame, ambient k}
       b.refCast(5, true);
       if (DBGEMIT) console.error("THROW handle-split cutStack=", em.sp.cutStack.length);
-      splitAt = new Split(rest, [...em.sp.cutStack]);
+      splitAt = new Split(rest, chain);
     }
   } else b.refNull(5); // k=0 (ref.null $K): the callee's dispatch returns its value inline
   if (direct === undefined) {
@@ -2722,14 +2755,23 @@ function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEmit: (k:
   }
   if (splitAt !== null) {
     // Fill the rest-of-site fragment directly at the land call site.
-    // Cut-stack baseline: the same value the enclosing body-level catcher
-    // (bodyCatch/emitMain) restores before its fillRest call, so nested
-    // splits during the fill re-discover clean chains from the body root.
-    const root = em.sp.bodyRoots[em.sp.bodyRoots.length - 1];
+    // Cut-stack baseline: the same value the enclosing catcher restored
+    // before its fillRest call, so nested splits during the fill re-discover
+    // clean chains from that fill's root. Inside a re-emission (restRoot
+    // set) that root is the in-progress fill's — the bodyRoots top is wrong
+    // for synthetic arm re-emissions, whose chain does not start at a
+    // body-root statement.
+    const active = em.sp.restRoot;
     const savedCut = em.sp.cutStack;
-    em.sp.cutStack = [...root.savedCut];
     try {
-      fillRest(em, splitAt, root.stmts, root.sc, root.tail);
+      if (active !== null) {
+        em.sp.cutStack = [...active.cutBase];
+        fillRest(em, splitAt, active.stmts, active.sc, active.tail);
+      } else {
+        const root = em.sp.bodyRoots[em.sp.bodyRoots.length - 1];
+        em.sp.cutStack = [...root.savedCut];
+        fillRest(em, splitAt, root.stmts, root.sc, root.tail);
+      }
     } finally {
       em.sp.cutStack = savedCut;
     }
@@ -3362,7 +3404,6 @@ function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = 
         ctx.kL,
         undefined,
         undefined,
-        ctx,
         {idx: em.ix.builtinFnIdx.get(bname)!, fsize: bi.params + mapLikeFrameWords(bname)});
       } else {
         const fc = f.anyref();
@@ -3384,10 +3425,7 @@ function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = 
         // trampoline convention; every other (lambda) call site lands
         // through a RET cell and is a split site (§3 emitCall).
         em.d.landCalls.has(id),
-        ctx.kL,
-        undefined,
-        undefined,
-        ctx);
+        ctx.kL);
       }
       // emitCallClosure leaves the landed result on the stack (or
       // tail-returns, making this capture unreachable); the inline paths
@@ -3519,7 +3557,7 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   // reloads read the frozen values, so a multi-shot resume re-runs the
   // rest against the pre-perform state (the interpreter's CPS accs),
   // not the frame as mutated by earlier resumes / loop iterations.
-  const ksp = f.snapWrap(ctx, () => {
+  const ksp = f.snapWrap(() => {
     b.localGet(amb);
   });
   b.localGet(found);
@@ -3701,7 +3739,7 @@ function emitHandle(em: Emit, id: ExprID, e: Expr & {t: "handle"}, f: Fn, s: Sco
   // rest's pre-cut operand reloads (chain levels above the handle, e.g.
   // sibling operands of `s + handle {...}`) must see the values as of
   // the install, not as mutated by the handler body / resumes.
-  const ksp = f.snapWrap(ctx, () => {
+  const ksp = f.snapWrap(() => {
     b.localGet(ctx.kL);
   });
   // RET cell over the handle-site frame; next = the continuation outside
@@ -3765,7 +3803,7 @@ function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Sco
   const restAfterIf = makeRestThunk(em, "if:after");
   // K_SPILL cell freezing the pre-if frame image for the after-if rest's
   // pre-cut operand reloads (see snapWrap).
-  const ksp = f.snapWrap(ctx, () => {
+  const ksp = f.snapWrap(() => {
     b.localGet(ctx.kL); // the ambient continuation
   });
   const ifk = f.retCell(restAfterIf.idx, () => {
@@ -3792,8 +3830,14 @@ function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Sco
     // must exist. Fill it along the if's own chain (the same content the
     // trailing throw below would have carried), then let the condition's
     // Split propagate; its own rest is filled by the enclosing catcher.
+    // Baseline: inside a re-emission (restRoot set) the fill runs against
+    // that fill's root and cutStack base — the bodyRoots top and its
+    // savedCut describe the outer fresh emission, not this re-emission.
     em.sp.cutStack.pop(); // fragments must not see the if's own frame
-    const rootC = em.sp.bodyRoots[em.sp.bodyRoots.length - 1];
+    const activeC = em.sp.restRoot;
+    const rootC = activeC !== null
+      ? {stmts: activeC.stmts, sc: activeC.sc, tail: activeC.tail, savedCut: activeC.cutBase}
+      : em.sp.bodyRoots[em.sp.bodyRoots.length - 1];
     const savedCutC = em.sp.cutStack;
     em.sp.cutStack = [...rootC.savedCut];
     try {
@@ -3837,7 +3881,11 @@ function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Sco
         // node itself when it pushed one, the split site's parent
         // otherwise), so the re-emission root and chain stay consistent.
         if (sp.chain.length < 2) throw new WasmError("internal: arm split chain too short");
-        em.sp.cutStack.pop(); // the synthetic root is the arm, not this if
+        // The synthetic root is the arm, not this if: the fill below runs
+        // with an empty cut stack (the re-emission rebuilds the path from
+        // the arm), and the ambient path — this if's frame included — is
+        // restored afterwards, so later split sites in the sibling arm (and
+        // the tail pop below) still record chains rooted at the body root.
         const savedCutA = em.sp.cutStack;
         em.sp.cutStack = [];
         try {
@@ -3863,8 +3911,17 @@ function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Sco
   // re-emissions must not see it (they push a fresh if frame along the
   // re-emitted chain).
   em.sp.cutStack.pop();
-  if (spA !== null) fillRest(em, spA, root.stmts, root.sc, root.tail);
-  if (spB !== null) fillRest(em, spB, root.stmts, root.sc, root.tail);
+  // Baseline: inside a re-emission (restRoot set) the arm fragments fill
+  // against that fill's root and cutStack base — a stale ambient path (this
+  // re-emission's frames above the baseline) would leak into the chains the
+  // fills record, corrupting later fragments filled from them.
+  const activeT = em.sp.restRoot;
+  const rootT = activeT !== null
+    ? {stmts: activeT.stmts, sc: activeT.sc, tail: activeT.tail, savedCut: activeT.cutBase}
+    : root;
+  const baseT = [...rootT.savedCut];
+  if (spA !== null) { em.sp.cutStack = baseT; fillRest(em, spA, rootT.stmts, rootT.sc, rootT.tail); }
+  if (spB !== null) { em.sp.cutStack = baseT; fillRest(em, spB, rootT.stmts, rootT.sc, rootT.tail); }
   em.sp.cutStack.push(id);
   // The code after the if chains through restAfterIf: the enclosing
   // body-level catcher fills it with the if's value as v.
@@ -3930,7 +3987,7 @@ function emitWhileCPS(em: Emit, id: ExprID, e: Expr & {t: "while"}, f: Fn, s: Sc
     }
     // K_SPILL cell freezing the pre-loop frame image for the after-while
     // rest's pre-cut operand reloads (see snapWrap).
-    const ksp = f.snapWrap(ctx, () => {
+    const ksp = f.snapWrap(() => {
       b.localGet(ctx.kL); // the ambient continuation
     });
     const ifk = f.retCell(restAfter.idx, () => {

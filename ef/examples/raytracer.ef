@@ -1,0 +1,129 @@
+# A 3D raytracer: two spheres over a checkerboard plane, lit by one
+# point light, rendered with 2x2 supersampling. Vectors and colors are
+# [x, y, z] tuples; a sphere packs center, radius, and color into a
+# single tuple. The camera sits at the origin looking down -z. Each
+# pixel prints its R, G, B channels on three lines; a -1.0 line after
+# each scanline separates rows.
+#
+# Render to a PNG (the script derives the resolution from the output):
+#
+#   bun run cli.ts runwasm examples/raytracer.ef > /tmp/rt.txt
+#   bun scripts/rt-to-png.ts /tmp/rt.txt /tmp/raytracer.png 4
+#
+# (third argument = integer upscale factor; omit for native 200x200)
+
+# ---- Math on [x, y, z] vectors ----
+type V3 = [float, float, float];
+
+let vAdd = fn(a: V3, b: V3): V3 { [a.0 + b.0, a.1 + b.1, a.2 + b.2] };
+let vSub = fn(a: V3, b: V3): V3 { [a.0 - b.0, a.1 - b.1, a.2 - b.2] };
+let vScale = fn(a: V3, s: float): V3 { [a.0 * s, a.1 * s, a.2 * s] };
+let vDot = fn(a: V3, b: V3): float { (a.0 * b.0) + ((a.1 * b.1) + (a.2 * b.2)) };
+let vAll = fn(s: float): V3 { [s, s, s] };
+
+# ---- Scene ----
+let size = 200;
+let step = 4.0 / (size - 1);      # viewport maps pixel indices to [-2, 2]
+let substep = step / 4.0;
+
+let camDir: V3 = [0.1, 0.0, -2.5];   # camera at the origin, facing -z
+let ambient = 0.15;
+let lightIntensity = 0.85;
+let light: V3 = [2.4, 1.0, -3.0];    # point light
+
+type Sphere = [V3, float, V3];    # center, radius, color
+let s1: Sphere = [[0.0, 0.0, -5.0], 1.5, [1.0, 0.4, 0.3]];    # warm orange
+let s2: Sphere = [[2.0, 0.5, -4.5], 1.0, [0.3, 0.5, 1.0]];    # cool blue
+
+let planeZ = -7.0;                # the ground plane z = planeZ
+let checkSize = 2.0;              # checkerboard cell size
+
+# ---- Ray-sphere intersection ----
+# Smaller root t of |t*d - c|^2 = r^2 (camera at the origin), or -1.0
+# when the ray misses.
+let sphereT = fn(d: V3, c: V3, r: float): float {
+  let a = vDot(d, d);
+  let b = -2.0 * vDot(d, c);
+  let q = vDot(c, c) - r * r;
+  let disc = (b * b) - ((4.0 * a) * q);
+  if (disc < 0.0) { -1.0 } else { (-b - sqrt(disc)) / (2.0 * a) }
+};
+
+# ---- Diffuse lighting (unnormalized, distance-attenuated) ----
+let diffuse = fn(n: V3, l: V3): float {
+  let ndl = vDot(n, l);
+  if (ndl > 0.0) { ndl / vDot(l, l) } else { 0.0 }
+};
+
+# Shading of a sphere hit: normal = (hit - center)/radius, light
+# direction = light - hit, color scaled by ambient + intensity*diffuse.
+let sphereShade = fn(s: Sphere, d: V3, t: float): V3 {
+  let [c, r, col] = s;
+  let hit = vScale(d, t);
+  let n = vScale(vSub(hit, c), 1.0 / r);
+  let l = vSub(light, hit);
+  vScale(col, ambient + lightIntensity * diffuse(n, l))
+};
+
+# ---- Checkerboard cell parity (symmetric about the origin) ----
+let cellParity = fn(coord: float, cell: float): float {
+  if (coord < 0.0) { cellParity(-coord, cell) }
+  else if (coord < cell) { 0.0 }
+  else if (coord < 2.0 * cell) { 1.0 }
+  else { cellParity(coord - 2.0 * cell, cell) }
+};
+
+let checkerVal = fn(x: float, y: float, cell: float): float {
+  if (cellParity(x, cell) < 0.5) {
+    if (cellParity(y, cell) < 0.5) { 0.7 } else { 0.2 }
+  } else {
+    if (cellParity(y, cell) < 0.5) { 0.2 } else { 0.7 }
+  }
+};
+
+# ---- Color of one ray through direction camDir + [dx, dy, 0] ----
+let sample = fn(dx: float, dy: float): V3 {
+  let d: V3 = [camDir.0 + dx, camDir.1 + dy, camDir.2];
+  let t1 = sphereT(d, s1.0, s1.1);
+  if (t1 > 0.0) {
+    sphereShade(s1, d, t1)
+  } else {
+    let t2 = sphereT(d, s2.0, s2.1);
+    if (t2 > 0.0) {
+      sphereShade(s2, d, t2)
+    } else {
+      if (d.2 < 0.0) {
+        # the ray reaches the ground plane z = planeZ at
+        # (planeZ*d.0/d.2, planeZ*d.1/d.2)
+        vAll(checkerVal((planeZ * d.0) / d.2, (planeZ * d.1) / d.2, checkSize))
+      } else {
+        vAll(0.0)
+      }
+    }
+  }
+};
+
+# ---- 2x2 supersampling: average the four corner samples ----
+let pixel = fn(px: int, py: int): V3 {
+  let x = (px * step) - 2.0;
+  let y = (py * step) - 2.0;
+  vScale(vAdd(
+    vAdd(sample(x - substep, y - substep), sample(x + substep, y - substep)),
+    vAdd(sample(x - substep, y + substep), sample(x + substep, y + substep))),
+    0.25)
+};
+
+# ---- Scan the viewport row by row ----
+let py = 0;
+while (py < size) {
+  let px = 0;
+  while (px < size) {
+    let c = pixel(px, py);
+    Println!(c.0);
+    Println!(c.1);
+    Println!(c.2);
+    px = px + 1;
+  };
+  Println!(-1.0);                 # row separator
+  py = py + 1;
+}

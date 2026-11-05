@@ -100,6 +100,14 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
       expect(pi).toBeCloseTo(3.14, 1);
     },
   }],
+  "block.ef": [{
+    label: "a block runs statements in order and yields the last value",
+    body: res => expect(res.stdout).toBe("42\n99\n123\nunit\n"),
+  }],
+  "closure.ef": [{
+    label: "a returned closure keeps reading its captured environment",
+    body: res => expect(res.stdout).toBe("7\nunit\n"),
+  }],
   "example.ef": [{
     label: "handler loops over a whole search space",
     body: res => expect(res.stdout).toBe("[[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]\n"),
@@ -112,6 +120,10 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     label: "mutable state via a state effect",
     body: res => expect(res.stdout).toBe("9\nunit\n"),
   }],
+  "local_decl.ef": [{
+    label: "a let inside a block is local to that block",
+    body: res => expect(res.stdout).toBe("5\nunit\n"),
+  }],
   "newton.ef": [{
     label: "iterative numeric effect loop",
     body: res => expect(res.stdout).toMatch(/^1\.4142\d*\nunit\n$/),
@@ -119,6 +131,30 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
   "poly_id_breaks.ef": [{
     label: "deliberately ill-typed, but runs under `any`",
     body: res => expect(res.stdout).toBe("5\nunit\n"),
+  }],
+  "raytracer.ef": [{
+    label: "renders two spheres over a checkerboard plane",
+    timeout: 60000,
+    body: res => {
+      // The image format: 200 scanlines of 600 R/G/B lines each, closed by
+      // a -1 row separator, then the runner's final `unit` echo. All values
+      // land in [0, 1.5] — checker grays, clamped shading, and separators.
+      const lines = res.stdout.split("\n");
+      expect(lines[lines.length - 1]).toBe("");
+      expect(lines[lines.length - 2]).toBe("unit");
+      const px = lines.slice(0, 200 * 601);
+      expect(px.length).toBe(200 * 601);
+      let bad = "";
+      for (let i = 0; i < px.length && bad === ""; i++) {
+        if (i % 601 === 600) {
+          if (px[i] !== "-1") bad = `line ${i}: expected -1 separator, got ${px[i]}`;
+          continue;
+        }
+        const v = Number(px[i]);
+        if (px[i] === "" || Number.isNaN(v) || v < 0 || v > 1.5) bad = `line ${i}: unexpected ${px[i]}`;
+      }
+      expect(bad).toBe("");
+    },
   }],
   "sieve.ef": [{
     label: "effectful pipeline produces primes up to 100",
@@ -166,6 +202,10 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     label: "deep tail recursion does not overflow",
     body: res => expect(res.stdout).toBe("0\nunit\n"),
   }],
+  "two_prints.ef": [{
+    label: "top-level statements run in order",
+    body: res => expect(res.stdout).toBe("6\n7\nunit\n"),
+  }],
   "unify.ef": [{
     label: "type unifier picks the right branch",
     body: res => expect(res.stdout).toBe("2\nunit\n"),
@@ -191,6 +231,6 @@ for (const [file, cases] of Object.entries(EXAMPLES)) {
 // so does a stale entry after a file is deleted. (Non-.ef files, e.g. .wasm
 // artifacts dropped next to the sources by `buildwasm`, are not examples.)
 test("every file in examples/ is exercised by a test", () => {
-  const files = readdirSync(join(workspaceDir, "examples"));
+  const files = readdirSync(join(workspaceDir, "examples")).filter(f => f.endsWith(".ef"));
   expect(files.sort()).toEqual(Object.keys(EXAMPLES).sort());
 });

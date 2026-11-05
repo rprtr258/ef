@@ -73,10 +73,12 @@ describe("wasm backend", () => {
   test("every example compiles to a valid module with no empty function bodies", () => {
     // Generalized from a star.ef-only check (moved here from
     // examples.test.ts): the invariant holds for any compiled program, so
-    // it runs over every file in examples/. Compiling all examples takes
-    // ~11s (star.ef alone ~3s), well over the 5s default timeout.
+    // it runs over every .ef file in examples/. Compiling all examples
+    // takes ~11s (star.ef alone ~3s), well over the 5s default timeout.
+    // (Non-.ef files, e.g. the old-syntax .ml sources, are not examples.)
     const dir = join(workspaceDir, "examples");
     for (const bin of readdirSync(dir)
+      .filter(file => file.endsWith(".ef"))
       .map(file => join(dir, file))
       .map(f => readFileSync(f).toString())
       .map(compile)) 
@@ -450,6 +452,85 @@ Println!("after")`);
     parity(`let x = 0;
 if (x < 1) { Println!("then") } else { Println!("else") };
 Println!("tail")`);
+  });
+
+  test("land calls in both branches of a nested if-else compile (site-memo regression)", () => {
+    // Every non-builtin call is a land-call split site; its rest fragment
+    // re-emits from the body root, and the sibling branch (containing
+    // another land call) re-emitted fresh during that fill used to fill its
+    // own fragment from the same root again — mutual recursion between
+    // fillRest and the call site's synchronous fill, growing until the
+    // stack overflowed inside binaryen. Rest fragments are now memoized by
+    // their split chain: same site, same fragment fn.
+    const src = `let g = fn(x: int): int { x + 1 };
+let f = fn(a: int): int {
+  if (a == 0) {
+    if (g(a) == 1) { 1 } else { 2 }
+  } else {
+    if (g(a) == 1) { 3 } else { 4 }
+  }
+};
+Println!(f(0))`;
+    expect(() => compile(src)).not.toThrow();
+    assertModule(compile(src));
+    // And the compiled module computes the same value as the interpreter.
+    expect(parity(src)).toBe("unit");
+  });
+
+  test("nested-operand land call plus a sibling land call in one body: parity (stale K_SPILL snapshot regression)", () => {
+    // A land-call result consumed as a nested OPERAND of another expression
+    // in the same body as a second (bare let-RHS) land call used to trap at
+    // runtime with a null deref: the nested site's K_SPILL cell reused the
+    // enclosing fragment's frozen frame image, but operand spills written
+    // by the enclosing fragment AFTER the outer freeze (the `-2.0` literal
+    // here) are missing from that stale image — the nested fragment's
+    // preCut reload read null and the `$NUM` ref.cast trapped.
+    const src = `let vDot = fn(a: [float], b: [float]): float { (a.0 * b.0) + ((a.1 * b.1) + (a.2 * b.2)) };
+let sphereT2 = fn(d: [float], c: [float], r: float): float {
+  let a = vDot(d, d);
+  let b = -2.0 * vDot(d, c);
+  a + b
+};
+Println!(sphereT2([0.1, 0.0, -2.5], [0.0, 0.0, -5.0], 1.5))`;
+    // Compiled output must match the interpreter's stdout, not just its value.
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => lines.push(a.join(" "));
+    let interp: string;
+    let wasm: string;
+    try {
+      interp = show(run(src));
+      lines.length = 0;
+      wasm = show(runWasm(src));
+    } finally {
+      console.log = orig;
+    }
+    expect(lines).toEqual(["-18.740000000000002"]);
+    expect(wasm).toBe(interp);
+    expect(wasm).toBe("unit");
+  });
+
+  test("fn-value selection through if branches stays correct (split-chain fix lock-in)", () => {
+    // Lambdas picked by an if-else and called through the selection were
+    // miscompiled before the split-chain memo (restByChain): the wrong arm's
+    // function could run. The interpreter and the compiled module must agree
+    // on both picks, and the printed output must be the picked results.
+    const src = `let f1 = fn(a: float): float { a * 2.0 };
+let f2 = fn(a: float): float { a + 1.0 };
+let pick = fn(c: bool): (float) -> float {
+  if (c) { f1 } else { f2 }
+};
+Println!(pick(true)(1.5));
+Println!(pick(false)(1.5))`;
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => lines.push(a.join(" "));
+    try {
+      expect(show(runWasm(src))).toBe("unit");
+    } finally {
+      console.log = orig;
+    }
+    expect(lines).toEqual(["3", "2.5"]);
   });
 
 });
