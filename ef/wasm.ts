@@ -179,9 +179,11 @@ const DBGEMIT = process.env["DBGEMIT"] === "1";
 // compiled module. HT[i] = bare heap type (the immediate GC instruction
 // builders take); RF[i] = (ref null $i) (params, fields, ref.null);
 // RN[i] = (ref $i) (non-null casts). $STR packs i16 over an i32 element type.
-let _T: {HT: binaryen.HeapType[], RF: binaryen.Type[], RN: binaryen.Type[]} | null = null;
-function types(): {HT: binaryen.HeapType[], RF: binaryen.Type[], RN: binaryen.Type[]} {
-  if (_T !== null) return _T;
+const _T: {
+  HT: binaryen.HeapType[],
+  RF: binaryen.Type[],
+  RN: binaryen.Type[],
+} = (() => {
   const tb = new binaryen.TypeBuilder(7);
   tb.createRecGroup(0, 7);
   const fld = (ty: binaryen.Type, mutable: boolean) =>
@@ -202,10 +204,12 @@ function types(): {HT: binaryen.HeapType[], RF: binaryen.Type[], RN: binaryen.Ty
     fld(tb.getTempRefType(tb.getTempHeapType(4), true), false),
     fld(binaryen.i31ref, false)]);
   const HT = tb.buildAndDispose();
-  _T = {HT, RF: HT.map((h) => binaryen.getTypeFromHeapType(h, true)),
-    RN: HT.map((h) => binaryen.getTypeFromHeapType(h, false))};
-  return _T;
-}
+  return {
+    HT,
+    RF: HT.map(h => binaryen.getTypeFromHeapType(h, true)),
+    RN: HT.map(h => binaryen.getTypeFromHeapType(h, false)),
+  };
+})();
 
 // Abstract heaptype bytes the emitters use (0x6c i31ref / 0x6d eqref /
 // 0x6e anyref) plus type indices 0..6 — mapped to (bare heap type, nullable
@@ -223,11 +227,10 @@ function absHeaps(): {any: binaryen.HeapType, eq: binaryen.HeapType, i31: binary
   return _abs;
 }
 function heapTypes(ht: number): {h: binaryen.HeapType, n: binaryen.Type} {
-  const T = types();
   if (ht === ANYREF) return {h: absHeaps().any, n: binaryen.anyref};
   if (ht === EQREF) return {h: absHeaps().eq, n: binaryen.eqref};
   if (ht === I31REF) return {h: absHeaps().i31, n: binaryen.i31ref};
-  if (ht >= 0 && ht <= 6) return {h: T.HT[ht], n: T.RF[ht]};
+  if (ht >= 0 && ht <= 6) return {h: _T.HT[ht], n: _T.RF[ht]};
   throw new WasmError(`internal: bad heaptype byte ${ht}`);
 }
 
@@ -263,14 +266,14 @@ function vt(t: number | number[] | null): binaryen.Type {
     if (t === ANYREF) return binaryen.anyref;
     if (t === EQREF) return binaryen.eqref;
     if (t === I31REF) return binaryen.i31ref;
-  } else return types().RF[t[1]];
+  } else return _T.RF[t[1]];
   throw new WasmError(`internal: bad valtype ${JSON.stringify(t)}`);
 }
 
 // One compile at a time runs in-process, so the module under construction
 // lives in a module-level binding (Buf emitters construct binaryen
 // expressions through it without threading it through every call). The
-// owning Compiler travels on each Fn instead (Fn.comp).
+// owning Emit context travels on each Fn instead (Fn.em).
 let MOD: binaryen.Module;
 
 // Control scope under construction: the implicit first scope is the function
@@ -539,7 +542,7 @@ class Buf {
         return;
       }
       case CALL: case RETURN_CALL: {
-        const sig = this.fn.comp.sigOf(got[0]);
+        const sig = sigOf(this.fn.em!, got[0]);
         const args = sig.ps.map(() => this.pop()).reverse();
         const call = op === RETURN_CALL
           ? MOD.return_call(`f${got[0]}`, args, sig.r ?? binaryen.none)
@@ -657,7 +660,10 @@ class Buf {
       const r = this.pop(), l = this.pop();
       this.push(f(l, r));
     };
-    const un = (f: (v: binaryen.ExpressionRef) => binaryen.ExpressionRef) => this.push(f(this.pop()));
+    const un = (f: (v: binaryen.ExpressionRef) => binaryen.ExpressionRef) => {
+      const x = this.pop();
+      this.push(f(x));
+    };
     switch (op) {
       case EQZ: un((v) => MOD.i32.eqz(v)); return;
       case EQ: bin((l, r) => MOD.i32.eq(l, r)); return;
@@ -701,23 +707,27 @@ class Buf {
   localSet(i: number): void { this.stmt(MOD.local.set(i, this.pop())); }
   globalGet(gi: number): void { this.push(MOD.global.get(`g${gi}`, binaryen.anyref)); }
   structNew(t: number): void {
-    const T = types();
     const sig = STRUCT_FIELDS[t];
-    if (typeof sig === "undefined") throw new WasmError(`internal: no struct fields for type ${t}`);
+    if (typeof sig === "undefined")
+      throw new WasmError(`internal: no struct fields for type ${t}`);
     const fields = sig.map(() => this.pop()).reverse();
-    this.push(MOD.struct.new(fields, T.HT[t]));
+    this.push(MOD.struct.new(fields, _T.HT[t]));
   }
-  structGet(t: number, fi: number): void { this.push(MOD.struct.get(fi, this.pop(), types().HT[t], false)); }
+  structGet(t: number, fi: number): void {
+    this.push(MOD.struct.get(fi, this.pop(), _T.HT[t], false));
+  }
   structSet(fi: number): void {
     const v = this.pop(), ref = this.pop();
     this.stmt(MOD.struct.set(fi, ref, v));
   }
-  arrayNew(t: number): void { this.push(MOD.array.new_default(types().HT[t], this.pop())); }
+  arrayNew(t: number): void {
+    this.push(MOD.array.new_default(_T.HT[t], this.pop()));
+  }
   arrayGet(t: number): void {
     // aget (non-packed $ELEMS) and agetu (unsigned i16 $STR) both pass
     // signed=false: get_u spelling for packed arrays, no extension otherwise.
     const idx = this.pop(), ref = this.pop();
-    this.push(MOD.array.get(ref, idx, types().HT[t], false));
+    this.push(MOD.array.get(ref, idx, _T.HT[t], false));
   }
 
   arraySet(): void { // pops (arrayref, index, value)
@@ -728,7 +738,8 @@ class Buf {
   arrayCopy(d: number, s: number): void { // pops (dst, dstOff, src, srcOff, len)
     const len = this.pop(), srcOff = this.pop(), src = this.pop(), dstOff = this.pop(), dst = this.pop();
     this.stmt(MOD.array.copy(dst, dstOff, src, srcOff, len));
-    if (d !== s) throw new WasmError("internal: array.copy with distinct types");
+    if (d !== s)
+      throw new WasmError("internal: array.copy with distinct types");
   }
   // nullable=true casts to (ref null ht); false to the non-null (ref ht).
   refTest(ht: number, nullable: boolean): void {
@@ -742,8 +753,10 @@ class Buf {
   // non-null form for abstract ones (i31/any/eq — their heap-type constants
   // are not type ids).
   private castType(ht: number, nullable: boolean): binaryen.Type {
-    if (nullable) return heapTypes(ht).n;
-    if (ht >= 0 && ht <= 6) return types().HT[ht];
+    if (nullable)
+      return heapTypes(ht).n;
+    if (ht >= 0 && ht <= 6)
+      return _T.HT[ht];
     return binaryen.getTypeFromHeapType(heapTypes(ht).h, false);
   }
   refNull(ht: number): void { this.push(MOD.ref.null(heapTypes(ht).n)); }
@@ -776,7 +789,7 @@ class Buf {
     if (this.ops.length > 1 || (this.pending.length > 0 && this.ops.length !== 1)) {
       if (DBGEMIT)
         console.error("finish f" + String(this.fn.fid), "idx", this.fn.idx, "typeIdx", this.fn.typeIdx,
-          "ops:", this.ops.map((o) => binaryen.getExpressionType(o)), "pending:", this.pending);
+          "ops:", this.ops.map(o => binaryen.getExpressionType(o)), "pending:", this.pending);
       throw new WasmError(`internal: leftover operands at fn end (fn ${this.fn.idx}, ${this.ops.length} ops, ${this.pending.length} pending)`);
     }
     while (this.pending.length > 0) {
@@ -816,9 +829,11 @@ class Fn {
   typeIdx = T_KABI; // program functions share (frame, k) -> i32; helpers may differ
   // Funcref table index (assigned at creation, stable across emission).
   idx = 0;
-  // The owning compiler: Buf handlers reach per-compile state (import
-  // tables, funcref sigs) through it instead of module globals.
-  constructor(public params: number, public comp: Compiler) {
+  // The owning emission context: Buf handlers reach per-compile state
+  // (import tables, funcref sigs) through it instead of module globals. Fn
+  // is created context-free during the pre-emission phases (discover /
+  // assignIndices); the context is attached when its body is emitted.
+  constructor(public params: number, public em?: Emit) {
     this.body = new Buf(this);
   }
   i32(): number { return this.typed(binaryen.i32); }
@@ -928,8 +943,21 @@ export function compile(src: string): Uint8Array {
 // ef_perform calls. The table is built by the same discovery pass that emits
 // the code, so the wasm module and the host agree on op numbering.
 export function compileWithOps(src: string): {bytes: Uint8Array, ops: string[]} {
-  const c = new Compiler(new Parser(src).parseProgram());
-  return {bytes: c.compile(), ops: c.effOps};
+  const prog = new Parser(src).parseProgram();
+  // One compile at a time runs in-process; bind the module for the Buf
+  // emitters (they construct binaryen expressions without threading it
+  // through every call).
+  const mod = new binaryen.Module();
+  mod.setFeatures(BIN_FEATURES);
+  MOD = mod;
+  // Phase pipeline (free functions over plain artifact records),
+  // then emission (one local Emit context) and assembly.
+  const d = discover(prog);
+  const o = optimize(prog);
+  const ix = assignIndices(prog, d, o);
+  const lay = layoutStatics(d, ix, o);
+  const funcs = emit(prog, d, o, ix, lay);
+  return {bytes: buildModule(mod, o, lay, funcs), ops: d.effOps};
 }
 
 // The binaryen shrink pass runs inside buildModule (the module is built via
@@ -960,289 +988,232 @@ export const BIN_FEATURES = binaryen.Features.MVP | binaryen.Features.ReferenceT
 
 // --- compiler ---------------------------------------------------------------
 
-class Compiler {
-  nodes: Expr[];
-  // The binaryen module under construction + funcref-index → typeIdx map
-  // (direct CALL targets resolve their signatures through it; indirect
-  // calls carry the type index in the stream). Set up in the constructor.
-  m: binaryen.Module;
-  funcRefTypes = new Map<number, number>();
-  scopes = new Map<ExprID, Scope>();
-  globalFrame = {slots: 0};
-  globalScope: Scope = {frame: this.globalFrame, parent: null, map: new Map()};
-  // Statics: immutable anyref globals with constant initializers (§5).
-  // statics[i] describes global `g${i}`'s initializer.
-  statics: StaticDesc[] = [];
-  numLits = new Map<number, number>();    // literal value → static global idx
-  strLits = new Map<string, number>();    // literal value → static global idx
-  cloOffsets = new Map<string, number>(); // builtin name → static $CLO global idx
-  funcs: Fn[] = [];
-  thunks: Fn[] = []; // land thunks (T_III_I), emitted between builtins and main
-  thunk0 = 0;        // funcref table index of the first land thunk
-  lambdaIdx = new Map<ExprID, number>();
-  // Effect op table: opid (table index) → op name. Seeded with the builtin
-  // effects (analysis.ts EFFECT_OPS, builtins.ts table order); compile()
-  // interns the program's performed/handled ops after them, and the host
-  // maps an opid back to its name via the table `compileWithOps` returns.
-  effOps: string[] = [...EFFECT_OPS];
-  effOpIds = new Map<string, number>(EFFECT_OPS.map((op, i) => [op, i]));
-  // True iff the program contains any `handle` node (compile()'s pre-scan).
-  // K_HDL cells are pushed only by handle emission, so a handle-free
-  // program's k chains hold K_RET/K_SPILL cells only and emitDispatch can
-  // skip the handler case-table scan.
-  hasHandle = false;
-  // Handler machinery (§4.4): per `handle` node, its op cases (each a
-  // T_KABI function over the handler's shared hframe), the explicit Return
-  // case if any, the static global idx of its dispatch table (set by
-  // layoutStatics; a $ELEMS of flat [opid, fnIdx, fsize, nparams] i31s),
-  // and the hframe scope discover() bound the case params/resume names
-  // into. Filled by discover().
-  hdlCases = new Map<ExprID, {
-    cases: {op: string, opid: number, fn: Fn, fsize: number, nparams: number, body: ExprID}[],
-    retCase: {fn: Fn, fsize: number, nparams: number, body: ExprID} | null,
-    // Default-Return identity fn for handlers without an explicit Return
-    // case and with npMax > 0: with nparams = npMax, emitDispatch stashes
-    // the Return value at hframe slot npMax + 1 where this fn reads it —
-    // the shared npMax=0 identity fn would clobber param/resume slots.
-    idRet: Fn | null,
-    // Max op-case param count; sizes the hframe and the identity Return fn.
+// --- compile phases ----------------------------------------------------------
+// The backend pipeline is a composition of free functions over plain artifact
+// records: each phase returns a fresh record with its additions, and no phase
+// mutates an artifact it did not create (shared entities — Fn, Scope — stay
+// mutable in place as before). compileWithOps composes the pipeline; the
+// emission phase at the bottom owns one local Emit context.
+
+// Phase 1 — discovery: typecheck, effect-op interning, handler-presence
+// pre-scan, then the scope/slot/literal/split-site walk over the whole
+// program. Written once; read by every later phase and by emission.
+type Discovery = {
+  // Scope per lambda/block (ExprID → its Scope).
+  scopes: Map<ExprID, Scope>,
+  globalScope: Scope,
+  // Literal presence maps (value → placeholder -1; static layout resolves
+  // the global indices into Layout.numStatics/strStatics).
+  numLits: Map<number, number>,
+  strLits: Map<string, number>,
+  // App nodes whose call is a non-builtin (lambda) call: split sites (§3
+  // emitCall). map/each/flatmap are builtins but land-style too.
+  landCalls: Set<ExprID>,
+  // Per-handle discovery records (§4.4): op cases + explicit Return case +
+  // the hframe scope bounding the case params/resume names + npMax. Case-fn
+  // funcref indices land in Indices (assignIndices), the case-table static
+  // global in Layout (layoutStatics) — neither is written here.
+  hdlCases: Map<ExprID, {
+    cases: {
+      op: string,
+      opid: number,
+      fn: Fn,
+      fsize: number,
+      nparams: number,
+      body: ExprID,
+    }[],
+    retCase: {
+      fn: Fn,
+      fsize: number,
+      nparams: number,
+      body: ExprID,
+    } | null,
     npMax: number,
-    tableOff: number,
     scope: Scope,
-  }>();
-  // Shared default-Return case function, used only by handlers with npMax 0
-  // (created by assignCaseFns): reads the Return value emitDispatch stashed
-  // in hframe slot 1 and dispatches it through its k — eval.ts:132's
-  // `(v, k2) => k2(v)`.
-  identityRet: Fn | null = null;
-  // Shared resume-closure fn (§4.6, created by assignCaseFns): the T_KABI
-  // fn every perform site's boxed resume binder points at.
-  resumeFn: Fn | null = null;
-  caseFnTotal = 0;
-  // Unit/bool statics (unit = the global's initial ref.null any).
-  unitRef: ValueRef = {k: "g", gi: 0};
-  trueRef: ValueRef = {k: "g", gi: 0};
-  falseRef: ValueRef = {k: "g", gi: 0};
-  piG = -1; // PI constant global (only when the program references PI)
-  // Builtins the program references as values (OPT_PASSES:
-  // treeShakeBuiltins): layoutStatics/emitBuiltins emit only these.
-  usedBuiltins = new Set<string>();
-  // Builtins referenced as VALUES (analysis.ts builtinValueUses — OPT_PASSES:
+  }>,
+  // True iff the program contains any `handle` node. K_HDL cells are pushed
+  // only by handle emission, so a handle-free program's k chains hold
+  // K_RET/K_SPILL cells only and emitDispatch can skip the handler
+  // case-table scan.
+  hasHandle: boolean,
+  // Effect op table: builtin ops pre-seeded (analysis.ts EFFECT_OPS,
+  // builtins.ts table order); the program's performed/handled ops intern in
+  // first-appearance AST order. Returned to the host by compileWithOps.
+  effOps: string[],
+  effOpIds: Map<string, number>,
+};
+
+// Phase 2 — module-level optimization facts (OPT_PASSES at the bottom of the file).
+// Ordered passes over the program; each records facts the emitters
+// consume, and index assignment derives helper/lambda/builtin funcref
+// indices from the live import count (that ordering constraint is dataflow
+// here: assignIndices takes Opt).
+type Opt = {
+  // Builtins referenced as VALUES (analysis.ts builtinValueUses —
   // treeShakeBuiltins): $CLO pool closures are emitted only for these;
   // call-only builtins are called directly via builtinFnIdx instead, and
   // operator trampolines exist only when the operator is value-referenced.
-  valueBuiltins = new Set<string>();
-  // Trampoline funcref index per emitted builtin (compile step 2e) — direct
-  // builtin call sites target these instead of loading a $CLO and
-  // dispatching through the table.
-  builtinFnIdx = new Map<string, number>();
-  // Live host imports (OPT_PASSES: dropDeadHostImports) — a subset of
-  // HOST_IMPORTS in original order — each name's funcref index, and the
-  // helper indices derived from the live count. Defined-function indices:
-  // helpers first (they always follow the imports), then lambdas, then
-  // handler case functions, builtins, main.
-  liveImports = [...HOST_IMPORTS];
-  impIdx = new Map(HOST_IMPORTS.map((n, i): [string, number] => [n, i]));
-  fTruthy = HOST_IMPORTS.length;
-  fEq = HOST_IMPORTS.length + 1;
-  fBox = HOST_IMPORTS.length + 2;
-  fCapture = HOST_IMPORTS.length + 3;
-  fLambda0 = HOST_IMPORTS.length + 4;
+  valueBuiltins: Set<string>,
+  // Builtins the program references at all (values + call sites,
+  // shadowing-correct): layoutStatics/emitBuiltins emit only these.
+  usedBuiltins: Set<string>,
+  // Live host imports (dropDeadHostImports) — a subset of HOST_IMPORTS in
+  // original order — and each name's funcref index. Defined-function
+  // indices: helpers first (they always follow the imports), then lambdas,
+  // then handler case functions, builtins, main.
+  liveImports: string[],
+  impIdx: Map<string, number>,
+};
+
+// Phase 3 — funcref index assignment (helpers, lambdas, spills, handler case
+// functions, builtin trampolines), deterministic AST order.
+type Indices = {
+  // funcref index → typeIdx (direct CALL targets resolve their signatures
+  // through it; indirect calls carry the type index in the stream).
+  funcRefTypes: Map<number, number>,
+  // Helper funcref indices: helpers always follow the live imports.
+  fTruthy: number,
+  fEq: number,
+  fBox: number,
+  fCapture: number,
+  fLambda0: number,
+  // Lambda funcref index per lambda node (deterministic AST order).
+  lambdaIdx: Map<ExprID, number>,
   // Perform spilling (§4.2): perform node → frame slot of its args cell.
   // The cell must survive the handler walk and stay reachable from the
   // after-perform fragment through the RET cell's frame pointer (cell.b).
-  spillOf = new Map<ExprID, number>();
+  spillOf: Map<ExprID, number>,
   // Perform/handle node → frame slot of its result value, spilled eagerly
   // whenever the node's value is substituted into a rest-of-site fragment
   // so later splits (and resumes) reload it instead of re-running it. For a
   // handle node this slot holds the installed K_HDL cell until the handle
   // completes (a split inside its body reloads the cell from here).
-  valSpill = new Map<ExprID, number>();
+  valSpill: Map<ExprID, number>,
   // Impure child node → frame slot of its already-computed value, allocated
   // for children that run before a split deeper in the same expression
   // (sibling operands of enclosing apps/arr literals). Pure children re-emit
   // observably identically; impure ones reload from here instead.
-  operandSpill = new Map<ExprID, number>();
-  // App nodes whose call is a non-builtin (lambda) call: each is a split
-  // site — the caller's body ends at the call and the rest-of-site lives
-  // in a land fragment (§3 emitCall). Builtins keep the k=0 trampoline.
-  landCalls = new Set<ExprID>();
-  // Rest fragments already filled: a handle's after-rest fragment is thrown
-  // to fillRest from every fragment re-emission of that handle, but only the
-  // first fill must land (later fills would append duplicate code to it).
-  filledRests = new Set<Fn>();
-  // Enclosing body roots (bodyCatch/emitMain): a split-mode if fills an
-  // arm's fragment against the body root its emission is nested in.
-  bodyRoots: {stmts: ExprID[], sc: Scope, tail: boolean, savedCut: ExprID[]}[] = [];
-  // Handle node → its after-handle rest fragment (T_III_I). Created when the
-  // handle installs its cells; filled by the body-level catcher that catches
-  // the handle's Split (or, when a perform inside the body split first, by
-  // the catcher filling the body fragment's nested split).
-  hdlRest = new Map<ExprID, Fn>();
-  // Split-mode while node → its loop-entry fragment and after-while rest
-  // fragment (§6b). The loop entry re-evaluates the condition each pass; the
-  // loop-back cell inside a pass re-enters it, so the continuation chain —
-  // not a wasm label — carries the loop across suspension points and a
-  // captured (copied) chain resumes mid-iteration correctly. Refreshed on
-  // every re-emission of the while (fragments that re-run the loop fresh).
-  ctlLoops = new Map<ExprID, {entry: Fn, rest: Fn}>();
+  operandSpill: Map<ExprID, number>,
   // frame → spill slots appended after its named slots (folded into the
   // lambda's frameSize / the global frame's allocation; see frameSizeOf).
-  spillTotals = new Map<{slots: number}, number>();
-  // Compile-time emission stack: the AST path currently being emitted
-  // within one function body (reset at body boundaries). A split site
-  // snapshots it as its fragment's re-emission chain.
-  cutStack: ExprID[] = [];
+  spillTotals: Map<{slots: number}, number>,
+  // Shared default-Return case function, used only by handlers with npMax 0:
+  // reads the Return value emitDispatch stashed in hframe slot 1 and
+  // dispatches it through its k — eval.ts:132's `(v, k2) => k2(v)`.
+  identityRet: Fn,
+  // Shared resume-closure fn (§4.6): the T_KABI fn every perform site's
+  // boxed resume binder points at.
+  resumeFn: Fn,
+  // Total count of handler case functions (idf + per-handler fns + rf).
+  caseFnTotal: number,
+  // Per-handler default-Return identity fns: for handlers without an
+  // explicit Return case and with npMax > 0 — with nparams = npMax,
+  // emitDispatch stashes the Return value at hframe slot npMax + 1 where
+  // the fn reads it (the shared npMax=0 identity fn would clobber
+  // param/resume slots).
+  hdlIdRet: Map<ExprID, Fn>,
+  // Builtin trampolines: funcref index of the first builtin / first land
+  // thunk, and trampoline funcref index per emitted builtin (direct builtin
+  // call sites target these instead of loading a $CLO and dispatching
+  // through the table).
+  builtin0: number,
+  thunk0: number,
+  builtinFnIdx: Map<string, number>,
+};
 
-  constructor(public prog: Program) {
-    this.nodes = prog.nodes;
-    // One compile at a time runs in-process; bind the module for the Buf
-    // emitters (they construct binaryen expressions without threading it
-    // through every call).
-    types(); // intern the GC type rec group once (process-global ids)
-    const mod = new binaryen.Module();
-    mod.setFeatures(BIN_FEATURES);
-    MOD = this.m = mod;
-  }
+// Phase 4 — static layout (§5): immutable anyref globals with constant
+// initializers — deduped number literals, PI, string literals, true/false
+// i31s, unit, one $CLO per surviving builtin, and per-handle case tables
+// ($ELEMS of flat [opid, fnIdx, fsize, nparams] i31 quadruples). Every
+// static allocates one global index; buildModule turns its descriptor into
+// the initializer.
+type Layout = {
+  statics: StaticDesc[],
+  // Unit/bool statics (unit = the global's initial ref.null any).
+  unitRef: ValueRef,
+  trueRef: ValueRef,
+  falseRef: ValueRef,
+  // PI constant global (only when the program references PI).
+  piG: number,
+  numStatics: Map<number, number>,   // literal value → static global idx
+  strStatics: Map<string, number>,   // literal value → static global idx
+  cloOffsets: Map<string, number>,   // builtin name → static $CLO global idx
+  hdlTableOff: Map<ExprID, number>,  // handle → case-table static global idx
+};
 
-  // Signature of a direct-call target by funcref index: imports carry their
-  // type by name; defined functions registered at index assignment.
-  sigOf(funcrefIdx: number): {ps: binaryen.Type[], r: binaryen.Type | null} {
-    const typeIdx = funcrefIdx < this.liveImports.length
-      ? impType(this.liveImports[funcrefIdx])
-      : this.funcRefTypes.get(funcrefIdx);
-    const sig = SIGS[typeIdx!] as {p: (number | number[])[], r: number | number[] | null} | undefined;
-    if (sig === undefined) {
-      if (DBGEMIT)
-        console.error("sigOf miss f" + String(funcrefIdx), "liveImports", this.liveImports.length,
-          "types:", [...this.funcRefTypes.entries()].map(([k, v]) => `${k}:${v}`).join(","));
-      throw new WasmError(`internal: no sig for funcref ${funcrefIdx} (type ${typeIdx})`);
-    }
-    return {ps: sig.p.map((t) => vt(t)), r: sig.r === null ? null : vt(sig.r)};
-  }
+// --- phase functions ---------------------------------------------------------
 
-  compile(): Uint8Array {
-    // Typecheck first: rejects ill-typed programs and stamps the runtime
-    // markers this backend reads (`div` on applications of `/`, `idx` on
-    // field accesses).
-    checkProgram(this.prog);
-    // Effect op discovery (analysis.ts): builtin ops are pre-seeded (field
-    // init); the program's performed/handled ops intern in first-appearance
-    // AST order — before discover(), whose handler records read effOpIds.
-    for (const op of collectEffectOps(this.prog))
-      if (!this.effOpIds.has(op)) {
-        this.effOpIds.set(op, this.effOps.length);
-        this.effOps.push(op);
-      }
-    // Handler presence pre-scan (see hasHandle): one flag for the whole
-    // module, consulted by every emitDispatch call.
-    this.hasHandle = this.nodes.some((n) => n.t === "handle");
-    // 1. Scope discovery: scopes per lambda/block, slot numbering, literals.
-    for (const it of this.prog.items) {
-      if ("e" in it) this.discover(it.e, this.globalScope);
+function discover(prog: Program): Discovery {
+  // Typecheck first: rejects ill-typed programs and stamps the runtime
+  // markers this backend reads (`div` on applications of `/`, `idx` on
+  // field accesses).
+  checkProgram(prog);
+  const globalFrame = {slots: 0};
+  const d: Discovery = {
+    scopes: new Map(),
+    globalScope: {frame: globalFrame, parent: null, map: new Map()},
+    numLits: new Map(),
+    strLits: new Map(),
+    landCalls: new Set(),
+    hdlCases: new Map(),
+    hasHandle: prog.nodes.some(n => n.t === "handle"),
+    effOps: [...EFFECT_OPS],
+    effOpIds: new Map(EFFECT_OPS.map((op, i) => [op, i])),
+  };
+  // Effect op discovery (analysis.ts): builtin ops are pre-seeded above; the
+  // program's performed/handled ops intern in first-appearance AST order —
+  // before the walk below, whose handler records read effOpIds.
+  for (const op of collectEffectOps(prog))
+    if (!d.effOpIds.has(op)) {
+      d.effOpIds.set(op, d.effOps.length);
+      d.effOps.push(op);
     }
-    // 2. Module-level optimization pipeline: ordered passes over the
-    //    analysis results; each pass records facts the emitters consume.
-    //    They run before index assignment because helper/lambda/builtin
-    //    funcref indices derive from the live import count. (Planned for
-    //    this seam: helper-function reachability, function-body dedup.)
-    for (const pass of OPT_PASSES)
-      pass(this);
-    // 2b. Helper funcref indices: helpers always follow the live imports.
-    this.fTruthy = this.liveImports.length;
-    this.fEq = this.fTruthy + 1;
-    this.fBox = this.fTruthy + 2;
-    this.fCapture = this.fTruthy + 3;
-    this.fLambda0 = this.fTruthy + 4;
-    // 2c. Function index assignment (deterministic AST order).
-    for (const it of this.prog.items) {
-      if ("e" in it) this.assignLambdas(it.e);
-    }
-    // 2d. Spill slots for perform/handle sites (§4.2/§4.4): each perform
-    // gets an args-cell slot and a result-value slot, each handle a
-    // result-value slot, folded into the enclosing frame's size (case-body
-    // spills go into the handler's hframe).
-    this.computeSpills();
-    // 2e. Handler case functions: funcref indices + hframe sizes, plus the
-    // shared default-Return identity function.
-    this.assignCaseFns();
-    const builtins = BUILTINS.filter(b => this.usedBuiltins.has(b.name));
-    const builtin0 = this.fLambda0 + this.lambdaIdx.size + this.caseFnTotal;
-    // Land thunks occupy the table slots between builtins and main.
-    this.thunk0 = builtin0 + builtins.length;
-    // Trampoline funcref indices for direct builtin call sites (must match
-    // emitBuiltins' emission order: BUILTINS filtered by usedBuiltins).
-    for (let i = 0; i < builtins.length; i++) {
-      this.builtinFnIdx.set(builtins[i].name, builtin0 + i);
-      this.funcRefTypes.set(builtin0 + i, T_KABI); // sigs resolve before emission
-    }
-    // 3. Static layout: assign global indices + initializer descriptors (§5).
-    this.layoutStatics();
-    // 4. Emit code: helpers (right after the live imports), lambdas, builtin
-    //    trampolines, then main (last; run/accessors follow in assemble()).
-    this.funcs.push(...this.emitHelpers());
-    for (const it of this.prog.items) {
-      if ("e" in it) this.emitLambdas(it.e);
-    }
-    this.emitCaseFns();
-    this.funcs.push(...this.emitBuiltins(builtin0));
-    const main = new Fn(2, this);
-    this.emitMain(main);
-    // Thunks are appended after all emission (emitMain's top-level calls
-    // create thunks too); main stays the last program function (exported
-    // as run — the run wrapper is assembled after it).
-    this.funcs.push(...this.thunks);
-    this.funcs.push(main);
-    // 5. Assemble via binaryen.
-    return this.buildModule();
-  }
-
-  // --- discovery: scopes, slots, literals ------------------------------------
-
-  discover(id: ExprID, sc: Scope): void {
-    const e = this.nodes[id];
+  // Scope discovery: scopes per lambda/block, slot numbering, literals,
+  // split sites, handler records.
+  const rec = (id: ExprID, sc: Scope): void => {
+    const e = prog.nodes[id];
     switch (e.t) {
       case "num":
-        this.numLits.set(e.v, -1);
+        d.numLits.set(e.v, -1);
         break;
       case "str":
-        this.strLits.set(e.v, -1);
+        d.strLits.set(e.v, -1);
         break;
       case "lambda": {
         const frame = {slots: 0};
         const s: Scope = {frame, parent: sc, map: new Map()};
         for (const p of e.params) s.map.set(p.name, frame.slots++);
-        this.scopes.set(id, s);
-        this.discover(e.body, s);
+        d.scopes.set(id, s);
+        rec(e.body, s);
         break;
       }
       // Blocks share the enclosing wasm frame: their lets just take further
       // slots (the interpreter's block env is a child of the current env).
       case "block": {
         const s: Scope = {frame: sc.frame, parent: sc, map: new Map()};
-        this.scopes.set(id, s);
-        for (const stmt of e.stmts) this.discover(stmt, s);
+        d.scopes.set(id, s);
+        for (const stmt of e.stmts) rec(stmt, s);
         break;
       }
       case "let":
         sc.map.set(e.name, sc.frame.slots++);
-        this.discover(e.val, sc);
+        rec(e.val, sc);
         break;
       case "dlet":
         for (const fd of e.fields) sc.map.set(fd.name, sc.frame.slots++);
-        this.discover(e.val, sc);
+        rec(e.val, sc);
         break;
       case "assign":
-        this.discover(e.val, sc);
+        rec(e.val, sc);
         break;
       case "if":
-        this.discover(e.c, sc);
-        this.discover(e.a, sc);
-        this.discover(e.b, sc);
+        rec(e.c, sc);
+        rec(e.a, sc);
+        rec(e.b, sc);
         break;
       case "while":
-        this.discover(e.c, sc);
-        this.discover(e.body, sc);
+        rec(e.c, sc);
+        rec(e.body, sc);
         break;
       case "app": {
         // Mark non-builtin calls as split sites (§3 emitCall); the same
@@ -1252,26 +1223,26 @@ class Compiler {
         // callback must see the caller's handler chain.
         // (cloOffsets is only filled at static layout, later than this
         // pass, so match against the BUILTINS name list here.)
-        const fne = this.nodes[e.fn];
+        const fne = prog.nodes[e.fn];
         const name = fne.t === "sym" ? fne.v : null;
-        const isBuiltin = name !== null && this.resolve(sc, name) === null &&
+        const isBuiltin = name !== null && resolve(sc, name) === null &&
           BUILTINS.some(b => b.name === name);
         if (name === null || !isBuiltin || MAP_LIKE.has(name)) {
-          this.landCalls.add(id);
+          d.landCalls.add(id);
         }
-        this.discover(e.fn, sc);
-        for (const a of e.args) this.discover(a, sc);
+        rec(e.fn, sc);
+        for (const a of e.args) rec(a, sc);
         break;
       }
       case "arr":
-        for (const el of e.elems) this.discover(el, sc);
+        for (const el of e.elems) rec(el, sc);
         break;
       case "field":
-        this.discover(e.obj, sc);
-        this.strLits.set(e.name, -1); // for the out-of-bounds message
+        rec(e.obj, sc);
+        d.strLits.set(e.name, -1); // for the out-of-bounds message
         break;
       case "perform":
-        for (const a of e.args) this.discover(a, sc);
+        for (const a of e.args) rec(a, sc);
         break;
       case "handle": {
         // Size the shared hframe: op params at slots 0..npMax-1 (per matched
@@ -1292,14 +1263,14 @@ class Compiler {
           if (c.op === "Return") {
             hs.map.set(c.params[0].name, npMax + 1);
             hs.map.set(c.resume, npMax);
-            retCase = {fn: new Fn(2, this), fsize: 0, nparams: npMax, body: c.body};
+            retCase = {fn: new Fn(2), fsize: 0, nparams: npMax, body: c.body};
           } else {
             for (let i = 0; i < c.params.length; i++) hs.map.set(c.params[i].name, i);
             hs.map.set(c.resume, c.params.length);
             cases.push({
               op: c.op,
-              opid: this.effOpIds.get(c.op)!,
-              fn: new Fn(2, this),
+              opid: d.effOpIds.get(c.op)!,
+              fn: new Fn(2),
               fsize: 0,
               nparams: c.params.length,
               body: c.body,
@@ -1307,11 +1278,11 @@ class Compiler {
           }
         }
         frame.slots = npMax + 2;
-        this.hdlCases.set(id, {cases, retCase, idRet: null, npMax, tableOff: 0, scope: hs});
+        d.hdlCases.set(id, {cases, retCase, npMax, scope: hs});
         // The handler body binds into the enclosing frame (it runs inline
         // there); case bodies bind into the hframe.
-        this.discover(e.body, sc);
-        for (const c of e.cases) this.discover(c.body, hs);
+        rec(e.body, sc);
+        for (const c of e.cases) rec(c.body, hs);
         break;
       }
       case "sym":
@@ -1319,759 +1290,109 @@ class Compiler {
       case "unit":
         break;
     }
+  };
+  for (const it of prog.items) {
+    if ("e" in it) rec(it.e, d.globalScope);
   }
+  return d;
+}
 
-  assignLambdas(id: ExprID): void {
-    const e = this.nodes[id];
+function optimize(prog: Program): Opt {
+  const o: Opt = {
+    valueBuiltins: new Set(),
+    usedBuiltins: new Set(),
+    liveImports: [...HOST_IMPORTS],
+    impIdx: new Map(HOST_IMPORTS.map((n, i): [string, number] => [n, i])),
+  };
+  for (const pass of OPT_PASSES)
+    pass(prog, o);
+  return o;
+}
+
+function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
+  // 2b. Helper funcref indices: helpers always follow the live imports.
+  const ix: Indices = {
+    funcRefTypes: new Map(),
+    fTruthy: o.liveImports.length,
+    fEq: o.liveImports.length + 1,
+    fBox: o.liveImports.length + 2,
+    fCapture: o.liveImports.length + 3,
+    fLambda0: o.liveImports.length + 4,
+    lambdaIdx: new Map(),
+    spillOf: new Map(),
+    valSpill: new Map(),
+    operandSpill: new Map(),
+    spillTotals: new Map(),
+    identityRet: undefined!, // set in 2e
+    resumeFn: undefined!,
+    caseFnTotal: 0,
+    hdlIdRet: new Map(),
+    builtin0: 0,
+    thunk0: 0,
+    builtinFnIdx: new Map(),
+  };
+  // 2c. Function index assignment (deterministic AST order).
+  const assignLambdas = (id: ExprID): void => {
+    const e = prog.nodes[id];
     switch (e.t) {
       case "lambda":
-        this.lambdaIdx.set(id, this.fLambda0 + this.lambdaIdx.size);
-        this.funcRefTypes.set(this.lambdaIdx.get(id)!, T_KABI); // sigs resolve before emission
-        this.assignLambdas(e.body);
+        ix.lambdaIdx.set(id, ix.fLambda0 + ix.lambdaIdx.size);
+        ix.funcRefTypes.set(ix.lambdaIdx.get(id)!, T_KABI); // sigs resolve before emission
+        assignLambdas(e.body);
         break;
       case "let":
       case "assign":
       case "dlet":
-        this.assignLambdas(e.val);
+        assignLambdas(e.val);
         break;
       case "block":
-        for (const stmt of e.stmts) this.assignLambdas(stmt);
+        for (const stmt of e.stmts) assignLambdas(stmt);
         break;
       case "if":
-        this.assignLambdas(e.c);
-        this.assignLambdas(e.a);
-        this.assignLambdas(e.b);
+        assignLambdas(e.c);
+        assignLambdas(e.a);
+        assignLambdas(e.b);
         break;
       case "while":
-        this.assignLambdas(e.c);
-        this.assignLambdas(e.body);
+        assignLambdas(e.c);
+        assignLambdas(e.body);
         break;
       case "app":
-        this.assignLambdas(e.fn);
-        for (const a of e.args) this.assignLambdas(a);
+        assignLambdas(e.fn);
+        for (const a of e.args) assignLambdas(a);
         break;
       case "arr":
-        for (const el of e.elems) this.assignLambdas(el);
+        for (const el of e.elems) assignLambdas(el);
         break;
       case "field":
-        this.assignLambdas(e.obj);
+        assignLambdas(e.obj);
         break;
       case "handle":
-        this.assignLambdas(e.body);
-        for (const c of e.cases) this.assignLambdas(c.body);
+        assignLambdas(e.body);
+        for (const c of e.cases) assignLambdas(c.body);
         break;
       case "perform":
-        for (const a of e.args) this.assignLambdas(a);
+        for (const a of e.args) assignLambdas(a);
         break;
     }
+  };
+  for (const it of prog.items) {
+    if ("e" in it) assignLambdas(it.e);
   }
-
-  emitLambdas(id: ExprID): void {
-    const e = this.nodes[id];
-    switch (e.t) {
-      case "lambda": {
-        const f = new Fn(2, this);
-        f.idx = this.lambdaIdx.get(id)!; // funcref index (assignLambdas order)
-        this.funcRefTypes.set(f.idx, T_KABI);
-        // bodyCatch emits the body and its completion dispatch (dead when
-        // the body ended in a tail call or split).
-        this.bodyCatch(e.body, f, this.scopes.get(id)!, true, INLINE);
-        this.funcs.push(f);
-        this.emitLambdas(e.body);
-        break;
-      }
-      case "let":
-      case "assign":
-      case "dlet":
-        this.emitLambdas(e.val);
-        break;
-      case "block":
-        for (const stmt of e.stmts) this.emitLambdas(stmt);
-        break;
-      case "if":
-        this.emitLambdas(e.c);
-        this.emitLambdas(e.a);
-        this.emitLambdas(e.b);
-        break;
-      case "while":
-        this.emitLambdas(e.c);
-        this.emitLambdas(e.body);
-        break;
-      case "app":
-        this.emitLambdas(e.fn);
-        for (const a of e.args) this.emitLambdas(a);
-        break;
-      case "arr":
-        for (const el of e.elems) this.emitLambdas(el);
-        break;
-      case "field":
-        this.emitLambdas(e.obj);
-        break;
-      case "handle":
-        this.emitLambdas(e.body);
-        for (const c of e.cases) this.emitLambdas(c.body);
-        break;
-      case "perform":
-        for (const a of e.args) this.emitLambdas(a);
-        break;
-    }
-  }
-
-
-  // --- body-level split protocol ---------------------------------------------
-
-  // 4b. Handler case function bodies (§4.4). Each case body runs over the
-  // handler's shared hframe (its frame param) with k = HDL.next — the
-  // two-k rule: the ambient continuation is the one captured OUTSIDE the
-  // handler, so a perform inside a case body walks from there and never
-  // re-enters its own handler, and a case body finishing normally
-  // dispatches straight through it (no Return re-wrap). The identity fns
-  // dispatch their frame's Return value (slot 1 for the shared npMax=0 fn,
-  // slot npMax+1 for a per-handler fn — where emitDispatch stashes it for
-  // the matching nparams) through their k — eval.ts:132's (v, k2) => k2(v).
-  emitCaseFns(): void {
-    const idf = this.identityRet!;
-    {
-      const b = idf.body;
-      const v = idf.anyref();
-      b.localGet(0);
-      b.structGet(4, 1);
-      b.i32Const(1);
-      b.arrayGet(1); // hframe slot 1: the Return value
-      b.localSet(v);
-      this.emitDispatch(idf, v);
-    }
-    this.funcs.push(idf);
-    for (const info of this.hdlCases.values()) {
-      for (const c of info.cases) {
-        this.bodyCatch(c.body, c.fn, info.scope, true, INLINE);
-        this.funcs.push(c.fn);
-      }
-      if (info.retCase !== null) {
-        this.bodyCatch(info.retCase.body, info.retCase.fn, info.scope, true, INLINE);
-        this.funcs.push(info.retCase.fn);
-      } else if (info.idRet !== null) {
-        const idr = info.idRet;
-        const b = idr.body;
-        const v = idr.anyref();
-        b.localGet(0);
-        b.structGet(4, 1);
-        b.i32Const(info.npMax + 1); // hframe Return slot (nparams = npMax)
-        b.arrayGet(1);
-        b.localSet(v);
-        this.emitDispatch(idr, v);
-        this.funcs.push(idr);
-      }
-    }
-    // The shared resume closure fn (§4.6): (frame, k) -> anyref. frame's
-    // parent is the perform site's capture record {slot 1 = captured slice,
-    // slot 2 = matched HDL, slot 3 = the invocation's hframe copy}; frame's
-    // slot 0 is the resumed value. Copies the slice afresh (originals
-    // untouched — multi-shot safe), re-chains the copy's bottom to a fresh
-    // HDL {case table, hframe, next = this call's k} and dispatches the
-    // resumed value through the fresh chain: RET cells run the segment's
-    // fragments, the fresh HDL's Return entry fires, and dispatch
-    // terminates at the caller's continuation.
-    const rf = this.resumeFn!;
-    {
-      const b = rf.body;
-      const v = rf.anyref(), rec = rf.anyref(), slice = rf.anyref(), hdl = rf.anyref();
-      const copy = rf.anyref(), fresh = rf.anyref(), cur = rf.anyref();
-      b.localGet(0);
-      b.structGet(4, 1);
-      b.i32Const(0);
-      b.arrayGet(1);
-      b.localSet(v); // the resumed value: the closure call frame's slot 0
-      b.localGet(0);
-      b.structGet(4, 0); // the capture record (env frame)
-      b.localSet(rec);
-      b.localGet(rec);
-      b.refCast(4, true);
-      b.structGet(4, 1);
-      b.i32Const(1);
-      b.arrayGet(1);
-      b.localSet(slice);
-      b.localGet(rec);
-      b.refCast(4, true);
-      b.structGet(4, 1);
-      b.i32Const(2);
-      b.arrayGet(1);
-      b.localSet(hdl);
-      b.localGet(slice);
-      b.refCast(5, true);
-      b.localGet(hdl);
-      b.refCast(5, true);
-      b.u8(CALL);
-      b.lebU(this.fCapture);
-      b.localSet(copy);
-      b.i32Const(K_HDL);
-      b.refI31();
-      b.localGet(hdl);
-      b.refCast(5, true);
-      b.structGet(5, 1); // a = the matched handler's case table
-      b.localGet(rec);
-      b.refCast(4, true);
-      b.structGet(4, 1);
-      b.i32Const(3);
-      b.arrayGet(1); // b = the invocation's hframe copy (rec slot 3)
-      b.localGet(1); // next = the k this closure was invoked with
-      b.structNew(5);
-      b.localSet(fresh);
-      b.localGet(copy);
-      b.localSet(cur);
-      b.u8(BLOCK);
-      b.u8(0x40);
-      b.u8(LOOP);
-      b.u8(0x40);
-      b.localGet(cur);
-      b.refCast(5, true);
-      b.structGet(5, 3);
-      b.localGet(hdl);
-      b.refCast(5, true);
-      b.refEq();
-      b.u8(BR_IF);
-      b.lebU(1); // cur is the bottom copy (its next is the old HDL)
-      b.localGet(cur);
-      b.refCast(5, true);
-      b.structGet(5, 3);
-      b.localSet(cur);
-      b.u8(BR);
-      b.lebU(0);
-      b.u8(END);
-      b.u8(END);
-      b.localGet(cur);
-      b.refCast(5, true);
-      b.localGet(fresh);
-      b.refCast(5, true);
-      b.structSet(3);
-      this.emitDispatch(rf, v, copy); // k = the closure's own k param
-    }
-    this.funcs.push(rf);
-  }
-
-  emitStmtSeq(stmts: ExprID[], f: Fn, sc: Scope, tail: boolean, ctx: Ctx): void {
-    const b = f.body;
-    if (stmts.length === 0) {
-      const v = f.anyref();
-      this.pushRef(f, this.unitRef);
-      b.localSet(v);
-      this.emitDispatch(f, v, ctx.kL);
-      return;
-    }
-    for (let k = 0; k < stmts.length; k++) {
-      const r = this.expr(stmts[k], f, sc, tail && k === stmts.length - 1, ctx);
-      if (k === stmts.length - 1) {
-        this.pushRef(f, r);
-        const v = f.anyref();
-        b.localSet(v);
-        this.emitDispatch(f, v, ctx.kL);
-      }
-    }
-  }
-
-  // Emit a lambda/case body, catching the Split of a perform/handle site
-  // inside it and filling that site's rest-of-site fragment (see fillRest).
-  // Lambda and case bodies are split boundaries: the chain never crosses a
-  // lambda call, so each body's catcher owns its sites' fragments.
-  bodyCatch(bodyId: ExprID, f: Fn, sc: Scope, tail: boolean, ctx: Ctx): void {
-    const savedCut = this.cutStack;
-    const bodyE = this.nodes[bodyId];
-    const stmts = bodyE.t === "block" ? bodyE.stmts : [bodyId];
-    const bsc = this.scopes.get(bodyId) ?? sc;
-    this.bodyRoots.push({stmts, sc: bsc, tail, savedCut: [...savedCut]});
-    try {
-      try {
-        this.emitStmtSeq(stmts, f, bsc, tail, ctx);
-      } catch (sp) {
-        this.cutStack = savedCut;
-        if (!(sp instanceof Split)) throw sp;
-        this.fillRest(sp, stmts, bsc, tail);
-        return;
-      }
-      this.cutStack = savedCut;
-    } finally {
-      this.bodyRoots.pop();
-    }
-  }
-
-  // Fill a split's rest-of-site fragment (T_III_I: frame, v, kNext) by
-  // re-emitting from the body root along the split's chain: statements
-  // before the cut already executed (skipped; surviving values reload from
-  // spill slots), the cut site continues the fragment with its value being
-  // the v param, statements after it re-emit inline. A further split during
-  // re-emission chains another fragment off this one's split site.
-  fillRest(sp: Split, root: ExprID[], sc: Scope, tail: boolean): void {
-    const gf = sp.restFn;
-    if (DBGEMIT) console.error("FILL_REST fn=", gf.idx, "root=", root.length, "chain=", sp.chain.length, "types=", "[" + sp.chain.map((x) => this.nodes[x]?.t).join(",") + "]", "tail=", tail);
-    // A shared after-rest fragment (e.g. a handle's) may be routed here
-    // again by a later re-emission of the same site; its content is already
-    // correct, so re-filling would only append a duplicate tail.
-    if (this.filledRests.has(gf)) return;
-    this.filledRests.add(gf);
-    const b = gf.body;
-    // Prologue: the k param is the split site's K_SPILL cell (see snapWrap)
-    // — load its frozen frame-image pointer into the `snap` local (pre-cut
-    // operand reloads read it) and continue with the cell's own next. A
-    // plain cell (nested-chained fragments whose site ran synchronously)
-    // means snap = the live frame (local 0): no operand-spill reload can
-    // happen in a fragment whose site never froze one, because such
-    // fragments re-emit only post-cut code and pure children re-emit
-    // instead of reloading.
-    const snap = gf.anyref();
-    b.localGet(2);
-    b.u8(0xd1); // ref.is_null: k = null → nothing froze a snapshot
-    b.u8(IF);
-    b.u8(0x40);
-    b.localGet(0); // live frame: snapSlot reads hit the frame param
-    b.localSet(snap);
-    b.u8(ELSE);
-    b.localGet(2);
-    b.refCast(5, true);
-    b.structGet(5, 0);
-    b.i31Get();
-    b.i32Const(K_SPILL);
-    b.u8(EQ);
-    b.u8(IF);
-    b.u8(0x40);
-    b.localGet(2);
-    b.refCast(5, true);
-    b.structGet(5, 1); // a = the frozen $FRAME snapshot
-    b.localSet(snap);
-    b.localGet(2);
-    b.refCast(5, true);
-    b.structGet(5, 3);
-    b.localSet(2);
-    b.u8(END);
-    b.u8(END);
-    const ci = root.indexOf(sp.chain[0]);
-    if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-    const savedCut = this.cutStack;
-    try {
-      for (let k = 0; k < root.length; k++) {
-        if (k < ci) continue; // executed before the split
-        const r = (k === ci)
-          ? this.expr(sp.chain[0], gf, sc, tail && k === root.length - 1, {kL: 2, cut: sp.chain.slice(1), snap})
-          : this.expr(root[k], gf, sc, tail && k === root.length - 1, {kL: 2, snap});
-        if (k === root.length - 1) {
-          this.pushRef(gf, r);
-          const v = gf.anyref();
-          gf.body.localSet(v);
-          this.emitDispatch(gf, v, 2); // kNext param
-        }
-      }
-    } catch (sp2) {
-      this.cutStack = savedCut;
-      if (!(sp2 instanceof Split)) throw sp2;
-      // The re-emitted code ended at another split site: this fragment is
-      // complete (it ends at that site's host boundary / case invocation);
-      // the rest after it chains into the new site's fragment.
-      if (DBGEMIT) console.error("  NESTED_SPLIT in fn=", gf.idx, "-> chain=", "[" + sp2.chain.map((x) => this.nodes[x]?.t).join(",") + "]");
-      this.fillRest(sp2, root, sc, tail);
-      return;
-    }
-    this.cutStack = savedCut;
-  }
-
-  // Fragment re-emission of a statement sequence from a cut statement:
-  // statements before index ci already executed (skipped — surviving values
-  // reload from spill slots), stmts[ci] continues the fragment with its
-  // value being the fragment's v param, statements after it re-emit inline.
-  // Returns the last statement's ref; pushRef it where the caller needs the
-  // legacy stack operand (handle/while-cut do, block-cut returns it).
-  emitStmtsFrom(stmts: ExprID[], f: Fn, s: Scope, ctx: Ctx, ci: number, cut: ExprID[], tail: boolean): ValueRef {
-    let r: ValueRef = this.unitRef;
-    for (let k = ci; k < stmts.length; k++) {
-      r = (k === ci)
-        ? this.expr(stmts[k], f, s, tail && k === stmts.length - 1, {kL: ctx.kL, cut: cut.slice(1)})
-        : this.expr(stmts[k], f, s, tail && k === stmts.length - 1, {kL: ctx.kL});
-    }
-    return r;
-  }
-
-  // --- helper functions (fixed indices after the live imports) ---------------
-
-  emitHelpers(): Fn[] {
-    // $truthy(v: anyref) -> i32: JS truthiness — 0 only for unit (ref.null
-    // any) and the bool i31 0 (matches `c !== false && c !== null`); every
-    // $NUM (including 0.0), $STR, $ARR and $CLO is truthy.
-    const truthy = new Fn(1, this);
-    truthy.typeIdx = T_TRUTHY;
-    this.funcRefTypes.set(this.fTruthy, T_TRUTHY);
-    {
-      const b = truthy.body;
-      b.localGet(0);
-      b.u8(0xd1); // ref.is_null
-      b.u8(IF);
-      b.u8(0x7f);
-      b.i32Const(0);
-      b.u8(ELSE);
-      b.localGet(0);
-      b.refTest(I31REF, true); // ref.test (ref null i31)
-      b.u8(IF);
-      b.u8(0x7f);
-      b.localGet(0);
-      b.refCast(I31REF, false);
-      b.i31Get(); // i31.get_u
-      b.u8(ELSE);
-      b.i32Const(1);
-      b.u8(END);
-      b.u8(END);
-    }
-    // $eq(a: anyref, b: anyref) -> anyref bool: JS === — nums by f64
-    // payload, bools by i31 payload, strings by i16 content, arrays/
-    // tuples/closures by identity (ref.cast (ref null eq) + ref.eq;
-    // identity survives `set` growth because growth repoints the wrapper's
-    // backing, not the wrapper), unit (null) equal only to unit.
-    const eq = new Fn(2, this);
-    eq.typeIdx = T_EQ;
-    this.funcRefTypes.set(this.fEq, T_EQ);
-    {
-      const b = eq.body;
-      const res = eq.i32();
-      // decided: a typed path (or the null mismatch) already answered.
-      const decided = eq.i32();
-      b.i32Const(0);
-      b.localSet(decided);
-      // null ladder: equal nulls → true, one null → false.
-      b.localGet(0);
-      b.u8(0xd1);
-      b.localGet(1);
-      b.u8(0xd1);
-      b.u8(EQ);
-      b.u8(IF);
-      b.u8(0x7f);
-      b.localGet(0);
-      b.u8(0xd1);
-      b.u8(ELSE);
-      b.i32Const(0);
-      b.u8(END);
-      b.localSet(res);
-      // one null, one not: the ladder answered (false).
-      b.localGet(0);
-      b.u8(0xd1);
-      b.localGet(1);
-      b.u8(0xd1);
-      b.u8(EQ);
-      b.u8(EQZ);
-      b.localSet(decided);
-      // bool == bool: i31 payloads.
-      b.localGet(0);
-      b.refTest(I31REF, true);
-      b.localGet(1);
-      b.refTest(I31REF, true);
-      b.u8(AND);
-      b.u8(IF);
-      b.u8(0x40);
-      b.localGet(0);
-      b.refCast(I31REF, false);
-      b.i31Get();
-      b.localGet(1);
-      b.refCast(I31REF, false);
-      b.i31Get();
-      b.u8(EQ);
-      b.localSet(res);
-      // decided: the bool path answered.
-      b.localGet(0);
-      b.refTest(I31REF, true);
-      b.localGet(1);
-      b.refTest(I31REF, true);
-      b.u8(AND);
-      b.localGet(decided);
-      b.u8(OR); // i32.or
-      b.localSet(decided);
-      b.u8(END);
-      // num == num: f64 payloads.
-      b.localGet(0);
-      b.refTest(0, true);
-      b.localGet(1);
-      b.refTest(0, true);
-      b.u8(AND);
-      b.u8(IF);
-      b.u8(0x40);
-      b.localGet(0);
-      b.refCast(0, true);
-      b.structGet(0, 0);
-      b.localGet(1);
-      b.refCast(0, true);
-      b.structGet(0, 0);
-      b.u8(FEQ);
-      b.localSet(res);
-      // decided: the num path answered.
-      b.localGet(0);
-      b.refTest(0, true);
-      b.localGet(1);
-      b.refTest(0, true);
-      b.u8(AND);
-      b.localGet(decided);
-      b.u8(OR); // i32.or
-      b.localSet(decided);
-      b.u8(END);
-      // str == str: i16 content.
-      b.localGet(0);
-      b.refTest(2, true);
-      b.localGet(1);
-      b.refTest(2, true);
-      b.u8(AND);
-      b.u8(IF);
-      b.u8(0x40);
-      const la = eq.i32(), lb = eq.i32();
-      b.localGet(0);
-      b.refCast(2, true);
-      b.arrayLen();
-      b.localSet(la);
-      b.localGet(1);
-      b.refCast(2, true);
-      b.arrayLen();
-      b.localSet(lb);
-      b.localGet(la);
-      b.localGet(lb);
-      b.u8(EQ);
-      b.localSet(res);
-      this.loop(eq, () => {
-        b.localGet(la);
-      }, i => {
-        b.localGet(res);
-        b.localGet(0);
-        b.refCast(2, true);
-        b.localGet(i);
-        b.arrayGet(2);
-        b.localGet(1);
-        b.refCast(2, true);
-        b.localGet(i);
-        b.arrayGet(2);
-        b.u8(EQ);
-        b.u8(AND);
-        b.localSet(res);
-      });
-      b.u8(END);
-      // Mixed/same-shape-arr/clo → identity (both operands cast through
-      // (ref null eq); a nullable cast accepts null but the null ladder
-      // already left). Only runs when no typed path answered.
-      b.localGet(decided);
-      b.u8(EQZ);
-      b.u8(IF);
-      b.u8(0x40);
-      b.localGet(0);
-      b.refCast(EQREF, true);
-      b.localGet(1);
-      b.refCast(EQREF, true);
-      b.refEq();
-      b.localSet(res);
-      b.u8(END);
-      b.localGet(res);
-      b.refI31();
-    }
-    // $box(x: f64) -> anyref: number struct.
-    const box = new Fn(1, this);
-    box.typeIdx = T_BOX;
-    this.funcRefTypes.set(this.fBox, T_BOX);
-    box.body.localGet(0);
-    box.body.structNew(0);
-    // $captureSlice(k: (ref null $K), until: (ref null $K)) -> (ref null $K):
-    // fresh copies of the cells from k up to (excluding) until, each
-    // {kind, a, b} verbatim; the bottom copy chains to `until`. Two passes:
-    // count (n ≥ 1: the slice always starts at a RET cell), then allocate
-    // n cells into a temp $ELEMS and link them (a $K cell is singly linked
-    // forward, so the copies are chained bottom-up out of the temp array).
-    const capture = new Fn(2, this);
-    capture.typeIdx = T_CAPTURE;
-    this.funcRefTypes.set(this.fCapture, T_CAPTURE);
-    {
-      const b = capture.body;
-      const n = capture.i32(), cur = capture.anyref(), tmp = capture.anyref();
-      const i = capture.i32(), src = capture.anyref(), cell = capture.anyref();
-      b.i32Const(0);
-      b.localSet(n);
-      b.localGet(0);
-      b.localSet(cur);
-      b.u8(BLOCK);
-      b.u8(0x40);
-      b.u8(LOOP);
-      b.u8(0x40);
-      b.localGet(cur);
-      b.refCast(5, true);
-      b.localGet(1);
-      b.refEq();
-      b.u8(BR_IF);
-      b.lebU(1);
-      b.localGet(n);
-      b.i32Const(1);
-      b.u8(ADD);
-      b.localSet(n);
-      b.localGet(cur);
-      b.refCast(5, true);
-      b.structGet(5, 3);
-      b.localSet(cur);
-      b.u8(BR);
-      b.lebU(0);
-      b.u8(END);
-      b.u8(END);
-      b.localGet(n);
-      b.arrayNew(1);
-      b.localSet(tmp);
-      b.localGet(0);
-      b.localSet(src);
-      b.i32Const(0);
-      b.localSet(i);
-      b.u8(BLOCK);
-      b.u8(0x40);
-      b.u8(LOOP);
-      b.u8(0x40);
-      b.localGet(i);
-      b.localGet(n);
-      b.u8(GEU);
-      b.u8(BR_IF);
-      b.lebU(1);
-      b.localGet(tmp);
-      b.refCast(1, true);
-      b.localGet(i);
-      b.localGet(src);
-      b.refCast(5, true);
-      b.structGet(5, 0);
-      b.localGet(src);
-      b.refCast(5, true);
-      b.structGet(5, 1);
-      b.localGet(src);
-      b.refCast(5, true);
-      b.structGet(5, 2);
-      b.refNull(5);
-      b.structNew(5);
-      b.arraySet();
-      b.localGet(i);
-      b.i32Const(1);
-      b.u8(ADD);
-      b.localSet(i);
-      b.localGet(src);
-      b.refCast(5, true);
-      b.structGet(5, 3);
-      b.localSet(src);
-      b.u8(BR);
-      b.lebU(0);
-      b.u8(END);
-      b.u8(END);
-      b.i32Const(0);
-      b.localSet(i);
-      b.u8(BLOCK);
-      b.u8(0x40);
-      b.u8(LOOP);
-      b.u8(0x40);
-      b.localGet(i);
-      b.localGet(n);
-      b.u8(GEU);
-      b.u8(BR_IF);
-      b.lebU(1);
-      b.localGet(tmp);
-      b.refCast(1, true);
-      b.localGet(i);
-      b.arrayGet(1);
-      b.refCast(5, true);
-      b.localSet(cell); // the cell is read as a statement: Buf statements run
-      // before pending ops, so a local.set must bind it before i++ mutates i
-      // (an op-pushed read would re-read the incremented i at its consumer).
-      b.localGet(i);
-      b.i32Const(1);
-      b.u8(ADD);
-      b.localSet(i);
-      b.localGet(cell);
-      b.refCast(5, true); // the local is anyref; struct.set needs the exact $K type
-      b.localGet(i);
-      b.localGet(n);
-      b.u8(GEU);
-      b.u8(IF);
-      b.u8(0x63);
-      b.u8(5); // next = until (the bottom of the slice)
-      b.localGet(1);
-      b.u8(ELSE);
-      b.localGet(tmp);
-      b.refCast(1, true);
-      b.localGet(i);
-      b.arrayGet(1);
-      b.refCast(5, true);
-      b.u8(END);
-      b.structSet(3);
-      b.u8(BR);
-      b.lebU(0);
-      b.u8(END);
-      b.u8(END);
-      b.localGet(tmp);
-      b.refCast(1, true);
-      b.i32Const(0);
-      b.arrayGet(1);
-      b.refCast(5, true);
-    }
-    return [truthy, eq, box, capture];
-  }
-
-  splits(id: ExprID): boolean {
-    const e = this.nodes[id];
-    switch (e.t) {
-      case "perform":
-      case "handle":
-        return true;
-      case "lambda":
-        return false;
-      case "block":
-        return e.stmts.some(st2 => this.splits(st2));
-      case "let":
-      case "assign":
-      case "dlet":
-        return this.splits(e.val);
-      case "if":
-        return this.splits(e.c) || this.splits(e.a) || this.splits(e.b);
-      case "while":
-        return this.splits(e.c) || this.splits(e.body);
-      case "app":
-        return this.landCalls.has(id) || this.splits(e.fn) || e.args.some(a => this.splits(a));
-      case "arr":
-        return e.elems.some(el => this.splits(el));
-      case "field":
-        return this.splits(e.obj);
-      default:
-        return false; // num/str/bool/unit/sym
-    }
-  }
-
-  // Whether re-emitting this node inside a fragment is observationally
-  // identical to reloading its value: pure nodes (constants, symbol reads,
-  // closure allocations) re-emit; impure ones must reload a spill slot.
-  pure(id: ExprID): boolean {
-    const e = this.nodes[id];
-    switch (e.t) {
-      case "num":
-      case "str":
-      case "bool":
-      case "unit":
-      case "sym":
-      case "lambda":
-        return true;
-      case "arr":
-        return e.elems.every(el => this.pure(el));
-      case "field":
-        return this.pure(e.obj);
-      default:
-        return false;
-    }
-  }
-
-  // One spill slot in `frame` for an operand that runs before a split.
-  addOperandSpill(id: ExprID, frame: {slots: number}): void {
-    this.operandSpill.set(id, frame.slots + (this.spillTotals.get(frame) ?? 0));
-    this.spillTotals.set(frame, (this.spillTotals.get(frame) ?? 0) + 1);
-  }
-
-  // Spill slots for perform/handle sites (§4.2/§4.4): each perform gets an
-  // args-cell slot and a result-value slot, each handle a cell slot; plus
-  // one slot per impure child that runs before a split deeper among its
-  // siblings (app fn/args, arr elems, perform args) so the fragment reloads
-  // the value instead of re-running it. Case-body spills land in the
-  // handler's hframe. Runs after discovery so the named-slot counts are
-  // final, before any emission reads a frame size.
-  computeSpills(): void {
+  // 2d. Spill slots for perform/handle sites (§4.2/§4.4): each perform gets
+  // an args-cell slot and a result-value slot, each handle a result-value
+  // slot, folded into the enclosing frame's size (case-body spills go into
+  // the handler's hframe).
+  const addOperandSpill = (id: ExprID, frame: {slots: number}): void => {
+    ix.operandSpill.set(id, frame.slots + (ix.spillTotals.get(frame) ?? 0));
+    ix.spillTotals.set(frame, (ix.spillTotals.get(frame) ?? 0) + 1);
+  };
+  const computeSpills = (): void => {
     const walk = (id: ExprID, frame: {slots: number}): void => {
-      const e = this.nodes[id];
+      const e = prog.nodes[id];
       switch (e.t) {
         case "lambda":
-          walk(e.body, this.scopes.get(id)!.frame);
+          walk(e.body, d.scopes.get(id)!.frame);
           break;
         case "block":
           for (const stmt of e.stmts) walk(stmt, frame);
@@ -2082,7 +1403,7 @@ class Compiler {
           walk(e.val, frame);
           break;
         case "if":
-          if (this.splits(e.c) || this.splits(e.a) || this.splits(e.b)) {
+          if (splits(prog, d, e.c) || splits(prog, d, e.a) || splits(prog, d, e.b)) {
             // A split-mode if (splitting arms): the condition reloads in
             // the fragment, and an arm before the cut site reloads too.
             // Every child spills — including pure ones: a multi-shot resume
@@ -2090,9 +1411,9 @@ class Compiler {
             // so re-emitting a sym/lambda/arr-literal child would observe
             // post-mutation state (or a fresh cell identity) where the
             // interpreter's CPS acc froze the pre-perform value.
-            this.addOperandSpill(e.c, frame);
-            this.addOperandSpill(e.a, frame);
-            this.addOperandSpill(e.b, frame);
+            addOperandSpill(e.c, frame);
+            addOperandSpill(e.a, frame);
+            addOperandSpill(e.b, frame);
           }
           walk(e.c, frame);
           walk(e.a, frame);
@@ -2108,9 +1429,9 @@ class Compiler {
           // inline body: every sibling's value must survive in a spill
           // slot so the fragment reloads it instead of re-running it.
           // Pure children spill too — see the if case (multi-shot freeze).
-          if (kids.some(k2 => this.splits(k2))) {
+          if (kids.some(k2 => splits(prog, d, k2))) {
             for (const k2 of kids) {
-              this.addOperandSpill(k2, frame);
+              addOperandSpill(k2, frame);
             }
           }
           for (const k2 of kids) walk(k2, frame);
@@ -2118,9 +1439,9 @@ class Compiler {
         }
         case "arr": {
           const elems = e.elems;
-          if (elems.some(el => this.splits(el))) {
+          if (elems.some(el => splits(prog, d, el))) {
             for (const el of elems) {
-              this.addOperandSpill(el, frame);
+              addOperandSpill(el, frame);
             }
           }
           for (const el of elems) walk(el, frame);
@@ -2130,26 +1451,26 @@ class Compiler {
           walk(e.obj, frame);
           break;
         case "perform": {
-          this.spillOf.set(id, frame.slots + (this.spillTotals.get(frame) ?? 0));
-          this.spillTotals.set(frame, (this.spillTotals.get(frame) ?? 0) + 1);
-          this.valSpill.set(id, frame.slots + (this.spillTotals.get(frame) ?? 0));
-          this.spillTotals.set(frame, (this.spillTotals.get(frame) ?? 0) + 1);
-          const flags = e.args.map(a => this.splits(a));
+          ix.spillOf.set(id, frame.slots + (ix.spillTotals.get(frame) ?? 0));
+          ix.spillTotals.set(frame, (ix.spillTotals.get(frame) ?? 0) + 1);
+          ix.valSpill.set(id, frame.slots + (ix.spillTotals.get(frame) ?? 0));
+          ix.spillTotals.set(frame, (ix.spillTotals.get(frame) ?? 0) + 1);
+          const flags = e.args.map(a => splits(prog, d, a));
           if (flags.some(Boolean)) {
             for (const a of e.args) {
-              this.addOperandSpill(a, frame);
+              addOperandSpill(a, frame);
             }
           }
           for (const a of e.args) walk(a, frame);
           break;
         }
         case "handle": {
-          this.valSpill.set(id, frame.slots + (this.spillTotals.get(frame) ?? 0));
-          this.spillTotals.set(frame, (this.spillTotals.get(frame) ?? 0) + 1);
+          ix.valSpill.set(id, frame.slots + (ix.spillTotals.get(frame) ?? 0));
+          ix.spillTotals.set(frame, (ix.spillTotals.get(frame) ?? 0) + 1);
           walk(e.body, frame);
           // Case bodies run over the handler's shared hframe, so their
           // perform spills land there (folded into the table's fsize).
-          const info = this.hdlCases.get(id)!;
+          const info = d.hdlCases.get(id)!;
           for (const c of info.cases) walk(c.body, info.scope.frame);
           if (info.retCase !== null) walk(info.retCase.body, info.scope.frame);
           break;
@@ -2158,127 +1479,184 @@ class Compiler {
           break; // num/str/bool/unit/sym: no children
       }
     };
-    for (const it of this.prog.items) {
-      if ("e" in it) walk(it.e, this.globalFrame);
+    for (const it of prog.items) {
+      if ("e" in it) walk(it.e, d.globalScope.frame);
+    }
+  };
+  computeSpills();
+  // 2e. Handler case functions: funcref indices + hframe sizes, plus the
+  // default-Return identity functions (shared npMax=0 one, per-handler ones
+  // for npMax > 0). Case functions run over the handler's shared hframe, so
+  // every case of one handler shares its fsize.
+  const idf = new Fn(2);
+  idf.idx = ix.fLambda0 + ix.lambdaIdx.size;
+  ix.identityRet = idf;
+  ix.funcRefTypes.set(idf.idx, T_KABI);
+  let next = idf.idx + 1;
+  for (const [hdlId, info] of d.hdlCases) {
+    const fs = frameSizeOf(ix, info.scope);
+    for (const c of info.cases) {
+      c.fn.idx = next++;
+      ix.funcRefTypes.set(c.fn.idx, T_KABI);
+      c.fsize = fs;
+    }
+    if (info.retCase !== null) {
+      info.retCase.fn.idx = next++;
+      ix.funcRefTypes.set(info.retCase.fn.idx, T_KABI);
+      info.retCase.fsize = fs;
+    } else if (info.npMax > 0) {
+      const idr = new Fn(2);
+      idr.idx = next++;
+      ix.funcRefTypes.set(idr.idx, T_KABI);
+      ix.hdlIdRet.set(hdlId, idr);
     }
   }
-
-  // Frame size of a scope's frame: named slots + perform spill slots (§4.2).
-  // Everything that allocates a frame (lambda closure fsize, the global
-  // frame in emitMain) must go through this so spilled values fit.
-  frameSizeOf(sc: Scope): number {
-    return sc.frame.slots + (this.spillTotals.get(sc.frame) ?? 0);
+  const rf = new Fn(2);
+  rf.idx = next++;
+  ix.funcRefTypes.set(rf.idx, T_KABI);
+  ix.resumeFn = rf;
+  ix.caseFnTotal = next - idf.idx;
+  // Land thunks occupy the table slots between builtins and main; builtin
+  // trampolines (must match emitBuiltins' emission order: BUILTINS filtered
+  // by usedBuiltins).
+  const builtins = BUILTINS.filter(b => o.usedBuiltins.has(b.name));
+  ix.builtin0 = ix.fLambda0 + ix.lambdaIdx.size + ix.caseFnTotal;
+  ix.thunk0 = ix.builtin0 + builtins.length;
+  for (let i = 0; i < builtins.length; i++) {
+    ix.builtinFnIdx.set(builtins[i].name, ix.builtin0 + i);
+    ix.funcRefTypes.set(ix.builtin0 + i, T_KABI); // sigs resolve before emission
   }
+  return ix;
+}
 
-  // 2c. Handler case functions (§4.4): funcref indices + hframe sizes, plus
-  // the default-Return identity functions (shared npMax=0 one, per-handler
-  // ones for npMax > 0). Case functions run over the handler's shared
-  // hframe, so every case of one handler shares its fsize.
-  assignCaseFns(): void {
-    const idf = new Fn(2, this);
-    idf.idx = this.fLambda0 + this.lambdaIdx.size;
-    this.identityRet = idf;
-    this.funcRefTypes.set(idf.idx, T_KABI);
-    let next = idf.idx + 1;
-    for (const info of this.hdlCases.values()) {
-      const fs = this.frameSizeOf(info.scope);
-      for (const c of info.cases) {
-        c.fn.idx = next++;
-        this.funcRefTypes.set(c.fn.idx, T_KABI);
-        c.fsize = fs;
-      }
-      if (info.retCase !== null) {
-        info.retCase.fn.idx = next++;
-        this.funcRefTypes.set(info.retCase.fn.idx, T_KABI);
-        info.retCase.fsize = fs;
-      } else if (info.npMax > 0) {
-        info.idRet = new Fn(2, this);
-        info.idRet.idx = next++;
-        this.funcRefTypes.set(info.idRet.idx, T_KABI);
-      }
-    }
-    const rf = new Fn(2, this);
-    rf.idx = next++;
-    this.funcRefTypes.set(rf.idx, T_KABI);
-    this.resumeFn = rf;
-    this.caseFnTotal = next - idf.idx;
+function layoutStatics(d: Discovery, ix: Indices, o: Opt): Layout {
+  const lay: Layout = {
+    statics: [],
+    unitRef: {k: "g", gi: 0},
+    trueRef: {k: "g", gi: 0},
+    falseRef: {k: "g", gi: 0},
+    piG: -1,
+    numStatics: new Map(),
+    strStatics: new Map(),
+    cloOffsets: new Map(),
+    hdlTableOff: new Map(),
+  };
+  const newStatic = (desc: StaticDesc): number => {
+    lay.statics.push(desc);
+    return lay.statics.length - 1;
+  };
+  // Unit: ref.null any.
+  lay.unitRef = {k: "g", gi: newStatic({t: "null"})};
+  // Bools: i31(0/1).
+  lay.trueRef = {k: "g", gi: newStatic({t: "i31", v: 1})};
+  lay.falseRef = {k: "g", gi: newStatic({t: "i31", v: 0})};
+  // Number literals (deduped by value).
+  for (const [v] of d.numLits)
+    lay.numStatics.set(v, newStatic({t: "num", v}));
+  // PI constant (only when the program references it).
+  if (o.usedBuiltins.has("PI"))
+    lay.piG = newStatic({t: "num", v: Math.PI});
+  // String literals (field names included — same constant pool).
+  for (const [v] of d.strLits)
+    lay.strStatics.set(v, newStatic({t: "str", s: v}));
+  // Builtin closures: $CLO {fnIdx, env = null, fsize = params + map-like
+  // extras} — only VALUE-referenced builtins get one (treeShakeBuiltins +
+  // builtinValueUses): call-only builtins are called directly via
+  // builtinFnIdx, so no closure object is materialized. `list` keeps fsize
+  // 0: its slot count is exactly argc, which the trampoline reads back via
+  // array.len.
+  for (const bi of BUILTINS) {
+    if (!o.valueBuiltins.has(bi.name)) continue;
+    const fni = ix.builtinFnIdx.get(bi.name);
+    if (fni === undefined) throw new WasmError(`internal: no trampoline for builtin ${bi.name}`);
+    lay.cloOffsets.set(bi.name, newStatic({t: "clo", fni, fsize: bi.params + mapLikeFrameWords(bi.name)}));
   }
-
-
-  // --- static layout ---------------------------------------------------------
-
-  // Statics are immutable anyref globals with constant initializers (§5):
-  // deduped number literals, PI, string literals, true/false i31s, unit, one
-  // $CLO per surviving builtin, and per-handle case tables ($ELEMS of flat
-  // [opid, fnIdx, fsize, nparams] i31 quadruples). Every static allocates
-  // one global index; buildModule turns its descriptor into the initializer.
-  newStatic(d: StaticDesc): number {
-    this.statics.push(d);
-    return this.statics.length - 1;
+  // PI is a float *value* (the checker types it `float`, not
+  // `() -> float`), so bind the name to the constant global, not to a
+  // closure.
+  if (o.usedBuiltins.has("PI")) {
+    lay.cloOffsets.set("PI", lay.piG);
   }
-
-  layoutStatics(): void {
-    // Unit: ref.null any.
-    this.unitRef = {k: "g", gi: this.newStatic({t: "null"})};
-    // Bools: i31(0/1).
-    this.trueRef = {k: "g", gi: this.newStatic({t: "i31", v: 1})};
-    this.falseRef = {k: "g", gi: this.newStatic({t: "i31", v: 0})};
-    // Number literals (deduped by value).
-    for (const [v] of this.numLits)
-      this.numLits.set(v, this.newStatic({t: "num", v}));
-    // PI constant (only when the program references it).
-    if (this.usedBuiltins.has("PI"))
-      this.piG = this.newStatic({t: "num", v: Math.PI});
-    // String literals (field names included — same constant pool).
-    for (const [v] of this.strLits)
-      this.strLits.set(v, this.newStatic({t: "str", s: v}));
-    // Builtin closures: $CLO {fnIdx, env = null, fsize = params + map-like
-    // extras} — only VALUE-referenced builtins get one (OPT_PASSES:
-    // treeShakeBuiltins + builtinValueUses): call-only builtins are called
-    // directly via builtinFnIdx, so no closure object is materialized.
-    // `list` keeps fsize 0: its slot count is exactly argc, which the
-    // trampoline reads back via array.len.
-    for (const bi of BUILTINS) {
-      if (!this.valueBuiltins.has(bi.name)) continue;
-      const fni = this.builtinFnIdx.get(bi.name);
-      if (fni === undefined) throw new WasmError(`internal: no trampoline for builtin ${bi.name}`);
-      this.cloOffsets.set(bi.name, this.newStatic({
-        t: "clo", fni, fsize: bi.params + mapLikeFrameWords(bi.name)}));
+  // Handler case tables (§4.4): flat [opid, fnIdx, fsize, nparams]* i31s.
+  // The Return entry (opid -1) always goes last — an explicit case fn when
+  // the handler declares one (its nparams = npMax puts the value at slot
+  // npMax+1), otherwise an identity fn with matching nparams (the shared
+  // npMax=0 fn puts the value at slot 1 where it reads it back; handlers
+  // with npMax > 0 get a per-handler fn so param/resume slots stay
+  // intact). The perform walk reads these at runtime, so all facts are
+  // data, not immediates.
+  for (const [hdlId, info] of d.hdlCases) {
+    const entries = info.cases.map(c => ({opid: c.opid, fn: c.fn, fsize: c.fsize, nparams: c.nparams}));
+    if (info.retCase !== null) {
+      entries.push({opid: -1, fn: info.retCase.fn, fsize: info.retCase.fsize, nparams: info.retCase.nparams});
+    } else if (info.npMax === 0) {
+      entries.push({opid: -1, fn: ix.identityRet, fsize: frameSizeOf(ix, info.scope), nparams: 0});
+    } else {
+      entries.push({opid: -1, fn: ix.hdlIdRet.get(hdlId)!, fsize: frameSizeOf(ix, info.scope), nparams: info.npMax});
     }
-    // PI is a float *value* (the checker types it `float`, not
-    // `() -> float`), so bind the name to the constant global, not to a
-    // closure.
-    if (this.usedBuiltins.has("PI")) {
-      this.cloOffsets.set("PI", this.piG);
-    }
-    // Handler case tables (§4.4): flat [opid, fnIdx, fsize, nparams]* i31s.
-    // The Return entry (opid -1) always goes last — an explicit case fn when
-    // the handler declares one (its nparams = npMax puts the value at slot
-    // npMax+1), otherwise an identity fn with matching nparams (the shared
-    // npMax=0 fn puts the value at slot 1 where it reads it back; handlers
-    // with npMax > 0 get a per-handler fn so param/resume slots stay
-    // intact). The perform walk reads these at runtime, so all facts are
-    // data, not immediates.
-    for (const [hdlId, info] of this.hdlCases) {
-      const entries = info.cases.map(c => ({opid: c.opid, fn: c.fn, fsize: c.fsize, nparams: c.nparams}));
-      if (info.retCase !== null) {
-        entries.push({opid: -1, fn: info.retCase.fn, fsize: info.retCase.fsize, nparams: info.retCase.nparams});
-      } else if (info.npMax === 0) {
-        entries.push({opid: -1, fn: this.identityRet!, fsize: this.frameSizeOf(info.scope), nparams: 0});
-      } else {
-        entries.push({opid: -1, fn: info.idRet!, fsize: this.frameSizeOf(info.scope), nparams: info.npMax});
-      }
-      const words: number[] = [];
-      for (const en of entries) words.push(en.opid, en.fn.idx, en.fsize, en.nparams);
-      this.hdlCases.get(hdlId)!.tableOff = this.newStatic({t: "elems", ws: words});
-    }
+    const words: number[] = [];
+    for (const en of entries)
+      words.push(en.opid, en.fn.idx, en.fsize, en.nparams);
+    lay.hdlTableOff.set(hdlId, newStatic({t: "elems", ws: words}));
   }
+  return lay;
+}
 
-  // The GC constant expression initializing one static global (§5): only
-  // const opcodes (ref.null/ref.i31, struct.new, array.new_fixed, *.const)
-  // may appear in a global initializer.
-  staticInit(d: StaticDesc): binaryen.ExpressionRef {
-    const m = this.m, HT = types().HT;
+// Cut-site query: does this subtree contain a split site (perform/handle/land call)?
+// Reads Discovery's split-site set; shared by assignIndices'
+// spill walk and the emitters' cut machinery.
+function splits(prog: Program, d: Discovery, id: ExprID): boolean {
+    const e = prog.nodes[id];
+    switch (e.t) {
+      case "perform":
+      case "handle":
+        return true;
+      case "lambda":
+        return false;
+      case "block":
+        return e.stmts.some(st2 => splits(prog, d, st2));
+      case "let":
+      case "assign":
+      case "dlet":
+        return splits(prog, d, e.val);
+      case "if":
+        return splits(prog, d, e.c) || splits(prog, d, e.a) || splits(prog, d, e.b);
+      case "while":
+        return splits(prog, d, e.c) || splits(prog, d, e.body);
+      case "app":
+        return d.landCalls.has(id) || splits(prog, d, e.fn) || e.args.some(a => splits(prog, d, a));
+      case "arr":
+        return e.elems.some(el => splits(prog, d, el));
+      case "field":
+        return splits(prog, d, e.obj);
+      default:
+        return false; // num/str/bool/unit/sym
+    }
+}
+
+// Frame size of a scope's frame: named slots + perform spill slots (§4.2).
+// Everything that allocates a frame (lambda closure fsize, the global frame
+// in emitMain) must go through this so spilled values fit.
+function frameSizeOf(ix: Indices, sc: Scope): number {
+  return sc.frame.slots + (ix.spillTotals.get(sc.frame) ?? 0);
+}
+
+function resolve(sc: Scope, name: string): {d: number, i: number} | null {
+    let d = 0;
+    let s: Scope | null = sc;
+    while (s !== null) {
+      const i = s.map.get(name);
+      if (i !== undefined) return {d, i};
+      if (s.parent !== null && s.parent.frame !== s.frame) d++;
+      s = s.parent;
+    }
+    return null;
+}
+
+// --- assembly -----------------------------------------------------------------
+
+function staticInit(m: binaryen.Module, d: StaticDesc): binaryen.ExpressionRef {
+    const HT = _T.HT;
     switch (d.t) {
       case "null": return m.ref.null(binaryen.anyref);
       case "i31": return m.ref.i31(m.i32.const(d.v));
@@ -2297,2627 +1675,26 @@ class Compiler {
       case "elems":
         return m.array.new_fixed(HT[1], d.ws.map((w) => m.ref.i31(m.i32.const(w))));
     }
-  }
+}
 
-  // --- expression emission ---------------------------------------------------
-
-  resolve(sc: Scope, name: string): {d: number, i: number} | null {
-    let d = 0;
-    let s: Scope | null = sc;
-    while (s !== null) {
-      const i = s.map.get(name);
-      if (i !== undefined) return {d, i};
-      if (s.parent !== null && s.parent.frame !== s.frame) d++;
-      s = s.parent;
-    }
-    return null;
-  }
-
-  // Returns the cell pointer of `name` as a ValueRef: a frame slot for the
-
-  // Returns the anyref value of `name` as a ValueRef: a frame slot for the
-  // current frame, a fresh local for parent frames (the frame walk balances
-  // its own stack), or a static global for placed closures.
-  emitSym(f: Fn, sc: Scope, name: string): ValueRef {
-    const b = f.body;
-    const r = this.resolve(sc, name);
-    if (r !== null) {
-      if (r.d === 0) return {k: "slot", i: r.i};
-      const v = f.anyref();
-      b.localGet(0);
-      for (let k = 0; k < r.d; k++) b.structGet(4, 0); // walk parent frames (typed field)
-      b.structGet(4, 1);
-      b.i32Const(r.i);
-      b.arrayGet(1);
-      b.localSet(v);
-      return {k: "local", l: v};
-    }
-    const clo = this.cloOffsets.get(name);
-    if (clo !== undefined) return {k: "g", gi: clo};
-    throw new WasmError(`Unbound symbol: ${name}`);
-  }
-
-  // Calls the closure in local `fc`; argEmit(k, ffp) stores argument k into
-  // the fresh frame at local ffp. The callee has the uniform CPS ABI
-  // (frame, k) -> i32. Leaves the result cell on the stack — or, when `tail`,
-  // returns the callee's result from the enclosing function directly
-  // (return_call_indirect passing the caller's k through, so tail recursion
-  // uses O(1) stack). A non-tail call passes k=0: the callee's dispatch(0, v)
-  // returns its result cell inline (today's zero-overhead arithmetic) — or,
-  // when `land`, a freshly allocated RET cell {K_RET, landA, $fp, k}:
-  // the callee's dispatch tail-calls the land thunk over the caller's frame
-  // and k, which dispatches the result into the caller's continuation (k=0
-  // here, so the value comes back to this call site and the body continues
-  // inline; the rest-of-site fragment machinery is in place for the
-  // suspendable constructs of later steps).
-  // A RET cell {K_RET, fragIdx, $fp, next} (§3): the continuation cell that
-  // tail-calls fragment `fragIdx` (T_III_I) over the caller's frame (local
-  // 0). `nextE` pushes the cell's next-pointer operand. Returns the cell.
-  retCell(f: Fn, fragIdx: number, nextE: () => void): number {
-    const b = f.body;
-    const cell = f.anyref();
-    b.i32Const(K_RET);
-    b.refI31();
-    b.i32Const(fragIdx);
-    b.refI31();
-    b.localGet(0); // b = the frame the fragment runs over
-    nextE();
-    b.refCast(5, true);
-    b.structNew(5);
-    b.localSet(cell);
-    return cell;
-  }
-
-  // A K_SPILL cell {K_SPILL, snapshot, null, next} chained in front of a
-  // split site's rest fragment. The snapshot freezes the values the rest
-  // fragment reloads from operand-spill slots: on the fresh path it is a
-  // copy of the current frame image taken at the split site (per capture —
-  // this cell is allocated at runtime on every site execution and copied
-  // into every continuation captured here, so multi-shot resumes each see
-  // the pre-perform values, matching the interpreter's CPS accs); on a
-  // fragment re-emission it is the enclosing fragment's snapshot (the same
-  // capture's frozen values — nested split sites inside the fragment must
-  // not re-freeze the already-mutated frame).
-  snapWrap(f: Fn, ctx: Ctx, nextE: () => void): number {
-    const b = f.body;
-    const ksp = f.anyref(), snapv = f.anyref();
-    if (ctx.snap !== undefined) {
-      b.localGet(ctx.snap);
-      b.localSet(snapv);
-    } else {
-      // Fresh $FRAME {same parent, slots array copied via array.copy} — the
-      // per-capture freeze (shallow slot copy, same as the old block copy).
-      b.localGet(0); b.structGet(4, 1); b.arrayLen();
-      b.arrayNew(1);
-      b.localSet(snapv);
-      b.localGet(snapv);
-      b.refCast(1, true);
-      b.i32Const(0);
-      b.localGet(0); b.structGet(4, 1);
-      b.i32Const(0);
-      b.localGet(0); b.structGet(4, 1); b.arrayLen();
-      b.arrayCopy(1, 1);
-      b.localGet(0); b.structGet(4, 0);
-      b.localGet(snapv);
-      b.refCast(1, true);
-      b.structNew(4);
-      b.localSet(snapv);
-    }
-    b.i32Const(K_SPILL);
-    b.refI31();
-    b.localGet(snapv);
-    b.refNull(ANYREF); // b unused (was UNIT_CELL)
-    nextE();
-    b.refCast(5, true);
-    b.structNew(5);
-    b.localSet(ksp);
-    return ksp;
-  }
-
-  // `direct` (direct builtin call specialization): when set, the callee is
-  // a known builtin trampoline — skip the $CLO load (env = null, static
-  // fsize, funcref index known) and emit a direct call instead of reading
-  // the code index and dispatching through the table. The frame/k
-  // convention is identical in both modes.
-  emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false, landA?: number, ctx?: Ctx, direct?: {idx: number, fsize: number}): void {
-    const b = f.body;
-    const clob = f.anyref(), idx = f.i32(), cf = f.anyref(), fs = f.i32(),
-      maxL = f.i32(), slots = f.anyref(), ffp = f.anyref();
-    if (direct === undefined) {
-      b.localGet(fc);
-      b.localSet(clob);
-      b.localGet(clob); b.refCast(6, true); b.structGet(6, 0); b.i31Get();
-      b.localSet(idx);
-      b.localGet(clob); b.refCast(6, true); b.structGet(6, 1);
-      b.localSet(cf);
-      b.localGet(clob); b.refCast(6, true); b.structGet(6, 2); b.i31Get();
-      b.localSet(fs);
-    } else {
-      b.i32Const(direct.idx);
-      b.localSet(idx);
-      b.refNull(4); // env: builtins run over the call frame itself
-      b.localSet(cf);
-      b.i32Const(direct.fsize);
-      b.localSet(fs);
-    }
-    // Slot count = max(fs, argc) — the slots array holds the params and the
-    // body's lets (fs) or all the args, whichever is longer. (argc readers
-    // use array.len instead of a stored argc field — valid only because the
-    // sole argc reader is `list`, whose fsize is 0.)
-    b.localGet(fs);
-    b.i32Const(argc);
-    b.localGet(fs);
-    b.i32Const(argc);
-    b.u8(GTU);
-    b.u8(SELECT);
-    b.localSet(maxL);
-    b.localGet(maxL);
-    b.arrayNew(1);
-    b.localSet(slots);
-    b.localGet(cf);
-    b.refCast(4, true);
-    b.localGet(slots);
-    b.refCast(1, true);
-    b.structNew(4); // {parent, slots}
-    b.localSet(ffp);
-    for (let k = 0; k < argc; k++) argEmit(k, ffp);
-    b.localGet(ffp);
-    b.refCast(4, true); // the call's frame param (ffp is an anyref local)
-    let splitAt: Split | null = null;
-    if (tail) { b.localGet(kL); b.refCast(5, true); } // tail call: pass the ambient continuation through
-    else if (land) {
-      if (noSplit) {
-        // Land-style RET cell ending the caller's body: used inside
-        // loop-entry thunks (map-like builtins), where the callback's result
-        // lands in the per-iteration thunk `landA` instead of the generic
-        // per-site dispatcher and the loop continues from there. The call is
-        // a tail call: the callback's completion always tails into landA
-        // (never returns here), and a terminal k=0 return must unwind past
-        // the whole loop to the caller's own call site.
-        b.localGet(this.retCell(f, landA!, () => b.localGet(kL))); // next = ambient k
-        b.refCast(5, true);
-      } else {
-        // Non-tail lambda call (§3 emitCall): the caller's body ENDS at
-        // the call — return_call_indirect with the continuation in the
-        // RET cell {K_RET, rest-of-site fragment, caller frame, ambient
-        // k}. Direct land emission: the caller's body is complete once the
-        // return_call is on the wire, so the rest-of-site fragment is
-        // filled HERE, synchronously — no Split is thrown and the
-        // body-level catch/replay round-trip is bypassed for these sites
-        // (the chain is still what fillRest re-emits; perform/handle/
-        // map/while sites keep the throw path until stages 3–4). The
-        // caller must keep no pending return address: a handler capture
-        // dispatches straight through H.next, and the terminal k=0
-        // return must not unwind through this call site. The rest
-        // fragment's K_SPILL cell freezes the frame image at the call
-        // (pre-cut operand reloads — sibling operands of the call — read
-        // the frozen values under multi-shot resume).
-        const rest = this.makeRestThunk("handle:after-handle");
-        const ksp = this.snapWrap(f, ctx!, () => b.localGet(kL));
-        b.localGet(this.retCell(f, rest.idx, () => b.localGet(ksp))); // next = K_SPILL{frozen frame, ambient k}
-        b.refCast(5, true);
-        if (DBGEMIT) console.error("THROW handle-split cutStack=", this.cutStack.length);
-        splitAt = new Split(rest, [...this.cutStack]);
-      }
-    } else b.refNull(5); // k=0 (ref.null $K): the callee's dispatch returns its value inline
-    if (direct === undefined) {
-      b.localGet(idx);
-      b.u8(tail || land ? RETURN_CALL_INDIRECT : CALL_INDIRECT); // noSplit land calls tail too (see above)
-      b.lebU(T_KABI);
-      b.lebU(0);
-    } else {
-      b.u8(tail || land ? RETURN_CALL : CALL); // direct: fn index is static, not a stack operand
-      b.lebU(direct.idx);
-    }
-    if (splitAt !== null) {
-      // Fill the rest-of-site fragment directly at the land call site.
-      // Cut-stack baseline: the same value the enclosing body-level catcher
-      // (bodyCatch/emitMain) restores before its fillRest call, so nested
-      // splits during the fill re-discover clean chains from the body root.
-      const root = this.bodyRoots[this.bodyRoots.length - 1];
-      const savedCut = this.cutStack;
-      this.cutStack = [...root.savedCut];
-      try {
-        this.fillRest(splitAt, root.stmts, root.sc, root.tail);
-      } finally {
-        this.cutStack = savedCut;
-      }
-    }
-  }
-
-  // One rest-of-site fragment: a T_III_I function (frame, v, kNext) -> i32
-  // registered in the funcref table. Filled later by the body-level catcher
-  // that catches this site's Split (bodyCatch/emitMain/fillRest).
-  makeRestThunk(role?: string): Fn {
-    const f = new Fn(3, this);
-    f.typeIdx = T_III_I;
-    f.idx = this.thunk0 + this.thunks.length;
-    this.funcRefTypes.set(f.idx, T_III_I);
-    if (DBGEMIT && role !== undefined) console.error("THUNK", f.idx, role);
-    this.thunks.push(f);
-    return f;
-  }
-
-  emitDispatch(f: Fn, v: number, k = 1): void {
-    const b = f.body;
-    const kind = () => { b.localGet(k); b.refCast(5, true); b.structGet(5, 0); b.i31Get(); };
-    const i31of = () => { b.refCast(I31REF, false); b.i31Get(); }; // anyref → i32 (i31 payload)
-    b.u8(BLOCK);
-    b.u8(ANYREF); // block (result anyref)
-    b.u8(LOOP);
-    b.u8(0x40);
-    b.localGet(k);
-    b.u8(0xd1); // ref.is_null: final return → the value itself
-    b.u8(IF);
-    b.u8(0x40);
-    b.localGet(v);
-    b.u8(BR); b.lebU(2); // leave the block with v
-    b.u8(END);
-    kind(); b.i32Const(K_RET); b.u8(EQ);
-    b.u8(IF);
-    b.u8(0x40);
-    b.localGet(k); b.refCast(5, true); b.structGet(5, 2); b.refCast(4, true);
-    b.localGet(v);
-    b.localGet(k); b.refCast(5, true); b.structGet(5, 3);
-    b.localGet(k); b.refCast(5, true); b.structGet(5, 1); i31of();
-    b.u8(RETURN_CALL_INDIRECT);
-    b.lebU(T_III_I);
-    b.lebU(0);
-    b.u8(END);
-    // K_HDL: scan the case table at k.a (a $ELEMS of flat [opid, fnIdx,
-    // fsize, nparams] i31 quadruples; the Return case, opid -1, goes last).
-    // A K_SPILL cell (a rest fragment's frozen-frame marker) is transparent:
-    // it carries no handler — skip it and walk on. Only kind==K_HDL scans.
-    // The scan is emitted only when the program contains a handle: K_HDL
-    // cells enter a chain solely via handle emission, so a handle-free
-    // program's scan is dead code — skipping it drops a nested scan loop
-    // (plus ~30 instructions of table probing) from every dispatch site.
-    if (this.hasHandle) {
-      kind(); b.i32Const(K_HDL); b.u8(EQ);
-      b.u8(IF);
-      b.u8(0x40);
-      const tbl = f.anyref(), nL = f.i32(), iL = f.i32(), found = f.i32(),
-        fnIdx = f.i32(), nparams = f.i32(), ent = f.i32();
-      b.localGet(k); b.refCast(5, true); b.structGet(5, 1); b.localSet(tbl);
-      b.localGet(tbl); b.refCast(1, true); b.arrayLen(); b.i32Const(4); b.u8(DIVU); b.localSet(nL);
-      b.i32Const(0); b.localSet(found);
-      b.i32Const(0); b.localSet(iL);
-      b.u8(BLOCK);
-      b.u8(0x40);
-      b.u8(LOOP);
-      b.u8(0x40);
-      b.localGet(iL); b.localGet(nL); b.u8(GEU); b.u8(BR_IF); b.lebU(1);
-      b.localGet(iL); b.i32Const(4); b.u8(MUL); b.localSet(ent);
-      b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.arrayGet(1); i31of();
-      b.i32Const(-1); b.u8(EQ);
-      b.u8(IF);
-      b.u8(0x40);
-      b.i32Const(1); b.localSet(found);
-      b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(1); b.u8(ADD); b.arrayGet(1); i31of(); b.localSet(fnIdx);
-      b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(3); b.u8(ADD); b.arrayGet(1); i31of(); b.localSet(nparams);
-      b.u8(BR); b.lebU(2); // exit the scan block
-      b.u8(END);
-      b.localGet(iL); b.i32Const(1); b.u8(ADD); b.localSet(iL);
-      b.u8(BR); b.lebU(0);
-      b.u8(END);
-      b.u8(END);
-      b.localGet(found);
-      b.u8(IF);
-      b.u8(0x40);
-      // Return case: store v into the hframe's Return param slot, then
-      // tail-call the case body as (hframe, k.next); funcref index last.
-      b.localGet(k); b.refCast(5, true); b.structGet(5, 2); b.refCast(4, true); b.structGet(4, 1);
-      b.localGet(nparams); b.i32Const(1); b.u8(ADD);
-      b.localGet(v);
-      b.arraySet();
-      b.localGet(k); b.refCast(5, true); b.structGet(5, 2); b.refCast(4, true);
-      b.localGet(k); b.refCast(5, true); b.structGet(5, 3);
-      b.localGet(fnIdx);
-      b.u8(RETURN_CALL_INDIRECT);
-      b.lebU(T_KABI);
-      b.lebU(0);
-      b.u8(END);
-      b.u8(END); // kind==K_HDL guard
-    }
-    // No Return case (or a skipped K_SPILL): k = k.next and dispatch again.
-    b.localGet(k); b.refCast(5, true); b.structGet(5, 3); b.localSet(k);
-    b.u8(BR); b.lebU(0);
-    b.u8(END); // loop
-    b.u8(0x00); // unreachable: the loop exits only through the k==0 branch
-    b.u8(END); // block
-  }
-
-  // Calls ef_fail(code, name, a, b); the import throws, so unreachable.
-  // `name` is a $STR static global index (field-access failures) or null.
-  emitFail(f: Fn, code: number, nameG: number | null, pushA: () => void, pushB: () => void): void {
-    const b = f.body;
-    b.i32Const(code);
-    if (nameG === null) b.refNull(ANYREF);
-    else b.globalGet(nameG);
-    pushA();
-    pushB();
-    b.u8(CALL);
-    b.lebU(this.impIdx.get("ef_fail")!);
-    b.u8(0x00); // unreachable
-  }
-
-  constF64 = (f: Fn, x: number) => () => f.body.f64Const(x);
-
-  // String concatenation of $STR locals a, b → new $STR on the stack.
-  emitStrCat(f: Fn, a: number, b: number): void {
-    const body = f.body;
-    const res = f.anyref();
-    body.localGet(a); body.refCast(2, true); body.arrayLen();
-    body.localGet(b); body.refCast(2, true); body.arrayLen();
-    body.u8(ADD);
-    body.arrayNew(2);
-    body.localSet(res);
-    // copy a then b (b starts at unit offset la)
-    body.localGet(res);
-    body.refCast(2, true);
-    body.i32Const(0);
-    body.localGet(a); body.refCast(2, true);
-    body.i32Const(0);
-    body.localGet(a); body.refCast(2, true); body.arrayLen();
-    body.arrayCopy(2, 2);
-    body.localGet(res);
-    body.refCast(2, true);
-    body.localGet(a); body.refCast(2, true); body.arrayLen();
-    body.localGet(b); body.refCast(2, true);
-    body.i32Const(0);
-    body.localGet(b); body.refCast(2, true); body.arrayLen();
-    body.arrayCopy(2, 2);
-    body.localGet(res);
-  }
-
-  // for (i = 0; i < n; i++) iter(i) — n pushed by pushN (const or local).
-  // Emits BLOCK { LOOP { cond; br_if out; iter; incr; br; } }.
-  loop(f: Fn, pushN: () => void, iter: (i: number) => void): void {
-    const b = f.body;
-    const i = f.i32();
-    b.i32Const(0);
-    b.localSet(i); // reset: a loop nested in another loop's body reuses this local across outer iterations
-    b.u8(BLOCK);
-    b.u8(0x40);
-    b.u8(LOOP);
-    b.u8(0x40);
-    b.localGet(i);
-    pushN();
-    b.u8(GEU);
-    b.u8(BR_IF);
-    b.lebU(1);
-    iter(i);
-    b.localGet(i);
-    b.i32Const(1);
-    b.u8(ADD);
-    b.localSet(i);
-    b.u8(BR);
-    b.lebU(0);
-    b.u8(END);
-    b.u8(END);
-  }
-
-  // Pushes (arrayref, index) of element i (local) of raw $ELEMS local
-  // `blk`; callers finish with aget (read) or push the value + aset (write).
-  elemAddr(f: Fn, blk: number, i: number): void {
-    f.body.localGet(blk);
-    f.body.refCast(1, true);
-    f.body.localGet(i);
-  }
-
-  // Allocates a raw $ELEMS array of length local `n`; returns the local.
-  allocArrBlk(f: Fn, n: number): number {
-    const blk = f.anyref();
-    f.body.localGet(n);
-    f.body.arrayNew(1);
-    f.body.localSet(blk);
-    return blk;
-  }
-
-  // Wraps the raw $ELEMS local `blk` → new $ARR wrapper on the stack.
-  // Growth (`set`) repoints the wrapper's backing array, so every alias
-  // sharing the wrapper sees the growth (§7.1).
-  boxArr(f: Fn, blk: number): void {
-    f.body.localGet(blk);
-    f.body.refCast(1, true);
-    f.body.structNew(3);
-  }
-
-  // Copies n (local) elements from srcBlk's elements starting at srcOff into
-  // a fresh array; leaves the boxed $ARR wrapper on the stack.
-  emitArrCopy(f: Fn, srcBlk: number, srcOff: number, n: number): void {
-    const b = f.body;
-    const blk = this.allocArrBlk(f, n);
-    b.localGet(blk);
-    b.refCast(1, true);
-    b.i32Const(0);
-    b.localGet(srcBlk);
-    b.refCast(1, true);
-    b.i32Const(srcOff);
-    b.localGet(n);
-    b.arrayCopy(1, 1);
-    this.boxArr(f, blk);
-  }
-
-  // true/false i31 selected by the i32 condition emitted by emitCond.
-  selectBool(f: Fn, emitCond: () => void): void {
-    const b = f.body;
-    const t = f.i32();
-    emitCond();
-    b.localSet(t);
-    this.pushRef(f, this.trueRef);
-    this.pushRef(f, this.falseRef);
-    b.localGet(t);
-    b.typedSelect(); // typed select (result anyref)
-  }
-
-  // Materialize a ValueRef onto the operand stack, at its consume point.
-  // This is the ONLY sanctioned place short-lived stack values cross an
-  // emitter boundary (the helper fully balances the stack per ref).
-  pushRef(f: Fn, r: ValueRef): void {
-    const b = f.body;
-    if (r.k === "g") b.globalGet(r.gi);
-    else if (r.k === "bool") { b.i32Const(r.v); b.refI31(); }
-    else if (r.k === "local") b.localGet(r.l);
-    else if (r.k === "snapSlot") { b.localGet(r.snap); b.refCast(4, true); b.structGet(4, 1); b.i32Const(r.i); b.arrayGet(1); }
-    else { b.localGet(0); b.structGet(4, 1); b.i32Const(r.i); b.arrayGet(1); }
-  }
-
-  // Persist a ref into the operand spill slot computeSpills allocated for
-  // `id` (if any) and return the slot ref: a value that must survive a
-  // later split is read back from the frame by the fragment machinery.
-  keepRef(id: ExprID, f: Fn, r: ValueRef): ValueRef {
-    const sp = this.operandSpill.get(id);
-    if (sp === undefined) return r;
-    const b = f.body;
-    this.pushRef(f, r);
-    const t = f.anyref();
-    b.localSet(t);
-    b.localGet(0); b.structGet(4, 1); b.i32Const(sp); b.localGet(t); b.arraySet();
-    return {k: "slot", i: sp};
-  }
-
-  preCut(id: ExprID, f: Fn, s: Scope, ctx: Ctx): ValueRef {
-    const sp = this.operandSpill.get(id) ?? this.valSpill.get(id);
-    if (sp !== undefined) {
-      if (ctx.snap !== undefined) return {k: "snapSlot", snap: ctx.snap, i: sp};
-      return {k: "slot", i: sp};
-    }
-    return this.expr(id, f, s, false, {kL: ctx.kL, snap: ctx.snap});
-  }
-
-  // Inline operator computation (§OPERATOR_OPS): the operands' refs are
-  // computed and spilled first (same discipline as `/`), then the operator
-  // computation runs on the caller's operand stack — no call, no frame.
-  // Mirrors each operator's $-trampoline body in emitBuiltins (same dynamic
-  // dispatch: `+` falls back to string concat then null). Leaves the boxed
-  // result on the stack; the wrapper dispatches it (never return_call $box:
-  // a raw tail return would bypass the caller's RET cell).
-  emitOperatorInline(f: Fn, name: string, e: Expr & {t: "app"}, s: Scope, ctx: Ctx, ci: number): void {
-    const b = f.body;
-    // Operand cut modes, mirroring the `/` path: the arg holding the cut
-    // site continues the fragment ("cut"), an earlier sibling reloads its
-    // spill ("pre"), a later sibling re-emits fresh ("post").
-    const argMode = (i: number): "cut" | "pre" | "post" =>
-      ci === i + 1 ? "cut" : i === 0 && ci > 1 ? "pre" : "post";
-    const pushArg = (i: number): void => {
-      this.pushRef(f, this.cutChildRef(e.args[i], f, s, ctx, argMode(i)));
-    };
-    switch (name) {
-      case "+": {
-        const a = f.anyref(), bv = f.anyref();
-        pushArg(0); b.localSet(a);
-        pushArg(1); b.localSet(bv);
-        b.localGet(a); b.refTest(0, false); b.localGet(bv); b.refTest(0, false);
-        b.u8(AND); b.u8(IF); b.u8(ANYREF);
-        b.localGet(a); b.refCast(0, false); b.structGet(0, 0);
-        b.localGet(bv); b.refCast(0, false); b.structGet(0, 0);
-        b.u8(FADD);
-        b.u8(CALL); b.lebU(this.fBox);
-        b.u8(ELSE);
-        b.localGet(a); b.refTest(2, false); b.localGet(bv); b.refTest(2, false); b.u8(AND);
-        b.u8(IF); b.u8(ANYREF);
-        this.emitStrCat(f, a, bv);
-        b.u8(ELSE); b.refNull(ANYREF); b.u8(END); b.u8(END);
-        break;
-      }
-      case "-": case "*": case "%": {
-        const x = f.f64(), y = f.f64();
-        pushArg(0); b.refCast(0, false); b.structGet(0, 0); b.localSet(x);
-        pushArg(1); b.refCast(0, false); b.structGet(0, 0); b.localSet(y);
-        if (name === "%") {
-          // JS fmod: a - b * trunc(a/b)
-          const t = f.f64();
-          b.localGet(x); b.localGet(y); b.u8(FDIV); b.u8(FTRUNC); b.localSet(t);
-          b.localGet(x); b.localGet(y); b.localGet(t); b.u8(FMUL); b.u8(FSUB);
-        } else {
-          b.localGet(x); b.localGet(y); b.u8(name === "-" ? FSUB : FMUL);
-        }
-        b.u8(CALL); b.lebU(this.fBox);
-        break;
-      }
-      case "neg": {
-        pushArg(0); b.refCast(0, false); b.structGet(0, 0);
-        b.u8(FNEG);
-        b.u8(CALL); b.lebU(this.fBox);
-        break;
-      }
-      case "<": case ">": case "<=": case ">=": {
-        const x = f.anyref(), y = f.anyref();
-        pushArg(0); b.localSet(x);
-        pushArg(1); b.localSet(y);
-        const cmp = name === "<" ? FLT : name === ">" ? FGT : name === "<=" ? FLE : FGE;
-        this.selectBool(f, () => {
-          b.localGet(x); b.refCast(0, false); b.structGet(0, 0);
-          b.localGet(y); b.refCast(0, false); b.structGet(0, 0);
-          b.u8(cmp);
-        });
-        break;
-      }
-      case "==": {
-        pushArg(0); pushArg(1);
-        b.u8(CALL); b.lebU(this.fEq);
-        break;
-      }
-      case "!=": {
-        pushArg(0); pushArg(1);
-        b.u8(CALL); b.lebU(this.fEq);
-        b.refCast(I31REF, false); // eq result's i31 bool payload
-        b.i31Get();
-        b.u8(EQZ); // 1 when $eq said false
-        this.selectBool(f, () => {});
-        break;
-      }
-      case "not": {
-        pushArg(0);
-        b.u8(CALL); b.lebU(this.fTruthy);
-        b.u8(EQZ);
-        this.selectBool(f, () => {});
-        break;
-      }
-      default:
-        throw new WasmError(`internal: no inline emitter for operator ${name}`);
-    }
-  }
-
-  // One child of a cut node, ref-native — also used for fresh emission
-  // (mode "post"), so fresh and cut bodies can share one shape.
-  // "cut": the child holding the deeper split site — continues the fragment
-  // chain (its value is the fragment's v param). "pre": a sibling evaluated
-  // BEFORE the cut child — a slot ref into its spill, or re-emit pure code
-  // inline (preCut). "post": a sibling evaluated AFTER the cut child (or no
-  // cut at all) — re-emit inline, with the caller's tail flag. Persists any
-  // mapped operand spill slot.
-  cutChildRef(child: ExprID, f: Fn, s: Scope, ctx: Ctx, mode: "cut" | "pre" | "post", tail = false): ValueRef {
-    if (mode === "cut") return this.keepRef(child, f, this.expr(child, f, s, false, {kL: ctx.kL, cut: ctx.cut!.slice(1), snap: ctx.snap}));
-    if (mode === "pre") return this.keepRef(child, f, this.preCut(child, f, s, ctx));
-    return this.keepRef(child, f, this.expr(child, f, s, tail, {kL: ctx.kL, snap: ctx.snap}));
-  }
-
-  // The split site is this node itself inside a fragment: its value is the
-  // fragment's v param (local 1), persisted for later fragments that reload it.
-  fragV(id: ExprID, f: Fn): ValueRef {
-    return this.keepRef(id, f, {k: "local", l: 1});
-  }
-
-  // The main expression emitter. Returns the expression's cell as a
-  // ValueRef — never leaves an implicit operand on the stack (see the
-  // value-explicit invariants above the ValueRef type).
-
-  expr(id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = INLINE): ValueRef {
-    const e = this.nodes[id];
-    // Lambda/block nodes carry their own scope; other nodes inherit sc.
-    const s = this.scopes.get(id) ?? sc;
-    if (s === undefined) throw new WasmError(`internal: no scope for node ${id} (${e.t})`);
-    const b = f.body;
-    // Cut path: undefined = normal emission; [] = this node is the split
-    // site (its value is the fragment's v param); [child, ...] = the child
-    // on the path continues the fragment.
-    const cut = ctx.cut;
-    // A split caught mid-emission (emitIfDispatch filling an arm's Split
-    // against the body root) re-emits a node whose own emission frame is
-    // still on the cut stack. The chain must stay an AST path — one frame
-    // per node — so do not duplicate the frame on re-entry.
-    const pushed = this.cutStack[this.cutStack.length - 1] !== id;
-    if (pushed) this.cutStack.push(id);
-    // try/finally: a child's Split (or error) unwinds through this frame —
-    // the push must not survive, or the next Split captures a stale chain
-    // whose head re-routes fillRest through the same (already handled)
-    // site forever.
-    try {
-    switch (e.t) {
-      case "num":
-        return {k: "g", gi: this.numLits.get(e.v)!};
-      case "str":
-        return {k: "g", gi: this.strLits.get(e.v)!};
-      case "bool":
-        return {k: "bool", v: e.v ? 1 : 0};
-      case "unit":
-        return this.unitRef;
-      case "sym":
-        return this.emitSym(f, s, e.v);
-      case "lambda": {
-        // immutable $CLO {fnIdx, env = current frame, fsize}
-        const clo = f.anyref();
-        b.i32Const(this.lambdaIdx.get(id)!);
-        b.refI31();
-        b.localGet(0); // captured frame = the frame param
-        b.i32Const(this.frameSizeOf(this.scopes.get(id)!)); // params + body lets + perform spills
-        b.refI31();
-        b.structNew(6);
-        b.localSet(clo);
-        return {k: "local", l: clo};
-      }
-      case "let": {
-        // Binds in the current frame (mirrors the interpreter: the binding
-        // exists before the value is computed, so `let x = x` sees null —
-        // a null slot read normalizes to unit inside the module).
-        const slot = s.map.get(e.name)!;
-        const vr = this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
-        b.localGet(0); b.structGet(4, 1);
-        b.i32Const(slot);
-        this.pushRef(f, vr);
-        b.arraySet();
-        return this.unitRef;
-      }
-      case "dlet": {
-        const blk = f.anyref();
-        const vr = this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
-        this.pushRef(f, vr);
-        b.refCast(3, true);
-        b.structGet(3, 0);
-        b.localSet(blk);
-        for (let k = 0; k < e.fields.length; k++) {
-          const slot = s.map.get(e.fields[k].name)!;
-          // tuple element k → frame slot (balances its stack in place)
-          b.localGet(0); b.structGet(4, 1);
-          b.i32Const(slot);
-          b.localGet(blk);
-          b.refCast(1, true);
-          b.i32Const(k);
-          b.arrayGet(1);
-          b.arraySet();
-        }
-        return this.unitRef;
-      }
-      case "assign": {
-        const r = this.resolve(s, e.name);
-        if (r === null) throw new WasmError(`Assignment to unbound symbol: ${e.name}`);
-        const vr = this.expr(e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
-        b.localGet(0);
-        for (let k = 0; k < r.d; k++) b.structGet(4, 0);
-        b.structGet(4, 1);
-        b.i32Const(r.i);
-        this.pushRef(f, vr);
-        b.arraySet();
-        return this.unitRef;
-      }
-      case "if": {
-        if (cut !== undefined && cut.length === 0) {
-          // The split site itself inside a fragment: a split-mode if's
-          // value arrives via the after-if fragment's v param.
-          return this.fragV(id, f);
-        }
-        // Cut descent index (0 = the condition, 1/2 = an arm); undefined =
-        // fresh emission.
-        const ci = cut === undefined ? undefined : [e.c, e.a, e.b].indexOf(cut[0]);
-        if (ci !== undefined && ci < 0) throw new WasmError("internal: split chain root mismatch");
-        // When the cut is inside an arm (or the condition while an arm can
-        // split), the if uses the dispatch shape: a sibling arm's own split
-        // during this re-emission would otherwise leave the fragment's IF
-        // unclosed. Split-mode fresh emission needs the same shape: an arm
-        // containing a split site cannot keep the value-shape IF — the
-        // site's return_call would end the function mid-block. Both arms
-        // dispatch their values through a RET cell chained to the after-if
-        // fragment, and the if itself becomes a split site whose fragment
-        // (filled by the body-level catcher) receives the if's value.
-        if (ci !== undefined
-          ? (ci !== 0 || this.splits(e.a) || this.splits(e.b))
-          : (this.splits(e.a) || this.splits(e.b))) {
-          this.emitIfDispatch(id, e, f, s, ctx, ci);
-          return this.unitRef; // unreachable: the dispatch-shape if throws Split
-        }
-        // Value shape — shared by fresh emission (ci undefined) and
-        // fragment re-emission (no arm can split): condition and both arms
-        // are value-explicit; each arm's ref is pushed as the IF block's
-        // result value. Fragment re-emission never tail-calls the arms.
-        const at = ci === undefined && tail;
-        this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, ci === undefined ? "post" : ci === 0 ? "cut" : "pre"));
-        b.u8(CALL);
-        b.lebU(this.fTruthy);
-        b.u8(IF);
-        b.u8(0x6e); // result anyref
-        this.pushRef(f, this.cutChildRef(e.a, f, s, ctx, ci === undefined ? "post" : ci === 1 ? "cut" : ci === 2 ? "pre" : "post", at));
-        b.u8(ELSE);
-        this.pushRef(f, this.cutChildRef(e.b, f, s, ctx, ci === undefined ? "post" : ci === 2 ? "cut" : "post", at));
-        b.u8(END);
-        const v = f.anyref();
-        b.localSet(v);
-        return this.keepRef(id, f, {k: "local", l: v});
-      }
-      case "while": {
-        if (cut !== undefined && cut.length === 0) {
-          // The loop exited: its unit value is the fragment's v param.
-          return this.fragV(id, f);
-        }
-        if (this.splits(e.c) || this.splits(e.body)) {
-          this.emitWhileCPS(id, e, f, s, ctx, cut);
-          return this.unitRef; // unreachable: the split-mode while throws Split
-        }
-        if (cut !== undefined) throw new WasmError("internal: split crossing a while");
-        b.u8(BLOCK);
-        b.u8(0x40);
-        b.u8(LOOP);
-        b.u8(0x40);
-        this.pushRef(f, this.expr(e.c, f, s, false, ctx));
-        b.u8(CALL);
-        b.lebU(this.fTruthy);
-        b.u8(EQZ);
-        b.u8(BR_IF);
-        b.lebU(1);
-        this.expr(e.body, f, s, false, ctx); // body value dropped: nothing on the stack
-        b.u8(BR);
-        b.lebU(0);
-        b.u8(END);
-        b.u8(END);
-        return this.unitRef;
-      }
-      case "block": {
-        if (cut === undefined) {
-          let last: ValueRef = this.unitRef;
-          for (let k = 0; k < e.stmts.length; k++) {
-            // Dropped statements leave nothing on the stack.
-            last = this.expr(e.stmts[k], f, s, tail && k === e.stmts.length - 1, ctx);
-          }
-          return last;
-        }
-        // Cut path through the block: statements before the cut site already
-        // executed (skipped), the cut statement continues the fragment with
-        // its value from the fragment's v param, the rest re-emits inline.
-        const ci = e.stmts.indexOf(cut[0]);
-        if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-        return this.emitStmtsFrom(e.stmts, f, s, ctx, ci, cut, tail);
-      }
-      case "arr": {
-        const blk = f.anyref();
-        b.i32Const(e.elems.length);
-        b.arrayNew(1);
-        b.localSet(blk);
-        const ci = cut === undefined ? -1 : e.elems.indexOf(cut[0]);
-        if (cut !== undefined && ci < 0) throw new WasmError("internal: split chain root mismatch");
-        for (let k = 0; k < e.elems.length; k++) {
-          // Value-explicit element order: the child's ref is computed BEFORE
-          // the destination address is pushed, so a split inside the child
-          // aborts on a clean operand stack (same ordering as the app
-          // case's args).
-          // Elements after the cut child have NOT run yet: they re-emit
-          // inline ("post"), never reload a never-written spill slot ("pre").
-          const r = this.cutChildRef(e.elems[k], f, s, ctx,
-            cut === undefined ? "post" : k === ci ? "cut" : k < ci ? "pre" : "post");
-          b.localGet(blk);
-          b.refCast(1, true);
-          b.i32Const(k);
-          this.pushRef(f, r);
-          b.arraySet();
-        }
-        b.localGet(blk);
-        b.refCast(1, true);
-        b.structNew(3); // $ARR wrapper
-        const v = f.anyref();
-        b.localSet(v);
-        return {k: "local", l: v};
-      }
-      case "field": {
-        const blk = f.anyref();
-        this.pushRef(f, this.expr(e.obj, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)}));
-        b.refCast(3, true);
-        b.structGet(3, 0);
-        b.localSet(blk);
-        // len <= idx → out of bounds
-        b.localGet(blk);
-        b.refCast(1, true);
-        b.arrayLen();
-        b.i32Const(e.idx!);
-        b.u8(LEU);
-        b.u8(IF);
-        b.u8(0x40);
-        this.emitFail(
-          f, 2, this.strLits.get(e.name)!,
-          this.constF64(f, e.idx!),
-          this.constF64(f, -1),
-        );
-        b.u8(END);
-        b.localGet(blk);
-        b.refCast(1, true);
-        b.i32Const(e.idx!);
-        b.arrayGet(1);
-        const v = f.anyref();
-        b.localSet(v);
-        return {k: "local", l: v};
-      }
-      case "perform":
-        if (cut !== undefined && cut.length === 0) {
-          // The split site itself inside a fragment: its value is the
-          // fragment's v param (the value the case body or host resumed
-          // with).
-          return this.fragV(id, f);
-        }
-        this.emitPerform(id, e, f, s, ctx);
-        return this.unitRef; // unreachable: perform always ends at its split site
-      case "handle":
-        if (cut !== undefined && cut.length === 0) {
-          // The split site itself inside a fragment: its value is the
-          // handle's value delivered by the after-handle fragment chain.
-          return this.fragV(id, f);
-        }
-        if (cut !== undefined) {
-          // A perform inside the body split: emit the body's remainder with
-          // the fragment's ambient continuation (kNext) — the perform-site
-          // RET cell carries it: the handler cell the walk started from in
-          // the original flow, or the fresh §4.6 chain (whose copied HDLs
-          // keep every enclosing handler live around the resumed segment)
-          // when the fragment runs from a resume closure.
-          const bodyE = this.nodes[e.body];
-          const stmts = bodyE.t === "block" ? bodyE.stmts : [e.body];
-          const bsc = this.scopes.get(e.body) ?? s;
-          const ci = stmts.indexOf(cut[0]);
-          if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-          this.pushRef(f, this.emitStmtsFrom(stmts, f, bsc, ctx, ci, cut, false));
-          const v = f.anyref();
-          b.localSet(v);
-          this.emitDispatch(f, v, ctx.kL);
-          // The dispatch tail-calls away (every table carries a Return
-          // entry); the after-handle rest chains from the split site.
-          throw new Split(this.hdlRest.get(id)!, [...this.cutStack]);
-        }
-        this.emitHandle(id, e, f, s, ctx);
-        return this.unitRef; // unreachable: the body's dispatch tail-calls away
-      case "app": {
-        if (cut !== undefined && cut.length === 0) {
-          // The split site itself inside a fragment: the call's result is
-          // the fragment's v param (the caller's body ended at the call's
-          // return_call, §3 emitCall).
-          return this.fragV(id, f);
-        }
-        // One shape for fresh emission and fragment re-emission: children
-        // before the cut site reload (or, if pure, re-emit), the cut child
-        // continues with the fragment's v param, children after re-emit
-        // inline; fresh emission evaluates everything (mode "post").
-        const kids = [e.fn, ...e.args];
-        const ci = cut === undefined ? -1 : kids.indexOf(cut[0]);
-        if (cut !== undefined && ci < 0) throw new WasmError("internal: split chain root mismatch");
-        // Direct builtin reference: the callee sym resolves to no user
-        // binding and names a builtin with a trampoline. Operators compile
-        // inline (no call at all, like `/` below); other builtins call their
-        // trampoline directly (no $CLO load, no table dispatch). `/` is
-        // checker-stamped instead (e.div) and keeps its own inline path.
-        const fne = this.nodes[e.fn];
-        const bname = e.div === undefined && fne.t === "sym" &&
-          this.resolve(s, fne.v) === null && BUILTINS.some(bb => bb.name === fne.v) ? fne.v : null;
-        // Inline paths compute right here, so at a tail position the boxed
-        // value must be DISPATCHED through the ambient continuation by the
-        // enclosing wrapper (emitStmtSeq bridges + emitDispatch) — the value
-        // must never return raw past the enclosing function, or a land
-        // site's RET cell would be bypassed (the callee is "supposed" to
-        // dispatch, but there is no callee).
-        if (e.div !== undefined) {
-          // `/` is stamped by the checker (int vs float truncation); the
-          // fn is the `/` sym itself, so the cut site is always in an
-          // operand (ci >= 1). Value-explicit operand order: both child
-          // refs are computed (and spilled) before either is materialized,
-          // so a split inside a child aborts on a clean operand stack.
-          // A non-number operand traps at the ref.cast (frozen deviation —
-          // the checker rejects non-num arithmetic statically).
-          if (ci === 0) throw new WasmError("internal: split chain root mismatch");
-          this.pushRef(f, this.cutChildRef(e.args[0], f, s, ctx, ci === 1 ? "cut" : ci < 0 ? "post" : "pre"));
-          b.refCast(0, false);
-          b.structGet(0, 0);
-          this.pushRef(f, this.cutChildRef(e.args[1], f, s, ctx, ci === 2 ? "cut" : "post"));
-          b.refCast(0, false);
-          b.structGet(0, 0);
-          b.u8(FDIV);
-          if (e.div === "int") b.u8(FTRUNC);
-          // Box inline (never return_call $box: at a tail position the raw
-          // return would bypass the caller's RET cell — the wrapper's
-          // dispatch must see the value).
-          b.u8(CALL);
-          b.lebU(this.fBox);
-        } else if (bname !== null && OPERATOR_OPS.has(bname)) {
-          this.emitOperatorInline(f, bname, e, s, ctx, ci);
-        } else if (bname !== null && this.builtinFnIdx.has(bname)) {
-          // Direct builtin call: static funcref index + fsize, env = null.
-          const bi = BUILTINS.find(bb => bb.name === bname)!;
-          this.emitCallClosure(f, 0, e.args.length, (k, ffp) => {
-            const r = this.cutChildRef(e.args[k], f, s, ctx,
-              k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
-            b.localGet(ffp); b.refCast(4, true); b.structGet(4, 1);
-            b.i32Const(k);
-            this.pushRef(f, r);
-            b.arraySet();
-          }, cut === undefined && tail,
-          this.landCalls.has(id),
-          ctx.kL,
-          undefined,
-          undefined,
-          ctx,
-          {idx: this.builtinFnIdx.get(bname)!, fsize: bi.params + mapLikeFrameWords(bname)});
-        } else {
-          const fc = f.anyref();
-          this.pushRef(f, this.cutChildRef(e.fn, f, s, ctx, ci === 0 ? "cut" : ci < 0 ? "post" : "pre"));
-          b.localSet(fc);
-          this.emitCallClosure(f, fc, e.args.length, (k, ffp) => {
-            // Value-explicit arg order: the child's ref is computed (and
-            // spilled) BEFORE the destination address is pushed, so a split
-            // inside the child aborts on a clean operand stack (blocker (b)
-            // by construction).
-            const r = this.cutChildRef(e.args[k], f, s, ctx,
-              k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
-            b.localGet(ffp); b.refCast(4, true); b.structGet(4, 1);
-            b.i32Const(k);
-            this.pushRef(f, r);
-            b.arraySet();
-          }, cut === undefined && tail,
-          // Builtins never perform or capture, so they keep the k=0
-          // trampoline convention; every other (lambda) call site lands
-          // through a RET cell and is a split site (§3 emitCall).
-          this.landCalls.has(id),
-          ctx.kL,
-          undefined,
-          undefined,
-          ctx);
-        }
-        // emitCallClosure leaves the landed result on the stack (or
-        // tail-returns, making this capture unreachable); the inline paths
-        // leave the computed value on the stack — at a tail position the
-        // enclosing wrapper (emitStmtSeq / fillRest) dispatches it through
-        // the ambient continuation, exactly like any non-call tail value.
-        const v = f.anyref();
-        b.localSet(v);
-        return {k: "local", l: v};
-      }
-      default:
-        // Unreachable: the switch covers every Expr variant, but a try/finally
-        // wrapper defeats TS's exhaustiveness-based end-of-function check.
-        throw new WasmError(`internal: no emitter for node ${id}`);
-    }
-    } finally {
-      if (pushed) this.cutStack.pop();
-    }
-  }
-
-  emitPerform(id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: Scope, ctx: Ctx): void {
-    const b = f.body;
-    const blk = f.anyref(), cell = f.anyref();
-    b.i32Const(e.args.length);
-    b.arrayNew(1);
-    b.localSet(blk);
-    // Cut path: the split site is inside one of the args. Args before it
-    // already ran (reload spilled / re-emit pure), the cut arg continues
-    // with the fragment's v, args after it re-emit inline; then the walk
-    // below re-runs with the fragment's ambient continuation.
-    const cut = ctx.cut;
-    const ci = cut === undefined ? -1 : e.args.indexOf(cut[0]);
-    if (cut !== undefined && ci < 0) throw new WasmError("internal: split chain root mismatch");
-    for (let k = 0; k < e.args.length; k++) {
-      // Value-explicit arg order: the child's ref is computed BEFORE the
-      // destination address is pushed, so a split inside the child aborts
-      // on a clean operand stack (same ordering as the app case's args).
-      const r = k === ci
-        ? this.cutChildRef(e.args[k], f, s, ctx, "cut")
-        : k < ci
-          ? this.cutChildRef(e.args[k], f, s, ctx, "pre")
-          : this.cutChildRef(e.args[k], f, s, ctx, "post");
-      b.localGet(blk);
-      b.refCast(1, true);
-      b.i32Const(k);
-      this.pushRef(f, r);
-      b.arraySet();
-    }
-    b.localGet(blk);
-    b.refCast(1, true);
-    b.structNew(3); // $ARR wrapper
-    b.localSet(cell);
-    const spillSlot = this.spillOf.get(id)!;
-    b.localGet(0); b.structGet(4, 1);
-    b.i32Const(spillSlot);
-    b.localGet(cell);
-    b.arraySet();
-    // Handler walk: kL walks the k chain; the first K_HDL whose case table
-    // (flat [opid, fnIdx, fsize, nparams]* i31s) contains opid wins. The
-    // pre-walk ambient continuation (amb) is what the RET cell carries:
-    // fragments re-dispatch through their kNext, so a resumed segment
-    // follows the fresh §4.6 chain (copied HDLs + kCaller) instead of
-    // skipping it.
-    const opid = this.effOpIds.get(e.op)!;
-    const restFn = this.makeRestThunk("perform:rest op=" + e.op);
-    const kL = f.anyref(), hdl = f.anyref(), found = f.i32();
-    const tbl = f.anyref(), nL = f.i32(), ent = f.i32();
-    const fnIdx = f.i32(), fsz = f.i32(), nparams = f.i32(), amb = f.anyref();
-    const i31of = () => { b.refCast(I31REF, false); b.i31Get(); }; // anyref → i32 (i31 payload)
-    b.localGet(ctx.kL); // the ambient continuation
-    b.localSet(kL);
-    b.localGet(ctx.kL);
-    b.localSet(amb);
-    b.i32Const(0);
-    b.localSet(found);
-    b.u8(BLOCK);
-    b.u8(0x40);
-    b.u8(LOOP);
-    b.u8(0x40);
-    b.localGet(kL);
-    b.u8(0xd1); // ref.is_null: k=0 → no handler anywhere → host fallback
-    b.u8(BR_IF);
-    b.lebU(1);
-    b.localGet(kL); b.refCast(5, true); b.structGet(5, 0); b.i31Get();
-    b.i32Const(K_HDL);
-    b.u8(EQ);
-    b.u8(IF);
-    b.u8(0x40);
-    b.localGet(kL); b.refCast(5, true); b.structGet(5, 1);
-    b.localSet(tbl);
-    b.localGet(tbl); b.refCast(1, true); b.arrayLen(); b.i32Const(4); b.u8(DIVU);
-    b.localSet(nL);
-    this.loop(f, () => {
-      b.localGet(nL);
-    }, i => {
-      b.localGet(i); b.i32Const(4); b.u8(MUL);
-      b.localSet(ent);
-      b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.arrayGet(1); i31of();
-      b.i32Const(opid);
-      b.u8(EQ);
-      b.u8(IF);
-      b.u8(0x40);
-      b.i32Const(1);
-      b.localSet(found);
-      b.localGet(kL);
-      b.localSet(hdl);
-      b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(1); b.u8(ADD); b.arrayGet(1); i31of();
-      b.localSet(fnIdx);
-      b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(2); b.u8(ADD); b.arrayGet(1); i31of();
-      b.localSet(fsz);
-      b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(3); b.u8(ADD); b.arrayGet(1); i31of();
-      b.localSet(nparams);
-      b.u8(BR);
-      b.lebU(2); // exit the table scan
-      b.u8(END);
-    });
-    b.localGet(found);
-    b.u8(BR_IF);
-    b.lebU(2); // matched handler → leave the walk
-    b.u8(END);
-    b.localGet(kL); b.refCast(5, true); b.structGet(5, 3);
-    b.localSet(kL);
-    b.u8(BR);
-    b.lebU(0);
-    b.u8(END);
-    b.u8(END);
-    // Freeze the frame image for this capture and chain the rest fragment
-    // behind a K_SPILL cell carrying it: the fragment's pre-cut operand
-    // reloads read the frozen values, so a multi-shot resume re-runs the
-    // rest against the pre-perform state (the interpreter's CPS accs),
-    // not the frame as mutated by earlier resumes / loop iterations.
-    const ksp = this.snapWrap(f, ctx, () => {
-      b.localGet(amb);
-    });
-    b.localGet(found);
-    b.u8(IF);
-    b.u8(0x7f); // handler found: invoke the matched case body
-    // Per-invocation frame copy: case invocations of one handler nest (a
-    // resumed segment can re-enter the handler), and each invocation needs
-    // its own params/spills — the interpreter gives every case invocation a
-    // fresh env, so the shared hframe must not be re-bound under an
-    // in-flight outer invocation (its fragments re-read scope slots). Copy
-    // the hframe; the matched entry's fsize (table word @2) sizes the copy,
-    // and the resume capture records a fresh HDL over the copy so the fresh
-    // chain's Return lands in this invocation's frame.
-    const hfc = f.anyref(), hfsrc = f.anyref(), hfs = f.anyref();
-    b.localGet(hdl); b.refCast(5, true); b.structGet(5, 2); b.refCast(4, true);
-    b.localSet(hfsrc);
-    b.localGet(hfsrc); b.refCast(4, true); b.structGet(4, 0); // parent (unchanged)
-    b.localGet(fsz);
-    b.arrayNew(1);
-    b.localSet(hfs);
-    this.loop(f, () => {
-      b.localGet(fsz);
-    }, i => {
-      b.localGet(hfs);
-      b.refCast(1, true);
-      b.localGet(i);
-      b.localGet(hfsrc); b.refCast(4, true); b.structGet(4, 1);
-      b.localGet(i);
-      b.arrayGet(1);
-      b.arraySet();
-    });
-    b.localGet(hfs);
-    b.refCast(1, true);
-    b.structNew(4);
-    b.localSet(hfc);
-    // Push this perform's RET cell; the slice below is captured as if this
-    // cell had been pushed before the walk (scan-first). Its next is the
-    // K_SPILL cell (the rest fragment's prologue loads the snapshot and
-    // skips the cell before dispatching, so K_SPILL stays invisible to
-    // every other dispatch and to fCapture's slice walk).
-    const ret = this.retCell(f, restFn.idx, () => {
-      b.localGet(ksp); // next = K_SPILL{frozen frame image, pre-walk ambient}
-    }); // b = the current frame (holds the spilled args cell)
-    // Capture the slice above the handler into fresh cells (originals
-    // untouched; the resume closure copies again on every call).
-    const slice = f.anyref();
-    b.localGet(ret);
-    b.refCast(5, true);
-    b.localGet(hdl);
-    b.refCast(5, true);
-    b.u8(CALL);
-    b.lebU(this.fCapture);
-    b.localSet(slice);
-    // The resume binder (§4.6): a $CLO over the shared resume fn and a
-    // capture-record frame {slot 1 = the slice, slot 2 = the matched HDL
-    // (the capture sentinel), slot 3 = this invocation's hframe copy}. The
-    // resume fn copies the slice afresh per call (sentinel = slot 2) and
-    // re-chains its bottom to a fresh HDL {slot 2's table, slot 3's frame,
-    // next = the k the closure was invoked with}, so the resumed segment
-    // runs against the caller's continuation and its Return lands in the
-    // invocation's frame copy.
-    const recs = f.anyref(), rec = f.anyref(), rclo = f.anyref();
-    b.i32Const(4);
-    b.arrayNew(1);
-    b.localSet(recs);
-    b.localGet(recs); b.refCast(1, true); b.i32Const(0); b.refNull(ANYREF); b.arraySet(); // slot 0 unused
-    b.localGet(recs); b.refCast(1, true); b.i32Const(1); b.localGet(slice); b.arraySet(); // slot 1: the captured slice
-    b.localGet(recs); b.refCast(1, true); b.i32Const(2); b.localGet(hdl); b.arraySet(); // slot 2: the matched HDL (sentinel)
-    b.localGet(recs); b.refCast(1, true); b.i32Const(3); b.localGet(hfc); b.arraySet(); // slot 3: this invocation's hframe copy
-    b.refNull(4); // parent = none
-    b.localGet(recs);
-    b.refCast(1, true);
-    b.structNew(4);
-    b.localSet(rec);
-    b.i32Const(this.resumeFn!.idx);
-    b.refI31();
-    b.localGet(rec);
-    b.refCast(4, true); // env = the resume record's $FRAME (rec is an anyref local)
-    b.i32Const(1); // fsize (call frame size hint: slot 0 = the resumed value)
-    b.refI31();
-    b.structNew(6);
-    b.localSet(rclo);
-    // Case invocation over the handler's shared hframe copy (hdl.b): bind
-    // the case params from the args cell, the resume binder to the boxed
-    // resume closure, then tail-call the case body
-    // with (hframe, hdl.next) — its continuation never contains this
-    // handler (two-k rule).
-    b.localGet(hfc); b.refCast(4, true); b.structGet(4, 1);
-    this.loop(f, () => {
-      b.localGet(nparams);
-    }, i2 => {
-      b.localGet(hfc); b.refCast(4, true); b.structGet(4, 1);
-      b.localGet(i2);
-      b.localGet(cell); b.refCast(3, true); b.structGet(3, 0);
-      b.localGet(i2);
-      b.arrayGet(1);
-      b.arraySet();
-    });
-    b.localGet(hfc); b.refCast(4, true); b.structGet(4, 1);
-    b.localGet(nparams);
-    b.localGet(rclo);
-    b.arraySet();
-    b.localGet(hfc);
-    b.refCast(4, true);
-    b.localGet(hdl); b.refCast(5, true); b.structGet(5, 3);
-    b.localGet(fnIdx);
-    b.u8(RETURN_CALL_INDIRECT);
-    b.lebU(T_KABI);
-    b.lebU(0);
-    b.u8(ELSE);
-    // No matching handler: bare host call, then the rest-of-site fragment —
-    // the SAME fragment the RET cell carries — continues with the resumed
-    // value over this frame and the ambient continuation. The args cell is
-    // reloaded from its spill slot, the pattern the fragment itself uses.
-    const v = f.anyref();
-    b.i32Const(opid);
-    b.localGet(0); b.structGet(4, 1); b.i32Const(spillSlot); b.arrayGet(1);
-    b.u8(CALL);
-    b.lebU(this.impIdx.get("ef_perform")!);
-    b.localSet(v);
-    b.localGet(0); b.structGet(4, 1); b.i32Const(this.valSpill.get(id)!);
-    b.localGet(v);
-    b.arraySet();
-    b.localGet(0);
-    b.localGet(v);
-    b.localGet(ksp);
-    b.refCast(5, true);
-    b.i32Const(restFn.idx);
-    b.u8(RETURN_CALL_INDIRECT);
-    b.lebU(T_III_I);
-    b.lebU(0);
-    b.u8(END);
-    b.u8(0x00); // unreachable: both arms end in a tail call
-    // The inline body ends at the split site; the catcher fills restFn.
-    if (DBGEMIT) console.error("THROW perform-split op=", e.op, "cut=", this.cutStack.length, "[" + this.cutStack.map((x) => this.nodes[x]?.t).join(",") + "]");
-    throw new Split(restFn, [...this.cutStack]);
-  }
-
-  // §4.4 handle. Installs the handler's continuation state and runs the
-  // body inline with the K_HDL cell as the ambient continuation k':
-  // - hframe: the handler's shared frame (op-param slots, resume binders,
-  //   the Return value slot, case-body spills — frameSizeOf(info.scope)).
-  // - RET cell for the after-handle rest: {K_RET, restFn, $fp, ambient k} —
-  //   the continuation OUTSIDE the handler; the Return case (and the
-  //   identity default) delivers the handle's value through it.
-  // - K_HDL cell: {K_HDL, case-table global, hframe, next = the RET cell}.
-  // The cell is spilled to the handle's frame slot so a perform inside the
-  // body (whose split re-emits this node in fragment mode) reloads the
-  // installed handler instead of reinstalling it. The body's completion
-  // dispatches through the cell (Return entry — explicit case fn or the
-  // shared identity); like a perform site, the handle ends the inline body
-  // and the after-handle rest lives in its own fragment.
-  emitHandle(id: ExprID, e: Expr & {t: "handle"}, f: Fn, s: Scope, ctx: Ctx): void {
-    const b = f.body;
-    const info = this.hdlCases.get(id)!;
-    const restFn = this.makeRestThunk("handle:restFn");
-    this.hdlRest.set(id, restFn);
-    const hf = f.anyref(), hdl = f.anyref();
-    b.localGet(0); // parent = the frame at the handle site
-    b.i32Const(this.frameSizeOf(info.scope));
-    b.arrayNew(1);
-    b.structNew(4);
-    b.localSet(hf);
-    // K_SPILL cell freezing the pre-handle frame image: the after-handle
-    // rest's pre-cut operand reloads (chain levels above the handle, e.g.
-    // sibling operands of `s + handle {...}`) must see the values as of
-    // the install, not as mutated by the handler body / resumes.
-    const ksp = this.snapWrap(f, ctx, () => {
-      b.localGet(ctx.kL);
-    });
-    // RET cell over the handle-site frame; next = the continuation outside
-    // the handler (the two-k rule: the case body's ambient continuation is
-    // the one captured OUTSIDE the handler).
-    const ret = this.retCell(f, restFn.idx, () => {
-      b.localGet(ksp);
-    });
-    b.i32Const(K_HDL);
-    b.refI31();
-    b.globalGet(info.tableOff); // a = the case table
-    b.localGet(hf);
-    b.localGet(ret); b.refCast(5, true);
-    b.structNew(5);
-    b.localSet(hdl);
-    const sp = this.valSpill.get(id);
-    if (sp !== undefined) {
-      b.localGet(0); b.structGet(4, 1);
-      b.i32Const(sp);
-      b.localGet(hdl);
-      b.arraySet();
-    }
-    // Body with the handler cell as the ambient continuation: no tail calls
-    // through the k param here — every value flows through the handler.
-    const bodyE = this.nodes[e.body];
-    const stmts = bodyE.t === "block" ? bodyE.stmts : [e.body];
-    this.emitStmtSeq(stmts, f, this.scopes.get(e.body) ?? s, false, {kL: hdl});
-    // The completion dispatch tail-calls the Return case (every table
-    // carries one); control never returns here. The after-handle rest is
-    // in restFn — the catcher that receives this Split fills it, re-emitting
-    // this node as the chain's split site (its value = the fragment's v).
-    throw new Split(restFn, [...this.cutStack]);
-  }
-
-  // --- builtin trampolines ---------------------------------------------------
-
-  // Dispatch-shape if (§3): used when an arm can split, or when re-emitting
-  // a fragment whose cut lands inside the if. Both arms dispatch their
-  // values through a RET cell {K_RET, restAfterIf, frame, ambient k} and
-  // return; the if itself becomes a split site whose fragment (filled by
-  // the body-level catcher) receives the if's value as v. An arm whose
-  // emission throws is closed with unreachable; its fragment is filled
-  // here against the enclosing body root along the split's chain.
-  // `ci` is the cut descent index when re-emitting a fragment (0 = the
-  // condition continues the fragment, 1/2 = the arm does); undefined when
-  // emitting fresh.
-  emitIfDispatch(id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Scope, ctx: Ctx, ci?: number): void {
-    const b = f.body;
-    // The split chain for this if: the path from the body root to here.
-    // Frames pushed while emitting the arms (nested re-emissions) are not
-    // part of it.
-    const chainToIf = [...this.cutStack];
-    const restAfterIf = this.makeRestThunk("if:after");
-    // K_SPILL cell freezing the pre-if frame image for the after-if rest's
-    // pre-cut operand reloads (see snapWrap).
-    const ksp = this.snapWrap(f, ctx, () => {
-      b.localGet(ctx.kL); // the ambient continuation
-    });
-    const ifk = this.retCell(f, restAfterIf.idx, () => {
-      b.localGet(ksp); // next = K_SPILL{frozen frame image, ambient k}
-    });
-    // Inside the dispatch shape the arms' ambient continuation is the arm
-    // completion cell: every split site in an arm (perform/land/...) must
-    // chain its rest fragment through ifk, or the resumed value bypasses
-    // the after-if rest entirely. The condition keeps the outer kL — its
-    // completion is the fTruthy call, not the arm dispatch.
-    const ctxArm: Ctx = {...ctx, kL: ifk};
-    let condSplit: Split | null = null;
-    try {
-      if (ci === undefined) this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, "post"));
-      else this.pushRef(f, this.cutChildRef(e.c, f, s, ctx, ci === 0 ? "cut" : "pre"));
-    } catch (spC) {
-      if (!(spC instanceof Split)) throw spC;
-      condSplit = spC;
-    }
-    if (condSplit !== null) {
-      // The condition/cut-child split: ifk already references restAfterIf in
-      // the emitted code, and under multi-shot resume the condition can still
-      // complete and dispatch an arm through it — so the post-if fragment
-      // must exist. Fill it along the if's own chain (the same content the
-      // trailing throw below would have carried), then let the condition's
-      // Split propagate; its own rest is filled by the enclosing catcher.
-      this.cutStack.pop(); // fragments must not see the if's own frame
-      const rootC = this.bodyRoots[this.bodyRoots.length - 1];
-      const savedCutC = this.cutStack;
-      this.cutStack = [...rootC.savedCut];
-      try {
-        this.fillRest(new Split(restAfterIf, chainToIf), rootC.stmts, rootC.sc, rootC.tail);
-      } finally {
-        this.cutStack = savedCutC;
-      }
-      b.u8(UNREACHABLE); // close the aborted fragment (the condition never falls through)
-      throw condSplit;
-    }
-    b.u8(CALL);
-    b.lebU(this.fTruthy);
-    b.u8(IF);
-    b.u8(0x40); // void: each arm ends in dispatch + return
-    const arm = (armE: ExprID, cutArm: boolean): Split | null => {
-      const va = f.anyref();
-      let sp: Split | null = null;
-      try {
-        if (cutArm) {
-          this.pushRef(f, this.cutChildRef(armE, f, s, ctxArm, "cut"));
-        } else {
-          // The other arm re-emits without the cut: the cut path belongs to
-          // the cut arm's subtree only.
-          this.pushRef(f, this.cutChildRef(armE, f, s, ctxArm, "post"));
-        }
-        b.localSet(va);
-      } catch (sp2) {
-        if (!(sp2 instanceof Split)) throw sp2;
-        sp = sp2;
-      }
-      if (sp !== null) {
-        if (!cutArm) {
-          // The non-cut arm re-emits fresh; a split site inside it must not
-          // re-root its fragment at the body root — filling from there would
-          // re-emit this if (with the arms' roles swapped), regenerating the
-          // sibling arm's split forever. Fill against the arm subtree:
-          // the fragment continues the arm's remainder and its kNext is the
-          // site's snap-wrapped ambient continuation (ifk), so the after-if
-          // rest still receives the if's value. The synthetic root is the
-          // first frame under this if on the split's chain (the arm body
-          // node itself when it pushed one, the split site's parent
-          // otherwise), so the re-emission root and chain stay consistent.
-          if (sp.chain.length < 2) throw new WasmError("internal: arm split chain too short");
-          this.cutStack.pop(); // the synthetic root is the arm, not this if
-          const savedCutA = this.cutStack;
-          this.cutStack = [];
-          try {
-            this.fillRest(new Split(sp.restFn, sp.chain.slice(1)), [sp.chain[1]], s, false);
-          } finally {
-            this.cutStack = savedCutA;
-          }
-        }
-        b.u8(UNREACHABLE);
-        return cutArm ? sp : null; // fresh arm: filled locally, arm "completes"
-      }
-      this.emitDispatch(f, va, ifk);
-      b.u8(RETURN); // the dispatch's result is this function's result
-      return null;
-    };
-    const spA = arm(e.a, ci === 1);
-    b.u8(ELSE);
-    const spB = arm(e.b, ci === 2);
-    b.u8(END);
-    b.u8(UNREACHABLE); // unreachable: each arm returned or trapped
-    const root = this.bodyRoots[this.bodyRoots.length - 1];
-    // This if's own expr frame is still on the cut stack; the arm fragment
-    // re-emissions must not see it (they push a fresh if frame along the
-    // re-emitted chain).
-    this.cutStack.pop();
-    if (spA !== null) this.fillRest(spA, root.stmts, root.sc, root.tail);
-    if (spB !== null) this.fillRest(spB, root.stmts, root.sc, root.tail);
-    this.cutStack.push(id);
-    // The code after the if chains through restAfterIf: the enclosing
-    // body-level catcher fills it with the if's value as v.
-    if (DBGEMIT) console.error("THROW if-split");
-    throw new Split(restAfterIf, chainToIf);
-  }
-
-  // Split-mode while (§6b): a perform/handle/land call inside the condition
-  // or body cannot keep the wasm block/loop shape — the site's return_call
-  // would end the function mid-loop and no captured continuation may cross a
-  // wasm label. The loop becomes a split site:
-  // - pass 1 (fresh): allocates the after-while RET cell {K_RET, restAfter,
-  //   $fp, ambient k} and the loop-entry RET cell {K_RET, loopEntry, $fp,
-  //   ifk}, fills the loopEntry fragment (one loop pass), and enters the
-  //   loop by dispatching unit through the entry cell. The body's ambient
-  //   continuation is a fresh per-pass loop-back cell {K_RET, loopEntry,
-  //   $fp, kNext} — the body re-enters the loop through the k chain, never
-  //   a label, and a perform inside the body captures that cell (so a
-  //   resumed copy re-enters the loop on the resumed chain).
-  // - cut = [] (fragment re-emission after the loop exited): the loop's
-  //   unit value is the fragment's v param.
-  // - cut through the body (a split inside it resumed): the rest of the
-  //   current iteration runs with the fragment's ambient continuation (the
-  //   loop-back cell in effect) and the iteration re-enters the loop
-  //   through it; the after-while rest chains off a fresh Split.
-  // - cut through the condition (a split inside it resumed): the condition
-  //   continues with the fragment's v, then one loop pass re-runs
-  //   (emitLoopPass with kNext = the fragment's ambient continuation).
-  emitWhileCPS(id: ExprID, e: Expr & {t: "while"}, f: Fn, s: Scope, ctx: Ctx, cut?: ExprID[]): void {
-    const b = f.body;
-    if (cut === undefined) {
-      const chainToWhile = [...this.cutStack];
-      const restAfter = this.makeRestThunk("while:after");
-      const loopEntry = this.makeRestThunk("while:loopEntry");
-      this.ctlLoops.set(id, {entry: loopEntry, rest: restAfter});
-      let inner: Split | null = null;
-      try {
-        this.emitLoopPass(loopEntry, e, s, 2, loopEntry.idx);
-      } catch (sp) {
-        if (!(sp instanceof Split)) throw sp;
-        inner = sp;
-      }
-      // K_SPILL cell freezing the pre-loop frame image for the after-while
-      // rest's pre-cut operand reloads (see snapWrap).
-      const ksp = this.snapWrap(f, ctx, () => {
-        b.localGet(ctx.kL); // the ambient continuation
-      });
-      const ifk = this.retCell(f, restAfter.idx, () => {
-        b.localGet(ksp); // next = K_SPILL{frozen frame image, ambient k}
-      });
-      const loopk = this.retCell(f, loopEntry.idx, () => {
-        b.localGet(ifk); // next = the after-while cell
-      });
-      const u = f.anyref();
-      this.pushRef(f, this.unitRef);
-      b.localSet(u);
-      this.emitDispatch(f, u, loopk); // enter the loop (tail call)
-      // The loop pass's emission ends at a split site inside it (that is
-      // what makes the while split-mode): that site's rest fragment is
-      // filled by the enclosing body-level catcher along the chain through
-      // this while; this loop's own after-rest chains when the cut path
-      // re-emits (below). The throw is unreachable in practice.
-      if (inner !== null) throw inner;
-      if (DBGEMIT) console.error("THROW while-cond-split");
-      throw new Split(restAfter, chainToWhile);
-    }
-    const loop = this.ctlLoops.get(id);
-    if (loop === undefined) throw new WasmError("internal: split chain root mismatch");
-    if (DBGEMIT) console.error("WHILE_CUT cond=", cut[0] === e.c, "body=", cut[0] === e.body, "cutlen=", cut.length);
-    if (cut[0] === e.c) {
-      // The condition continues the fragment with the fragment's v, then one
-      // loop pass re-runs over the ambient continuation (fresh loop-back
-      // cell inside emitLoopPass).
-      this.emitLoopPass(f, e, s, ctx.kL, loop.entry.idx, cut.slice(1), ctx.snap);
-      b.u8(UNREACHABLE); // each path dispatched (loop back / exit)
-      throw new Split(loop.rest, [...this.cutStack]);
-    }
-    if (cut[0] === e.body) {
-      // Mid-iteration re-entry with a non-block body: it continues the
-      // fragment with the cut site's value.
-      const bsc = this.scopes.get(e.body) ?? s;
-      this.pushRef(f, this.expr(e.body, f, bsc, false, {kL: ctx.kL, cut: cut.slice(1)}));
-    } else {
-      // Mid-iteration re-entry: skip the condition (already run). Like
-      // handler bodies, a block body is bypassed by emitStmtSeq, so the
-      // chain's next element is a statement of the body block: statements
-      // before the cut site executed, it continues with the fragment's v,
-      // statements after it re-emit inline.
-      const bodyE = this.nodes[e.body];
-      if (bodyE.t !== "block") throw new WasmError("internal: split chain root mismatch");
-      const stmts = bodyE.stmts;
-      const bsc = this.scopes.get(e.body) ?? s;
-      const ci = stmts.indexOf(cut[0]);
-      if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-      this.pushRef(f, this.emitStmtsFrom(stmts, f, bsc, ctx, ci, cut, false));
-    }
-    const v = f.anyref();
-    b.localSet(v);
-    this.emitDispatch(f, v, ctx.kL); // loop back through the k chain
-    b.u8(UNREACHABLE);
-    throw new Split(loop.rest, [...this.cutStack]);
-  }
-
-  // One loop pass (§6b loop-entry fragment): evaluate the condition (fresh,
-  // or continuing a fragment's v when `condCut` is set), then truthy?
-  // body-then-loop-back : exit with the loop's unit value. The loop-back
-  // cell is allocated per pass and chained to `kNext` (the after-loop
-  // continuation in effect), so every capture of it resumes on the chain it
-  // was captured from. The body's completion dispatches through the cell;
-  // a Split inside the body leaves the pass closed at the site (unreachable
-  // body path) and propagates — the enclosing catcher fills that site's
-  // fragment along the chain through this while.
-  emitLoopPass(f: Fn, e: Expr & {t: "while"}, s: Scope, kNext: number, entryIdx: number, condCut?: ExprID[], snap?: number): void {
-    const b = f.body;
-    // Value-explicit cond: the ref is materialized at its consume point
-    // (fTruthy); keepRef persists it into the operand spill slot when the
-    // fragment machinery mapped one (same discipline as the app case's
-    // args). A Split inside the condition (a perform/handle/land call in
-    // it) propagates to the enclosing catcher before the IF opens — the
-    // pass closes with unreachable and the cond-cut fragment re-runs the
-    // pass with the resumed value.
-    let condRef: ValueRef;
-    try {
-      condRef = condCut === undefined
-        ? this.keepRef(e.c, f, this.expr(e.c, f, s, false, {kL: kNext}))
-        : condCut.length === 0
-          ? this.keepRef(e.c, f, {k: "local", l: 1}) // cond is the split site: v param
-          // condCut[0] is a descendant of the cond (e.g. a perform inside
-          // the comparison), not the cond itself — pass the cut through
-          // intact; cutChildRef's slice(1) would drop the site and the
-          // cond would collapse to bare fragV.
-          : this.keepRef(e.c, f, this.expr(e.c, f, s, false, {kL: kNext, cut: condCut, snap}));
-    } catch (sp) {
-      if (!(sp instanceof Split)) throw sp;
-      b.u8(UNREACHABLE); // the pass never completes inline at this site
-      throw sp;
-    }
-    this.pushRef(f, condRef);
-    b.u8(CALL);
-    b.lebU(this.fTruthy);
-    b.u8(IF);
-    b.u8(0x40); // void: the body path tails into the loop-back cell
-    try {
-      // RET cell over the pass's frame; next = the after-loop continuation
-      const lb = this.retCell(f, entryIdx, () => {
-        b.localGet(kNext);
-      });
-      const bodyE = this.nodes[e.body];
-      const stmts = bodyE.t === "block" ? bodyE.stmts : [e.body];
-      const bsc = this.scopes.get(e.body) ?? s;
-      this.emitStmtSeq(stmts, f, bsc, false, {kL: lb});
-      // The body's completion dispatch left the dispatch walk's block
-      // result on the stack (the k=0 terminal-return value): consume it as
-      // this pass's return. When the body splits, the catch below closes
-      // the arm before this line.
-      b.u8(RETURN);
-    } catch (sp) {
-      if (!(sp instanceof Split)) throw sp;
-      b.u8(UNREACHABLE); // the body never completes inline at this site
-      b.u8(END);
-      const u = f.anyref();
-      this.pushRef(f, this.unitRef);
-      b.localSet(u);
-      this.emitDispatch(f, u, kNext); // condition false: exit
-      throw sp;
-    }
-    b.u8(END);
-    const u = f.anyref();
-    this.pushRef(f, this.unitRef);
-    b.localSet(u);
-    this.emitDispatch(f, u, kNext); // condition false: exit
-  }
-
-  // Frame slot i (anyref) of the current frame (local 0) — the args/builtin
-  // access path. Writes push (arrayref, index) + value + aset at the .
-  slot(f: Fn, i: number): void {
-    f.body.localGet(0);
-    f.body.structGet(4, 1);
-    f.body.i32Const(i);
-    f.body.arrayGet(1);
-  }
-
-  // f64 payload of slot i's number; ref.cast traps on non-numbers (the
-  // frozen §7.7 deviation — unreachable in well-typed programs).
-  slotF64(f: Fn, i: number): number {
-    const l = f.f64();
-    this.slot(f, i);
-    f.body.refCast(0, false);
-    f.body.structGet(0, 0);
-    f.body.localSet(l);
-    return l;
-  }
-
-  emitBuiltins(builtin0: number): Fn[] {
-    const out: Fn[] = [];
-    for (const {name} of BUILTINS) {
-      if (!this.usedBuiltins.has(name)) continue;
-      const f = new Fn(2, this); // (frame, k): builtins are T_KABI trampolines
-      f.typeIdx = T_KABI;
-      f.idx = builtin0 + out.length; // matches the push order (usedBuiltins filter)
-      this.funcRefTypes.set(f.idx, T_KABI);
-      const b = f.body;
-      const box = () => {
-        b.u8(CALL);
-        b.lebU(this.fBox);
-      };
-      switch (name) {
-        case "+": {
-          const a = f.anyref(), bv = f.anyref();
-          this.slot(f, 0);
-          b.localSet(a);
-          this.slot(f, 1);
-          b.localSet(bv);
-          b.localGet(a);
-          b.refTest(0, false);
-          b.localGet(bv);
-          b.refTest(0, false);
-          b.u8(AND);
-          b.u8(IF);
-          b.u8(0x6e); // result anyref
-          b.localGet(a);
-          b.refCast(0, false);
-          b.structGet(0, 0);
-          b.localGet(bv);
-          b.refCast(0, false);
-          b.structGet(0, 0);
-          b.u8(FADD);
-          box();
-          b.u8(ELSE);
-          b.localGet(a);
-          b.refTest(2, false);
-          b.localGet(bv);
-          b.refTest(2, false);
-          b.u8(AND);
-          b.u8(IF);
-          b.u8(0x6e);
-          this.emitStrCat(f, a, bv);
-          b.u8(ELSE);
-          b.refNull(ANYREF);
-          b.u8(END);
-          b.u8(END);
-          break;
-        }
-        case "-": {
-          const x = this.slotF64(f, 0), y = this.slotF64(f, 1);
-          b.localGet(x);
-          b.localGet(y);
-          b.u8(FSUB);
-          box();
-          break;
-        }
-        case "*": {
-          const x = this.slotF64(f, 0), y = this.slotF64(f, 1);
-          b.localGet(x);
-          b.localGet(y);
-          b.u8(FMUL);
-          box();
-          break;
-        }
-        case "%": {
-          // JS fmod: a - b * trunc(a/b)
-          const x = this.slotF64(f, 0), y = this.slotF64(f, 1), t = f.f64();
-          b.localGet(x);
-          b.localGet(y);
-          b.u8(FDIV);
-          b.u8(FTRUNC);
-          b.localSet(t);
-          b.localGet(x);
-          b.localGet(y);
-          b.localGet(t);
-          b.u8(FMUL);
-          b.u8(FSUB);
-          box();
-          break;
-        }
-        case "neg": {
-          const x = this.slotF64(f, 0);
-          b.localGet(x);
-          b.u8(FNEG);
-          box();
-          break;
-        }
-        case "<":
-        case ">":
-        case "<=":
-        case ">=": {
-          const x = this.slotF64(f, 0), y = this.slotF64(f, 1);
-          const cmp = name === "<" ? FLT : name === ">" ? FGT : name === "<=" ? FLE : FGE;
-          this.selectBool(f, () => {
-            b.localGet(x);
-            b.localGet(y);
-            b.u8(cmp);
-          });
-          break;
-        }
-        case "==": {
-          this.slot(f, 0);
-          this.slot(f, 1);
-          b.u8(CALL);
-          b.lebU(this.fEq);
-          break;
-        }
-        case "!=": {
-          this.slot(f, 0);
-          this.slot(f, 1);
-          b.u8(CALL);
-          b.lebU(this.fEq);
-          b.refCast(I31REF, false); // eq result's i31 bool payload
-          b.i31Get();
-          b.u8(EQZ); // 1 when $eq said false
-          this.selectBool(f, () => {});
-          break;
-        }
-        case "not": {
-          this.slot(f, 0);
-          b.u8(CALL);
-          b.lebU(this.fTruthy);
-          b.u8(EQZ);
-          this.selectBool(f, () => {});
-          break;
-        }
-        case "list": {
-          // The frame has fsize 0, so the slots array length IS argc — the
-          // only argc reader in the backend (do not generalize).
-          const n = f.i32();
-          b.localGet(0);
-          b.structGet(4, 1);
-          b.arrayLen();
-          b.localSet(n);
-          const blk = this.allocArrBlk(f, n);
-          this.loop(f, () => {
-            b.localGet(n);
-          }, i => {
-            this.elemAddr(f, blk, i);
-            this.slot(f, i);
-            b.arraySet();
-          });
-          this.boxArr(f, blk);
-          break;
-        }
-        case "head": {
-          const blk = f.anyref();
-          this.slot(f, 0);
-          b.refCast(3, true);
-          b.structGet(3, 0);
-          b.localSet(blk);
-          b.localGet(blk);
-          b.refCast(1, true);
-          b.arrayLen();
-          b.u8(EQZ);
-          b.u8(IF);
-          b.u8(0x40);
-          this.emitFail(f, 0, null, this.constF64(f, 0), this.constF64(f, 0));
-          b.u8(END);
-          b.localGet(blk);
-          b.refCast(1, true);
-          b.i32Const(0);
-          b.arrayGet(1);
-          break;
-        }
-        case "tail": {
-          const blk = f.anyref(), len = f.i32(), n1 = f.i32();
-          this.slot(f, 0);
-          b.refCast(3, true);
-          b.structGet(3, 0);
-          b.localSet(blk);
-          b.localGet(blk);
-          b.refCast(1, true);
-          b.arrayLen();
-          b.localSet(len);
-          b.localGet(len);
-          b.u8(EQZ);
-          b.u8(IF);
-          b.u8(0x7f);
-          b.i32Const(0);
-          b.u8(ELSE);
-          b.localGet(len);
-          b.i32Const(1);
-          b.u8(SUB);
-          b.u8(END);
-          b.localSet(n1);
-          this.emitArrCopy(f, blk, 1, n1);
-          break;
-        }
-        case "concat": {
-          const aBlk = f.anyref(), bBlk = f.anyref(), la = f.i32(), lb = f.i32(), n = f.i32();
-          this.slot(f, 0);
-          b.refCast(3, true);
-          b.structGet(3, 0);
-          b.localSet(aBlk);
-          this.slot(f, 1);
-          b.refCast(3, true);
-          b.structGet(3, 0);
-          b.localSet(bBlk);
-          b.localGet(aBlk);
-          b.refCast(1, true);
-          b.arrayLen();
-          b.localSet(la);
-          b.localGet(bBlk);
-          b.refCast(1, true);
-          b.arrayLen();
-          b.localSet(lb);
-          b.localGet(la);
-          b.localGet(lb);
-          b.u8(ADD);
-          b.localSet(n);
-          const blk = this.allocArrBlk(f, n);
-          this.loop(f, () => {
-            b.localGet(la);
-          }, i => {
-            this.elemAddr(f, blk, i);
-            this.elemAddr(f, aBlk, i);
-            b.arrayGet(1);
-            b.arraySet();
-          });
-          this.loop(f, () => {
-            b.localGet(lb);
-          }, i => {
-            this.elemAddr(f, blk, i);
-            b.localGet(la);
-            b.u8(ADD);
-            this.elemAddr(f, bBlk, i);
-            b.arrayGet(1);
-            b.arraySet();
-          });
-          this.boxArr(f, blk);
-          break;
-        }
-        case "flat": {
-          const xss = f.anyref(), n = f.i32(), total = f.i32();
-          this.slot(f, 0);
-          b.refCast(3, true);
-          b.structGet(3, 0);
-          b.localSet(xss);
-          b.localGet(xss);
-          b.refCast(1, true);
-          b.arrayLen();
-          b.localSet(n);
-          b.i32Const(0);
-          b.localSet(total);
-          // JS Array.prototype.flat parity: non-array elements pass through
-          // instead of being read as inner arrays (a resumed scalar flowing
-          // back through a map-like land path lands exactly here).
-          this.loop(f, () => {
-            b.localGet(n);
-          }, k => {
-            const cell = f.anyref();
-            this.elemAddr(f, xss, k);
-            b.arrayGet(1);
-            b.localSet(cell);
-            b.localGet(cell);
-            b.refTest(3, false); // is $ARR?
-            b.u8(IF);
-            b.u8(0x40);
-            b.localGet(cell);
-            b.refCast(3, true);
-            b.structGet(3, 0);
-            b.refCast(1, true);
-            b.arrayLen(); // inner len
-            b.localGet(total);
-            b.u8(ADD);
-            b.localSet(total);
-            b.u8(ELSE);
-            b.localGet(total);
-            b.i32Const(1);
-            b.u8(ADD);
-            b.localSet(total);
-            b.u8(END);
-          });
-          const blk = this.allocArrBlk(f, total);
-          const w = f.i32();
-          b.i32Const(0);
-          b.localSet(w);
-          this.loop(f, () => {
-            b.localGet(n);
-          }, k => {
-            const cell = f.anyref(), xb = f.anyref(), xl = f.i32();
-            this.elemAddr(f, xss, k);
-            b.arrayGet(1);
-            b.localSet(cell);
-            b.localGet(cell);
-            b.refTest(3, false);
-            b.u8(IF);
-            b.u8(0x40);
-            b.localGet(cell);
-            b.refCast(3, true);
-            b.structGet(3, 0);
-            b.localSet(xb);
-            b.localGet(xb);
-            b.refCast(1, true);
-            b.arrayLen();
-            b.localSet(xl);
-            this.loop(f, () => {
-              b.localGet(xl);
-            }, j => {
-              this.elemAddr(f, blk, w);
-              this.elemAddr(f, xb, j);
-              b.arrayGet(1);
-              b.arraySet();
-              b.localGet(w);
-              b.i32Const(1);
-              b.u8(ADD);
-              b.localSet(w);
-            });
-            b.u8(ELSE);
-            this.elemAddr(f, blk, w);
-            b.localGet(cell);
-            b.arraySet();
-            b.localGet(w);
-            b.i32Const(1);
-            b.u8(ADD);
-            b.localSet(w);
-            b.u8(END);
-          });
-          this.boxArr(f, blk);
-          break;
-        }
-        case "len": {
-          this.slot(f, 0);
-          b.refCast(3, true);
-          b.structGet(3, 0);
-          b.refCast(1, true);
-          b.arrayLen();
-          b.u8(CONV_I32);
-          box();
-          break;
-        }
-        case "strlen": {
-          this.slot(f, 0);
-          b.refCast(2, true);
-          b.arrayLen();
-          b.u8(CONV_I32);
-          box();
-          break;
-        }
-        case "PI":
-          b.globalGet(this.piG);
-          break;
-        case "cos":
-          this.slot(f, 0);
-          b.u8(CALL);
-          b.lebU(this.impIdx.get("ef_cos")!);
-          break;
-        case "sin":
-          this.slot(f, 0);
-          b.u8(CALL);
-          b.lebU(this.impIdx.get("ef_sin")!);
-          break;
-        case "sqrt": {
-          const x = this.slotF64(f, 0);
-          b.localGet(x);
-          b.u8(FSQRT);
-          box();
-          break;
-        }
-        case "abs": {
-          const x = this.slotF64(f, 0);
-          b.localGet(x);
-          b.u8(FABS);
-          box();
-          break;
-        }
-        case "round": {
-          const x = this.slotF64(f, 0);
-          b.localGet(x);
-          b.f64Const(0.5);
-          b.u8(FADD);
-          b.u8(FFLOOR);
-          box();
-          break;
-        }
-        case "range": {
-          const s = this.slotF64(f, 0), e = this.slotF64(f, 1), stepv = this.slotF64(f, 2);
-          const n = f.i32();
-          b.localGet(stepv);
-          b.f64Const(0);
-          b.u8(FEQ);
-          b.u8(IF);
-          b.u8(0x7f);
-          b.i32Const(0);
-          b.u8(ELSE);
-          b.localGet(e);
-          b.localGet(s);
-          b.u8(FSUB);
-          b.localGet(stepv);
-          b.u8(FDIV);
-          b.u8(FCEIL);
-          b.f64Const(0);
-          b.u8(FGT);
-          b.u8(IF);
-          b.u8(0x7f);
-          b.localGet(e);
-          b.localGet(s);
-          b.u8(FSUB);
-          b.localGet(stepv);
-          b.u8(FDIV);
-          b.u8(FCEIL);
-          b.u8(TRUNC_F64);
-          b.u8(ELSE);
-          b.i32Const(0);
-          b.u8(END);
-          b.u8(END);
-          b.localSet(n);
-          const blk = this.allocArrBlk(f, n);
-          this.loop(f, () => {
-            b.localGet(n);
-          }, k => {
-            this.elemAddr(f, blk, k);
-            b.localGet(s);
-            b.localGet(k);
-            b.u8(CONV_I32);
-            b.localGet(stepv);
-            b.u8(FMUL);
-            b.u8(FADD);
-            box();
-            b.arraySet();
-          });
-          this.boxArr(f, blk);
-          break;
-        }
-        case "char":
-          this.slot(f, 0);
-          b.u8(CALL);
-          b.lebU(this.impIdx.get("ef_char")!);
-          break;
-        case "number":
-          this.slot(f, 0);
-          b.u8(CALL);
-          b.lebU(this.impIdx.get("ef_number")!);
-          break;
-        case "args":
-          b.u8(CALL);
-          b.lebU(this.impIdx.get("ef_args")!);
-          break;
-        case "get": {
-          const blk = f.anyref(), len = f.i32(), idx = f.i32();
-          const idxF = this.slotF64(f, 1);
-          this.slot(f, 0);
-          b.refCast(3, true);
-          b.structGet(3, 0);
-          b.localSet(blk);
-          b.localGet(blk);
-          b.refCast(1, true);
-          b.arrayLen();
-          b.localSet(len);
-          b.localGet(idxF);
-          b.u8(TRUNC_F64);
-          b.localSet(idx);
-          b.localGet(idx);
-          b.i32Const(0);
-          b.u8(LTS); // idx < 0
-          b.localGet(idx);
-          b.localGet(len);
-          b.u8(GEU); // idx >= len
-          b.u8(OR);
-          b.u8(IF);
-          b.u8(0x40);
-          this.emitFail(f, 1, null, () => {
-            b.localGet(idxF);
-          }, () => {
-            b.localGet(len);
-            b.u8(CONV_I32);
-          });
-          b.u8(END);
-          this.elemAddr(f, blk, idx);
-          b.arrayGet(1);
-          break;
-        }
-        case "set": {
-          const xs = f.anyref(), blk = f.anyref(), len = f.i32(), idx = f.i32(), v = f.anyref();
-          const idxF = this.slotF64(f, 1);
-          this.slot(f, 0);
-          b.localSet(xs);
-          b.localGet(xs);
-          b.refCast(3, true);
-          b.structGet(3, 0);
-          b.localSet(blk);
-          b.localGet(blk);
-          b.refCast(1, true);
-          b.arrayLen();
-          b.localSet(len);
-          b.localGet(idxF);
-          b.u8(TRUNC_F64);
-          b.localSet(idx);
-          this.slot(f, 2);
-          b.localSet(v);
-          b.localGet(idx);
-          b.localGet(len);
-          b.u8(LTU); // idx < len → in-place
-          b.u8(IF);
-          b.u8(0x40);
-          this.elemAddr(f, blk, idx);
-          b.localGet(v);
-          b.arraySet();
-          b.u8(ELSE);
-          // grow: fresh slots array of len idx+1, copy old, fill holes with
-          // unit, repoint the wrapper's backing (aliases share the wrapper,
-          // so they all see the growth — §7.1).
-          const nb = f.anyref(), nlen = f.i32();
-          b.localGet(idx);
-          b.i32Const(1);
-          b.u8(ADD);
-          b.localSet(nlen);
-          b.localGet(nlen);
-          b.arrayNew(1);
-          b.localSet(nb);
-          this.loop(f, () => {
-            b.localGet(nlen);
-          }, k => {
-            b.localGet(nb);
-            b.refCast(1, true);
-            b.localGet(k);
-            b.localGet(k);
-            b.localGet(len);
-            b.u8(LTU); // k < old len → copy
-            b.u8(IF);
-            b.u8(0x6e); // result anyref
-            this.elemAddr(f, blk, k);
-            b.arrayGet(1);
-            b.u8(ELSE);
-            b.refNull(ANYREF);
-            b.u8(END);
-            b.arraySet();
-          });
-          b.localGet(nb);
-          b.refCast(1, true);
-          b.localGet(idx);
-          b.localGet(v);
-          b.arraySet();
-          b.localGet(xs);
-          b.refCast(3, true);
-          b.localGet(nb);
-          b.refCast(1, true);
-          b.structSet(0); // point the wrapper at the new backing
-          b.u8(END);
-          b.refNull(ANYREF);
-          break;
-        }
-        case "map":
-        case "each":
-        case "flatmap":
-          this.emitMapLike(f, name);
-          break;
-        default:
-          throw new WasmError(`internal: builtin ${name} not implemented`);
-      }
-      // Complete with the ABI's dispatch: builtins are called with k=0, so
-      // dispatch(0, v) just returns the computed value.
-      const v = f.anyref();
-      b.localSet(v);
-      this.emitDispatch(f, v);
-      out.push(f);
-    }
-    return out;
-  }
-
-  // map/each/flatmap CPS (§3): a map-like call site is a landCalls split
-  // site, so the entry (this builtin Fn) runs with the caller's RET cell as
-  // its k and its result dispatches through the caller's continuation. The
-  // entry reads the array, allocates the result array into its own frame,
-  // and tail-calls the loop-entry thunk; each iteration calls the callback
-  // with a RET cell {K_RET, iter-land, entry frame, ambient k} — so a
-  // performing callback walks the caller's handler chain, and a completed
-  // callback lands in the per-iteration thunk (res[i] = v, i+1, loop-entry).
-  // All loop state (result/tmp array, counter) lives in the entry frame
-  // slots, so the loop survives suspension. The counter slot holds a boxed
-  // number (slots are anyref); it is unboxed for comparisons and boxed
-  // again when passed to the callback as the iteration index.
-  emitMapLike(f: Fn, name: string): void {
-    const b = f.body;
-    const resSlot = name === "each" ? -1 : 2; // map: res, flatmap: tmp
-    const iSlot = name === "each" ? 2 : 3;
-    const loopEntry = this.makeRestThunk("maplike:loopEntry");
-    const iterLand = this.makeRestThunk("maplike:iterLand");
-    // Per-iteration land: store the callback result (map/flatmap), bump the
-    // counter, continue the loop. frame = the entry frame, v = the callback
-    // result, k = the ambient continuation (passed to the next iteration).
-    {
-      const t = iterLand, tb = t.body;
-      if (name !== "each") {
-        const blk = t.anyref(), iL = t.i32();
-        this.slot(t, resSlot);
-        tb.refCast(3, true);
-        tb.structGet(3, 0);
-        tb.localSet(blk);
-        this.slot(t, iSlot);
-        tb.refCast(0, false);
-        tb.structGet(0, 0);
-        tb.u8(TRUNC_F64);
-        tb.localSet(iL);
-        this.elemAddr(t, blk, iL);
-        tb.localGet(1);
-        tb.arraySet();
-      }
-      // counter += 1 (boxed back into the slot)
-      tb.localGet(0); tb.structGet(4, 1);
-      tb.i32Const(iSlot);
-      this.slot(t, iSlot);
-      tb.refCast(0, false);
-      tb.structGet(0, 0);
-      tb.f64Const(1);
-      tb.u8(FADD);
-      tb.u8(CALL);
-      tb.lebU(this.fBox);
-      tb.arraySet();
-      tb.localGet(0);
-      this.pushRef(t, this.unitRef);
-      tb.localGet(2);
-      tb.u8(RETURN_CALL);
-      tb.lebU(loopEntry.idx);
-    }
-
-    // Loop entry: done → finalize (box the result / flatmap copy) and
-    // dispatch through this thunk's k; else call the callback on element i.
-    {
-      const t = loopEntry, tb = t.body;
-      const xb = t.anyref(), n = t.i32(), iL = t.i32(), fc = t.anyref();
-      this.slot(t, 1); // the xs wrapper (arg 1) → its backing array and length
-      tb.refCast(3, true);
-      tb.structGet(3, 0);
-      tb.localSet(xb);
-      tb.localGet(xb);
-      tb.refCast(1, true);
-      tb.arrayLen();
-      tb.localSet(n);
-      this.slot(t, iSlot);
-      tb.refCast(0, false);
-      tb.structGet(0, 0);
-      tb.u8(TRUNC_F64);
-      tb.localSet(iL);
-      tb.localGet(iL);
-      tb.localGet(n);
-      tb.u8(GEU);
-      tb.u8(IF);
-      tb.u8(0x40);
-      const v = t.anyref();
-      if (name === "map") {
-        const res = t.anyref();
-        this.slot(t, resSlot);
-        tb.refCast(3, true);
-        tb.structGet(3, 0);
-        tb.localSet(res);
-        this.boxArr(t, res);
-      } else if (name === "each") {
-        this.pushRef(t, this.unitRef);
-      } else {
-        // flatmap: total = Σ per-element lengths; allocate; copy; box.
-        const tmp = t.anyref(), total = t.i32();
-        this.slot(t, resSlot);
-        tb.refCast(3, true);
-        tb.structGet(3, 0);
-        tb.localSet(tmp);
-        tb.i32Const(0);
-        tb.localSet(total);
-        this.loop(t, () => {
-          tb.localGet(n);
-        }, i => {
-          // total += len of callback result i: elem → its backing array →
-          // len (scalar elements count as 1 — the tag test, not the value).
-          const cell = t.anyref();
-          this.elemAddr(t, tmp, i);
-          tb.arrayGet(1);
-          tb.localSet(cell);
-          tb.localGet(cell);
-          tb.refTest(3, false);
-          tb.u8(IF);
-          tb.u8(0x40);
-          tb.localGet(cell);
-          tb.refCast(3, true);
-          tb.structGet(3, 0);
-          tb.refCast(1, true);
-          tb.arrayLen();
-          tb.localGet(total);
-          tb.u8(ADD);
-          tb.localSet(total);
-          tb.u8(ELSE);
-          tb.localGet(total);
-          tb.i32Const(1);
-          tb.u8(ADD);
-          tb.localSet(total);
-          tb.u8(END);
-        });
-        const res = this.allocArrBlk(t, total);
-        const w = t.i32();
-        tb.i32Const(0);
-        tb.localSet(w);
-        this.loop(t, () => {
-          tb.localGet(n);
-        }, i => {
-          const xb2 = t.anyref(), xl = t.i32();
-          const cell = t.anyref();
-          this.elemAddr(t, tmp, i);
-          tb.arrayGet(1);
-          tb.localSet(cell);
-          tb.localGet(cell);
-          tb.refTest(3, false);
-          tb.u8(IF);
-          tb.u8(0x40);
-          tb.localGet(cell);
-          tb.refCast(3, true);
-          tb.structGet(3, 0);
-          tb.localSet(xb2);
-          tb.localGet(xb2);
-          tb.refCast(1, true);
-          tb.arrayLen();
-          tb.localSet(xl);
-          this.loop(t, () => {
-            tb.localGet(xl);
-          }, j => {
-            // dst = res[w], src = xb2[j] (element values, same layout the
-            // box/collect path reads back).
-            this.elemAddr(t, res, w);
-            this.elemAddr(t, xb2, j);
-            tb.arrayGet(1);
-            tb.arraySet();
-            tb.localGet(w);
-            tb.i32Const(1);
-            tb.u8(ADD);
-            tb.localSet(w);
-          });
-          tb.u8(ELSE);
-          this.elemAddr(t, res, w);
-          tb.localGet(cell);
-          tb.arraySet();
-          tb.localGet(w);
-          tb.i32Const(1);
-          tb.u8(ADD);
-          tb.localSet(w);
-          tb.u8(END);
-        });
-        this.boxArr(t, res);
-      }
-      tb.localSet(v);
-      this.emitDispatch(t, v, 2); // k = this thunk's k param
-      tb.u8(RETURN); // only the k=0 branch reaches here, with the value
-      tb.u8(ELSE);
-      // Iteration: elem = xs[i]; the callback's RET cell lands in iterLand
-      // (landA) over this thunk's frame, with next = this thunk's k.
-      this.slot(t, 0);
-      tb.localSet(fc);
-      const elem = t.anyref();
-      this.elemAddr(t, xb, iL);
-      tb.arrayGet(1);
-      tb.localSet(elem);
-      this.emitCallClosure(t, fc, name === "map" ? 1 : 2, (k, ffp) => {
-        // Suspension-safe as-is: elem/iL are locals set before the call, and
-        // fBox cannot suspend, so no operand spans a suspension point.
-        tb.localGet(ffp); tb.refCast(4, true); tb.structGet(4, 1);
-        tb.i32Const(k);
-        if (k === 0) tb.localGet(elem);
-        else {
-          tb.localGet(iL);
-          tb.u8(CONV_I32);
-          tb.u8(CALL);
-          tb.lebU(this.fBox);
-        }
-        tb.arraySet();
-      }, false, true, 2, true, iterLand.idx);
-      tb.u8(UNREACHABLE); // the callback always tails into iterLand
-      tb.u8(END);
-      tb.u8(UNREACHABLE); // both if arms diverge; keep the implicit end typed
-    }
-    // Entry (this builtin Fn): allocate the result array, init the counter,
-    // tail-call the loop entry.
-    const xb = f.anyref(), n = f.i32();
-    this.slot(f, 1);
-    b.refCast(3, true);
-    b.structGet(3, 0);
-    b.localSet(xb);
-    b.localGet(xb);
-    b.refCast(1, true);
-    b.arrayLen();
-    b.localSet(n);
-    if (resSlot >= 0) {
-      const res = this.allocArrBlk(f, n);
-      b.localGet(0); b.structGet(4, 1);
-      b.i32Const(resSlot);
-      this.boxArr(f, res); // the slot holds the $ARR wrapper (iterLand + the
-                           // done path read it back as a wrapper)
-      b.arraySet();
-    }
-    b.localGet(0); b.structGet(4, 1);
-    b.i32Const(iSlot);
-    b.i32Const(0);
-    b.u8(CONV_I32);
-    b.u8(CALL);
-    b.lebU(this.fBox);
-    b.arraySet();
-    b.localGet(0);
-    this.pushRef(f, this.unitRef);
-    b.localGet(1);
-    b.u8(RETURN_CALL);
-    b.lebU(loopEntry.idx);
-  }
-
-  // --- main & assembly -------------------------------------------------------
-
-  emitMain(f: Fn): void {
-    const b = f.body;
-    // The global frame is allocated by run() (the frame param is local 0).
-    const exprs = this.prog.items.filter((it): it is {e: ExprID} => "e" in it);
-    const v = f.anyref();
-    if (exprs.length === 0) {
-      this.pushRef(f, this.unitRef);
-      b.localSet(v);
-    } else {
-      // Same split protocol as bodyCatch: a perform/handle at the top level
-      // ends the inline body; its fragment re-emits the remaining items.
-      const savedCut = this.cutStack;
-      const roots = exprs.map(it => it.e);
-      this.bodyRoots.push({stmts: roots, sc: this.globalScope, tail: false, savedCut: [...savedCut]});
-      try {
-        try {
-          for (let k = 0; k < exprs.length; k++) {
-            const r = this.expr(exprs[k].e, f, this.globalScope);
-            if (k < exprs.length - 1) { /* dropped: nothing on the stack */ }
-            else { this.pushRef(f, r); b.localSet(v); }
-          }
-        } catch (sp) {
-          this.cutStack = savedCut;
-          if (!(sp instanceof Split)) throw sp;
-          this.fillRest(sp, roots, this.globalScope, false);
-          return; // the body ends at the split site (both paths tail-call)
-        }
-        this.cutStack = savedCut;
-      } finally {
-        this.bodyRoots.pop();
-      }
-    }
-    // run() calls main with k = ref.null $K, so dispatch(null, v) returns
-    // the top-level value.
-    this.emitDispatch(f, v);
-  }
-
-  // run (allocates the global frame, calls main with k = null) and the
-  // 12 host accessors (§4 — JS cannot read GC fields directly). Appended
-  // after main; indices computed here.
-  emitInits(): void {
-    const mainIdx = this.liveImports.length + this.funcs.length - 1; // main is last
-    this.funcRefTypes.set(mainIdx, T_KABI); // main's funcref slot (after thunks)
-    const run = new Fn(0, this);
-    run.typeIdx = T_RUN;
-    run.idx = mainIdx + 1;
-    this.funcRefTypes.set(run.idx, T_RUN);
-    {
-      const b = run.body;
-      b.refNull(4); // global frame parent = null
-      b.i32Const(this.frameSizeOf(this.globalScope));
-      b.arrayNew(1);
-      b.structNew(4);
-      b.refNull(5); // k = null: main's dispatch returns its value
-      b.u8(CALL);
-      b.lebU(mainIdx);
-    }
-    this.funcs.push(run);
-    const acc = (params: number, typeIdx: number, emit: (b: Buf, f: Fn) => void): Fn => {
-      const f = new Fn(params, this);
-      f.typeIdx = typeIdx;
-      f.idx = this.liveImports.length + this.funcs.length;
-      this.funcRefTypes.set(f.idx, typeIdx);
-      emit(f.body, f);
-      this.funcs.push(f);
-      return f;
-    };
-    // __tag(v) -> i32: 0 unit (null) 1 num 2 bool 3 str 4 arr 5 clo
-    acc(1, 14, (b) => {
-      b.localGet(0);
-      b.u8(0xd1);
-      b.u8(IF);
-      b.u8(0x7f);
-      b.i32Const(0);
-      b.u8(ELSE);
-      const tag = (ht: number, t: number) => {
-        b.localGet(0);
-        b.refTest(ht, false);
-        b.u8(IF);
-        b.u8(0x7f);
-        b.i32Const(t);
-        b.u8(ELSE);
-      };
-      tag(I31REF, 2);
-      tag(0, 1); // $NUM
-      tag(2, 3); // $STR
-      tag(3, 4); // $ARR
-      b.localGet(0);
-      b.refTest(6, false); // $CLO
-      b.u8(IF);
-      b.u8(0x7f);
-      b.i32Const(5);
-      b.u8(ELSE);
-      b.u8(UNREACHABLE);
-      b.u8(END);
-      b.u8(END);
-      b.u8(END);
-      b.u8(END);
-      b.u8(END);
-      b.u8(END);
-    });
-    // __num(v) -> f64
-    acc(1, 19, (b) => {
-      b.localGet(0);
-      b.refCast(0, false);
-      b.structGet(0, 0);
-    });
-    // __str_len(v) -> i32
-    acc(1, 14, (b) => {
-      b.localGet(0);
-      b.refCast(2, false);
-      b.arrayLen();
-    });
-    // __str_get(v, i) -> i32
-    acc(2, 20, (b) => {
-      b.localGet(0);
-      b.refCast(2, false);
-      b.localGet(1);
-      b.arrayGet(2);
-    });
-    // __arr_len(v) -> i32
-    acc(1, 14, (b) => {
-      b.localGet(0);
-      b.refCast(3, false);
-      b.structGet(3, 0);
-      b.arrayLen();
-    });
-    // __arr_get(v, i) -> anyref
-    acc(2, 22, (b) => {
-      b.localGet(0);
-      b.refCast(3, false);
-      b.structGet(3, 0);
-      b.localGet(1);
-      b.arrayGet(1);
-    });
-    // __mk_num(x) -> anyref
-    acc(1, 13, (b) => {
-      b.localGet(0);
-      b.structNew(0);
-    });
-    // __mk_bool(b) -> anyref
-    acc(1, 12, (b) => {
-      b.localGet(0);
-      b.refI31();
-    });
-    // __str_new(n) -> anyref
-    acc(1, 12, (b) => {
-      b.localGet(0);
-      b.arrayNew(2);
-    });
-    // __str_set(v, i, u) -> ()
-    acc(3, 21, (b) => {
-      b.localGet(0);
-      b.refCast(2, false);
-      b.localGet(1);
-      b.localGet(2);
-      b.arraySet();
-    });
-    // __arr_new(n) -> anyref
-    acc(1, 12, (b) => {
-      b.localGet(0);
-      b.arrayNew(1);
-      b.structNew(3);
-    });
-    // __arr_set(v, i, x) -> ()
-    acc(3, 23, (b) => {
-      b.localGet(0);
-      b.refCast(3, false);
-      b.structGet(3, 0);
-      b.localGet(1);
-      b.localGet(2);
-      b.arraySet();
-    });
-  }
-
-  // Build the binaryen module from the emitted function bodies and emit the
-  // binary. Section assembly is gone: binaryen owns the module structure
-  // (imports keep HOST_IMPORTS order — the host ABI and the tests pin it;
-  // funcref index = liveImports + position since imports occupy the first
-  // table slots, making the element segment the identity map). The shrink
-  // pass optimizes in place — no binary round-trip through a reader.
-  buildModule(): Uint8Array {
-    this.emitInits();
-    const m = this.m;
+function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]): Uint8Array {
     // import section
-    for (let i = 0; i < this.liveImports.length; i++) {
-      const n = this.liveImports[i];
+    for (let i = 0; i < o.liveImports.length; i++) {
+      const n = o.liveImports[i];
       const sig = SIGS[impType(n)];
       m.addFunctionImport(`f${i}`, "env", n,
         binaryen.createType(sig.p.map(vt)), sig.r === null ? binaryen.none : vt(sig.r));
     }
     // global section: immutable statics, each initialized by a GC constant
     // expression (§5) — instantiation builds the value, no runtime fill.
-    for (let i = 0; i < this.statics.length; i++)
-      m.addGlobal(`g${i}`, binaryen.anyref, false, this.staticInit(this.statics[i]));
+    for (let i = 0; i < lay.statics.length; i++)
+      m.addGlobal(`g${i}`, binaryen.anyref, false, staticInit(m, lay.statics[i]));
     // table + functions + identity element segment (slot i → func i).
-    const total = this.liveImports.length + this.funcs.length;
+    const total = o.liveImports.length + funcs.length;
     m.addTable("t0", total, total);
-    for (let i = 0; i < this.funcs.length; i++) {
-      const f = this.funcs[i];
-      const funcrefIdx = this.liveImports.length + i;
+    for (let i = 0; i < funcs.length; i++) {
+      const f = funcs[i];
+      const funcrefIdx = o.liveImports.length + i;
       const sig = SIGS[f.typeIdx] as {p: (number | number[])[], r: number | number[] | null} | undefined;
       if (sig === undefined) throw new WasmError(`internal: fn ${funcrefIdx} has unknown type ${f.typeIdx}`);
       m.addFunction(`f${funcrefIdx}`, binaryen.createType(sig.p.map(vt)),
@@ -4945,18 +1722,3491 @@ class Compiler {
     const bytes = m.emitBinary();
     m.dispose();
     return bytes;
+}
+
+// --- compiler -----------------------------------------------------------------
+
+// --- emission -----------------------------------------------------------------
+// Emission is free functions over one local Emit context, created inside
+// emit() and dropped when it returns: nothing outside emission can touch
+// this state. Each function takes `em` first; the per-node emission mode
+// (ambient continuation cell + cut path) stays in the Ctx parameter.
+
+
+// Split machinery (§3-§6b): the compile-time state of the cut path — the AST
+// path currently being emitted (cutStack, snapshotted by split sites as their
+// fragment's re-emission chain), the enclosing body roots a split-mode if
+// fills its arm fragments against (bodyRoots), the rest fragments already
+// filled (filledRests — a handle's after-rest is thrown to fillRest from
+// every fragment re-emission of that handle, but only the first fill must
+// land), the after-handle rest fragments (hdlRest) and the split-mode while
+// fragments (ctlLoops). One bundle, one lifetime.
+type Splits = {
+  cutStack: ExprID[],
+  bodyRoots: {stmts: ExprID[], sc: Scope, tail: boolean, savedCut: ExprID[]}[],
+  filledRests: Set<Fn>,
+  hdlRest: Map<ExprID, Fn>,
+  ctlLoops: Map<ExprID, {entry: Fn, rest: Fn}>,
+};
+
+// Emission context: created inside emit() and dropped when it returns.
+// Carries the program (nodes is an alias of prog.nodes — the emitters read
+// it constantly), the read-only phase artifacts, the code under construction
+// and the split machinery.
+type Emit = {
+  prog: Program,
+  nodes: Expr[],
+  d: Discovery,
+  o: Opt,
+  ix: Indices,
+  lay: Layout,
+  // Code under construction: emitted functions, and the land thunks
+  // (T_III_I) appended between builtins and main.
+  funcs: Fn[],
+  thunks: Fn[],
+  // Split machinery (see Splits).
+  sp: Splits,
+};
+
+function emit(prog: Program, d: Discovery, o: Opt, ix: Indices, lay: Layout): Fn[] {
+  const em: Emit = {
+    prog,
+    nodes: prog.nodes,
+    d, o, ix, lay,
+    funcs: [],
+    thunks: [],
+    sp: {
+      cutStack: [],
+      bodyRoots: [],
+      filledRests: new Set(),
+      hdlRest: new Map(),
+      ctlLoops: new Map(),
+    },
+  };
+  // Helpers (right after the live imports), lambdas, builtin trampolines,
+  // then main (last; run/accessors follow in buildModule).
+  em.funcs.push(...emitHelpers(em));
+  for (const it of prog.items) {
+    if ("e" in it) emitLambdas(em, it.e);
   }
+  emitCaseFns(em);
+  em.funcs.push(...emitBuiltins(em, ix.builtin0));
+  const main = new Fn(2, em);
+  emitMain(em, main);
+  // Thunks are appended after all emission (emitMain's top-level calls
+  // create thunks too); main stays the last program function (exported
+  // as run — the run wrapper is assembled after it).
+  em.funcs.push(...em.thunks);
+  em.funcs.push(main);
+  emitInits(em);
+  return em.funcs;
+}
+
+
+const constF64 = (f: Fn, x: number) => () => f.body.f64Const(x);
+
+// Signature of a direct-call target by funcref index: imports carry their
+// type by name; defined functions registered at index assignment.
+function sigOf(em: Emit, funcrefIdx: number): {ps: binaryen.Type[], r: binaryen.Type | null} {
+// Signature of a direct-call target by funcref index: imports carry their
+// type by name; defined functions registered at index assignment.
+  const typeIdx = funcrefIdx < em.o.liveImports.length
+    ? impType(em.o.liveImports[funcrefIdx])
+    : em.ix.funcRefTypes.get(funcrefIdx);
+  const sig = SIGS[typeIdx!] as {p: (number | number[])[], r: number | number[] | null} | undefined;
+  if (sig === undefined) {
+    if (DBGEMIT)
+      console.error("sigOf miss f" + String(funcrefIdx), "liveImports", em.o.liveImports.length,
+        "types:", [...em.ix.funcRefTypes.entries()].map(([k, v]) => `${k}:${v}`).join(","));
+    throw new WasmError(`internal: no sig for funcref ${funcrefIdx} (type ${typeIdx})`);
+  }
+  return {ps: sig.p.map((t) => vt(t)), r: sig.r === null ? null : vt(sig.r)};
+}
+
+function emitLambdas(em: Emit, id: ExprID): void {
+  const e = em.nodes[id];
+  switch (e.t) {
+    case "lambda": {
+      const f = new Fn(2, em);
+      f.idx = em.ix.lambdaIdx.get(id)!; // funcref index (assignLambdas order)
+      em.ix.funcRefTypes.set(f.idx, T_KABI);
+      // bodyCatch emits the body and its completion dispatch (dead when
+      // the body ended in a tail call or split).
+      bodyCatch(em, e.body, f, em.d.scopes.get(id)!, true, INLINE);
+      em.funcs.push(f);
+      emitLambdas(em, e.body);
+      break;
+    }
+    case "let":
+    case "assign":
+    case "dlet":
+      emitLambdas(em, e.val);
+      break;
+    case "block":
+      for (const stmt of e.stmts) emitLambdas(em, stmt);
+      break;
+    case "if":
+      emitLambdas(em, e.c);
+      emitLambdas(em, e.a);
+      emitLambdas(em, e.b);
+      break;
+    case "while":
+      emitLambdas(em, e.c);
+      emitLambdas(em, e.body);
+      break;
+    case "app":
+      emitLambdas(em, e.fn);
+      for (const a of e.args) emitLambdas(em, a);
+      break;
+    case "arr":
+      for (const el of e.elems) emitLambdas(em, el);
+      break;
+    case "field":
+      emitLambdas(em, e.obj);
+      break;
+    case "handle":
+      emitLambdas(em, e.body);
+      for (const c of e.cases) emitLambdas(em, c.body);
+      break;
+    case "perform":
+      for (const a of e.args) emitLambdas(em, a);
+      break;
+  }
+}
+
+// 4b. Handler case function bodies (§4.4). Each case body runs over the
+// handler's shared hframe (its frame param) with k = HDL.next — the
+// two-k rule: the ambient continuation is the one captured OUTSIDE the
+// handler, so a perform inside a case body walks from there and never
+// re-enters its own handler, and a case body finishing normally
+// dispatches straight through it (no Return re-wrap). The identity fns
+// dispatch their frame's Return value (slot 1 for the shared npMax=0 fn,
+// slot npMax+1 for a per-handler fn — where emitDispatch stashes it for
+// the matching nparams) through their k — eval.ts:132's (v, k2) => k2(v).
+function emitCaseFns(em: Emit): void {
+// 4b. Handler case function bodies (§4.4). Each case body runs over the
+// handler's shared hframe (its frame param) with k = HDL.next — the
+// two-k rule: the ambient continuation is the one captured OUTSIDE the
+// handler, so a perform inside a case body walks from there and never
+// re-enters its own handler, and a case body finishing normally
+// dispatches straight through it (no Return re-wrap). The identity fns
+// dispatch their frame's Return value (slot 1 for the shared npMax=0 fn,
+// slot npMax+1 for a per-handler fn — where emitDispatch stashes it for
+// the matching nparams) through their k — eval.ts:132's (v, k2) => k2(v).
+  const idf = em.ix.identityRet;
+  idf.em = em;
+  {
+    const b = idf.body;
+    const v = idf.anyref();
+    b.localGet(0);
+    b.structGet(4, 1);
+    b.i32Const(1);
+    b.arrayGet(1); // hframe slot 1: the Return value
+    b.localSet(v);
+    emitDispatch(em, idf, v);
+  }
+  em.funcs.push(idf);
+  for (const [hdlId, info] of em.d.hdlCases) {
+    for (const c of info.cases) {
+      c.fn.em = em;
+      bodyCatch(em, c.body, c.fn, info.scope, true, INLINE);
+      em.funcs.push(c.fn);
+    }
+    if (info.retCase !== null) {
+      info.retCase.fn.em = em;
+      bodyCatch(em, info.retCase.body, info.retCase.fn, info.scope, true, INLINE);
+      em.funcs.push(info.retCase.fn);
+    } else if (info.npMax > 0) {
+      const idr = em.ix.hdlIdRet.get(hdlId)!;
+      idr.em = em;
+      const b = idr.body;
+      const v = idr.anyref();
+      b.localGet(0);
+      b.structGet(4, 1);
+      b.i32Const(info.npMax + 1); // hframe Return slot (nparams = npMax)
+      b.arrayGet(1);
+      b.localSet(v);
+      emitDispatch(em, idr, v);
+      em.funcs.push(idr);
+    }
+  }
+  // The shared resume closure fn (§4.6): (frame, k) -> anyref. frame's
+  // parent is the perform site's capture record {slot 1 = captured slice,
+  // slot 2 = matched HDL, slot 3 = the invocation's hframe copy}; frame's
+  // slot 0 is the resumed value. Copies the slice afresh (originals
+  // untouched — multi-shot safe), re-chains the copy's bottom to a fresh
+  // HDL {case table, hframe, next = this call's k} and dispatches the
+  // resumed value through the fresh chain: RET cells run the segment's
+  // fragments, the fresh HDL's Return entry fires, and dispatch
+  // terminates at the caller's continuation.
+  const rf = em.ix.resumeFn;
+  rf.em = em;
+  {
+    const b = rf.body;
+    const v = rf.anyref(), rec = rf.anyref(), slice = rf.anyref(), hdl = rf.anyref();
+    const copy = rf.anyref(), fresh = rf.anyref(), cur = rf.anyref();
+    b.localGet(0);
+    b.structGet(4, 1);
+    b.i32Const(0);
+    b.arrayGet(1);
+    b.localSet(v); // the resumed value: the closure call frame's slot 0
+    b.localGet(0);
+    b.structGet(4, 0); // the capture record (env frame)
+    b.localSet(rec);
+    b.localGet(rec);
+    b.refCast(4, true);
+    b.structGet(4, 1);
+    b.i32Const(1);
+    b.arrayGet(1);
+    b.localSet(slice);
+    b.localGet(rec);
+    b.refCast(4, true);
+    b.structGet(4, 1);
+    b.i32Const(2);
+    b.arrayGet(1);
+    b.localSet(hdl);
+    b.localGet(slice);
+    b.refCast(5, true);
+    b.localGet(hdl);
+    b.refCast(5, true);
+    b.u8(CALL);
+    b.lebU(em.ix.fCapture);
+    b.localSet(copy);
+    b.i32Const(K_HDL);
+    b.refI31();
+    b.localGet(hdl);
+    b.refCast(5, true);
+    b.structGet(5, 1); // a = the matched handler's case table
+    b.localGet(rec);
+    b.refCast(4, true);
+    b.structGet(4, 1);
+    b.i32Const(3);
+    b.arrayGet(1); // b = the invocation's hframe copy (rec slot 3)
+    b.localGet(1); // next = the k this closure was invoked with
+    b.structNew(5);
+    b.localSet(fresh);
+    b.localGet(copy);
+    b.localSet(cur);
+    b.u8(BLOCK);
+    b.u8(0x40);
+    b.u8(LOOP);
+    b.u8(0x40);
+    b.localGet(cur);
+    b.refCast(5, true);
+    b.structGet(5, 3);
+    b.localGet(hdl);
+    b.refCast(5, true);
+    b.refEq();
+    b.u8(BR_IF);
+    b.lebU(1); // cur is the bottom copy (its next is the old HDL)
+    b.localGet(cur);
+    b.refCast(5, true);
+    b.structGet(5, 3);
+    b.localSet(cur);
+    b.u8(BR);
+    b.lebU(0);
+    b.u8(END);
+    b.u8(END);
+    b.localGet(cur);
+    b.refCast(5, true);
+    b.localGet(fresh);
+    b.refCast(5, true);
+    b.structSet(3);
+    emitDispatch(em, rf, v, copy); // k = the closure's own k param
+  }
+  em.funcs.push(rf);
+}
+
+function emitStmtSeq(em: Emit, stmts: ExprID[], f: Fn, sc: Scope, tail: boolean, ctx: Ctx): void {
+  const b = f.body;
+  if (stmts.length === 0) {
+    const v = f.anyref();
+    pushRef(f, em.lay.unitRef);
+    b.localSet(v);
+    emitDispatch(em, f, v, ctx.kL);
+    return;
+  }
+  for (let k = 0; k < stmts.length; k++) {
+    const r = expr(em, stmts[k], f, sc, tail && k === stmts.length - 1, ctx);
+    if (k === stmts.length - 1) {
+      pushRef(f, r);
+      const v = f.anyref();
+      b.localSet(v);
+      emitDispatch(em, f, v, ctx.kL);
+    }
+  }
+}
+
+// Emit a lambda/case body, catching the Split of a perform/handle site
+// inside it and filling that site's rest-of-site fragment (see fillRest).
+// Lambda and case bodies are split boundaries: the chain never crosses a
+// lambda call, so each body's catcher owns its sites' fragments.
+function bodyCatch(em: Emit, bodyId: ExprID, f: Fn, sc: Scope, tail: boolean, ctx: Ctx): void {
+// Emit a lambda/case body, catching the Split of a perform/handle site
+// inside it and filling that site's rest-of-site fragment (see fillRest).
+// Lambda and case bodies are split boundaries: the chain never crosses a
+// lambda call, so each body's catcher owns its sites' fragments.
+  const savedCut = em.sp.cutStack;
+  const bodyE = em.nodes[bodyId];
+  const stmts = bodyE.t === "block" ? bodyE.stmts : [bodyId];
+  const bsc = em.d.scopes.get(bodyId) ?? sc;
+  em.sp.bodyRoots.push({stmts, sc: bsc, tail, savedCut: [...savedCut]});
+  try {
+    try {
+      emitStmtSeq(em, stmts, f, bsc, tail, ctx);
+    } catch (sp) {
+      em.sp.cutStack = savedCut;
+      if (!(sp instanceof Split)) throw sp;
+      fillRest(em, sp, stmts, bsc, tail);
+      return;
+    }
+    em.sp.cutStack = savedCut;
+  } finally {
+    em.sp.bodyRoots.pop();
+  }
+}
+
+// Fill a split's rest-of-site fragment (T_III_I: frame, v, kNext) by
+// re-emitting from the body root along the split's chain: statements
+// before the cut already executed (skipped; surviving values reload from
+// spill slots), the cut site continues the fragment with its value being
+// the v param, statements after it re-emit inline. A further split during
+// re-emission chains another fragment off this one's split site.
+function fillRest(em: Emit, sp: Split, root: ExprID[], sc: Scope, tail: boolean): void {
+// Fill a split's rest-of-site fragment (T_III_I: frame, v, kNext) by
+// re-emitting from the body root along the split's chain: statements
+// before the cut already executed (skipped; surviving values reload from
+// spill slots), the cut site continues the fragment with its value being
+// the v param, statements after it re-emit inline. A further split during
+// re-emission chains another fragment off this one's split site.
+  const gf = sp.restFn;
+  if (DBGEMIT) console.error("FILL_REST fn=", gf.idx, "root=", root.length, "chain=", sp.chain.length, "types=", "[" + sp.chain.map((x) => em.nodes[x]?.t).join(",") + "]", "tail=", tail);
+  // A shared after-rest fragment (e.g. a handle's) may be routed here
+  // again by a later re-emission of the same site; its content is already
+  // correct, so re-filling would only append a duplicate tail.
+  if (em.sp.filledRests.has(gf)) return;
+  em.sp.filledRests.add(gf);
+  const b = gf.body;
+  // Prologue: the k param is the split site's K_SPILL cell (see snapWrap)
+  // — load its frozen frame-image pointer into the `snap` local (pre-cut
+  // operand reloads read it) and continue with the cell's own next. A
+  // plain cell (nested-chained fragments whose site ran synchronously)
+  // means snap = the live frame (local 0): no operand-spill reload can
+  // happen in a fragment whose site never froze one, because such
+  // fragments re-emit only post-cut code and pure children re-emit
+  // instead of reloading.
+  const snap = gf.anyref();
+  b.localGet(2);
+  b.u8(0xd1); // ref.is_null: k = null → nothing froze a snapshot
+  b.u8(IF);
+  b.u8(0x40);
+  b.localGet(0); // live frame: snapSlot reads hit the frame param
+  b.localSet(snap);
+  b.u8(ELSE);
+  b.localGet(2);
+  b.refCast(5, true);
+  b.structGet(5, 0);
+  b.i31Get();
+  b.i32Const(K_SPILL);
+  b.u8(EQ);
+  b.u8(IF);
+  b.u8(0x40);
+  b.localGet(2);
+  b.refCast(5, true);
+  b.structGet(5, 1); // a = the frozen $FRAME snapshot
+  b.localSet(snap);
+  b.localGet(2);
+  b.refCast(5, true);
+  b.structGet(5, 3);
+  b.localSet(2);
+  b.u8(END);
+  b.u8(END);
+  const ci = root.indexOf(sp.chain[0]);
+  if (ci < 0) throw new WasmError("internal: split chain root mismatch");
+  const savedCut = em.sp.cutStack;
+  try {
+    for (let k = 0; k < root.length; k++) {
+      if (k < ci) continue; // executed before the split
+      const r = (k === ci)
+        ? expr(em, sp.chain[0], gf, sc, tail && k === root.length - 1, {kL: 2, cut: sp.chain.slice(1), snap})
+        : expr(em, root[k], gf, sc, tail && k === root.length - 1, {kL: 2, snap});
+      if (k === root.length - 1) {
+        pushRef(gf, r);
+        const v = gf.anyref();
+        gf.body.localSet(v);
+        emitDispatch(em, gf, v, 2); // kNext param
+      }
+    }
+  } catch (sp2) {
+    em.sp.cutStack = savedCut;
+    if (!(sp2 instanceof Split)) throw sp2;
+    // The re-emitted code ended at another split site: this fragment is
+    // complete (it ends at that site's host boundary / case invocation);
+    // the rest after it chains into the new site's fragment.
+    if (DBGEMIT) console.error("  NESTED_SPLIT in fn=", gf.idx, "-> chain=", "[" + sp2.chain.map((x) => em.nodes[x]?.t).join(",") + "]");
+    fillRest(em, sp2, root, sc, tail);
+    return;
+  }
+  em.sp.cutStack = savedCut;
+}
+
+// Fragment re-emission of a statement sequence from a cut statement:
+// statements before index ci already executed (skipped — surviving values
+// reload from spill slots), stmts[ci] continues the fragment with its
+// value being the fragment's v param, statements after it re-emit inline.
+// Returns the last statement's ref; pushRef it where the caller needs the
+// legacy stack operand (handle/while-cut do, block-cut returns it).
+function emitStmtsFrom(em: Emit, stmts: ExprID[], f: Fn, s: Scope, ctx: Ctx, ci: number, cut: ExprID[], tail: boolean): ValueRef {
+// Fragment re-emission of a statement sequence from a cut statement:
+// statements before index ci already executed (skipped — surviving values
+// reload from spill slots), stmts[ci] continues the fragment with its
+// value being the fragment's v param, statements after it re-emit inline.
+// Returns the last statement's ref; pushRef it where the caller needs the
+// legacy stack operand (handle/while-cut do, block-cut returns it).
+  let r: ValueRef = em.lay.unitRef;
+  for (let k = ci; k < stmts.length; k++) {
+    r = (k === ci)
+      ? expr(em, stmts[k], f, s, tail && k === stmts.length - 1, {kL: ctx.kL, cut: cut.slice(1)})
+      : expr(em, stmts[k], f, s, tail && k === stmts.length - 1, {kL: ctx.kL});
+  }
+  return r;
+}
+
+function emitHelpers(em: Emit): Fn[] {
+  // $truthy(v: anyref) -> i32: JS truthiness — 0 only for unit (ref.null
+  // any) and the bool i31 0 (matches `c !== false && c !== null`); every
+  // $NUM (including 0.0), $STR, $ARR and $CLO is truthy.
+  const truthy = new Fn(1, em);
+  truthy.typeIdx = T_TRUTHY;
+  em.ix.funcRefTypes.set(em.ix.fTruthy, T_TRUTHY);
+  {
+    const b = truthy.body;
+    b.localGet(0);
+    b.u8(0xd1); // ref.is_null
+    b.u8(IF);
+    b.u8(0x7f);
+    b.i32Const(0);
+    b.u8(ELSE);
+    b.localGet(0);
+    b.refTest(I31REF, true); // ref.test (ref null i31)
+    b.u8(IF);
+    b.u8(0x7f);
+    b.localGet(0);
+    b.refCast(I31REF, false);
+    b.i31Get(); // i31.get_u
+    b.u8(ELSE);
+    b.i32Const(1);
+    b.u8(END);
+    b.u8(END);
+  }
+  // $eq(a: anyref, b: anyref) -> anyref bool: JS === — nums by f64
+  // payload, bools by i31 payload, strings by i16 content, arrays/
+  // tuples/closures by identity (ref.cast (ref null eq) + ref.eq;
+  // identity survives `set` growth because growth repoints the wrapper's
+  // backing, not the wrapper), unit (null) equal only to unit.
+  const eq = new Fn(2, em);
+  eq.typeIdx = T_EQ;
+  em.ix.funcRefTypes.set(em.ix.fEq, T_EQ);
+  {
+    const b = eq.body;
+    const res = eq.i32();
+    // decided: a typed path (or the null mismatch) already answered.
+    const decided = eq.i32();
+    b.i32Const(0);
+    b.localSet(decided);
+    // null ladder: equal nulls → true, one null → false.
+    b.localGet(0);
+    b.u8(0xd1);
+    b.localGet(1);
+    b.u8(0xd1);
+    b.u8(EQ);
+    b.u8(IF);
+    b.u8(0x7f);
+    b.localGet(0);
+    b.u8(0xd1);
+    b.u8(ELSE);
+    b.i32Const(0);
+    b.u8(END);
+    b.localSet(res);
+    // one null, one not: the ladder answered (false).
+    b.localGet(0);
+    b.u8(0xd1);
+    b.localGet(1);
+    b.u8(0xd1);
+    b.u8(EQ);
+    b.u8(EQZ);
+    b.localSet(decided);
+    // bool == bool: i31 payloads.
+    b.localGet(0);
+    b.refTest(I31REF, true);
+    b.localGet(1);
+    b.refTest(I31REF, true);
+    b.u8(AND);
+    b.u8(IF);
+    b.u8(0x40);
+    b.localGet(0);
+    b.refCast(I31REF, false);
+    b.i31Get();
+    b.localGet(1);
+    b.refCast(I31REF, false);
+    b.i31Get();
+    b.u8(EQ);
+    b.localSet(res);
+    // decided: the bool path answered.
+    b.localGet(0);
+    b.refTest(I31REF, true);
+    b.localGet(1);
+    b.refTest(I31REF, true);
+    b.u8(AND);
+    b.localGet(decided);
+    b.u8(OR); // i32.or
+    b.localSet(decided);
+    b.u8(END);
+    // num == num: f64 payloads.
+    b.localGet(0);
+    b.refTest(0, true);
+    b.localGet(1);
+    b.refTest(0, true);
+    b.u8(AND);
+    b.u8(IF);
+    b.u8(0x40);
+    b.localGet(0);
+    b.refCast(0, true);
+    b.structGet(0, 0);
+    b.localGet(1);
+    b.refCast(0, true);
+    b.structGet(0, 0);
+    b.u8(FEQ);
+    b.localSet(res);
+    // decided: the num path answered.
+    b.localGet(0);
+    b.refTest(0, true);
+    b.localGet(1);
+    b.refTest(0, true);
+    b.u8(AND);
+    b.localGet(decided);
+    b.u8(OR); // i32.or
+    b.localSet(decided);
+    b.u8(END);
+    // str == str: i16 content.
+    b.localGet(0);
+    b.refTest(2, true);
+    b.localGet(1);
+    b.refTest(2, true);
+    b.u8(AND);
+    b.u8(IF);
+    b.u8(0x40);
+    const la = eq.i32(), lb = eq.i32();
+    b.localGet(0);
+    b.refCast(2, true);
+    b.arrayLen();
+    b.localSet(la);
+    b.localGet(1);
+    b.refCast(2, true);
+    b.arrayLen();
+    b.localSet(lb);
+    b.localGet(la);
+    b.localGet(lb);
+    b.u8(EQ);
+    b.localSet(res);
+    loop(eq, () => {
+      b.localGet(la);
+    }, i => {
+      b.localGet(res);
+      b.localGet(0);
+      b.refCast(2, true);
+      b.localGet(i);
+      b.arrayGet(2);
+      b.localGet(1);
+      b.refCast(2, true);
+      b.localGet(i);
+      b.arrayGet(2);
+      b.u8(EQ);
+      b.u8(AND);
+      b.localSet(res);
+    });
+    b.u8(END);
+    // Mixed/same-shape-arr/clo → identity (both operands cast through
+    // (ref null eq); a nullable cast accepts null but the null ladder
+    // already left). Only runs when no typed path answered.
+    b.localGet(decided);
+    b.u8(EQZ);
+    b.u8(IF);
+    b.u8(0x40);
+    b.localGet(0);
+    b.refCast(EQREF, true);
+    b.localGet(1);
+    b.refCast(EQREF, true);
+    b.refEq();
+    b.localSet(res);
+    b.u8(END);
+    b.localGet(res);
+    b.refI31();
+  }
+  // $box(x: f64) -> anyref: number struct.
+  const box = new Fn(1, em);
+  box.typeIdx = T_BOX;
+  em.ix.funcRefTypes.set(em.ix.fBox, T_BOX);
+  box.body.localGet(0);
+  box.body.structNew(0);
+  // $captureSlice(k: (ref null $K), until: (ref null $K)) -> (ref null $K):
+  // fresh copies of the cells from k up to (excluding) until, each
+  // {kind, a, b} verbatim; the bottom copy chains to `until`. Two passes:
+  // count (n ≥ 1: the slice always starts at a RET cell), then allocate
+  // n cells into a temp $ELEMS and link them (a $K cell is singly linked
+  // forward, so the copies are chained bottom-up out of the temp array).
+  const capture = new Fn(2, em);
+  capture.typeIdx = T_CAPTURE;
+  em.ix.funcRefTypes.set(em.ix.fCapture, T_CAPTURE);
+  {
+    const b = capture.body;
+    const n = capture.i32(), cur = capture.anyref(), tmp = capture.anyref();
+    const i = capture.i32(), src = capture.anyref(), cell = capture.anyref();
+    b.i32Const(0);
+    b.localSet(n);
+    b.localGet(0);
+    b.localSet(cur);
+    b.u8(BLOCK);
+    b.u8(0x40);
+    b.u8(LOOP);
+    b.u8(0x40);
+    b.localGet(cur);
+    b.refCast(5, true);
+    b.localGet(1);
+    b.refEq();
+    b.u8(BR_IF);
+    b.lebU(1);
+    b.localGet(n);
+    b.i32Const(1);
+    b.u8(ADD);
+    b.localSet(n);
+    b.localGet(cur);
+    b.refCast(5, true);
+    b.structGet(5, 3);
+    b.localSet(cur);
+    b.u8(BR);
+    b.lebU(0);
+    b.u8(END);
+    b.u8(END);
+    b.localGet(n);
+    b.arrayNew(1);
+    b.localSet(tmp);
+    b.localGet(0);
+    b.localSet(src);
+    b.i32Const(0);
+    b.localSet(i);
+    b.u8(BLOCK);
+    b.u8(0x40);
+    b.u8(LOOP);
+    b.u8(0x40);
+    b.localGet(i);
+    b.localGet(n);
+    b.u8(GEU);
+    b.u8(BR_IF);
+    b.lebU(1);
+    b.localGet(tmp);
+    b.refCast(1, true);
+    b.localGet(i);
+    b.localGet(src);
+    b.refCast(5, true);
+    b.structGet(5, 0);
+    b.localGet(src);
+    b.refCast(5, true);
+    b.structGet(5, 1);
+    b.localGet(src);
+    b.refCast(5, true);
+    b.structGet(5, 2);
+    b.refNull(5);
+    b.structNew(5);
+    b.arraySet();
+    b.localGet(i);
+    b.i32Const(1);
+    b.u8(ADD);
+    b.localSet(i);
+    b.localGet(src);
+    b.refCast(5, true);
+    b.structGet(5, 3);
+    b.localSet(src);
+    b.u8(BR);
+    b.lebU(0);
+    b.u8(END);
+    b.u8(END);
+    b.i32Const(0);
+    b.localSet(i);
+    b.u8(BLOCK);
+    b.u8(0x40);
+    b.u8(LOOP);
+    b.u8(0x40);
+    b.localGet(i);
+    b.localGet(n);
+    b.u8(GEU);
+    b.u8(BR_IF);
+    b.lebU(1);
+    b.localGet(tmp);
+    b.refCast(1, true);
+    b.localGet(i);
+    b.arrayGet(1);
+    b.refCast(5, true);
+    b.localSet(cell); // the cell is read as a statement: Buf statements run
+    // before pending ops, so a local.set must bind it before i++ mutates i
+    // (an op-pushed read would re-read the incremented i at its consumer).
+    b.localGet(i);
+    b.i32Const(1);
+    b.u8(ADD);
+    b.localSet(i);
+    b.localGet(cell);
+    b.refCast(5, true); // the local is anyref; struct.set needs the exact $K type
+    b.localGet(i);
+    b.localGet(n);
+    b.u8(GEU);
+    b.u8(IF);
+    b.u8(0x63);
+    b.u8(5); // next = until (the bottom of the slice)
+    b.localGet(1);
+    b.u8(ELSE);
+    b.localGet(tmp);
+    b.refCast(1, true);
+    b.localGet(i);
+    b.arrayGet(1);
+    b.refCast(5, true);
+    b.u8(END);
+    b.structSet(3);
+    b.u8(BR);
+    b.lebU(0);
+    b.u8(END);
+    b.u8(END);
+    b.localGet(tmp);
+    b.refCast(1, true);
+    b.i32Const(0);
+    b.arrayGet(1);
+    b.refCast(5, true);
+  }
+  return [truthy, eq, box, capture];
+}
+
+// Returns the anyref value of `name` as a ValueRef: a frame slot for the
+// current frame, a fresh local for parent frames (the frame walk balances
+// its own stack), or a static global for placed closures.
+function emitSym(em: Emit, f: Fn, sc: Scope, name: string): ValueRef {
+// Returns the anyref value of `name` as a ValueRef: a frame slot for the
+// current frame, a fresh local for parent frames (the frame walk balances
+// its own stack), or a static global for placed closures.
+  const b = f.body;
+  const r = resolve(sc, name);
+  if (r !== null) {
+    if (r.d === 0) return {k: "slot", i: r.i};
+    const v = f.anyref();
+    b.localGet(0);
+    for (let k = 0; k < r.d; k++) b.structGet(4, 0); // walk parent frames (typed field)
+    b.structGet(4, 1);
+    b.i32Const(r.i);
+    b.arrayGet(1);
+    b.localSet(v);
+    return {k: "local", l: v};
+  }
+  const clo = em.lay.cloOffsets.get(name);
+  if (clo !== undefined) return {k: "g", gi: clo};
+  throw new WasmError(`Unbound symbol: ${name}`);
+}
+
+// Calls the closure in local `fc`; argEmit(k, ffp) stores argument k into
+// the fresh frame at local ffp. The callee has the uniform CPS ABI
+// (frame, k) -> i32. Leaves the result cell on the stack — or, when `tail`,
+// returns the callee's result from the enclosing function directly
+// (return_call_indirect passing the caller's k through, so tail recursion
+// uses O(1) stack). A non-tail call passes k=0: the callee's dispatch(0, v)
+// returns its result cell inline (today's zero-overhead arithmetic) — or,
+// when `land`, a freshly allocated RET cell {K_RET, landA, $fp, k}:
+// the callee's dispatch tail-calls the land thunk over the caller's frame
+// and k, which dispatches the result into the caller's continuation (k=0
+// here, so the value comes back to this call site and the body continues
+// inline; the rest-of-site fragment machinery is in place for the
+// suspendable constructs of later steps).
+// A RET cell {K_RET, fragIdx, $fp, next} (§3): the continuation cell that
+// tail-calls fragment `fragIdx` (T_III_I) over the caller's frame (local
+// 0). `nextE` pushes the cell's next-pointer operand. Returns the cell.
+function retCell(f: Fn, fragIdx: number, nextE: () => void): number {
+// Calls the closure in local `fc`; argEmit(k, ffp) stores argument k into
+// the fresh frame at local ffp. The callee has the uniform CPS ABI
+// (frame, k) -> i32. Leaves the result cell on the stack — or, when `tail`,
+// returns the callee's result from the enclosing function directly
+// (return_call_indirect passing the caller's k through, so tail recursion
+// uses O(1) stack). A non-tail call passes k=0: the callee's dispatch(0, v)
+// returns its result cell inline (today's zero-overhead arithmetic) — or,
+// when `land`, a freshly allocated RET cell {K_RET, landA, $fp, k}:
+// the callee's dispatch tail-calls the land thunk over the caller's frame
+// and k, which dispatches the result into the caller's continuation (k=0
+// here, so the value comes back to this call site and the body continues
+// inline; the rest-of-site fragment machinery is in place for the
+// suspendable constructs of later steps).
+// A RET cell {K_RET, fragIdx, $fp, next} (§3): the continuation cell that
+// tail-calls fragment `fragIdx` (T_III_I) over the caller's frame (local
+// 0). `nextE` pushes the cell's next-pointer operand. Returns the cell.
+  const b = f.body;
+  const cell = f.anyref();
+  b.i32Const(K_RET);
+  b.refI31();
+  b.i32Const(fragIdx);
+  b.refI31();
+  b.localGet(0); // b = the frame the fragment runs over
+  nextE();
+  b.refCast(5, true);
+  b.structNew(5);
+  b.localSet(cell);
+  return cell;
+}
+
+// A K_SPILL cell {K_SPILL, snapshot, null, next} chained in front of a
+// split site's rest fragment. The snapshot freezes the values the rest
+// fragment reloads from operand-spill slots: on the fresh path it is a
+// copy of the current frame image taken at the split site (per capture —
+// this cell is allocated at runtime on every site execution and copied
+// into every continuation captured here, so multi-shot resumes each see
+// the pre-perform values, matching the interpreter's CPS accs); on a
+// fragment re-emission it is the enclosing fragment's snapshot (the same
+// capture's frozen values — nested split sites inside the fragment must
+// not re-freeze the already-mutated frame).
+function snapWrap(f: Fn, ctx: Ctx, nextE: () => void): number {
+// A K_SPILL cell {K_SPILL, snapshot, null, next} chained in front of a
+// split site's rest fragment. The snapshot freezes the values the rest
+// fragment reloads from operand-spill slots: on the fresh path it is a
+// copy of the current frame image taken at the split site (per capture —
+// this cell is allocated at runtime on every site execution and copied
+// into every continuation captured here, so multi-shot resumes each see
+// the pre-perform values, matching the interpreter's CPS accs); on a
+// fragment re-emission it is the enclosing fragment's snapshot (the same
+// capture's frozen values — nested split sites inside the fragment must
+// not re-freeze the already-mutated frame).
+  const b = f.body;
+  const ksp = f.anyref(), snapv = f.anyref();
+  if (ctx.snap !== undefined) {
+    b.localGet(ctx.snap);
+    b.localSet(snapv);
+  } else {
+    // Fresh $FRAME {same parent, slots array copied via array.copy} — the
+    // per-capture freeze (shallow slot copy, same as the old block copy).
+    b.localGet(0); b.structGet(4, 1); b.arrayLen();
+    b.arrayNew(1);
+    b.localSet(snapv);
+    b.localGet(snapv);
+    b.refCast(1, true);
+    b.i32Const(0);
+    b.localGet(0); b.structGet(4, 1);
+    b.i32Const(0);
+    b.localGet(0); b.structGet(4, 1); b.arrayLen();
+    b.arrayCopy(1, 1);
+    b.localGet(0); b.structGet(4, 0);
+    b.localGet(snapv);
+    b.refCast(1, true);
+    b.structNew(4);
+    b.localSet(snapv);
+  }
+  b.i32Const(K_SPILL);
+  b.refI31();
+  b.localGet(snapv);
+  b.refNull(ANYREF); // b unused (was UNIT_CELL)
+  nextE();
+  b.refCast(5, true);
+  b.structNew(5);
+  b.localSet(ksp);
+  return ksp;
+}
+
+// `direct` (direct builtin call specialization): when set, the callee is
+// a known builtin trampoline — skip the $CLO load (env = null, static
+// fsize, funcref index known) and emit a direct call instead of reading
+// the code index and dispatching through the table. The frame/k
+// convention is identical in both modes.
+function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false, landA?: number, ctx?: Ctx, direct?: {idx: number, fsize: number}): void {
+// `direct` (direct builtin call specialization): when set, the callee is
+// a known builtin trampoline — skip the $CLO load (env = null, static
+// fsize, funcref index known) and emit a direct call instead of reading
+// the code index and dispatching through the table. The frame/k
+// convention is identical in both modes.
+  const b = f.body;
+  const clob = f.anyref(), idx = f.i32(), cf = f.anyref(), fs = f.i32(),
+    maxL = f.i32(), slots = f.anyref(), ffp = f.anyref();
+  if (direct === undefined) {
+    b.localGet(fc);
+    b.localSet(clob);
+    b.localGet(clob); b.refCast(6, true); b.structGet(6, 0); b.i31Get();
+    b.localSet(idx);
+    b.localGet(clob); b.refCast(6, true); b.structGet(6, 1);
+    b.localSet(cf);
+    b.localGet(clob); b.refCast(6, true); b.structGet(6, 2); b.i31Get();
+    b.localSet(fs);
+  } else {
+    b.i32Const(direct.idx);
+    b.localSet(idx);
+    b.refNull(4); // env: builtins run over the call frame itself
+    b.localSet(cf);
+    b.i32Const(direct.fsize);
+    b.localSet(fs);
+  }
+  // Slot count = max(fs, argc) — the slots array holds the params and the
+  // body's lets (fs) or all the args, whichever is longer. (argc readers
+  // use array.len instead of a stored argc field — valid only because the
+  // sole argc reader is `list`, whose fsize is 0.)
+  b.localGet(fs);
+  b.i32Const(argc);
+  b.localGet(fs);
+  b.i32Const(argc);
+  b.u8(GTU);
+  b.u8(SELECT);
+  b.localSet(maxL);
+  b.localGet(maxL);
+  b.arrayNew(1);
+  b.localSet(slots);
+  b.localGet(cf);
+  b.refCast(4, true);
+  b.localGet(slots);
+  b.refCast(1, true);
+  b.structNew(4); // {parent, slots}
+  b.localSet(ffp);
+  for (let k = 0; k < argc; k++) argEmit(k, ffp);
+  b.localGet(ffp);
+  b.refCast(4, true); // the call's frame param (ffp is an anyref local)
+  let splitAt: Split | null = null;
+  if (tail) { b.localGet(kL); b.refCast(5, true); } // tail call: pass the ambient continuation through
+  else if (land) {
+    if (noSplit) {
+      // Land-style RET cell ending the caller's body: used inside
+      // loop-entry thunks (map-like builtins), where the callback's result
+      // lands in the per-iteration thunk `landA` instead of the generic
+      // per-site dispatcher and the loop continues from there. The call is
+      // a tail call: the callback's completion always tails into landA
+      // (never returns here), and a terminal k=0 return must unwind past
+      // the whole loop to the caller's own call site.
+      b.localGet(retCell(f, landA!, () => b.localGet(kL))); // next = ambient k
+      b.refCast(5, true);
+    } else {
+      // Non-tail lambda call (§3 emitCall): the caller's body ENDS at
+      // the call — return_call_indirect with the continuation in the
+      // RET cell {K_RET, rest-of-site fragment, caller frame, ambient
+      // k}. Direct land emission: the caller's body is complete once the
+      // return_call is on the wire, so the rest-of-site fragment is
+      // filled HERE, synchronously — no Split is thrown and the
+      // body-level catch/replay round-trip is bypassed for these sites
+      // (the chain is still what fillRest re-emits; perform/handle/
+      // map/while sites keep the throw path until stages 3–4). The
+      // caller must keep no pending return address: a handler capture
+      // dispatches straight through H.next, and the terminal k=0
+      // return must not unwind through this call site. The rest
+      // fragment's K_SPILL cell freezes the frame image at the call
+      // (pre-cut operand reloads — sibling operands of the call — read
+      // the frozen values under multi-shot resume).
+      const rest = makeRestThunk(em, "handle:after-handle");
+      const ksp = snapWrap(f, ctx!, () => b.localGet(kL));
+      b.localGet(retCell(f, rest.idx, () => b.localGet(ksp))); // next = K_SPILL{frozen frame, ambient k}
+      b.refCast(5, true);
+      if (DBGEMIT) console.error("THROW handle-split cutStack=", em.sp.cutStack.length);
+      splitAt = new Split(rest, [...em.sp.cutStack]);
+    }
+  } else b.refNull(5); // k=0 (ref.null $K): the callee's dispatch returns its value inline
+  if (direct === undefined) {
+    b.localGet(idx);
+    b.u8(tail || land ? RETURN_CALL_INDIRECT : CALL_INDIRECT); // noSplit land calls tail too (see above)
+    b.lebU(T_KABI);
+    b.lebU(0);
+  } else {
+    b.u8(tail || land ? RETURN_CALL : CALL); // direct: fn index is static, not a stack operand
+    b.lebU(direct.idx);
+  }
+  if (splitAt !== null) {
+    // Fill the rest-of-site fragment directly at the land call site.
+    // Cut-stack baseline: the same value the enclosing body-level catcher
+    // (bodyCatch/emitMain) restores before its fillRest call, so nested
+    // splits during the fill re-discover clean chains from the body root.
+    const root = em.sp.bodyRoots[em.sp.bodyRoots.length - 1];
+    const savedCut = em.sp.cutStack;
+    em.sp.cutStack = [...root.savedCut];
+    try {
+      fillRest(em, splitAt, root.stmts, root.sc, root.tail);
+    } finally {
+      em.sp.cutStack = savedCut;
+    }
+  }
+}
+
+// One rest-of-site fragment: a T_III_I function (frame, v, kNext) -> i32
+// registered in the funcref table. Filled later by the body-level catcher
+// that catches this site's Split (bodyCatch/emitMain/fillRest).
+function makeRestThunk(em: Emit, role?: string): Fn {
+// One rest-of-site fragment: a T_III_I function (frame, v, kNext) -> i32
+// registered in the funcref table. Filled later by the body-level catcher
+// that catches this site's Split (bodyCatch/emitMain/fillRest).
+  const f = new Fn(3, em);
+  f.typeIdx = T_III_I;
+  f.idx = em.ix.thunk0 + em.thunks.length;
+  em.ix.funcRefTypes.set(f.idx, T_III_I);
+  if (DBGEMIT && role !== undefined) console.error("THUNK", f.idx, role);
+  em.thunks.push(f);
+  return f;
+}
+
+function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
+  const b = f.body;
+  const kind = () => { b.localGet(k); b.refCast(5, true); b.structGet(5, 0); b.i31Get(); };
+  const i31of = () => { b.refCast(I31REF, false); b.i31Get(); }; // anyref → i32 (i31 payload)
+  b.u8(BLOCK);
+  b.u8(ANYREF); // block (result anyref)
+  b.u8(LOOP);
+  b.u8(0x40);
+  b.localGet(k);
+  b.u8(0xd1); // ref.is_null: final return → the value itself
+  b.u8(IF);
+  b.u8(0x40);
+  b.localGet(v);
+  b.u8(BR); b.lebU(2); // leave the block with v
+  b.u8(END);
+  kind(); b.i32Const(K_RET); b.u8(EQ);
+  b.u8(IF);
+  b.u8(0x40);
+  b.localGet(k); b.refCast(5, true); b.structGet(5, 2); b.refCast(4, true);
+  b.localGet(v);
+  b.localGet(k); b.refCast(5, true); b.structGet(5, 3);
+  b.localGet(k); b.refCast(5, true); b.structGet(5, 1); i31of();
+  b.u8(RETURN_CALL_INDIRECT);
+  b.lebU(T_III_I);
+  b.lebU(0);
+  b.u8(END);
+  // K_HDL: scan the case table at k.a (a $ELEMS of flat [opid, fnIdx,
+  // fsize, nparams] i31 quadruples; the Return case, opid -1, goes last).
+  // A K_SPILL cell (a rest fragment's frozen-frame marker) is transparent:
+  // it carries no handler — skip it and walk on. Only kind==K_HDL scans.
+  // The scan is emitted only when the program contains a handle: K_HDL
+  // cells enter a chain solely via handle emission, so a handle-free
+  // program's scan is dead code — skipping it drops a nested scan loop
+  // (plus ~30 instructions of table probing) from every dispatch site.
+  if (em.d.hasHandle) {
+    kind(); b.i32Const(K_HDL); b.u8(EQ);
+    b.u8(IF);
+    b.u8(0x40);
+    const tbl = f.anyref(), nL = f.i32(), iL = f.i32(), found = f.i32(),
+      fnIdx = f.i32(), nparams = f.i32(), ent = f.i32();
+    b.localGet(k); b.refCast(5, true); b.structGet(5, 1); b.localSet(tbl);
+    b.localGet(tbl); b.refCast(1, true); b.arrayLen(); b.i32Const(4); b.u8(DIVU); b.localSet(nL);
+    b.i32Const(0); b.localSet(found);
+    b.i32Const(0); b.localSet(iL);
+    b.u8(BLOCK);
+    b.u8(0x40);
+    b.u8(LOOP);
+    b.u8(0x40);
+    b.localGet(iL); b.localGet(nL); b.u8(GEU); b.u8(BR_IF); b.lebU(1);
+    b.localGet(iL); b.i32Const(4); b.u8(MUL); b.localSet(ent);
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.arrayGet(1); i31of();
+    b.i32Const(-1); b.u8(EQ);
+    b.u8(IF);
+    b.u8(0x40);
+    b.i32Const(1); b.localSet(found);
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(1); b.u8(ADD); b.arrayGet(1); i31of(); b.localSet(fnIdx);
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(3); b.u8(ADD); b.arrayGet(1); i31of(); b.localSet(nparams);
+    b.u8(BR); b.lebU(2); // exit the scan block
+    b.u8(END);
+    b.localGet(iL); b.i32Const(1); b.u8(ADD); b.localSet(iL);
+    b.u8(BR); b.lebU(0);
+    b.u8(END);
+    b.u8(END);
+    b.localGet(found);
+    b.u8(IF);
+    b.u8(0x40);
+    // Return case: store v into the hframe's Return param slot, then
+    // tail-call the case body as (hframe, k.next); funcref index last.
+    b.localGet(k); b.refCast(5, true); b.structGet(5, 2); b.refCast(4, true); b.structGet(4, 1);
+    b.localGet(nparams); b.i32Const(1); b.u8(ADD);
+    b.localGet(v);
+    b.arraySet();
+    b.localGet(k); b.refCast(5, true); b.structGet(5, 2); b.refCast(4, true);
+    b.localGet(k); b.refCast(5, true); b.structGet(5, 3);
+    b.localGet(fnIdx);
+    b.u8(RETURN_CALL_INDIRECT);
+    b.lebU(T_KABI);
+    b.lebU(0);
+    b.u8(END);
+    b.u8(END); // kind==K_HDL guard
+  }
+  // No Return case (or a skipped K_SPILL): k = k.next and dispatch again.
+  b.localGet(k); b.refCast(5, true); b.structGet(5, 3); b.localSet(k);
+  b.u8(BR); b.lebU(0);
+  b.u8(END); // loop
+  b.u8(0x00); // unreachable: the loop exits only through the k==0 branch
+  b.u8(END); // block
+}
+
+// Calls ef_fail(code, name, a, b); the import throws, so unreachable.
+// `name` is a $STR static global index (field-access failures) or null.
+function emitFail(em: Emit, f: Fn, code: number, nameG: number | null, pushA: () => void, pushB: () => void): void {
+// Calls ef_fail(code, name, a, b); the import throws, so unreachable.
+// `name` is a $STR static global index (field-access failures) or null.
+  const b = f.body;
+  b.i32Const(code);
+  if (nameG === null) b.refNull(ANYREF);
+  else b.globalGet(nameG);
+  pushA();
+  pushB();
+  b.u8(CALL);
+  b.lebU(em.o.impIdx.get("ef_fail")!);
+  b.u8(0x00); // unreachable
+}
+
+// String concatenation of $STR locals a, b → new $STR on the stack.
+function emitStrCat(f: Fn, a: number, b: number): void {
+// String concatenation of $STR locals a, b → new $STR on the stack.
+  const body = f.body;
+  const res = f.anyref();
+  body.localGet(a); body.refCast(2, true); body.arrayLen();
+  body.localGet(b); body.refCast(2, true); body.arrayLen();
+  body.u8(ADD);
+  body.arrayNew(2);
+  body.localSet(res);
+  // copy a then b (b starts at unit offset la)
+  body.localGet(res);
+  body.refCast(2, true);
+  body.i32Const(0);
+  body.localGet(a); body.refCast(2, true);
+  body.i32Const(0);
+  body.localGet(a); body.refCast(2, true); body.arrayLen();
+  body.arrayCopy(2, 2);
+  body.localGet(res);
+  body.refCast(2, true);
+  body.localGet(a); body.refCast(2, true); body.arrayLen();
+  body.localGet(b); body.refCast(2, true);
+  body.i32Const(0);
+  body.localGet(b); body.refCast(2, true); body.arrayLen();
+  body.arrayCopy(2, 2);
+  body.localGet(res);
+}
+
+// for (i = 0; i < n; i++) iter(i) — n pushed by pushN (const or local).
+// Emits BLOCK { LOOP { cond; br_if out; iter; incr; br; } }.
+function loop(f: Fn, pushN: () => void, iter: (i: number) => void): void {
+// for (i = 0; i < n; i++) iter(i) — n pushed by pushN (const or local).
+// Emits BLOCK { LOOP { cond; br_if out; iter; incr; br; } }.
+  const b = f.body;
+  const i = f.i32();
+  b.i32Const(0);
+  b.localSet(i); // reset: a loop nested in another loop's body reuses this local across outer iterations
+  b.u8(BLOCK);
+  b.u8(0x40);
+  b.u8(LOOP);
+  b.u8(0x40);
+  b.localGet(i);
+  pushN();
+  b.u8(GEU);
+  b.u8(BR_IF);
+  b.lebU(1);
+  iter(i);
+  b.localGet(i);
+  b.i32Const(1);
+  b.u8(ADD);
+  b.localSet(i);
+  b.u8(BR);
+  b.lebU(0);
+  b.u8(END);
+  b.u8(END);
+}
+
+// Pushes (arrayref, index) of element i (local) of raw $ELEMS local
+// `blk`; callers finish with aget (read) or push the value + aset (write).
+function elemAddr(f: Fn, blk: number, i: number): void {
+// Pushes (arrayref, index) of element i (local) of raw $ELEMS local
+// `blk`; callers finish with aget (read) or push the value + aset (write).
+  f.body.localGet(blk);
+  f.body.refCast(1, true);
+  f.body.localGet(i);
+}
+
+// Allocates a raw $ELEMS array of length local `n`; returns the local.
+function allocArrBlk(f: Fn, n: number): number {
+// Allocates a raw $ELEMS array of length local `n`; returns the local.
+  const blk = f.anyref();
+  f.body.localGet(n);
+  f.body.arrayNew(1);
+  f.body.localSet(blk);
+  return blk;
+}
+
+// Wraps the raw $ELEMS local `blk` → new $ARR wrapper on the stack.
+// Growth (`set`) repoints the wrapper's backing array, so every alias
+// sharing the wrapper sees the growth (§7.1).
+function boxArr(f: Fn, blk: number): void {
+// Wraps the raw $ELEMS local `blk` → new $ARR wrapper on the stack.
+// Growth (`set`) repoints the wrapper's backing array, so every alias
+// sharing the wrapper sees the growth (§7.1).
+  f.body.localGet(blk);
+  f.body.refCast(1, true);
+  f.body.structNew(3);
+}
+
+// Copies n (local) elements from srcBlk's elements starting at srcOff into
+// a fresh array; leaves the boxed $ARR wrapper on the stack.
+function emitArrCopy(f: Fn, srcBlk: number, srcOff: number, n: number): void {
+// Copies n (local) elements from srcBlk's elements starting at srcOff into
+// a fresh array; leaves the boxed $ARR wrapper on the stack.
+  const b = f.body;
+  const blk = allocArrBlk(f, n);
+  b.localGet(blk);
+  b.refCast(1, true);
+  b.i32Const(0);
+  b.localGet(srcBlk);
+  b.refCast(1, true);
+  b.i32Const(srcOff);
+  b.localGet(n);
+  b.arrayCopy(1, 1);
+  boxArr(f, blk);
+}
+
+// true/false i31 selected by the i32 condition emitted by emitCond.
+function selectBool(em: Emit, f: Fn, emitCond: () => void): void {
+// true/false i31 selected by the i32 condition emitted by emitCond.
+  const b = f.body;
+  const t = f.i32();
+  emitCond();
+  b.localSet(t);
+  pushRef(f, em.lay.trueRef);
+  pushRef(f, em.lay.falseRef);
+  b.localGet(t);
+  b.typedSelect(); // typed select (result anyref)
+}
+
+// Materialize a ValueRef onto the operand stack, at its consume point.
+// This is the ONLY sanctioned place short-lived stack values cross an
+// emitter boundary (the helper fully balances the stack per ref).
+function pushRef(f: Fn, r: ValueRef): void {
+// Materialize a ValueRef onto the operand stack, at its consume point.
+// This is the ONLY sanctioned place short-lived stack values cross an
+// emitter boundary (the helper fully balances the stack per ref).
+  const b = f.body;
+  if (r.k === "g") b.globalGet(r.gi);
+  else if (r.k === "bool") { b.i32Const(r.v); b.refI31(); }
+  else if (r.k === "local") b.localGet(r.l);
+  else if (r.k === "snapSlot") { b.localGet(r.snap); b.refCast(4, true); b.structGet(4, 1); b.i32Const(r.i); b.arrayGet(1); }
+  else { b.localGet(0); b.structGet(4, 1); b.i32Const(r.i); b.arrayGet(1); }
+}
+
+// Persist a ref into the operand spill slot computeSpills allocated for
+// `id` (if any) and return the slot ref: a value that must survive a
+// later split is read back from the frame by the fragment machinery.
+function keepRef(em: Emit, id: ExprID, f: Fn, r: ValueRef): ValueRef {
+// Persist a ref into the operand spill slot computeSpills allocated for
+// `id` (if any) and return the slot ref: a value that must survive a
+// later split is read back from the frame by the fragment machinery.
+  const sp = em.ix.operandSpill.get(id);
+  if (sp === undefined) return r;
+  const b = f.body;
+  pushRef(f, r);
+  const t = f.anyref();
+  b.localSet(t);
+  b.localGet(0); b.structGet(4, 1); b.i32Const(sp); b.localGet(t); b.arraySet();
+  return {k: "slot", i: sp};
+}
+
+function preCut(em: Emit, id: ExprID, f: Fn, s: Scope, ctx: Ctx): ValueRef {
+  const sp = em.ix.operandSpill.get(id) ?? em.ix.valSpill.get(id);
+  if (sp !== undefined) {
+    if (ctx.snap !== undefined) return {k: "snapSlot", snap: ctx.snap, i: sp};
+    return {k: "slot", i: sp};
+  }
+  return expr(em, id, f, s, false, {kL: ctx.kL, snap: ctx.snap});
+}
+
+// Inline operator computation (§OPERATOR_OPS): the operands' refs are
+// computed and spilled first (same discipline as `/`), then the operator
+// computation runs on the caller's operand stack — no call, no frame.
+// Mirrors each operator's $-trampoline body in emitBuiltins (same dynamic
+// dispatch: `+` falls back to string concat then null). Leaves the boxed
+// result on the stack; the wrapper dispatches it (never return_call $box:
+// a raw tail return would bypass the caller's RET cell).
+function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"}, s: Scope, ctx: Ctx, ci: number): void {
+// Inline operator computation (§OPERATOR_OPS): the operands' refs are
+// computed and spilled first (same discipline as `/`), then the operator
+// computation runs on the caller's operand stack — no call, no frame.
+// Mirrors each operator's $-trampoline body in emitBuiltins (same dynamic
+// dispatch: `+` falls back to string concat then null). Leaves the boxed
+// result on the stack; the wrapper dispatches it (never return_call $box:
+// a raw tail return would bypass the caller's RET cell).
+  const b = f.body;
+  // Operand cut modes, mirroring the `/` path: the arg holding the cut
+  // site continues the fragment ("cut"), an earlier sibling reloads its
+  // spill ("pre"), a later sibling re-emits fresh ("post").
+  const argMode = (i: number): "cut" | "pre" | "post" =>
+    ci === i + 1 ? "cut" : i === 0 && ci > 1 ? "pre" : "post";
+  const pushArg = (i: number): void => {
+    pushRef(f, cutChildRef(em, e.args[i], f, s, ctx, argMode(i)));
+  };
+  switch (name) {
+    case "+": {
+      const a = f.anyref(), bv = f.anyref();
+      pushArg(0); b.localSet(a);
+      pushArg(1); b.localSet(bv);
+      b.localGet(a); b.refTest(0, false); b.localGet(bv); b.refTest(0, false);
+      b.u8(AND); b.u8(IF); b.u8(ANYREF);
+      b.localGet(a); b.refCast(0, false); b.structGet(0, 0);
+      b.localGet(bv); b.refCast(0, false); b.structGet(0, 0);
+      b.u8(FADD);
+      b.u8(CALL); b.lebU(em.ix.fBox);
+      b.u8(ELSE);
+      b.localGet(a); b.refTest(2, false); b.localGet(bv); b.refTest(2, false); b.u8(AND);
+      b.u8(IF); b.u8(ANYREF);
+      emitStrCat(f, a, bv);
+      b.u8(ELSE); b.refNull(ANYREF); b.u8(END); b.u8(END);
+      break;
+    }
+    case "-": case "*": case "%": {
+      const x = f.f64(), y = f.f64();
+      pushArg(0); b.refCast(0, false); b.structGet(0, 0); b.localSet(x);
+      pushArg(1); b.refCast(0, false); b.structGet(0, 0); b.localSet(y);
+      if (name === "%") {
+        // JS fmod: a - b * trunc(a/b)
+        const t = f.f64();
+        b.localGet(x); b.localGet(y); b.u8(FDIV); b.u8(FTRUNC); b.localSet(t);
+        b.localGet(x); b.localGet(y); b.localGet(t); b.u8(FMUL); b.u8(FSUB);
+      } else {
+        b.localGet(x); b.localGet(y); b.u8(name === "-" ? FSUB : FMUL);
+      }
+      b.u8(CALL); b.lebU(em.ix.fBox);
+      break;
+    }
+    case "neg": {
+      pushArg(0); b.refCast(0, false); b.structGet(0, 0);
+      b.u8(FNEG);
+      b.u8(CALL); b.lebU(em.ix.fBox);
+      break;
+    }
+    case "<": case ">": case "<=": case ">=": {
+      const x = f.anyref(), y = f.anyref();
+      pushArg(0); b.localSet(x);
+      pushArg(1); b.localSet(y);
+      const cmp = name === "<" ? FLT : name === ">" ? FGT : name === "<=" ? FLE : FGE;
+      selectBool(em, f, () => {
+        b.localGet(x); b.refCast(0, false); b.structGet(0, 0);
+        b.localGet(y); b.refCast(0, false); b.structGet(0, 0);
+        b.u8(cmp);
+      });
+      break;
+    }
+    case "==": {
+      pushArg(0); pushArg(1);
+      b.u8(CALL); b.lebU(em.ix.fEq);
+      break;
+    }
+    case "!=": {
+      pushArg(0); pushArg(1);
+      b.u8(CALL); b.lebU(em.ix.fEq);
+      b.refCast(I31REF, false); // eq result's i31 bool payload
+      b.i31Get();
+      b.u8(EQZ); // 1 when $eq said false
+      selectBool(em, f, () => {});
+      break;
+    }
+    case "not": {
+      pushArg(0);
+      b.u8(CALL); b.lebU(em.ix.fTruthy);
+      b.u8(EQZ);
+      selectBool(em, f, () => {});
+      break;
+    }
+    default:
+      throw new WasmError(`internal: no inline emitter for operator ${name}`);
+  }
+}
+
+// One child of a cut node, ref-native — also used for fresh emission
+// (mode "post"), so fresh and cut bodies can share one shape.
+// "cut": the child holding the deeper split site — continues the fragment
+// chain (its value is the fragment's v param). "pre": a sibling evaluated
+// BEFORE the cut child — a slot ref into its spill, or re-emit pure code
+// inline (preCut). "post": a sibling evaluated AFTER the cut child (or no
+// cut at all) — re-emit inline, with the caller's tail flag. Persists any
+// mapped operand spill slot.
+function cutChildRef(em: Emit, child: ExprID, f: Fn, s: Scope, ctx: Ctx, mode: "cut" | "pre" | "post", tail = false): ValueRef {
+// One child of a cut node, ref-native — also used for fresh emission
+// (mode "post"), so fresh and cut bodies can share one shape.
+// "cut": the child holding the deeper split site — continues the fragment
+// chain (its value is the fragment's v param). "pre": a sibling evaluated
+// BEFORE the cut child — a slot ref into its spill, or re-emit pure code
+// inline (preCut). "post": a sibling evaluated AFTER the cut child (or no
+// cut at all) — re-emit inline, with the caller's tail flag. Persists any
+// mapped operand spill slot.
+  if (mode === "cut") return keepRef(em, child, f, expr(em, child, f, s, false, {kL: ctx.kL, cut: ctx.cut!.slice(1), snap: ctx.snap}));
+  if (mode === "pre") return keepRef(em, child, f, preCut(em, child, f, s, ctx));
+  return keepRef(em, child, f, expr(em, child, f, s, tail, {kL: ctx.kL, snap: ctx.snap}));
+}
+
+// The split site is this node itself inside a fragment: its value is the
+// fragment's v param (local 1), persisted for later fragments that reload it.
+function fragV(em: Emit, id: ExprID, f: Fn): ValueRef {
+// The split site is this node itself inside a fragment: its value is the
+// fragment's v param (local 1), persisted for later fragments that reload it.
+  return keepRef(em, id, f, {k: "local", l: 1});
+}
+
+function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = INLINE): ValueRef {
+  const e = em.nodes[id];
+  // Lambda/block nodes carry their own scope; other nodes inherit sc.
+  const s = em.d.scopes.get(id) ?? sc;
+  if (s === undefined) throw new WasmError(`internal: no scope for node ${id} (${e.t})`);
+  const b = f.body;
+  // Cut path: undefined = normal emission; [] = this node is the split
+  // site (its value is the fragment's v param); [child, ...] = the child
+  // on the path continues the fragment.
+  const cut = ctx.cut;
+  // A split caught mid-emission (emitIfDispatch filling an arm's Split
+  // against the body root) re-emits a node whose own emission frame is
+  // still on the cut stack. The chain must stay an AST path — one frame
+  // per node — so do not duplicate the frame on re-entry.
+  const pushed = em.sp.cutStack[em.sp.cutStack.length - 1] !== id;
+  if (pushed) em.sp.cutStack.push(id);
+  // try/finally: a child's Split (or error) unwinds through this frame —
+  // the push must not survive, or the next Split captures a stale chain
+  // whose head re-routes fillRest through the same (already handled)
+  // site forever.
+  try {
+  switch (e.t) {
+    case "num":
+      return {k: "g", gi: em.lay.numStatics.get(e.v)!};
+    case "str":
+      return {k: "g", gi: em.lay.strStatics.get(e.v)!};
+    case "bool":
+      return {k: "bool", v: e.v ? 1 : 0};
+    case "unit":
+      return em.lay.unitRef;
+    case "sym":
+      return emitSym(em, f, s, e.v);
+    case "lambda": {
+      // immutable $CLO {fnIdx, env = current frame, fsize}
+      const clo = f.anyref();
+      b.i32Const(em.ix.lambdaIdx.get(id)!);
+      b.refI31();
+      b.localGet(0); // captured frame = the frame param
+      b.i32Const(frameSizeOf(em.ix, em.d.scopes.get(id)!)); // params + body lets + perform spills
+      b.refI31();
+      b.structNew(6);
+      b.localSet(clo);
+      return {k: "local", l: clo};
+    }
+    case "let": {
+      // Binds in the current frame (mirrors the interpreter: the binding
+      // exists before the value is computed, so `let x = x` sees null —
+      // a null slot read normalizes to unit inside the module).
+      const slot = s.map.get(e.name)!;
+      const vr = expr(em, e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
+      b.localGet(0); b.structGet(4, 1);
+      b.i32Const(slot);
+      pushRef(f, vr);
+      b.arraySet();
+      return em.lay.unitRef;
+    }
+    case "dlet": {
+      const blk = f.anyref();
+      const vr = expr(em, e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
+      pushRef(f, vr);
+      b.refCast(3, true);
+      b.structGet(3, 0);
+      b.localSet(blk);
+      for (let k = 0; k < e.fields.length; k++) {
+        const slot = s.map.get(e.fields[k].name)!;
+        // tuple element k → frame slot (balances its stack in place)
+        b.localGet(0); b.structGet(4, 1);
+        b.i32Const(slot);
+        b.localGet(blk);
+        b.refCast(1, true);
+        b.i32Const(k);
+        b.arrayGet(1);
+        b.arraySet();
+      }
+      return em.lay.unitRef;
+    }
+    case "assign": {
+      const r = resolve(s, e.name);
+      if (r === null) throw new WasmError(`Assignment to unbound symbol: ${e.name}`);
+      const vr = expr(em, e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
+      b.localGet(0);
+      for (let k = 0; k < r.d; k++) b.structGet(4, 0);
+      b.structGet(4, 1);
+      b.i32Const(r.i);
+      pushRef(f, vr);
+      b.arraySet();
+      return em.lay.unitRef;
+    }
+    case "if": {
+      if (cut !== undefined && cut.length === 0) {
+        // The split site itself inside a fragment: a split-mode if's
+        // value arrives via the after-if fragment's v param.
+        return fragV(em, id, f);
+      }
+      // Cut descent index (0 = the condition, 1/2 = an arm); undefined =
+      // fresh emission.
+      const ci = cut === undefined ? undefined : [e.c, e.a, e.b].indexOf(cut[0]);
+      if (ci !== undefined && ci < 0) throw new WasmError("internal: split chain root mismatch");
+      // When the cut is inside an arm (or the condition while an arm can
+      // split), the if uses the dispatch shape: a sibling arm's own split
+      // during this re-emission would otherwise leave the fragment's IF
+      // unclosed. Split-mode fresh emission needs the same shape: an arm
+      // containing a split site cannot keep the value-shape IF — the
+      // site's return_call would end the function mid-block. Both arms
+      // dispatch their values through a RET cell chained to the after-if
+      // fragment, and the if itself becomes a split site whose fragment
+      // (filled by the body-level catcher) receives the if's value.
+      if (ci !== undefined
+        ? (ci !== 0 || splits(em.prog, em.d, e.a) || splits(em.prog, em.d, e.b))
+        : (splits(em.prog, em.d, e.a) || splits(em.prog, em.d, e.b))) {
+        emitIfDispatch(em, id, e, f, s, ctx, ci);
+        return em.lay.unitRef; // unreachable: the dispatch-shape if throws Split
+      }
+      // Value shape — shared by fresh emission (ci undefined) and
+      // fragment re-emission (no arm can split): condition and both arms
+      // are value-explicit; each arm's ref is pushed as the IF block's
+      // result value. Fragment re-emission never tail-calls the arms.
+      const at = ci === undefined && tail;
+      pushRef(f, cutChildRef(em, e.c, f, s, ctx, ci === undefined ? "post" : ci === 0 ? "cut" : "pre"));
+      b.u8(CALL);
+      b.lebU(em.ix.fTruthy);
+      b.u8(IF);
+      b.u8(0x6e); // result anyref
+      pushRef(f, cutChildRef(em, e.a, f, s, ctx, ci === undefined ? "post" : ci === 1 ? "cut" : ci === 2 ? "pre" : "post", at));
+      b.u8(ELSE);
+      pushRef(f, cutChildRef(em, e.b, f, s, ctx, ci === undefined ? "post" : ci === 2 ? "cut" : "post", at));
+      b.u8(END);
+      const v = f.anyref();
+      b.localSet(v);
+      return keepRef(em, id, f, {k: "local", l: v});
+    }
+    case "while": {
+      if (cut !== undefined && cut.length === 0) {
+        // The loop exited: its unit value is the fragment's v param.
+        return fragV(em, id, f);
+      }
+      if (splits(em.prog, em.d, e.c) || splits(em.prog, em.d, e.body)) {
+        emitWhileCPS(em, id, e, f, s, ctx, cut);
+        return em.lay.unitRef; // unreachable: the split-mode while throws Split
+      }
+      if (cut !== undefined) throw new WasmError("internal: split crossing a while");
+      b.u8(BLOCK);
+      b.u8(0x40);
+      b.u8(LOOP);
+      b.u8(0x40);
+      pushRef(f, expr(em, e.c, f, s, false, ctx));
+      b.u8(CALL);
+      b.lebU(em.ix.fTruthy);
+      b.u8(EQZ);
+      b.u8(BR_IF);
+      b.lebU(1);
+      expr(em, e.body, f, s, false, ctx); // body value dropped: nothing on the stack
+      b.u8(BR);
+      b.lebU(0);
+      b.u8(END);
+      b.u8(END);
+      return em.lay.unitRef;
+    }
+    case "block": {
+      if (cut === undefined) {
+        let last: ValueRef = em.lay.unitRef;
+        for (let k = 0; k < e.stmts.length; k++) {
+          // Dropped statements leave nothing on the stack.
+          last = expr(em, e.stmts[k], f, s, tail && k === e.stmts.length - 1, ctx);
+        }
+        return last;
+      }
+      // Cut path through the block: statements before the cut site already
+      // executed (skipped), the cut statement continues the fragment with
+      // its value from the fragment's v param, the rest re-emits inline.
+      const ci = e.stmts.indexOf(cut[0]);
+      if (ci < 0) throw new WasmError("internal: split chain root mismatch");
+      return emitStmtsFrom(em, e.stmts, f, s, ctx, ci, cut, tail);
+    }
+    case "arr": {
+      const blk = f.anyref();
+      b.i32Const(e.elems.length);
+      b.arrayNew(1);
+      b.localSet(blk);
+      const ci = cut === undefined ? -1 : e.elems.indexOf(cut[0]);
+      if (cut !== undefined && ci < 0) throw new WasmError("internal: split chain root mismatch");
+      for (let k = 0; k < e.elems.length; k++) {
+        // Value-explicit element order: the child's ref is computed BEFORE
+        // the destination address is pushed, so a split inside the child
+        // aborts on a clean operand stack (same ordering as the app
+        // case's args).
+        // Elements after the cut child have NOT run yet: they re-emit
+        // inline ("post"), never reload a never-written spill slot ("pre").
+        const r = cutChildRef(em, e.elems[k], f, s, ctx,
+          cut === undefined ? "post" : k === ci ? "cut" : k < ci ? "pre" : "post");
+        b.localGet(blk);
+        b.refCast(1, true);
+        b.i32Const(k);
+        pushRef(f, r);
+        b.arraySet();
+      }
+      b.localGet(blk);
+      b.refCast(1, true);
+      b.structNew(3); // $ARR wrapper
+      const v = f.anyref();
+      b.localSet(v);
+      return {k: "local", l: v};
+    }
+    case "field": {
+      const blk = f.anyref();
+      pushRef(f, expr(em, e.obj, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)}));
+      b.refCast(3, true);
+      b.structGet(3, 0);
+      b.localSet(blk);
+      // len <= idx → out of bounds
+      b.localGet(blk);
+      b.refCast(1, true);
+      b.arrayLen();
+      b.i32Const(e.idx!);
+      b.u8(LEU);
+      b.u8(IF);
+      b.u8(0x40);
+      emitFail(em, 
+        f, 2, em.lay.strStatics.get(e.name)!,
+        constF64(f, e.idx!),
+        constF64(f, -1),
+      );
+      b.u8(END);
+      b.localGet(blk);
+      b.refCast(1, true);
+      b.i32Const(e.idx!);
+      b.arrayGet(1);
+      const v = f.anyref();
+      b.localSet(v);
+      return {k: "local", l: v};
+    }
+    case "perform":
+      if (cut !== undefined && cut.length === 0) {
+        // The split site itself inside a fragment: its value is the
+        // fragment's v param (the value the case body or host resumed
+        // with).
+        return fragV(em, id, f);
+      }
+      emitPerform(em, id, e, f, s, ctx);
+      return em.lay.unitRef; // unreachable: perform always ends at its split site
+    case "handle":
+      if (cut !== undefined && cut.length === 0) {
+        // The split site itself inside a fragment: its value is the
+        // handle's value delivered by the after-handle fragment chain.
+        return fragV(em, id, f);
+      }
+      if (cut !== undefined) {
+        // A perform inside the body split: emit the body's remainder with
+        // the fragment's ambient continuation (kNext) — the perform-site
+        // RET cell carries it: the handler cell the walk started from in
+        // the original flow, or the fresh §4.6 chain (whose copied HDLs
+        // keep every enclosing handler live around the resumed segment)
+        // when the fragment runs from a resume closure.
+        const bodyE = em.nodes[e.body];
+        const stmts = bodyE.t === "block" ? bodyE.stmts : [e.body];
+        const bsc = em.d.scopes.get(e.body) ?? s;
+        const ci = stmts.indexOf(cut[0]);
+        if (ci < 0) throw new WasmError("internal: split chain root mismatch");
+        pushRef(f, emitStmtsFrom(em, stmts, f, bsc, ctx, ci, cut, false));
+        const v = f.anyref();
+        b.localSet(v);
+        emitDispatch(em, f, v, ctx.kL);
+        // The dispatch tail-calls away (every table carries a Return
+        // entry); the after-handle rest chains from the split site.
+        throw new Split(em.sp.hdlRest.get(id)!, [...em.sp.cutStack]);
+      }
+      emitHandle(em, id, e, f, s, ctx);
+      return em.lay.unitRef; // unreachable: the body's dispatch tail-calls away
+    case "app": {
+      if (cut !== undefined && cut.length === 0) {
+        // The split site itself inside a fragment: the call's result is
+        // the fragment's v param (the caller's body ended at the call's
+        // return_call, §3 emitCall).
+        return fragV(em, id, f);
+      }
+      // One shape for fresh emission and fragment re-emission: children
+      // before the cut site reload (or, if pure, re-emit), the cut child
+      // continues with the fragment's v param, children after re-emit
+      // inline; fresh emission evaluates everything (mode "post").
+      const kids = [e.fn, ...e.args];
+      const ci = cut === undefined ? -1 : kids.indexOf(cut[0]);
+      if (cut !== undefined && ci < 0) throw new WasmError("internal: split chain root mismatch");
+      // Direct builtin reference: the callee sym resolves to no user
+      // binding and names a builtin with a trampoline. Operators compile
+      // inline (no call at all, like `/` below); other builtins call their
+      // trampoline directly (no $CLO load, no table dispatch). `/` is
+      // checker-stamped instead (e.div) and keeps its own inline path.
+      const fne = em.nodes[e.fn];
+      const bname = e.div === undefined && fne.t === "sym" &&
+        resolve(s, fne.v) === null && BUILTINS.some(bb => bb.name === fne.v) ? fne.v : null;
+      // Inline paths compute right here, so at a tail position the boxed
+      // value must be DISPATCHED through the ambient continuation by the
+      // enclosing wrapper (emitStmtSeq bridges + emitDispatch) — the value
+      // must never return raw past the enclosing function, or a land
+      // site's RET cell would be bypassed (the callee is "supposed" to
+      // dispatch, but there is no callee).
+      if (e.div !== undefined) {
+        // `/` is stamped by the checker (int vs float truncation); the
+        // fn is the `/` sym itself, so the cut site is always in an
+        // operand (ci >= 1). Value-explicit operand order: both child
+        // refs are computed (and spilled) before either is materialized,
+        // so a split inside a child aborts on a clean operand stack.
+        // A non-number operand traps at the ref.cast (frozen deviation —
+        // the checker rejects non-num arithmetic statically).
+        if (ci === 0) throw new WasmError("internal: split chain root mismatch");
+        pushRef(f, cutChildRef(em, e.args[0], f, s, ctx, ci === 1 ? "cut" : ci < 0 ? "post" : "pre"));
+        b.refCast(0, false);
+        b.structGet(0, 0);
+        pushRef(f, cutChildRef(em, e.args[1], f, s, ctx, ci === 2 ? "cut" : "post"));
+        b.refCast(0, false);
+        b.structGet(0, 0);
+        b.u8(FDIV);
+        if (e.div === "int") b.u8(FTRUNC);
+        // Box inline (never return_call $box: at a tail position the raw
+        // return would bypass the caller's RET cell — the wrapper's
+        // dispatch must see the value).
+        b.u8(CALL);
+        b.lebU(em.ix.fBox);
+      } else if (bname !== null && OPERATOR_OPS.has(bname)) {
+        emitOperatorInline(em, f, bname, e, s, ctx, ci);
+      } else if (bname !== null && em.ix.builtinFnIdx.has(bname)) {
+        // Direct builtin call: static funcref index + fsize, env = null.
+        const bi = BUILTINS.find(bb => bb.name === bname)!;
+        emitCallClosure(em, f, 0, e.args.length, (k, ffp) => {
+          const r = cutChildRef(em, e.args[k], f, s, ctx,
+            k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
+          b.localGet(ffp); b.refCast(4, true); b.structGet(4, 1);
+          b.i32Const(k);
+          pushRef(f, r);
+          b.arraySet();
+        }, cut === undefined && tail,
+        em.d.landCalls.has(id),
+        ctx.kL,
+        undefined,
+        undefined,
+        ctx,
+        {idx: em.ix.builtinFnIdx.get(bname)!, fsize: bi.params + mapLikeFrameWords(bname)});
+      } else {
+        const fc = f.anyref();
+        pushRef(f, cutChildRef(em, e.fn, f, s, ctx, ci === 0 ? "cut" : ci < 0 ? "post" : "pre"));
+        b.localSet(fc);
+        emitCallClosure(em, f, fc, e.args.length, (k, ffp) => {
+          // Value-explicit arg order: the child's ref is computed (and
+          // spilled) BEFORE the destination address is pushed, so a split
+          // inside the child aborts on a clean operand stack (blocker (b)
+          // by construction).
+          const r = cutChildRef(em, e.args[k], f, s, ctx,
+            k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
+          b.localGet(ffp); b.refCast(4, true); b.structGet(4, 1);
+          b.i32Const(k);
+          pushRef(f, r);
+          b.arraySet();
+        }, cut === undefined && tail,
+        // Builtins never perform or capture, so they keep the k=0
+        // trampoline convention; every other (lambda) call site lands
+        // through a RET cell and is a split site (§3 emitCall).
+        em.d.landCalls.has(id),
+        ctx.kL,
+        undefined,
+        undefined,
+        ctx);
+      }
+      // emitCallClosure leaves the landed result on the stack (or
+      // tail-returns, making this capture unreachable); the inline paths
+      // leave the computed value on the stack — at a tail position the
+      // enclosing wrapper (emitStmtSeq / fillRest) dispatches it through
+      // the ambient continuation, exactly like any non-call tail value.
+      const v = f.anyref();
+      b.localSet(v);
+      return {k: "local", l: v};
+    }
+    default:
+      // Unreachable: the switch covers every Expr variant, but a try/finally
+      // wrapper defeats TS's exhaustiveness-based end-of-function check.
+      throw new WasmError(`internal: no emitter for node ${id}`);
+  }
+  } finally {
+    if (pushed) em.sp.cutStack.pop();
+  }
+}
+
+function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: Scope, ctx: Ctx): void {
+  const b = f.body;
+  const blk = f.anyref(), cell = f.anyref();
+  b.i32Const(e.args.length);
+  b.arrayNew(1);
+  b.localSet(blk);
+  // Cut path: the split site is inside one of the args. Args before it
+  // already ran (reload spilled / re-emit pure), the cut arg continues
+  // with the fragment's v, args after it re-emit inline; then the walk
+  // below re-runs with the fragment's ambient continuation.
+  const cut = ctx.cut;
+  const ci = cut === undefined ? -1 : e.args.indexOf(cut[0]);
+  if (cut !== undefined && ci < 0) throw new WasmError("internal: split chain root mismatch");
+  for (let k = 0; k < e.args.length; k++) {
+    // Value-explicit arg order: the child's ref is computed BEFORE the
+    // destination address is pushed, so a split inside the child aborts
+    // on a clean operand stack (same ordering as the app case's args).
+    const r = k === ci
+      ? cutChildRef(em, e.args[k], f, s, ctx, "cut")
+      : k < ci
+        ? cutChildRef(em, e.args[k], f, s, ctx, "pre")
+        : cutChildRef(em, e.args[k], f, s, ctx, "post");
+    b.localGet(blk);
+    b.refCast(1, true);
+    b.i32Const(k);
+    pushRef(f, r);
+    b.arraySet();
+  }
+  b.localGet(blk);
+  b.refCast(1, true);
+  b.structNew(3); // $ARR wrapper
+  b.localSet(cell);
+  const spillSlot = em.ix.spillOf.get(id)!;
+  b.localGet(0); b.structGet(4, 1);
+  b.i32Const(spillSlot);
+  b.localGet(cell);
+  b.arraySet();
+  // Handler walk: kL walks the k chain; the first K_HDL whose case table
+  // (flat [opid, fnIdx, fsize, nparams]* i31s) contains opid wins. The
+  // pre-walk ambient continuation (amb) is what the RET cell carries:
+  // fragments re-dispatch through their kNext, so a resumed segment
+  // follows the fresh §4.6 chain (copied HDLs + kCaller) instead of
+  // skipping it.
+  const opid = em.d.effOpIds.get(e.op)!;
+  const restFn = makeRestThunk(em, "perform:rest op=" + e.op);
+  const kL = f.anyref(), hdl = f.anyref(), found = f.i32();
+  const tbl = f.anyref(), nL = f.i32(), ent = f.i32();
+  const fnIdx = f.i32(), fsz = f.i32(), nparams = f.i32(), amb = f.anyref();
+  const i31of = () => { b.refCast(I31REF, false); b.i31Get(); }; // anyref → i32 (i31 payload)
+  b.localGet(ctx.kL); // the ambient continuation
+  b.localSet(kL);
+  b.localGet(ctx.kL);
+  b.localSet(amb);
+  b.i32Const(0);
+  b.localSet(found);
+  b.u8(BLOCK);
+  b.u8(0x40);
+  b.u8(LOOP);
+  b.u8(0x40);
+  b.localGet(kL);
+  b.u8(0xd1); // ref.is_null: k=0 → no handler anywhere → host fallback
+  b.u8(BR_IF);
+  b.lebU(1);
+  b.localGet(kL); b.refCast(5, true); b.structGet(5, 0); b.i31Get();
+  b.i32Const(K_HDL);
+  b.u8(EQ);
+  b.u8(IF);
+  b.u8(0x40);
+  b.localGet(kL); b.refCast(5, true); b.structGet(5, 1);
+  b.localSet(tbl);
+  b.localGet(tbl); b.refCast(1, true); b.arrayLen(); b.i32Const(4); b.u8(DIVU);
+  b.localSet(nL);
+  loop(f, () => {
+    b.localGet(nL);
+  }, i => {
+    b.localGet(i); b.i32Const(4); b.u8(MUL);
+    b.localSet(ent);
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.arrayGet(1); i31of();
+    b.i32Const(opid);
+    b.u8(EQ);
+    b.u8(IF);
+    b.u8(0x40);
+    b.i32Const(1);
+    b.localSet(found);
+    b.localGet(kL);
+    b.localSet(hdl);
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(1); b.u8(ADD); b.arrayGet(1); i31of();
+    b.localSet(fnIdx);
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(2); b.u8(ADD); b.arrayGet(1); i31of();
+    b.localSet(fsz);
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(3); b.u8(ADD); b.arrayGet(1); i31of();
+    b.localSet(nparams);
+    b.u8(BR);
+    b.lebU(2); // exit the table scan
+    b.u8(END);
+  });
+  b.localGet(found);
+  b.u8(BR_IF);
+  b.lebU(2); // matched handler → leave the walk
+  b.u8(END);
+  b.localGet(kL); b.refCast(5, true); b.structGet(5, 3);
+  b.localSet(kL);
+  b.u8(BR);
+  b.lebU(0);
+  b.u8(END);
+  b.u8(END);
+  // Freeze the frame image for this capture and chain the rest fragment
+  // behind a K_SPILL cell carrying it: the fragment's pre-cut operand
+  // reloads read the frozen values, so a multi-shot resume re-runs the
+  // rest against the pre-perform state (the interpreter's CPS accs),
+  // not the frame as mutated by earlier resumes / loop iterations.
+  const ksp = snapWrap(f, ctx, () => {
+    b.localGet(amb);
+  });
+  b.localGet(found);
+  b.u8(IF);
+  b.u8(0x7f); // handler found: invoke the matched case body
+  // Per-invocation frame copy: case invocations of one handler nest (a
+  // resumed segment can re-enter the handler), and each invocation needs
+  // its own params/spills — the interpreter gives every case invocation a
+  // fresh env, so the shared hframe must not be re-bound under an
+  // in-flight outer invocation (its fragments re-read scope slots). Copy
+  // the hframe; the matched entry's fsize (table word @2) sizes the copy,
+  // and the resume capture records a fresh HDL over the copy so the fresh
+  // chain's Return lands in this invocation's frame.
+  const hfc = f.anyref(), hfsrc = f.anyref(), hfs = f.anyref();
+  b.localGet(hdl); b.refCast(5, true); b.structGet(5, 2); b.refCast(4, true);
+  b.localSet(hfsrc);
+  b.localGet(hfsrc); b.refCast(4, true); b.structGet(4, 0); // parent (unchanged)
+  b.localGet(fsz);
+  b.arrayNew(1);
+  b.localSet(hfs);
+  loop(f, () => {
+    b.localGet(fsz);
+  }, i => {
+    b.localGet(hfs);
+    b.refCast(1, true);
+    b.localGet(i);
+    b.localGet(hfsrc); b.refCast(4, true); b.structGet(4, 1);
+    b.localGet(i);
+    b.arrayGet(1);
+    b.arraySet();
+  });
+  b.localGet(hfs);
+  b.refCast(1, true);
+  b.structNew(4);
+  b.localSet(hfc);
+  // Push this perform's RET cell; the slice below is captured as if this
+  // cell had been pushed before the walk (scan-first). Its next is the
+  // K_SPILL cell (the rest fragment's prologue loads the snapshot and
+  // skips the cell before dispatching, so K_SPILL stays invisible to
+  // every other dispatch and to fCapture's slice walk).
+  const ret = retCell(f, restFn.idx, () => {
+    b.localGet(ksp); // next = K_SPILL{frozen frame image, pre-walk ambient}
+  }); // b = the current frame (holds the spilled args cell)
+  // Capture the slice above the handler into fresh cells (originals
+  // untouched; the resume closure copies again on every call).
+  const slice = f.anyref();
+  b.localGet(ret);
+  b.refCast(5, true);
+  b.localGet(hdl);
+  b.refCast(5, true);
+  b.u8(CALL);
+  b.lebU(em.ix.fCapture);
+  b.localSet(slice);
+  // The resume binder (§4.6): a $CLO over the shared resume fn and a
+  // capture-record frame {slot 1 = the slice, slot 2 = the matched HDL
+  // (the capture sentinel), slot 3 = this invocation's hframe copy}. The
+  // resume fn copies the slice afresh per call (sentinel = slot 2) and
+  // re-chains its bottom to a fresh HDL {slot 2's table, slot 3's frame,
+  // next = the k the closure was invoked with}, so the resumed segment
+  // runs against the caller's continuation and its Return lands in the
+  // invocation's frame copy.
+  const recs = f.anyref(), rec = f.anyref(), rclo = f.anyref();
+  b.i32Const(4);
+  b.arrayNew(1);
+  b.localSet(recs);
+  b.localGet(recs); b.refCast(1, true); b.i32Const(0); b.refNull(ANYREF); b.arraySet(); // slot 0 unused
+  b.localGet(recs); b.refCast(1, true); b.i32Const(1); b.localGet(slice); b.arraySet(); // slot 1: the captured slice
+  b.localGet(recs); b.refCast(1, true); b.i32Const(2); b.localGet(hdl); b.arraySet(); // slot 2: the matched HDL (sentinel)
+  b.localGet(recs); b.refCast(1, true); b.i32Const(3); b.localGet(hfc); b.arraySet(); // slot 3: this invocation's hframe copy
+  b.refNull(4); // parent = none
+  b.localGet(recs);
+  b.refCast(1, true);
+  b.structNew(4);
+  b.localSet(rec);
+  b.i32Const(em.ix.resumeFn.idx);
+  b.refI31();
+  b.localGet(rec);
+  b.refCast(4, true); // env = the resume record's $FRAME (rec is an anyref local)
+  b.i32Const(1); // fsize (call frame size hint: slot 0 = the resumed value)
+  b.refI31();
+  b.structNew(6);
+  b.localSet(rclo);
+  // Case invocation over the handler's shared hframe copy (hdl.b): bind
+  // the case params from the args cell, the resume binder to the boxed
+  // resume closure, then tail-call the case body
+  // with (hframe, hdl.next) — its continuation never contains this
+  // handler (two-k rule).
+  b.localGet(hfc); b.refCast(4, true); b.structGet(4, 1);
+  loop(f, () => {
+    b.localGet(nparams);
+  }, i2 => {
+    b.localGet(hfc); b.refCast(4, true); b.structGet(4, 1);
+    b.localGet(i2);
+    b.localGet(cell); b.refCast(3, true); b.structGet(3, 0);
+    b.localGet(i2);
+    b.arrayGet(1);
+    b.arraySet();
+  });
+  b.localGet(hfc); b.refCast(4, true); b.structGet(4, 1);
+  b.localGet(nparams);
+  b.localGet(rclo);
+  b.arraySet();
+  b.localGet(hfc);
+  b.refCast(4, true);
+  b.localGet(hdl); b.refCast(5, true); b.structGet(5, 3);
+  b.localGet(fnIdx);
+  b.u8(RETURN_CALL_INDIRECT);
+  b.lebU(T_KABI);
+  b.lebU(0);
+  b.u8(ELSE);
+  // No matching handler: bare host call, then the rest-of-site fragment —
+  // the SAME fragment the RET cell carries — continues with the resumed
+  // value over this frame and the ambient continuation. The args cell is
+  // reloaded from its spill slot, the pattern the fragment itself uses.
+  const v = f.anyref();
+  b.i32Const(opid);
+  b.localGet(0); b.structGet(4, 1); b.i32Const(spillSlot); b.arrayGet(1);
+  b.u8(CALL);
+  b.lebU(em.o.impIdx.get("ef_perform")!);
+  b.localSet(v);
+  b.localGet(0); b.structGet(4, 1); b.i32Const(em.ix.valSpill.get(id)!);
+  b.localGet(v);
+  b.arraySet();
+  b.localGet(0);
+  b.localGet(v);
+  b.localGet(ksp);
+  b.refCast(5, true);
+  b.i32Const(restFn.idx);
+  b.u8(RETURN_CALL_INDIRECT);
+  b.lebU(T_III_I);
+  b.lebU(0);
+  b.u8(END);
+  b.u8(0x00); // unreachable: both arms end in a tail call
+  // The inline body ends at the split site; the catcher fills restFn.
+  if (DBGEMIT) console.error("THROW perform-split op=", e.op, "cut=", em.sp.cutStack.length, "[" + em.sp.cutStack.map((x) => em.nodes[x]?.t).join(",") + "]");
+  throw new Split(restFn, [...em.sp.cutStack]);
+}
+
+// §4.4 handle. Installs the handler's continuation state and runs the
+// body inline with the K_HDL cell as the ambient continuation k':
+// - hframe: the handler's shared frame (op-param slots, resume binders,
+//   the Return value slot, case-body spills — frameSizeOf(info.scope)).
+// - RET cell for the after-handle rest: {K_RET, restFn, $fp, ambient k} —
+//   the continuation OUTSIDE the handler; the Return case (and the
+//   identity default) delivers the handle's value through it.
+// - K_HDL cell: {K_HDL, case-table global, hframe, next = the RET cell}.
+// The cell is spilled to the handle's frame slot so a perform inside the
+// body (whose split re-emits this node in fragment mode) reloads the
+// installed handler instead of reinstalling it. The body's completion
+// dispatches through the cell (Return entry — explicit case fn or the
+// shared identity); like a perform site, the handle ends the inline body
+// and the after-handle rest lives in its own fragment.
+function emitHandle(em: Emit, id: ExprID, e: Expr & {t: "handle"}, f: Fn, s: Scope, ctx: Ctx): void {
+// §4.4 handle. Installs the handler's continuation state and runs the
+// body inline with the K_HDL cell as the ambient continuation k':
+// - hframe: the handler's shared frame (op-param slots, resume binders,
+//   the Return value slot, case-body spills — frameSizeOf(info.scope)).
+// - RET cell for the after-handle rest: {K_RET, restFn, $fp, ambient k} —
+//   the continuation OUTSIDE the handler; the Return case (and the
+//   identity default) delivers the handle's value through it.
+// - K_HDL cell: {K_HDL, case-table global, hframe, next = the RET cell}.
+// The cell is spilled to the handle's frame slot so a perform inside the
+// body (whose split re-emits this node in fragment mode) reloads the
+// installed handler instead of reinstalling it. The body's completion
+// dispatches through the cell (Return entry — explicit case fn or the
+// shared identity); like a perform site, the handle ends the inline body
+// and the after-handle rest lives in its own fragment.
+  const b = f.body;
+  const info = em.d.hdlCases.get(id)!;
+  const restFn = makeRestThunk(em, "handle:restFn");
+  em.sp.hdlRest.set(id, restFn);
+  const hf = f.anyref(), hdl = f.anyref();
+  b.localGet(0); // parent = the frame at the handle site
+  b.i32Const(frameSizeOf(em.ix, info.scope));
+  b.arrayNew(1);
+  b.structNew(4);
+  b.localSet(hf);
+  // K_SPILL cell freezing the pre-handle frame image: the after-handle
+  // rest's pre-cut operand reloads (chain levels above the handle, e.g.
+  // sibling operands of `s + handle {...}`) must see the values as of
+  // the install, not as mutated by the handler body / resumes.
+  const ksp = snapWrap(f, ctx, () => {
+    b.localGet(ctx.kL);
+  });
+  // RET cell over the handle-site frame; next = the continuation outside
+  // the handler (the two-k rule: the case body's ambient continuation is
+  // the one captured OUTSIDE the handler).
+  const ret = retCell(f, restFn.idx, () => {
+    b.localGet(ksp);
+  });
+  b.i32Const(K_HDL);
+  b.refI31();
+  b.globalGet(em.lay.hdlTableOff.get(id)!); // a = the case table
+  b.localGet(hf);
+  b.localGet(ret); b.refCast(5, true);
+  b.structNew(5);
+  b.localSet(hdl);
+  const sp = em.ix.valSpill.get(id);
+  if (sp !== undefined) {
+    b.localGet(0); b.structGet(4, 1);
+    b.i32Const(sp);
+    b.localGet(hdl);
+    b.arraySet();
+  }
+  // Body with the handler cell as the ambient continuation: no tail calls
+  // through the k param here — every value flows through the handler.
+  const bodyE = em.nodes[e.body];
+  const stmts = bodyE.t === "block" ? bodyE.stmts : [e.body];
+  emitStmtSeq(em, stmts, f, em.d.scopes.get(e.body) ?? s, false, {kL: hdl});
+  // The completion dispatch tail-calls the Return case (every table
+  // carries one); control never returns here. The after-handle rest is
+  // in restFn — the catcher that receives this Split fills it, re-emitting
+  // this node as the chain's split site (its value = the fragment's v).
+  throw new Split(restFn, [...em.sp.cutStack]);
+}
+
+// Dispatch-shape if (§3): used when an arm can split, or when re-emitting
+// a fragment whose cut lands inside the if. Both arms dispatch their
+// values through a RET cell {K_RET, restAfterIf, frame, ambient k} and
+// return; the if itself becomes a split site whose fragment (filled by
+// the body-level catcher) receives the if's value as v. An arm whose
+// emission throws is closed with unreachable; its fragment is filled
+// here against the enclosing body root along the split's chain.
+// `ci` is the cut descent index when re-emitting a fragment (0 = the
+// condition continues the fragment, 1/2 = the arm does); undefined when
+// emitting fresh.
+function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Scope, ctx: Ctx, ci?: number): void {
+// Dispatch-shape if (§3): used when an arm can split, or when re-emitting
+// a fragment whose cut lands inside the if. Both arms dispatch their
+// values through a RET cell {K_RET, restAfterIf, frame, ambient k} and
+// return; the if itself becomes a split site whose fragment (filled by
+// the body-level catcher) receives the if's value as v. An arm whose
+// emission throws is closed with unreachable; its fragment is filled
+// here against the enclosing body root along the split's chain.
+// `ci` is the cut descent index when re-emitting a fragment (0 = the
+// condition continues the fragment, 1/2 = the arm does); undefined when
+// emitting fresh.
+  const b = f.body;
+  // The split chain for this if: the path from the body root to here.
+  // Frames pushed while emitting the arms (nested re-emissions) are not
+  // part of it.
+  const chainToIf = [...em.sp.cutStack];
+  const restAfterIf = makeRestThunk(em, "if:after");
+  // K_SPILL cell freezing the pre-if frame image for the after-if rest's
+  // pre-cut operand reloads (see snapWrap).
+  const ksp = snapWrap(f, ctx, () => {
+    b.localGet(ctx.kL); // the ambient continuation
+  });
+  const ifk = retCell(f, restAfterIf.idx, () => {
+    b.localGet(ksp); // next = K_SPILL{frozen frame image, ambient k}
+  });
+  // Inside the dispatch shape the arms' ambient continuation is the arm
+  // completion cell: every split site in an arm (perform/land/...) must
+  // chain its rest fragment through ifk, or the resumed value bypasses
+  // the after-if rest entirely. The condition keeps the outer kL — its
+  // completion is the fTruthy call, not the arm dispatch.
+  const ctxArm: Ctx = {...ctx, kL: ifk};
+  let condSplit: Split | null = null;
+  try {
+    if (ci === undefined) pushRef(f, cutChildRef(em, e.c, f, s, ctx, "post"));
+    else pushRef(f, cutChildRef(em, e.c, f, s, ctx, ci === 0 ? "cut" : "pre"));
+  } catch (spC) {
+    if (!(spC instanceof Split)) throw spC;
+    condSplit = spC;
+  }
+  if (condSplit !== null) {
+    // The condition/cut-child split: ifk already references restAfterIf in
+    // the emitted code, and under multi-shot resume the condition can still
+    // complete and dispatch an arm through it — so the post-if fragment
+    // must exist. Fill it along the if's own chain (the same content the
+    // trailing throw below would have carried), then let the condition's
+    // Split propagate; its own rest is filled by the enclosing catcher.
+    em.sp.cutStack.pop(); // fragments must not see the if's own frame
+    const rootC = em.sp.bodyRoots[em.sp.bodyRoots.length - 1];
+    const savedCutC = em.sp.cutStack;
+    em.sp.cutStack = [...rootC.savedCut];
+    try {
+      fillRest(em, new Split(restAfterIf, chainToIf), rootC.stmts, rootC.sc, rootC.tail);
+    } finally {
+      em.sp.cutStack = savedCutC;
+    }
+    b.u8(UNREACHABLE); // close the aborted fragment (the condition never falls through)
+    throw condSplit;
+  }
+  b.u8(CALL);
+  b.lebU(em.ix.fTruthy);
+  b.u8(IF);
+  b.u8(0x40); // void: each arm ends in dispatch + return
+  const arm = (armE: ExprID, cutArm: boolean): Split | null => {
+    const va = f.anyref();
+    let sp: Split | null = null;
+    try {
+      if (cutArm) {
+        pushRef(f, cutChildRef(em, armE, f, s, ctxArm, "cut"));
+      } else {
+        // The other arm re-emits without the cut: the cut path belongs to
+        // the cut arm's subtree only.
+        pushRef(f, cutChildRef(em, armE, f, s, ctxArm, "post"));
+      }
+      b.localSet(va);
+    } catch (sp2) {
+      if (!(sp2 instanceof Split)) throw sp2;
+      sp = sp2;
+    }
+    if (sp !== null) {
+      if (!cutArm) {
+        // The non-cut arm re-emits fresh; a split site inside it must not
+        // re-root its fragment at the body root — filling from there would
+        // re-emit this if (with the arms' roles swapped), regenerating the
+        // sibling arm's split forever. Fill against the arm subtree:
+        // the fragment continues the arm's remainder and its kNext is the
+        // site's snap-wrapped ambient continuation (ifk), so the after-if
+        // rest still receives the if's value. The synthetic root is the
+        // first frame under this if on the split's chain (the arm body
+        // node itself when it pushed one, the split site's parent
+        // otherwise), so the re-emission root and chain stay consistent.
+        if (sp.chain.length < 2) throw new WasmError("internal: arm split chain too short");
+        em.sp.cutStack.pop(); // the synthetic root is the arm, not this if
+        const savedCutA = em.sp.cutStack;
+        em.sp.cutStack = [];
+        try {
+          fillRest(em, new Split(sp.restFn, sp.chain.slice(1)), [sp.chain[1]], s, false);
+        } finally {
+          em.sp.cutStack = savedCutA;
+        }
+      }
+      b.u8(UNREACHABLE);
+      return cutArm ? sp : null; // fresh arm: filled locally, arm "completes"
+    }
+    emitDispatch(em, f, va, ifk);
+    b.u8(RETURN); // the dispatch's result is this function's result
+    return null;
+  };
+  const spA = arm(e.a, ci === 1);
+  b.u8(ELSE);
+  const spB = arm(e.b, ci === 2);
+  b.u8(END);
+  b.u8(UNREACHABLE); // unreachable: each arm returned or trapped
+  const root = em.sp.bodyRoots[em.sp.bodyRoots.length - 1];
+  // This if's own expr frame is still on the cut stack; the arm fragment
+  // re-emissions must not see it (they push a fresh if frame along the
+  // re-emitted chain).
+  em.sp.cutStack.pop();
+  if (spA !== null) fillRest(em, spA, root.stmts, root.sc, root.tail);
+  if (spB !== null) fillRest(em, spB, root.stmts, root.sc, root.tail);
+  em.sp.cutStack.push(id);
+  // The code after the if chains through restAfterIf: the enclosing
+  // body-level catcher fills it with the if's value as v.
+  if (DBGEMIT) console.error("THROW if-split");
+  throw new Split(restAfterIf, chainToIf);
+}
+
+// Split-mode while (§6b): a perform/handle/land call inside the condition
+// or body cannot keep the wasm block/loop shape — the site's return_call
+// would end the function mid-loop and no captured continuation may cross a
+// wasm label. The loop becomes a split site:
+// - pass 1 (fresh): allocates the after-while RET cell {K_RET, restAfter,
+//   $fp, ambient k} and the loop-entry RET cell {K_RET, loopEntry, $fp,
+//   ifk}, fills the loopEntry fragment (one loop pass), and enters the
+//   loop by dispatching unit through the entry cell. The body's ambient
+//   continuation is a fresh per-pass loop-back cell {K_RET, loopEntry,
+//   $fp, kNext} — the body re-enters the loop through the k chain, never
+//   a label, and a perform inside the body captures that cell (so a
+//   resumed copy re-enters the loop on the resumed chain).
+// - cut = [] (fragment re-emission after the loop exited): the loop's
+//   unit value is the fragment's v param.
+// - cut through the body (a split inside it resumed): the rest of the
+//   current iteration runs with the fragment's ambient continuation (the
+//   loop-back cell in effect) and the iteration re-enters the loop
+//   through it; the after-while rest chains off a fresh Split.
+// - cut through the condition (a split inside it resumed): the condition
+//   continues with the fragment's v, then one loop pass re-runs
+//   (emitLoopPass with kNext = the fragment's ambient continuation).
+function emitWhileCPS(em: Emit, id: ExprID, e: Expr & {t: "while"}, f: Fn, s: Scope, ctx: Ctx, cut?: ExprID[]): void {
+// Split-mode while (§6b): a perform/handle/land call inside the condition
+// or body cannot keep the wasm block/loop shape — the site's return_call
+// would end the function mid-loop and no captured continuation may cross a
+// wasm label. The loop becomes a split site:
+// - pass 1 (fresh): allocates the after-while RET cell {K_RET, restAfter,
+//   $fp, ambient k} and the loop-entry RET cell {K_RET, loopEntry, $fp,
+//   ifk}, fills the loopEntry fragment (one loop pass), and enters the
+//   loop by dispatching unit through the entry cell. The body's ambient
+//   continuation is a fresh per-pass loop-back cell {K_RET, loopEntry,
+//   $fp, kNext} — the body re-enters the loop through the k chain, never
+//   a label, and a perform inside the body captures that cell (so a
+//   resumed copy re-enters the loop on the resumed chain).
+// - cut = [] (fragment re-emission after the loop exited): the loop's
+//   unit value is the fragment's v param.
+// - cut through the body (a split inside it resumed): the rest of the
+//   current iteration runs with the fragment's ambient continuation (the
+//   loop-back cell in effect) and the iteration re-enters the loop
+//   through it; the after-while rest chains off a fresh Split.
+// - cut through the condition (a split inside it resumed): the condition
+//   continues with the fragment's v, then one loop pass re-runs
+//   (emitLoopPass with kNext = the fragment's ambient continuation).
+  const b = f.body;
+  if (cut === undefined) {
+    const chainToWhile = [...em.sp.cutStack];
+    const restAfter = makeRestThunk(em, "while:after");
+    const loopEntry = makeRestThunk(em, "while:loopEntry");
+    em.sp.ctlLoops.set(id, {entry: loopEntry, rest: restAfter});
+    let inner: Split | null = null;
+    try {
+      emitLoopPass(em, loopEntry, e, s, 2, loopEntry.idx);
+    } catch (sp) {
+      if (!(sp instanceof Split)) throw sp;
+      inner = sp;
+    }
+    // K_SPILL cell freezing the pre-loop frame image for the after-while
+    // rest's pre-cut operand reloads (see snapWrap).
+    const ksp = snapWrap(f, ctx, () => {
+      b.localGet(ctx.kL); // the ambient continuation
+    });
+    const ifk = retCell(f, restAfter.idx, () => {
+      b.localGet(ksp); // next = K_SPILL{frozen frame image, ambient k}
+    });
+    const loopk = retCell(f, loopEntry.idx, () => {
+      b.localGet(ifk); // next = the after-while cell
+    });
+    const u = f.anyref();
+    pushRef(f, em.lay.unitRef);
+    b.localSet(u);
+    emitDispatch(em, f, u, loopk); // enter the loop (tail call)
+    // The loop pass's emission ends at a split site inside it (that is
+    // what makes the while split-mode): that site's rest fragment is
+    // filled by the enclosing body-level catcher along the chain through
+    // this while; this loop's own after-rest chains when the cut path
+    // re-emits (below). The throw is unreachable in practice.
+    if (inner !== null) throw inner;
+    if (DBGEMIT) console.error("THROW while-cond-split");
+    throw new Split(restAfter, chainToWhile);
+  }
+  const loop = em.sp.ctlLoops.get(id);
+  if (loop === undefined) throw new WasmError("internal: split chain root mismatch");
+  if (DBGEMIT) console.error("WHILE_CUT cond=", cut[0] === e.c, "body=", cut[0] === e.body, "cutlen=", cut.length);
+  if (cut[0] === e.c) {
+    // The condition continues the fragment with the fragment's v, then one
+    // loop pass re-runs over the ambient continuation (fresh loop-back
+    // cell inside emitLoopPass).
+    emitLoopPass(em, f, e, s, ctx.kL, loop.entry.idx, cut.slice(1), ctx.snap);
+    b.u8(UNREACHABLE); // each path dispatched (loop back / exit)
+    throw new Split(loop.rest, [...em.sp.cutStack]);
+  }
+  if (cut[0] === e.body) {
+    // Mid-iteration re-entry with a non-block body: it continues the
+    // fragment with the cut site's value.
+    const bsc = em.d.scopes.get(e.body) ?? s;
+    pushRef(f, expr(em, e.body, f, bsc, false, {kL: ctx.kL, cut: cut.slice(1)}));
+  } else {
+    // Mid-iteration re-entry: skip the condition (already run). Like
+    // handler bodies, a block body is bypassed by emitStmtSeq, so the
+    // chain's next element is a statement of the body block: statements
+    // before the cut site executed, it continues with the fragment's v,
+    // statements after it re-emit inline.
+    const bodyE = em.nodes[e.body];
+    if (bodyE.t !== "block") throw new WasmError("internal: split chain root mismatch");
+    const stmts = bodyE.stmts;
+    const bsc = em.d.scopes.get(e.body) ?? s;
+    const ci = stmts.indexOf(cut[0]);
+    if (ci < 0) throw new WasmError("internal: split chain root mismatch");
+    pushRef(f, emitStmtsFrom(em, stmts, f, bsc, ctx, ci, cut, false));
+  }
+  const v = f.anyref();
+  b.localSet(v);
+  emitDispatch(em, f, v, ctx.kL); // loop back through the k chain
+  b.u8(UNREACHABLE);
+  throw new Split(loop.rest, [...em.sp.cutStack]);
+}
+
+// One loop pass (§6b loop-entry fragment): evaluate the condition (fresh,
+// or continuing a fragment's v when `condCut` is set), then truthy?
+// body-then-loop-back : exit with the loop's unit value. The loop-back
+// cell is allocated per pass and chained to `kNext` (the after-loop
+// continuation in effect), so every capture of it resumes on the chain it
+// was captured from. The body's completion dispatches through the cell;
+// a Split inside the body leaves the pass closed at the site (unreachable
+// body path) and propagates — the enclosing catcher fills that site's
+// fragment along the chain through this while.
+function emitLoopPass(em: Emit, f: Fn, e: Expr & {t: "while"}, s: Scope, kNext: number, entryIdx: number, condCut?: ExprID[], snap?: number): void {
+// One loop pass (§6b loop-entry fragment): evaluate the condition (fresh,
+// or continuing a fragment's v when `condCut` is set), then truthy?
+// body-then-loop-back : exit with the loop's unit value. The loop-back
+// cell is allocated per pass and chained to `kNext` (the after-loop
+// continuation in effect), so every capture of it resumes on the chain it
+// was captured from. The body's completion dispatches through the cell;
+// a Split inside the body leaves the pass closed at the site (unreachable
+// body path) and propagates — the enclosing catcher fills that site's
+// fragment along the chain through this while.
+  const b = f.body;
+  // Value-explicit cond: the ref is materialized at its consume point
+  // (fTruthy); keepRef persists it into the operand spill slot when the
+  // fragment machinery mapped one (same discipline as the app case's
+  // args). A Split inside the condition (a perform/handle/land call in
+  // it) propagates to the enclosing catcher before the IF opens — the
+  // pass closes with unreachable and the cond-cut fragment re-runs the
+  // pass with the resumed value.
+  let condRef: ValueRef;
+  try {
+    condRef = condCut === undefined
+      ? keepRef(em, e.c, f, expr(em, e.c, f, s, false, {kL: kNext}))
+      : condCut.length === 0
+        ? keepRef(em, e.c, f, {k: "local", l: 1}) // cond is the split site: v param
+        // condCut[0] is a descendant of the cond (e.g. a perform inside
+        // the comparison), not the cond itself — pass the cut through
+        // intact; cutChildRef's slice(1) would drop the site and the
+        // cond would collapse to bare fragV.
+        : keepRef(em, e.c, f, expr(em, e.c, f, s, false, {kL: kNext, cut: condCut, snap}));
+  } catch (sp) {
+    if (!(sp instanceof Split)) throw sp;
+    b.u8(UNREACHABLE); // the pass never completes inline at this site
+    throw sp;
+  }
+  pushRef(f, condRef);
+  b.u8(CALL);
+  b.lebU(em.ix.fTruthy);
+  b.u8(IF);
+  b.u8(0x40); // void: the body path tails into the loop-back cell
+  try {
+    // RET cell over the pass's frame; next = the after-loop continuation
+    const lb = retCell(f, entryIdx, () => {
+      b.localGet(kNext);
+    });
+    const bodyE = em.nodes[e.body];
+    const stmts = bodyE.t === "block" ? bodyE.stmts : [e.body];
+    const bsc = em.d.scopes.get(e.body) ?? s;
+    emitStmtSeq(em, stmts, f, bsc, false, {kL: lb});
+    // The body's completion dispatch left the dispatch walk's block
+    // result on the stack (the k=0 terminal-return value): consume it as
+    // this pass's return. When the body splits, the catch below closes
+    // the arm before this line.
+    b.u8(RETURN);
+  } catch (sp) {
+    if (!(sp instanceof Split)) throw sp;
+    b.u8(UNREACHABLE); // the body never completes inline at this site
+    b.u8(END);
+    const u = f.anyref();
+    pushRef(f, em.lay.unitRef);
+    b.localSet(u);
+    emitDispatch(em, f, u, kNext); // condition false: exit
+    throw sp;
+  }
+  b.u8(END);
+  const u = f.anyref();
+  pushRef(f, em.lay.unitRef);
+  b.localSet(u);
+  emitDispatch(em, f, u, kNext); // condition false: exit
+}
+
+// Frame slot i (anyref) of the current frame (local 0) — the args/builtin
+// access path. Writes push (arrayref, index) + value + aset at the .
+function slot(f: Fn, i: number): void {
+// Frame slot i (anyref) of the current frame (local 0) — the args/builtin
+// access path. Writes push (arrayref, index) + value + aset at the .
+  f.body.localGet(0);
+  f.body.structGet(4, 1);
+  f.body.i32Const(i);
+  f.body.arrayGet(1);
+}
+
+// f64 payload of slot i's number; ref.cast traps on non-numbers (the
+// frozen §7.7 deviation — unreachable in well-typed programs).
+function slotF64(f: Fn, i: number): number {
+// f64 payload of slot i's number; ref.cast traps on non-numbers (the
+// frozen §7.7 deviation — unreachable in well-typed programs).
+  const l = f.f64();
+  slot(f, i);
+  f.body.refCast(0, false);
+  f.body.structGet(0, 0);
+  f.body.localSet(l);
+  return l;
+}
+
+function emitBuiltins(em: Emit, builtin0: number): Fn[] {
+  const out: Fn[] = [];
+  for (const {name} of BUILTINS) {
+    if (!em.o.usedBuiltins.has(name)) continue;
+    const f = new Fn(2, em); // (frame, k): builtins are T_KABI trampolines
+    f.typeIdx = T_KABI;
+    f.idx = builtin0 + out.length; // matches the push order (usedBuiltins filter)
+    em.ix.funcRefTypes.set(f.idx, T_KABI);
+    const b = f.body;
+    const box = () => {
+      b.u8(CALL);
+      b.lebU(em.ix.fBox);
+    };
+    switch (name) {
+      case "+": {
+        const a = f.anyref(), bv = f.anyref();
+        slot(f, 0);
+        b.localSet(a);
+        slot(f, 1);
+        b.localSet(bv);
+        b.localGet(a);
+        b.refTest(0, false);
+        b.localGet(bv);
+        b.refTest(0, false);
+        b.u8(AND);
+        b.u8(IF);
+        b.u8(0x6e); // result anyref
+        b.localGet(a);
+        b.refCast(0, false);
+        b.structGet(0, 0);
+        b.localGet(bv);
+        b.refCast(0, false);
+        b.structGet(0, 0);
+        b.u8(FADD);
+        box();
+        b.u8(ELSE);
+        b.localGet(a);
+        b.refTest(2, false);
+        b.localGet(bv);
+        b.refTest(2, false);
+        b.u8(AND);
+        b.u8(IF);
+        b.u8(0x6e);
+        emitStrCat(f, a, bv);
+        b.u8(ELSE);
+        b.refNull(ANYREF);
+        b.u8(END);
+        b.u8(END);
+        break;
+      }
+      case "-": {
+        const x = slotF64(f, 0), y = slotF64(f, 1);
+        b.localGet(x);
+        b.localGet(y);
+        b.u8(FSUB);
+        box();
+        break;
+      }
+      case "*": {
+        const x = slotF64(f, 0), y = slotF64(f, 1);
+        b.localGet(x);
+        b.localGet(y);
+        b.u8(FMUL);
+        box();
+        break;
+      }
+      case "%": {
+        // JS fmod: a - b * trunc(a/b)
+        const x = slotF64(f, 0), y = slotF64(f, 1), t = f.f64();
+        b.localGet(x);
+        b.localGet(y);
+        b.u8(FDIV);
+        b.u8(FTRUNC);
+        b.localSet(t);
+        b.localGet(x);
+        b.localGet(y);
+        b.localGet(t);
+        b.u8(FMUL);
+        b.u8(FSUB);
+        box();
+        break;
+      }
+      case "neg": {
+        const x = slotF64(f, 0);
+        b.localGet(x);
+        b.u8(FNEG);
+        box();
+        break;
+      }
+      case "<":
+      case ">":
+      case "<=":
+      case ">=": {
+        const x = slotF64(f, 0), y = slotF64(f, 1);
+        const cmp = name === "<" ? FLT : name === ">" ? FGT : name === "<=" ? FLE : FGE;
+        selectBool(em, f, () => {
+          b.localGet(x);
+          b.localGet(y);
+          b.u8(cmp);
+        });
+        break;
+      }
+      case "==": {
+        slot(f, 0);
+        slot(f, 1);
+        b.u8(CALL);
+        b.lebU(em.ix.fEq);
+        break;
+      }
+      case "!=": {
+        slot(f, 0);
+        slot(f, 1);
+        b.u8(CALL);
+        b.lebU(em.ix.fEq);
+        b.refCast(I31REF, false); // eq result's i31 bool payload
+        b.i31Get();
+        b.u8(EQZ); // 1 when $eq said false
+        selectBool(em, f, () => {});
+        break;
+      }
+      case "not": {
+        slot(f, 0);
+        b.u8(CALL);
+        b.lebU(em.ix.fTruthy);
+        b.u8(EQZ);
+        selectBool(em, f, () => {});
+        break;
+      }
+      case "list": {
+        // The frame has fsize 0, so the slots array length IS argc — the
+        // only argc reader in the backend (do not generalize).
+        const n = f.i32();
+        b.localGet(0);
+        b.structGet(4, 1);
+        b.arrayLen();
+        b.localSet(n);
+        const blk = allocArrBlk(f, n);
+        loop(f, () => {
+          b.localGet(n);
+        }, i => {
+          elemAddr(f, blk, i);
+          slot(f, i);
+          b.arraySet();
+        });
+        boxArr(f, blk);
+        break;
+      }
+      case "head": {
+        const blk = f.anyref();
+        slot(f, 0);
+        b.refCast(3, true);
+        b.structGet(3, 0);
+        b.localSet(blk);
+        b.localGet(blk);
+        b.refCast(1, true);
+        b.arrayLen();
+        b.u8(EQZ);
+        b.u8(IF);
+        b.u8(0x40);
+        emitFail(em, f, 0, null, constF64(f, 0), constF64(f, 0));
+        b.u8(END);
+        b.localGet(blk);
+        b.refCast(1, true);
+        b.i32Const(0);
+        b.arrayGet(1);
+        break;
+      }
+      case "tail": {
+        const blk = f.anyref(), len = f.i32(), n1 = f.i32();
+        slot(f, 0);
+        b.refCast(3, true);
+        b.structGet(3, 0);
+        b.localSet(blk);
+        b.localGet(blk);
+        b.refCast(1, true);
+        b.arrayLen();
+        b.localSet(len);
+        b.localGet(len);
+        b.u8(EQZ);
+        b.u8(IF);
+        b.u8(0x7f);
+        b.i32Const(0);
+        b.u8(ELSE);
+        b.localGet(len);
+        b.i32Const(1);
+        b.u8(SUB);
+        b.u8(END);
+        b.localSet(n1);
+        emitArrCopy(f, blk, 1, n1);
+        break;
+      }
+      case "concat": {
+        const aBlk = f.anyref(), bBlk = f.anyref(), la = f.i32(), lb = f.i32(), n = f.i32();
+        slot(f, 0);
+        b.refCast(3, true);
+        b.structGet(3, 0);
+        b.localSet(aBlk);
+        slot(f, 1);
+        b.refCast(3, true);
+        b.structGet(3, 0);
+        b.localSet(bBlk);
+        b.localGet(aBlk);
+        b.refCast(1, true);
+        b.arrayLen();
+        b.localSet(la);
+        b.localGet(bBlk);
+        b.refCast(1, true);
+        b.arrayLen();
+        b.localSet(lb);
+        b.localGet(la);
+        b.localGet(lb);
+        b.u8(ADD);
+        b.localSet(n);
+        const blk = allocArrBlk(f, n);
+        loop(f, () => {
+          b.localGet(la);
+        }, i => {
+          elemAddr(f, blk, i);
+          elemAddr(f, aBlk, i);
+          b.arrayGet(1);
+          b.arraySet();
+        });
+        loop(f, () => {
+          b.localGet(lb);
+        }, i => {
+          elemAddr(f, blk, i);
+          b.localGet(la);
+          b.u8(ADD);
+          elemAddr(f, bBlk, i);
+          b.arrayGet(1);
+          b.arraySet();
+        });
+        boxArr(f, blk);
+        break;
+      }
+      case "flat": {
+        const xss = f.anyref(), n = f.i32(), total = f.i32();
+        slot(f, 0);
+        b.refCast(3, true);
+        b.structGet(3, 0);
+        b.localSet(xss);
+        b.localGet(xss);
+        b.refCast(1, true);
+        b.arrayLen();
+        b.localSet(n);
+        b.i32Const(0);
+        b.localSet(total);
+        // JS Array.prototype.flat parity: non-array elements pass through
+        // instead of being read as inner arrays (a resumed scalar flowing
+        // back through a map-like land path lands exactly here).
+        loop(f, () => {
+          b.localGet(n);
+        }, k => {
+          const cell = f.anyref();
+          elemAddr(f, xss, k);
+          b.arrayGet(1);
+          b.localSet(cell);
+          b.localGet(cell);
+          b.refTest(3, false); // is $ARR?
+          b.u8(IF);
+          b.u8(0x40);
+          b.localGet(cell);
+          b.refCast(3, true);
+          b.structGet(3, 0);
+          b.refCast(1, true);
+          b.arrayLen(); // inner len
+          b.localGet(total);
+          b.u8(ADD);
+          b.localSet(total);
+          b.u8(ELSE);
+          b.localGet(total);
+          b.i32Const(1);
+          b.u8(ADD);
+          b.localSet(total);
+          b.u8(END);
+        });
+        const blk = allocArrBlk(f, total);
+        const w = f.i32();
+        b.i32Const(0);
+        b.localSet(w);
+        loop(f, () => {
+          b.localGet(n);
+        }, k => {
+          const cell = f.anyref(), xb = f.anyref(), xl = f.i32();
+          elemAddr(f, xss, k);
+          b.arrayGet(1);
+          b.localSet(cell);
+          b.localGet(cell);
+          b.refTest(3, false);
+          b.u8(IF);
+          b.u8(0x40);
+          b.localGet(cell);
+          b.refCast(3, true);
+          b.structGet(3, 0);
+          b.localSet(xb);
+          b.localGet(xb);
+          b.refCast(1, true);
+          b.arrayLen();
+          b.localSet(xl);
+          loop(f, () => {
+            b.localGet(xl);
+          }, j => {
+            elemAddr(f, blk, w);
+            elemAddr(f, xb, j);
+            b.arrayGet(1);
+            b.arraySet();
+            b.localGet(w);
+            b.i32Const(1);
+            b.u8(ADD);
+            b.localSet(w);
+          });
+          b.u8(ELSE);
+          elemAddr(f, blk, w);
+          b.localGet(cell);
+          b.arraySet();
+          b.localGet(w);
+          b.i32Const(1);
+          b.u8(ADD);
+          b.localSet(w);
+          b.u8(END);
+        });
+        boxArr(f, blk);
+        break;
+      }
+      case "len": {
+        slot(f, 0);
+        b.refCast(3, true);
+        b.structGet(3, 0);
+        b.refCast(1, true);
+        b.arrayLen();
+        b.u8(CONV_I32);
+        box();
+        break;
+      }
+      case "strlen": {
+        slot(f, 0);
+        b.refCast(2, true);
+        b.arrayLen();
+        b.u8(CONV_I32);
+        box();
+        break;
+      }
+      case "PI":
+        b.globalGet(em.lay.piG);
+        break;
+      case "cos":
+        slot(f, 0);
+        b.u8(CALL);
+        b.lebU(em.o.impIdx.get("ef_cos")!);
+        break;
+      case "sin":
+        slot(f, 0);
+        b.u8(CALL);
+        b.lebU(em.o.impIdx.get("ef_sin")!);
+        break;
+      case "sqrt": {
+        const x = slotF64(f, 0);
+        b.localGet(x);
+        b.u8(FSQRT);
+        box();
+        break;
+      }
+      case "abs": {
+        const x = slotF64(f, 0);
+        b.localGet(x);
+        b.u8(FABS);
+        box();
+        break;
+      }
+      case "round": {
+        const x = slotF64(f, 0);
+        b.localGet(x);
+        b.f64Const(0.5);
+        b.u8(FADD);
+        b.u8(FFLOOR);
+        box();
+        break;
+      }
+      case "range": {
+        const s = slotF64(f, 0), e = slotF64(f, 1), stepv = slotF64(f, 2);
+        const n = f.i32();
+        b.localGet(stepv);
+        b.f64Const(0);
+        b.u8(FEQ);
+        b.u8(IF);
+        b.u8(0x7f);
+        b.i32Const(0);
+        b.u8(ELSE);
+        b.localGet(e);
+        b.localGet(s);
+        b.u8(FSUB);
+        b.localGet(stepv);
+        b.u8(FDIV);
+        b.u8(FCEIL);
+        b.f64Const(0);
+        b.u8(FGT);
+        b.u8(IF);
+        b.u8(0x7f);
+        b.localGet(e);
+        b.localGet(s);
+        b.u8(FSUB);
+        b.localGet(stepv);
+        b.u8(FDIV);
+        b.u8(FCEIL);
+        b.u8(TRUNC_F64);
+        b.u8(ELSE);
+        b.i32Const(0);
+        b.u8(END);
+        b.u8(END);
+        b.localSet(n);
+        const blk = allocArrBlk(f, n);
+        loop(f, () => {
+          b.localGet(n);
+        }, k => {
+          elemAddr(f, blk, k);
+          b.localGet(s);
+          b.localGet(k);
+          b.u8(CONV_I32);
+          b.localGet(stepv);
+          b.u8(FMUL);
+          b.u8(FADD);
+          box();
+          b.arraySet();
+        });
+        boxArr(f, blk);
+        break;
+      }
+      case "char":
+        slot(f, 0);
+        b.u8(CALL);
+        b.lebU(em.o.impIdx.get("ef_char")!);
+        break;
+      case "number":
+        slot(f, 0);
+        b.u8(CALL);
+        b.lebU(em.o.impIdx.get("ef_number")!);
+        break;
+      case "args":
+        b.u8(CALL);
+        b.lebU(em.o.impIdx.get("ef_args")!);
+        break;
+      case "get": {
+        const blk = f.anyref(), len = f.i32(), idx = f.i32();
+        const idxF = slotF64(f, 1);
+        slot(f, 0);
+        b.refCast(3, true);
+        b.structGet(3, 0);
+        b.localSet(blk);
+        b.localGet(blk);
+        b.refCast(1, true);
+        b.arrayLen();
+        b.localSet(len);
+        b.localGet(idxF);
+        b.u8(TRUNC_F64);
+        b.localSet(idx);
+        b.localGet(idx);
+        b.i32Const(0);
+        b.u8(LTS); // idx < 0
+        b.localGet(idx);
+        b.localGet(len);
+        b.u8(GEU); // idx >= len
+        b.u8(OR);
+        b.u8(IF);
+        b.u8(0x40);
+        emitFail(em, f, 1, null, () => {
+          b.localGet(idxF);
+        }, () => {
+          b.localGet(len);
+          b.u8(CONV_I32);
+        });
+        b.u8(END);
+        elemAddr(f, blk, idx);
+        b.arrayGet(1);
+        break;
+      }
+      case "set": {
+        const xs = f.anyref(), blk = f.anyref(), len = f.i32(), idx = f.i32(), v = f.anyref();
+        const idxF = slotF64(f, 1);
+        slot(f, 0);
+        b.localSet(xs);
+        b.localGet(xs);
+        b.refCast(3, true);
+        b.structGet(3, 0);
+        b.localSet(blk);
+        b.localGet(blk);
+        b.refCast(1, true);
+        b.arrayLen();
+        b.localSet(len);
+        b.localGet(idxF);
+        b.u8(TRUNC_F64);
+        b.localSet(idx);
+        slot(f, 2);
+        b.localSet(v);
+        b.localGet(idx);
+        b.localGet(len);
+        b.u8(LTU); // idx < len → in-place
+        b.u8(IF);
+        b.u8(0x40);
+        elemAddr(f, blk, idx);
+        b.localGet(v);
+        b.arraySet();
+        b.u8(ELSE);
+        // grow: fresh slots array of len idx+1, copy old, fill holes with
+        // unit, repoint the wrapper's backing (aliases share the wrapper,
+        // so they all see the growth — §7.1).
+        const nb = f.anyref(), nlen = f.i32();
+        b.localGet(idx);
+        b.i32Const(1);
+        b.u8(ADD);
+        b.localSet(nlen);
+        b.localGet(nlen);
+        b.arrayNew(1);
+        b.localSet(nb);
+        loop(f, () => {
+          b.localGet(nlen);
+        }, k => {
+          b.localGet(nb);
+          b.refCast(1, true);
+          b.localGet(k);
+          b.localGet(k);
+          b.localGet(len);
+          b.u8(LTU); // k < old len → copy
+          b.u8(IF);
+          b.u8(0x6e); // result anyref
+          elemAddr(f, blk, k);
+          b.arrayGet(1);
+          b.u8(ELSE);
+          b.refNull(ANYREF);
+          b.u8(END);
+          b.arraySet();
+        });
+        b.localGet(nb);
+        b.refCast(1, true);
+        b.localGet(idx);
+        b.localGet(v);
+        b.arraySet();
+        b.localGet(xs);
+        b.refCast(3, true);
+        b.localGet(nb);
+        b.refCast(1, true);
+        b.structSet(0); // point the wrapper at the new backing
+        b.u8(END);
+        b.refNull(ANYREF);
+        break;
+      }
+      case "map":
+      case "each":
+      case "flatmap":
+        emitMapLike(em, f, name);
+        break;
+      default:
+        throw new WasmError(`internal: builtin ${name} not implemented`);
+    }
+    // Complete with the ABI's dispatch: builtins are called with k=0, so
+    // dispatch(0, v) just returns the computed value.
+    const v = f.anyref();
+    b.localSet(v);
+    emitDispatch(em, f, v);
+    out.push(f);
+  }
+  return out;
+}
+
+// map/each/flatmap CPS (§3): a map-like call site is a landCalls split
+// site, so the entry (this builtin Fn) runs with the caller's RET cell as
+// its k and its result dispatches through the caller's continuation. The
+// entry reads the array, allocates the result array into its own frame,
+// and tail-calls the loop-entry thunk; each iteration calls the callback
+// with a RET cell {K_RET, iter-land, entry frame, ambient k} — so a
+// performing callback walks the caller's handler chain, and a completed
+// callback lands in the per-iteration thunk (res[i] = v, i+1, loop-entry).
+// All loop state (result/tmp array, counter) lives in the entry frame
+// slots, so the loop survives suspension. The counter slot holds a boxed
+// number (slots are anyref); it is unboxed for comparisons and boxed
+// again when passed to the callback as the iteration index.
+function emitMapLike(em: Emit, f: Fn, name: string): void {
+// map/each/flatmap CPS (§3): a map-like call site is a landCalls split
+// site, so the entry (this builtin Fn) runs with the caller's RET cell as
+// its k and its result dispatches through the caller's continuation. The
+// entry reads the array, allocates the result array into its own frame,
+// and tail-calls the loop-entry thunk; each iteration calls the callback
+// with a RET cell {K_RET, iter-land, entry frame, ambient k} — so a
+// performing callback walks the caller's handler chain, and a completed
+// callback lands in the per-iteration thunk (res[i] = v, i+1, loop-entry).
+// All loop state (result/tmp array, counter) lives in the entry frame
+// slots, so the loop survives suspension. The counter slot holds a boxed
+// number (slots are anyref); it is unboxed for comparisons and boxed
+// again when passed to the callback as the iteration index.
+  const b = f.body;
+  const resSlot = name === "each" ? -1 : 2; // map: res, flatmap: tmp
+  const iSlot = name === "each" ? 2 : 3;
+  const loopEntry = makeRestThunk(em, "maplike:loopEntry");
+  const iterLand = makeRestThunk(em, "maplike:iterLand");
+  // Per-iteration land: store the callback result (map/flatmap), bump the
+  // counter, continue the loop. frame = the entry frame, v = the callback
+  // result, k = the ambient continuation (passed to the next iteration).
+  {
+    const t = iterLand, tb = t.body;
+    if (name !== "each") {
+      const blk = t.anyref(), iL = t.i32();
+      slot(t, resSlot);
+      tb.refCast(3, true);
+      tb.structGet(3, 0);
+      tb.localSet(blk);
+      slot(t, iSlot);
+      tb.refCast(0, false);
+      tb.structGet(0, 0);
+      tb.u8(TRUNC_F64);
+      tb.localSet(iL);
+      elemAddr(t, blk, iL);
+      tb.localGet(1);
+      tb.arraySet();
+    }
+    // counter += 1 (boxed back into the slot)
+    tb.localGet(0); tb.structGet(4, 1);
+    tb.i32Const(iSlot);
+    slot(t, iSlot);
+    tb.refCast(0, false);
+    tb.structGet(0, 0);
+    tb.f64Const(1);
+    tb.u8(FADD);
+    tb.u8(CALL);
+    tb.lebU(em.ix.fBox);
+    tb.arraySet();
+    tb.localGet(0);
+    pushRef(t, em.lay.unitRef);
+    tb.localGet(2);
+    tb.u8(RETURN_CALL);
+    tb.lebU(loopEntry.idx);
+  }
+
+  // Loop entry: done → finalize (box the result / flatmap copy) and
+  // dispatch through this thunk's k; else call the callback on element i.
+  {
+    const t = loopEntry, tb = t.body;
+    const xb = t.anyref(), n = t.i32(), iL = t.i32(), fc = t.anyref();
+    slot(t, 1); // the xs wrapper (arg 1) → its backing array and length
+    tb.refCast(3, true);
+    tb.structGet(3, 0);
+    tb.localSet(xb);
+    tb.localGet(xb);
+    tb.refCast(1, true);
+    tb.arrayLen();
+    tb.localSet(n);
+    slot(t, iSlot);
+    tb.refCast(0, false);
+    tb.structGet(0, 0);
+    tb.u8(TRUNC_F64);
+    tb.localSet(iL);
+    tb.localGet(iL);
+    tb.localGet(n);
+    tb.u8(GEU);
+    tb.u8(IF);
+    tb.u8(0x40);
+    const v = t.anyref();
+    if (name === "map") {
+      const res = t.anyref();
+      slot(t, resSlot);
+      tb.refCast(3, true);
+      tb.structGet(3, 0);
+      tb.localSet(res);
+      boxArr(t, res);
+    } else if (name === "each") {
+      pushRef(t, em.lay.unitRef);
+    } else {
+      // flatmap: total = Σ per-element lengths; allocate; copy; box.
+      const tmp = t.anyref(), total = t.i32();
+      slot(t, resSlot);
+      tb.refCast(3, true);
+      tb.structGet(3, 0);
+      tb.localSet(tmp);
+      tb.i32Const(0);
+      tb.localSet(total);
+      loop(t, () => {
+        tb.localGet(n);
+      }, i => {
+        // total += len of callback result i: elem → its backing array →
+        // len (scalar elements count as 1 — the tag test, not the value).
+        const cell = t.anyref();
+        elemAddr(t, tmp, i);
+        tb.arrayGet(1);
+        tb.localSet(cell);
+        tb.localGet(cell);
+        tb.refTest(3, false);
+        tb.u8(IF);
+        tb.u8(0x40);
+        tb.localGet(cell);
+        tb.refCast(3, true);
+        tb.structGet(3, 0);
+        tb.refCast(1, true);
+        tb.arrayLen();
+        tb.localGet(total);
+        tb.u8(ADD);
+        tb.localSet(total);
+        tb.u8(ELSE);
+        tb.localGet(total);
+        tb.i32Const(1);
+        tb.u8(ADD);
+        tb.localSet(total);
+        tb.u8(END);
+      });
+      const res = allocArrBlk(t, total);
+      const w = t.i32();
+      tb.i32Const(0);
+      tb.localSet(w);
+      loop(t, () => {
+        tb.localGet(n);
+      }, i => {
+        const xb2 = t.anyref(), xl = t.i32();
+        const cell = t.anyref();
+        elemAddr(t, tmp, i);
+        tb.arrayGet(1);
+        tb.localSet(cell);
+        tb.localGet(cell);
+        tb.refTest(3, false);
+        tb.u8(IF);
+        tb.u8(0x40);
+        tb.localGet(cell);
+        tb.refCast(3, true);
+        tb.structGet(3, 0);
+        tb.localSet(xb2);
+        tb.localGet(xb2);
+        tb.refCast(1, true);
+        tb.arrayLen();
+        tb.localSet(xl);
+        loop(t, () => {
+          tb.localGet(xl);
+        }, j => {
+          // dst = res[w], src = xb2[j] (element values, same layout the
+          // box/collect path reads back).
+          elemAddr(t, res, w);
+          elemAddr(t, xb2, j);
+          tb.arrayGet(1);
+          tb.arraySet();
+          tb.localGet(w);
+          tb.i32Const(1);
+          tb.u8(ADD);
+          tb.localSet(w);
+        });
+        tb.u8(ELSE);
+        elemAddr(t, res, w);
+        tb.localGet(cell);
+        tb.arraySet();
+        tb.localGet(w);
+        tb.i32Const(1);
+        tb.u8(ADD);
+        tb.localSet(w);
+        tb.u8(END);
+      });
+      boxArr(t, res);
+    }
+    tb.localSet(v);
+    emitDispatch(em, t, v, 2); // k = this thunk's k param
+    tb.u8(RETURN); // only the k=0 branch reaches here, with the value
+    tb.u8(ELSE);
+    // Iteration: elem = xs[i]; the callback's RET cell lands in iterLand
+    // (landA) over this thunk's frame, with next = this thunk's k.
+    slot(t, 0);
+    tb.localSet(fc);
+    const elem = t.anyref();
+    elemAddr(t, xb, iL);
+    tb.arrayGet(1);
+    tb.localSet(elem);
+    emitCallClosure(em, t, fc, name === "map" ? 1 : 2, (k, ffp) => {
+      // Suspension-safe as-is: elem/iL are locals set before the call, and
+      // fBox cannot suspend, so no operand spans a suspension point.
+      tb.localGet(ffp); tb.refCast(4, true); tb.structGet(4, 1);
+      tb.i32Const(k);
+      if (k === 0) tb.localGet(elem);
+      else {
+        tb.localGet(iL);
+        tb.u8(CONV_I32);
+        tb.u8(CALL);
+        tb.lebU(em.ix.fBox);
+      }
+      tb.arraySet();
+    }, false, true, 2, true, iterLand.idx);
+    tb.u8(UNREACHABLE); // the callback always tails into iterLand
+    tb.u8(END);
+    tb.u8(UNREACHABLE); // both if arms diverge; keep the implicit end typed
+  }
+  // Entry (this builtin Fn): allocate the result array, init the counter,
+  // tail-call the loop entry.
+  const xb = f.anyref(), n = f.i32();
+  slot(f, 1);
+  b.refCast(3, true);
+  b.structGet(3, 0);
+  b.localSet(xb);
+  b.localGet(xb);
+  b.refCast(1, true);
+  b.arrayLen();
+  b.localSet(n);
+  if (resSlot >= 0) {
+    const res = allocArrBlk(f, n);
+    b.localGet(0); b.structGet(4, 1);
+    b.i32Const(resSlot);
+    boxArr(f, res); // the slot holds the $ARR wrapper (iterLand + the
+                         // done path read it back as a wrapper)
+    b.arraySet();
+  }
+  b.localGet(0); b.structGet(4, 1);
+  b.i32Const(iSlot);
+  b.i32Const(0);
+  b.u8(CONV_I32);
+  b.u8(CALL);
+  b.lebU(em.ix.fBox);
+  b.arraySet();
+  b.localGet(0);
+  pushRef(f, em.lay.unitRef);
+  b.localGet(1);
+  b.u8(RETURN_CALL);
+  b.lebU(loopEntry.idx);
+}
+
+function emitMain(em: Emit, f: Fn): void {
+  const b = f.body;
+  // The global frame is allocated by run() (the frame param is local 0).
+  const exprs = em.prog.items.filter((it): it is {e: ExprID} => "e" in it);
+  const v = f.anyref();
+  if (exprs.length === 0) {
+    pushRef(f, em.lay.unitRef);
+    b.localSet(v);
+  } else {
+    // Same split protocol as bodyCatch: a perform/handle at the top level
+    // ends the inline body; its fragment re-emits the remaining items.
+    const savedCut = em.sp.cutStack;
+    const roots = exprs.map(it => it.e);
+    em.sp.bodyRoots.push({stmts: roots, sc: em.d.globalScope, tail: false, savedCut: [...savedCut]});
+    try {
+      try {
+        for (let k = 0; k < exprs.length; k++) {
+          const r = expr(em, exprs[k].e, f, em.d.globalScope);
+          if (k < exprs.length - 1) { /* dropped: nothing on the stack */ }
+          else { pushRef(f, r); b.localSet(v); }
+        }
+      } catch (sp) {
+        em.sp.cutStack = savedCut;
+        if (!(sp instanceof Split)) throw sp;
+        fillRest(em, sp, roots, em.d.globalScope, false);
+        return; // the body ends at the split site (both paths tail-call)
+      }
+      em.sp.cutStack = savedCut;
+    } finally {
+      em.sp.bodyRoots.pop();
+    }
+  }
+  // run() calls main with k = ref.null $K, so dispatch(null, v) returns
+  // the top-level value.
+  emitDispatch(em, f, v);
+}
+
+// run (allocates the global frame, calls main with k = null) and the
+// 12 host accessors (§4 — JS cannot read GC fields directly). Appended
+// after main; indices computed here.
+function emitInits(em: Emit): void {
+// run (allocates the global frame, calls main with k = null) and the
+// 12 host accessors (§4 — JS cannot read GC fields directly). Appended
+// after main; indices computed here.
+  const mainIdx = em.o.liveImports.length + em.funcs.length - 1; // main is last
+  em.ix.funcRefTypes.set(mainIdx, T_KABI); // main's funcref slot (after thunks)
+  const run = new Fn(0, em);
+  run.typeIdx = T_RUN;
+  run.idx = mainIdx + 1;
+  em.ix.funcRefTypes.set(run.idx, T_RUN);
+  {
+    const b = run.body;
+    b.refNull(4); // global frame parent = null
+    b.i32Const(frameSizeOf(em.ix, em.d.globalScope));
+    b.arrayNew(1);
+    b.structNew(4);
+    b.refNull(5); // k = null: main's dispatch returns its value
+    b.u8(CALL);
+    b.lebU(mainIdx);
+  }
+  em.funcs.push(run);
+  const acc = (params: number, typeIdx: number, emit: (b: Buf, f: Fn) => void): Fn => {
+    const f = new Fn(params, em);
+    f.typeIdx = typeIdx;
+    f.idx = em.o.liveImports.length + em.funcs.length;
+    em.ix.funcRefTypes.set(f.idx, typeIdx);
+    emit(f.body, f);
+    em.funcs.push(f);
+    return f;
+  };
+  // __tag(v) -> i32: 0 unit (null) 1 num 2 bool 3 str 4 arr 5 clo
+  acc(1, 14, (b) => {
+    b.localGet(0);
+    b.u8(0xd1);
+    b.u8(IF);
+    b.u8(0x7f);
+    b.i32Const(0);
+    b.u8(ELSE);
+    const tag = (ht: number, t: number) => {
+      b.localGet(0);
+      b.refTest(ht, false);
+      b.u8(IF);
+      b.u8(0x7f);
+      b.i32Const(t);
+      b.u8(ELSE);
+    };
+    tag(I31REF, 2);
+    tag(0, 1); // $NUM
+    tag(2, 3); // $STR
+    tag(3, 4); // $ARR
+    b.localGet(0);
+    b.refTest(6, false); // $CLO
+    b.u8(IF);
+    b.u8(0x7f);
+    b.i32Const(5);
+    b.u8(ELSE);
+    b.u8(UNREACHABLE);
+    b.u8(END);
+    b.u8(END);
+    b.u8(END);
+    b.u8(END);
+    b.u8(END);
+    b.u8(END);
+  });
+  // __num(v) -> f64
+  acc(1, 19, (b) => {
+    b.localGet(0);
+    b.refCast(0, false);
+    b.structGet(0, 0);
+  });
+  // __str_len(v) -> i32
+  acc(1, 14, (b) => {
+    b.localGet(0);
+    b.refCast(2, false);
+    b.arrayLen();
+  });
+  // __str_get(v, i) -> i32
+  acc(2, 20, (b) => {
+    b.localGet(0);
+    b.refCast(2, false);
+    b.localGet(1);
+    b.arrayGet(2);
+  });
+  // __arr_len(v) -> i32
+  acc(1, 14, (b) => {
+    b.localGet(0);
+    b.refCast(3, false);
+    b.structGet(3, 0);
+    b.arrayLen();
+  });
+  // __arr_get(v, i) -> anyref
+  acc(2, 22, (b) => {
+    b.localGet(0);
+    b.refCast(3, false);
+    b.structGet(3, 0);
+    b.localGet(1);
+    b.arrayGet(1);
+  });
+  // __mk_num(x) -> anyref
+  acc(1, 13, (b) => {
+    b.localGet(0);
+    b.structNew(0);
+  });
+  // __mk_bool(b) -> anyref
+  acc(1, 12, (b) => {
+    b.localGet(0);
+    b.refI31();
+  });
+  // __str_new(n) -> anyref
+  acc(1, 12, (b) => {
+    b.localGet(0);
+    b.arrayNew(2);
+  });
+  // __str_set(v, i, u) -> ()
+  acc(3, 21, (b) => {
+    b.localGet(0);
+    b.refCast(2, false);
+    b.localGet(1);
+    b.localGet(2);
+    b.arraySet();
+  });
+  // __arr_new(n) -> anyref
+  acc(1, 12, (b) => {
+    b.localGet(0);
+    b.arrayNew(1);
+    b.structNew(3);
+  });
+  // __arr_set(v, i, x) -> ()
+  acc(3, 23, (b) => {
+    b.localGet(0);
+    b.refCast(3, false);
+    b.structGet(3, 0);
+    b.localGet(1);
+    b.localGet(2);
+    b.arraySet();
+  });
 }
 
 // --- module-level optimization pipeline ---------------------------------------
 
-// Ordered passes after the analysis phase and before index assignment (run
-// in compile()); each records facts the emitters consume, and index
-// assignment derives helper/lambda/builtin funcref indices from the live
-// import count. The AST walks themselves live in analysis.ts (shared with
+// Ordered passes over the program (run in optimize()); each records facts the
+// emitters consume, and index assignment derives helper/lambda/builtin
+// funcref indices from the live import count (dataflow: assignIndices takes
+// Opt). The AST walks themselves live in analysis.ts (shared with
 // interpreter-side consumers); planned for this seam: helper-function
 // reachability, function-body dedup.
-const OPT_PASSES: ((c: Compiler) => void)[] = [
+const OPT_PASSES: ((prog: Program, o: Opt) => void)[] = [
   treeShakeBuiltins,
   dropDeadHostImports,
 ];
@@ -4964,13 +5214,13 @@ const OPT_PASSES: ((c: Compiler) => void)[] = [
 // Marks every builtin the program references as a value (analysis.ts
 // builtinRefs — shadowing-correct, checker-mirroring binding order):
 // layoutStatics/emitBuiltins emit only these.
-function treeShakeBuiltins(c: Compiler): void {
-  c.valueBuiltins = builtinValueUses(c.prog);
-  const refs = builtinRefs(c.prog);
+function treeShakeBuiltins(prog: Program, o: Opt): void {
+  o.valueBuiltins = builtinValueUses(prog);
+  const refs = builtinRefs(prog);
   // Trampolines: every referenced non-operator (their direct call sites
   // still call them); operators only when used as values, since operator
   // call sites compile inline.
-  c.usedBuiltins = new Set([...refs].filter(n => c.valueBuiltins.has(n) || !OPERATOR_OPS.has(n)));
+  o.usedBuiltins = new Set([...refs].filter(n => o.valueBuiltins.has(n) || !OPERATOR_OPS.has(n)));
 }
 
 // Import names that serve exactly one builtin each (import → builtin).
@@ -4990,14 +5240,14 @@ const BUILTIN_IMPORTS: Record<string, string> = {
 // performs the proof downstream for modules whose unreferenced code it can
 // see through, e.g. operator-only programs with no bounds checks left).
 // Live imports keep their HOST_IMPORTS order.
-function dropDeadHostImports(c: Compiler): void {
+function dropDeadHostImports(prog: Program, o: Opt): void {
   const live = HOST_IMPORTS.filter(n =>
-    n === "ef_perform" ? performsAnyOp(c.prog) :
+    n === "ef_perform" ? performsAnyOp(prog) :
     n === "ef_fail" ? true :
     Object.hasOwn(BUILTIN_IMPORTS, n) &&
-      c.usedBuiltins.has(BUILTIN_IMPORTS[n]));
+      o.usedBuiltins.has(BUILTIN_IMPORTS[n]));
   if (DBGEMIT)
-    console.error("dropDeadHostImports:", JSON.stringify(live), "used:", [...c.usedBuiltins].join(","));
-  c.liveImports = live;
-  c.impIdx = new Map(live.map((n, i): [string, number] => [n, i]));
+    console.error("dropDeadHostImports:", JSON.stringify(live), "used:", [...o.usedBuiltins].join(","));
+  o.liveImports = live;
+  o.impIdx = new Map(live.map((n, i): [string, number] => [n, i]));
 }
