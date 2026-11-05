@@ -81,49 +81,10 @@ import binaryen from "binaryen";
 import {Parser, type Expr, type ExprID, type Program} from "./parser.ts";
 import {checkProgram} from "./types.ts";
 import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, performsAnyOp} from "./analysis.ts";
+import {Ctx, INLINE, Scope, WasmError, _T} from "./wasm_types.ts";
+import * as w from "./wasm_consts.ts";
 // The binary format layer is gone: Buf interprets the emitters' stack-machine
 // instruction stream directly into binaryen AST (see Buf below).
-
-// --- opcodes ---------------------------------------------------------------
-
-// i32 arithmetic/comparison
-const ADD = 0x6a, SUB = 0x6b, MUL = 0x6c;
-const EQZ = 0x45, EQ = 0x46, LTS = 0x48, LTU = 0x49, OR = 0x72, AND = 0x71;
-const GTU = 0x4b, LEU = 0x4d, GEU = 0x4f, DIVU = 0x6e;
-// f64 arithmetic/comparison
-const FABS = 0x99, FNEG = 0x9a, FCEIL = 0x9b, FFLOOR = 0x9c, FTRUNC = 0x9d, FSQRT = 0x9f;
-const FADD = 0xa0, FSUB = 0xa1, FMUL = 0xa2, FDIV = 0xa3;
-const FLT = 0x63, FGT = 0x64, FLE = 0x65, FGE = 0x66, FEQ = 0x61;
-const TRUNC_F64 = 0xaa, CONV_I32 = 0xb7; // i32.trunc_f64_s, f64.convert_i32_s
-const CALL = 0x10, CALL_INDIRECT = 0x11, RETURN_CALL = 0x12, RETURN_CALL_INDIRECT = 0x13, SELECT = 0x1b;
-const BR = 0x0c, BR_IF = 0x0d, IF = 0x04, ELSE = 0x05, END = 0x0b, LOOP = 0x03, BLOCK = 0x02;
-const RETURN = 0x0f, UNREACHABLE = 0x00;
-
-
-// --- WasmGC substrate (step 1, additive) -------------------------------------
-
-// Abstract heap types are single valtype bytes, never passed through the sleb
-// writer; a concrete (ref null $t) would be 0x63 <sleb $t> (not needed yet).
-const ANYREF = 0x6e, EQREF = 0x6d, I31REF = 0x6c;
-
-// GC opcodes: 0xFB-prefixed instructions carry a sub-opcode (single byte for
-// the values here) followed by typeidx/heaptype immediates. REF_NULL/REF_EQ/
-// SELECT_TYPED are plain (unprefixed) opcodes; SELECT_TYPED takes a vec of
-// valtypes instead of the untyped 0x1b form.
-const GC = 0xfb;
-
-// --- module-level constants -------------------------------------------------
-
-
-// k-cell kinds (i31 in the $K.kind field). K_RET: a = i31 thunk funcref
-// index, b = the frame the thunk runs over. K_HDL: a = $ELEMS case table of
-// flat [opid, fnIdx, fsize, nparams] i31 quadruples (the Return case is
-// opid -1), b = the handler frame (hframe). K_SPILL: a = frozen $FRAME
-// snapshot (per-capture operand snapshot), b unused; it sits between a
-// split site's RET cell and the ambient chain so only that site's rest
-// fragment sees it (its prologue loads a and skips the cell before
-// dispatching).
-const K_RET = 0, K_HDL = 1, K_SPILL = 2;
 
 // map/each/flatmap invoke user callbacks, so they are called land-style: a
 // map-like call site is a landCalls split site (§3) and the builtin loops
@@ -139,33 +100,16 @@ const mapLikeFrameWords = (name: string): number => name === "each" ? 1 : MAP_LI
 // values (e.g. passed to foldl) — see treeShakeBuiltins.
 const OPERATOR_OPS = new Set(["+", "-", "*", "%", "neg", "<", ">", "<=", ">=", "==", "!=", "not"]);
 
+// Import names that serve exactly one builtin each (import → builtin).
+const BUILTIN_IMPORTS: Record<string, string> = {
+  ef_char: "char", ef_number: "number", ef_args: "args",
+  ef_cos: "cos", ef_sin: "sin",
+};
+
 const HOST_IMPORTS = [
-  "ef_perform",
-  "ef_char", "ef_number", "ef_args", "ef_cos", "ef_sin", "ef_fail",
+  "ef_perform", "ef_fail",
+  ...Object.keys(BUILTIN_IMPORTS),
 ];
-
-// Type section indices — assemble() emits exactly this order: structs/
-// arrays 0..6 ($NUM, $ELEMS, $STR, $ARR, $FRAME, $K, $CLO), then func
-// types 7..23. Shared shapes dedupe by position: 7 () -> anyref (run +
-// ef_args), 8 () -> (), 9 (i32, anyref) -> anyref (ef_perform), 10 (i32,
-// anyref, f64, f64) -> () (ef_fail), 11 (anyref) -> anyref (ef_char/
-// number/cos/sin), 12 (i32) -> anyref (__mk_bool/__str_new/__arr_new),
-// 13 (f64) -> anyref (fBox/__mk_num), 14 (anyref) -> i32 (fTruthy/__tag/
-// __str_len/__arr_len), 15 (anyref, anyref) -> anyref (fEq), 16 ((ref null
-// $K), (ref null $K)) -> (ref null $K) (fCapture), 17 T_KABI ((ref null
-// $FRAME), (ref null $K)) -> anyref, 18 T_III_I ((ref null $FRAME), anyref,
-// (ref null $K)) -> anyref; 19..23 are accessor-only shapes named in
-// assemble().
-const T_RUN = 7, T_PERFORM = 9, T_FAIL = 10, T_STRNUM = 11,
-  T_BOX = 13, T_TRUTHY = 14, T_EQ = 15, T_CAPTURE = 16, T_KABI = 17,
-  T_III_I = 18;
-
-function impType(n: string): number {
-  if (n === "ef_perform") return T_PERFORM;
-  if (n === "ef_fail") return T_FAIL;
-  if (n === "ef_args") return T_RUN;
-  return T_STRNUM;
-}
 
 // debug emitter tracing: run with DBGEMIT=1 to log split/thunk internals
 // during compile; off (and free) otherwise.
@@ -174,87 +118,27 @@ const DBGEMIT = process.env["DBGEMIT"] === "1";
 
 // --- binaryen-backed body emitter -------------------------------------------
 
-// WasmGC types (§1): one rec group of 7 struct/array shapes. binaryen types
-// are process-global interned ids, so they build once and are reused by every
-// compiled module. HT[i] = bare heap type (the immediate GC instruction
-// builders take); RF[i] = (ref null $i) (params, fields, ref.null);
-// RN[i] = (ref $i) (non-null casts). $STR packs i16 over an i32 element type.
-const _T: {
-  HT: binaryen.HeapType[],
-  RF: binaryen.Type[],
-  RN: binaryen.Type[],
-} = (() => {
-  const tb = new binaryen.TypeBuilder(7);
-  tb.createRecGroup(0, 7);
-  const fld = (ty: binaryen.Type, mutable: boolean) =>
-    ({type: ty, packedType: binaryen.notPacked, mutable});
-  tb.setStructType(0, [fld(binaryen.f64, false)]);                       // 0 $NUM
-  tb.setArrayType(1, binaryen.anyref, binaryen.notPacked, true);         // 1 $ELEMS
-  tb.setArrayType(2, binaryen.i32, binaryen.i16, true);                  // 2 $STR
-  tb.setStructType(3, [fld(tb.getTempRefType(tb.getTempHeapType(1), true), true)]); // 3 $ARR
-  tb.setStructType(4, [                                                  // 4 $FRAME
-    fld(tb.getTempRefType(tb.getTempHeapType(4), true), true),
-    fld(tb.getTempRefType(tb.getTempHeapType(1), true), true)]);
-  tb.setStructType(5, [                                                  // 5 $K
-    fld(binaryen.i31ref, true), fld(binaryen.anyref, true),
-    fld(binaryen.anyref, true),
-    fld(tb.getTempRefType(tb.getTempHeapType(5), true), true)]);
-  tb.setStructType(6, [                                                  // 6 $CLO
-    fld(binaryen.i31ref, false),
-    fld(tb.getTempRefType(tb.getTempHeapType(4), true), false),
-    fld(binaryen.i31ref, false)]);
-  const HT = tb.buildAndDispose();
-  return {
-    HT,
-    RF: HT.map(h => binaryen.getTypeFromHeapType(h, true)),
-    RN: HT.map(h => binaryen.getTypeFromHeapType(h, false)),
-  };
-})();
-
-// Abstract heaptype bytes the emitters use (0x6c i31ref / 0x6d eqref /
-// 0x6e anyref) plus type indices 0..6 — mapped to (bare heap type, nullable
-// type). The d.ts's heap-type constants (binaryen.any/i31/eq) are undefined
-// in this build, so abstract heap types derive from the nullable type
-// constants via getHeapType. Concrete-type non-null forms share the bare
-// heap type id, so both spellings of a cast target collapse onto HT[i].
-let _abs: {any: binaryen.HeapType, eq: binaryen.HeapType, i31: binaryen.HeapType} | null = null;
-function absHeaps(): {any: binaryen.HeapType, eq: binaryen.HeapType, i31: binaryen.HeapType} {
-  if (_abs === null) _abs = {
-    any: binaryen.getHeapType(binaryen.anyref),
-    eq: binaryen.getHeapType(binaryen.eqref),
-    i31: binaryen.getHeapType(binaryen.i31ref),
-  };
-  return _abs;
-}
-function heapTypes(ht: number): {h: binaryen.HeapType, n: binaryen.Type} {
-  if (ht === ANYREF) return {h: absHeaps().any, n: binaryen.anyref};
-  if (ht === EQREF) return {h: absHeaps().eq, n: binaryen.eqref};
-  if (ht === I31REF) return {h: absHeaps().i31, n: binaryen.i31ref};
-  if (ht >= 0 && ht <= 6) return {h: _T.HT[ht], n: _T.RF[ht]};
-  throw new WasmError(`internal: bad heaptype byte ${ht}`);
-}
-
 // Func signatures by type index (§1 func types 7..23). Valtype spellings
 // mirror the emitter's byte language: 0x7f i32, 0x7c f64, 0x6e anyref,
 // [0x63, n] = (ref null $n). Consumed by Buf's call handling and by
 // buildModule's addFunction calls.
 const SIGS: Record<number, {p: (number | number[])[], r: number | number[] | null}> = {
-  [T_RUN]: {p: [], r: ANYREF},                    // run, ef_args
-  [T_PERFORM]: {p: [0x7f, ANYREF], r: ANYREF},    // ef_perform
-  [T_FAIL]: {p: [0x7f, ANYREF, 0x7c, 0x7c], r: null}, // ef_fail
-  [T_STRNUM]: {p: [ANYREF], r: ANYREF},           // ef_char/number/cos/sin
-  [12]: {p: [0x7f], r: ANYREF},                   // __mk_bool/__str_new/__arr_new
-  [T_BOX]: {p: [0x7c], r: ANYREF},                // fBox, __mk_num
-  [T_TRUTHY]: {p: [ANYREF], r: 0x7f},             // fTruthy, __tag/__str_len/__arr_len
-  [T_EQ]: {p: [ANYREF, ANYREF], r: ANYREF},       // fEq
-  [T_CAPTURE]: {p: [[0x63, 5], [0x63, 5]], r: [0x63, 5]}, // fCapture
-  [T_KABI]: {p: [[0x63, 4], [0x63, 5]], r: ANYREF},       // (frame, k) program fns
-  [T_III_I]: {p: [[0x63, 4], ANYREF, [0x63, 5]], r: ANYREF}, // land thunks
-  [19]: {p: [ANYREF], r: 0x7c},                   // __num
-  [20]: {p: [ANYREF, 0x7f], r: 0x7f},             // __str_get
-  [21]: {p: [ANYREF, 0x7f, 0x7f], r: null},       // __str_set
-  [22]: {p: [ANYREF, 0x7f], r: ANYREF},           // __arr_get
-  [23]: {p: [ANYREF, 0x7f, ANYREF], r: null},     // __arr_set
+  [w.T_RUN]: {p: [], r: w.ANYREF},                    // run, ef_args
+  [w.T_PERFORM]: {p: [0x7f, w.ANYREF], r: w.ANYREF},    // ef_perform
+  [w.T_FAIL]: {p: [0x7f, w.ANYREF, 0x7c, 0x7c], r: null}, // ef_fail
+  [w.T_STRNUM]: {p: [w.ANYREF], r: w.ANYREF},           // ef_char/number/cos/sin
+  [12]: {p: [0x7f], r: w.ANYREF},                   // __mk_bool/__str_new/__arr_new
+  [w.T_BOX]: {p: [0x7c], r: w.ANYREF},                // fBox, __mk_num
+  [w.T_TRUTHY]: {p: [w.ANYREF], r: 0x7f},             // fTruthy, __tag/__str_len/__arr_len
+  [w.T_EQ]: {p: [w.ANYREF, w.ANYREF], r: w.ANYREF},       // fEq
+  [w.T_CAPTURE]: {p: [[0x63, 5], [0x63, 5]], r: [0x63, 5]}, // fCapture
+  [w.T_KABI]: {p: [[0x63, 4], [0x63, 5]], r: w.ANYREF},       // (frame, k) program fns
+  [w.T_III_I]: {p: [[0x63, 4], w.ANYREF, [0x63, 5]], r: w.ANYREF}, // land thunks
+  [19]: {p: [w.ANYREF], r: 0x7c},                   // __num
+  [20]: {p: [w.ANYREF, 0x7f], r: 0x7f},             // __str_get
+  [21]: {p: [w.ANYREF, 0x7f, 0x7f], r: null},       // __str_set
+  [22]: {p: [w.ANYREF, 0x7f], r: w.ANYREF},           // __arr_get
+  [23]: {p: [w.ANYREF, 0x7f, w.ANYREF], r: null},     // __arr_set
 };
 
 // Valtype byte (or [0x63, idx] pair) → binaryen Type. 0x40 → none (void).
@@ -263,9 +147,9 @@ function vt(t: number | number[] | null): binaryen.Type {
   if (typeof t === "number") {
     if (t === 0x7f) return binaryen.i32;
     if (t === 0x7c) return binaryen.f64;
-    if (t === ANYREF) return binaryen.anyref;
-    if (t === EQREF) return binaryen.eqref;
-    if (t === I31REF) return binaryen.i31ref;
+    if (t === w.ANYREF) return binaryen.anyref;
+    if (t === w.EQREF) return binaryen.eqref;
+    if (t === w.I31REF) return binaryen.i31ref;
   } else return _T.RF[t[1]];
   throw new WasmError(`internal: bad valtype ${JSON.stringify(t)}`);
 }
@@ -298,8 +182,8 @@ const STRUCT_FIELDS: Record<number, (number | number[])[]> = {
   [0]: [0x7c],                       // $NUM: f64
   [3]: [[0x63, 1]],                  // $ARR: (ref null $ELEMS)
   [4]: [[0x63, 4], [0x63, 1]],       // $FRAME
-  [5]: [I31REF, ANYREF, ANYREF, [0x63, 5]], // $K
-  [6]: [I31REF, [0x63, 4], I31REF],  // $CLO
+  [5]: [w.I31REF, w.ANYREF, w.ANYREF, [0x63, 5]], // $K
+  [6]: [w.I31REF, [0x63, 4], w.I31REF],  // $CLO
 };
 
 class Buf {
@@ -312,7 +196,7 @@ class Buf {
   // capture never mistakes one for its own result.
   private pending: number[] = [];
   private labelN = 0;
-  // Pending stream instruction awaiting raw immediates (b.u8(CALL) +
+  // Pending stream instruction awaiting raw immediates (b.u8(w.CALL) +
   // b.lebU(idx) and friends): opcode, GC sub-opcode, remaining immediates.
   private pend: {op: number, gc: number, need: ("bt" | "lebU")[], got: number[]} | null = null;
 
@@ -429,7 +313,7 @@ class Buf {
       if (this.pend.need.length === 0) this.complete(); // immediate-less op
       return this;
     }
-    if (this.pend.gc === -1 && this.pend.op === GC) {
+    if (this.pend.gc === -1 && this.pend.op === w.GC) {
       this.pend.gc = n;
       this.pend.need = this.needs(n, n);
       if (this.pend.need.length === 0) this.complete();
@@ -463,9 +347,9 @@ class Buf {
     if (gc >= 0)
       return []; // GC ops never reach the stream (emit methods bypass it)
     switch (op) {
-      case BLOCK: case LOOP: case IF: return ["bt"];
-      case CALL: case RETURN_CALL: case BR: case BR_IF: return ["lebU"];
-      case CALL_INDIRECT: case RETURN_CALL_INDIRECT: return ["lebU", "lebU"];
+      case w.BLOCK: case w.LOOP: case w.IF: return ["bt"];
+      case w.CALL: case w.RETURN_CALL: case w.BR: case w.BR_IF: return ["lebU"];
+      case w.CALL_INDIRECT: case w.RETURN_CALL_INDIRECT: return ["lebU", "lebU"];
       default: return [];
     }
   }
@@ -478,9 +362,9 @@ class Buf {
     if (DBGEMIT)
       console.error(`insn f${this.fn.fid} ${op.toString(16)} [${got.join(",")}]`);
     switch (op) {
-      case BLOCK: this.openScope("block", got); return;
-      case LOOP: this.openScope("loop", got); return;
-      case IF: {
+      case w.BLOCK: this.openScope("block", got); return;
+      case w.LOOP: this.openScope("loop", got); return;
+      case w.IF: {
         const cond = this.pop();
         this.openScope("if", got);
         this.top().cond = cond;
@@ -488,7 +372,7 @@ class Buf {
           console.error(`IF f${this.fn.fid} stack=[${this.scopes.map((s) => s.kind.slice(0, 2) + ":" + s.label).join(",")}]`);
         return;
       }
-      case ELSE: {
+      case w.ELSE: {
         const sc = this.top();
         if (DBGEMIT)
           console.error(`ELSE f${this.fn.fid} top=${sc.kind}:${sc.label} arm=${sc.arm !== undefined}`);
@@ -499,7 +383,7 @@ class Buf {
         sc.dead = false;
         return;
       }
-      case END: {
+      case w.END: {
         const sc = this.scopes.pop()!;
         if (DBGEMIT)
           console.error(`END f${this.fn.fid} pop=${sc.kind}:${sc.label} res=${sc.result} stmts=${sc.stmts.length} dead=${sc.dead} ids=[${sc.stmts.map((s) => String(binaryen.getExpressionId(s))).join(",")}] stack=[${this.scopes.map((s) => s.kind.slice(0, 2) + ":" + s.label).join(",")}]`);
@@ -522,7 +406,7 @@ class Buf {
         this.finishScope(sc, this.branch(sc, sc.label));
         return;
       }
-      case BR: {
+      case w.BR: {
         const t = this.brTarget(got[0]);
         const val = t.result === 0x40 ? undefined : this.pop();
         // markDead BEFORE pushing the br: leaked-operand drops belong before
@@ -534,35 +418,35 @@ class Buf {
         this.top().stmts.push(val === undefined ? MOD.br(t.label) : MOD.br(t.label, undefined, val));
         return;
       }
-      case BR_IF: {
+      case w.BR_IF: {
         const cond = this.pop(); // cond sits on top of any br value
         const t = this.brTarget(got[0]);
         const val = t.result === 0x40 ? undefined : this.pop();
         this.stmt(val === undefined ? MOD.br_if(t.label, cond) : MOD.br_if(t.label, cond, val));
         return;
       }
-      case CALL: case RETURN_CALL: {
+      case w.CALL: case w.RETURN_CALL: {
         const sig = sigOf(this.fn.em!, got[0]);
         const args = sig.ps.map(() => this.pop()).reverse();
-        const call = op === RETURN_CALL
+        const call = op === w.RETURN_CALL
           ? MOD.return_call(`f${got[0]}`, args, sig.r ?? binaryen.none)
           : MOD.call(`f${got[0]}`, args, sig.r ?? binaryen.none);
         this.callResult(op, call, sig);
         return;
       }
-      case CALL_INDIRECT: case RETURN_CALL_INDIRECT: {
+      case w.CALL_INDIRECT: case w.RETURN_CALL_INDIRECT: {
         const [typeIdx, tableIdx] = got;
         if (tableIdx !== 0) throw new WasmError("internal: call_indirect table != 0");
         const sig = this.tSig(typeIdx);
         const idxExpr = this.pop();
         const args = sig.ps.map(() => this.pop()).reverse();
-        const call = op === CALL_INDIRECT
+        const call = op === w.CALL_INDIRECT
           ? MOD.call_indirect("t0", idxExpr, args, binaryen.createType(sig.ps), sig.r ?? binaryen.none)
           : MOD.return_call_indirect("t0", idxExpr, args, binaryen.createType(sig.ps), sig.r ?? binaryen.none);
         this.callResult(op, call, sig);
         return;
       }
-      case RETURN: {
+      case w.RETURN: {
         const sig = SIGS[this.fn.typeIdx];
         const rv = sig.r === null ? undefined : this.pop(); // pop while alive
         // markDead FIRST so leaked-operand drops land BEFORE the return —
@@ -572,11 +456,11 @@ class Buf {
         this.top().stmts.push(rv === undefined ? MOD.return() : MOD.return(rv));
         return;
       }
-      case UNREACHABLE:
+      case w.UNREACHABLE:
         this.markDead();
         this.top().stmts.push(MOD.unreachable());
         return;
-      case SELECT: {
+      case w.SELECT: {
         const cond = this.pop(), v2 = this.pop(), v1 = this.pop();
         this.push(MOD.select(cond, v1, v2));
         return;
@@ -590,7 +474,7 @@ class Buf {
   // the target is void; return-calls (direct and indirect) are statements —
   // they never return.
   private callResult(op: number, call: binaryen.ExpressionRef, sig: {r: binaryen.Type | null}): void {
-    if (op === RETURN_CALL || op === RETURN_CALL_INDIRECT) {
+    if (op === w.RETURN_CALL || op === w.RETURN_CALL_INDIRECT) {
       // The byte world pushed the callee's result bytes even for tail calls
       // (stack-polymorphic unreachable): code after the tail call stays
       // stack-typed (e.g. a following local.set consumes it). Bottom-typed
@@ -665,36 +549,36 @@ class Buf {
       this.push(f(x));
     };
     switch (op) {
-      case EQZ: un((v) => MOD.i32.eqz(v)); return;
-      case EQ: bin((l, r) => MOD.i32.eq(l, r)); return;
-      case LTS: bin((l, r) => MOD.i32.lt_s(l, r)); return;
-      case LTU: bin((l, r) => MOD.i32.lt_u(l, r)); return;
-      case GTU: bin((l, r) => MOD.i32.gt_u(l, r)); return;
-      case LEU: bin((l, r) => MOD.i32.le_u(l, r)); return;
-      case GEU: bin((l, r) => MOD.i32.ge_u(l, r)); return;
-      case ADD: bin((l, r) => MOD.i32.add(l, r)); return;
-      case SUB: bin((l, r) => MOD.i32.sub(l, r)); return;
-      case MUL: bin((l, r) => MOD.i32.mul(l, r)); return;
-      case DIVU: bin((l, r) => MOD.i32.div_u(l, r)); return;
-      case AND: bin((l, r) => MOD.i32.and(l, r)); return;
-      case OR: bin((l, r) => MOD.i32.or(l, r)); return;
-      case FADD: bin((l, r) => MOD.f64.add(l, r)); return;
-      case FSUB: bin((l, r) => MOD.f64.sub(l, r)); return;
-      case FMUL: bin((l, r) => MOD.f64.mul(l, r)); return;
-      case FDIV: bin((l, r) => MOD.f64.div(l, r)); return;
-      case FEQ: bin((l, r) => MOD.f64.eq(l, r)); return;
-      case FLT: bin((l, r) => MOD.f64.lt(l, r)); return;
-      case FGT: bin((l, r) => MOD.f64.gt(l, r)); return;
-      case FLE: bin((l, r) => MOD.f64.le(l, r)); return;
-      case FGE: bin((l, r) => MOD.f64.ge(l, r)); return;
-      case FABS: un((v) => MOD.f64.abs(v)); return;
-      case FNEG: un((v) => MOD.f64.neg(v)); return;
-      case FCEIL: un((v) => MOD.f64.ceil(v)); return;
-      case FFLOOR: un((v) => MOD.f64.floor(v)); return;
-      case FTRUNC: un((v) => MOD.f64.trunc(v)); return;
-      case FSQRT: un((v) => MOD.f64.sqrt(v)); return;
-      case TRUNC_F64: un((v) => MOD.i32.trunc_s.f64(v)); return;
-      case CONV_I32: un((v) => MOD.f64.convert_s.i32(v)); return;
+      case w.EQZ: un((v) => MOD.i32.eqz(v)); return;
+      case w.EQ: bin((l, r) => MOD.i32.eq(l, r)); return;
+      case w.LTS: bin((l, r) => MOD.i32.lt_s(l, r)); return;
+      case w.LTU: bin((l, r) => MOD.i32.lt_u(l, r)); return;
+      case w.GTU: bin((l, r) => MOD.i32.gt_u(l, r)); return;
+      case w.LEU: bin((l, r) => MOD.i32.le_u(l, r)); return;
+      case w.GEU: bin((l, r) => MOD.i32.ge_u(l, r)); return;
+      case w.ADD: bin((l, r) => MOD.i32.add(l, r)); return;
+      case w.SUB: bin((l, r) => MOD.i32.sub(l, r)); return;
+      case w.MUL: bin((l, r) => MOD.i32.mul(l, r)); return;
+      case w.DIVU: bin((l, r) => MOD.i32.div_u(l, r)); return;
+      case w.AND: bin((l, r) => MOD.i32.and(l, r)); return;
+      case w.OR: bin((l, r) => MOD.i32.or(l, r)); return;
+      case w.FADD: bin((l, r) => MOD.f64.add(l, r)); return;
+      case w.FSUB: bin((l, r) => MOD.f64.sub(l, r)); return;
+      case w.FMUL: bin((l, r) => MOD.f64.mul(l, r)); return;
+      case w.FDIV: bin((l, r) => MOD.f64.div(l, r)); return;
+      case w.FEQ: bin((l, r) => MOD.f64.eq(l, r)); return;
+      case w.FLT: bin((l, r) => MOD.f64.lt(l, r)); return;
+      case w.FGT: bin((l, r) => MOD.f64.gt(l, r)); return;
+      case w.FLE: bin((l, r) => MOD.f64.le(l, r)); return;
+      case w.FGE: bin((l, r) => MOD.f64.ge(l, r)); return;
+      case w.FABS: un((v) => MOD.f64.abs(v)); return;
+      case w.FNEG: un((v) => MOD.f64.neg(v)); return;
+      case w.FCEIL: un((v) => MOD.f64.ceil(v)); return;
+      case w.FFLOOR: un((v) => MOD.f64.floor(v)); return;
+      case w.FTRUNC: un((v) => MOD.f64.trunc(v)); return;
+      case w.FSQRT: un((v) => MOD.f64.sqrt(v)); return;
+      case w.TRUNC_F64: un((v) => MOD.i32.trunc_s.f64(v)); return;
+      case w.CONV_I32: un((v) => MOD.f64.convert_s.i32(v)); return;
       default: throw new WasmError(`internal: unknown opcode 0x${op.toString(16)}`);
     }
   }
@@ -754,12 +638,12 @@ class Buf {
   // are not type ids).
   private castType(ht: number, nullable: boolean): binaryen.Type {
     if (nullable)
-      return heapTypes(ht).n;
+      return w.heapTypes(ht).n;
     if (ht >= 0 && ht <= 6)
       return _T.HT[ht];
-    return binaryen.getTypeFromHeapType(heapTypes(ht).h, false);
+    return binaryen.getTypeFromHeapType(w.heapTypes(ht).h, false);
   }
-  refNull(ht: number): void { this.push(MOD.ref.null(heapTypes(ht).n)); }
+  refNull(ht: number): void { this.push(MOD.ref.null(w.heapTypes(ht).n)); }
   refI31(): void { this.push(MOD.ref.i31(this.pop())); }
   i31Get(): void { this.push(MOD.i31.get_s(this.pop())); }
   refEq(): void { const r = this.pop(), l = this.pop(); this.push(MOD.ref.eq(l, r)); }
@@ -826,7 +710,7 @@ class Fn {
   readonly fid = Fn.nextId++; // trace discriminator (idx repeats across fns)
   body: Buf;
   locals: binaryen.Type[] = []; // extra locals in allocation order
-  typeIdx = T_KABI; // program functions share (frame, k) -> i32; helpers may differ
+  typeIdx = w.T_KABI; // program functions share (frame, k) -> i32; helpers may differ
   // Funcref table index (assigned at creation, stable across emission).
   idx = 0;
   // The owning emission context: Buf handlers reach per-compile state
@@ -844,23 +728,261 @@ class Fn {
     this.locals.push(t);
     return this.params + this.locals.length - 1;
   }
-}
 
-// Emission context: which local holds the ambient continuation cell (1 = a
-// T_KABI function's k param, 2 = a rest-of-site fragment's kNext param, any
-// other local = a handle's K_HDL cell), plus the not-yet-executed cut path
-// when re-emitting a fragment: cut[0] is the child of the current node on
-// the path to the split site; an empty array marks the split site itself
-// (its value is the fragment's v param). `snap` is the wasm local holding
-// the fragment's frozen frame-image pointer (the K_SPILL cell's a): pre-cut
-// siblings reload from it instead of the live frame, matching the
-// interpreter's frozen CPS accs under multi-shot resume.
-type Ctx = {
-  kL: number,
-  cut?: ExprID[],
-  snap?: number,
-};
-const INLINE: Ctx = {kL: 1};
+  // Frame slot i (anyref) of the current frame (local 0) — the args/builtin
+  // access path. Writes push (arrayref, index) + value + aset at the .
+  slot(i: number): void {
+    // Frame slot i (anyref) of the current frame (local 0) — the args/builtin
+    // access path. Writes push (arrayref, index) + value + aset at the .
+    this.body.localGet(0);
+    this.body.structGet(4, 1);
+    this.body.i32Const(i);
+    this.body.arrayGet(1);
+  }
+
+  // f64 payload of slot i's number; ref.cast traps on non-numbers (the
+  // frozen §7.7 deviation — unreachable in well-typed programs).
+  slotF64(i: number): number {
+    // f64 payload of slot i's number; ref.cast traps on non-numbers (the
+    // frozen §7.7 deviation — unreachable in well-typed programs).
+    const l = this.f64();
+    this.slot(i);
+    this.body.refCast(0, false);
+    this.body.structGet(0, 0);
+    this.body.localSet(l);
+    return l;
+  }
+
+
+  // String concatenation of $STR locals a, b → new $STR on the stack.
+  emitStrCat(a: number, b: number): void {
+    // String concatenation of $STR locals a, b → new $STR on the stack.
+    const body = this.body;
+    const res = this.anyref();
+    body.localGet(a); body.refCast(2, true); body.arrayLen();
+    body.localGet(b); body.refCast(2, true); body.arrayLen();
+    body.u8(w.ADD);
+    body.arrayNew(2);
+    body.localSet(res);
+    // copy a then b (b starts at unit offset la)
+    body.localGet(res);
+    body.refCast(2, true);
+    body.i32Const(0);
+    body.localGet(a); body.refCast(2, true);
+    body.i32Const(0);
+    body.localGet(a); body.refCast(2, true); body.arrayLen();
+    body.arrayCopy(2, 2);
+    body.localGet(res);
+    body.refCast(2, true);
+    body.localGet(a); body.refCast(2, true); body.arrayLen();
+    body.localGet(b); body.refCast(2, true);
+    body.i32Const(0);
+    body.localGet(b); body.refCast(2, true); body.arrayLen();
+    body.arrayCopy(2, 2);
+    body.localGet(res);
+  }
+
+  // for (i = 0; i < n; i++) iter(i) — n pushed by pushN (const or local).
+  // Emits BLOCK { LOOP { cond; br_if out; iter; incr; br; } }.
+  loop(pushN: () => void, iter: (i: number) => void): void {
+    // for (i = 0; i < n; i++) iter(i) — n pushed by pushN (const or local).
+    // Emits BLOCK { LOOP { cond; br_if out; iter; incr; br; } }.
+    const b = this.body;
+    const i = this.i32();
+    b.i32Const(0);
+    b.localSet(i); // reset: a loop nested in another loop's body reuses this local across outer iterations
+    b.u8(w.BLOCK);
+    b.u8(0x40);
+    b.u8(w.LOOP);
+    b.u8(0x40);
+    b.localGet(i);
+    pushN();
+    b.u8(w.GEU);
+    b.u8(w.BR_IF);
+    b.lebU(1);
+    iter(i);
+    b.localGet(i);
+    b.i32Const(1);
+    b.u8(w.ADD);
+    b.localSet(i);
+    b.u8(w.BR);
+    b.lebU(0);
+    b.u8(w.END);
+    b.u8(w.END);
+  }
+
+  // Pushes (arrayref, index) of element i (local) of raw $ELEMS local
+  // `blk`; callers finish with aget (read) or push the value + aset (write).
+  elemAddr(blk: number, i: number): void {
+    // Pushes (arrayref, index) of element i (local) of raw $ELEMS local
+    // `blk`; callers finish with aget (read) or push the value + aset (write).
+    this.body.localGet(blk);
+    this.body.refCast(1, true);
+    this.body.localGet(i);
+  }
+
+  // Allocates a raw $ELEMS array of length local `n`; returns the local.
+  allocArrBlk(n: number): number {
+    // Allocates a raw $ELEMS array of length local `n`; returns the local.
+    const blk = this.anyref();
+    this.body.localGet(n);
+    this.body.arrayNew(1);
+    this.body.localSet(blk);
+    return blk;
+  }
+
+  // Wraps the raw $ELEMS local `blk` → new $ARR wrapper on the stack.
+  // Growth (`set`) repoints the wrapper's backing array, so every alias
+  // sharing the wrapper sees the growth (§7.1).
+  boxArr(blk: number): void {
+    // Wraps the raw $ELEMS local `blk` → new $ARR wrapper on the stack.
+    // Growth (`set`) repoints the wrapper's backing array, so every alias
+    // sharing the wrapper sees the growth (§7.1).
+    this.body.localGet(blk);
+    this.body.refCast(1, true);
+    this.body.structNew(3);
+  }
+
+  // Copies n (local) elements from srcBlk's elements starting at srcOff into
+  // a fresh array; leaves the boxed $ARR wrapper on the stack.
+  emitArrCopy(srcBlk: number, srcOff: number, n: number): void {
+    // Copies n (local) elements from srcBlk's elements starting at srcOff into
+    // a fresh array; leaves the boxed $ARR wrapper on the stack.
+    const b = this.body;
+    const blk = this.allocArrBlk(n);
+    b.localGet(blk);
+    b.refCast(1, true);
+    b.i32Const(0);
+    b.localGet(srcBlk);
+    b.refCast(1, true);
+    b.i32Const(srcOff);
+    b.localGet(n);
+    b.arrayCopy(1, 1);
+    this.boxArr(blk);
+  }
+
+  // Materialize a ValueRef onto the operand stack, at its consume point.
+  // This is the ONLY sanctioned place short-lived stack values cross an
+  // emitter boundary (the helper fully balances the stack per ref).
+  pushRef(r: ValueRef): void {
+    // Materialize a ValueRef onto the operand stack, at its consume point.
+    // This is the ONLY sanctioned place short-lived stack values cross an
+    // emitter boundary (the helper fully balances the stack per ref).
+    const b = this.body;
+    if (r.k === "g") b.globalGet(r.gi);
+    else if (r.k === "bool") { b.i32Const(r.v); b.refI31(); }
+    else if (r.k === "local") b.localGet(r.l);
+    else if (r.k === "snapSlot") { b.localGet(r.snap); b.refCast(4, true); b.structGet(4, 1); b.i32Const(r.i); b.arrayGet(1); }
+    else { b.localGet(0); b.structGet(4, 1); b.i32Const(r.i); b.arrayGet(1); }
+  }
+
+  constF64(x: number) {
+    return () => this.body.f64Const(x);
+  }
+
+  // Calls the closure in local `fc`; argEmit(k, ffp) stores argument k into
+  // the fresh frame at local ffp. The callee has the uniform CPS ABI
+  // (frame, k) -> i32. Leaves the result cell on the stack — or, when `tail`,
+  // returns the callee's result from the enclosing function directly
+  // (return_call_indirect passing the caller's k through, so tail recursion
+  // uses O(1) stack). A non-tail call passes k=0: the callee's dispatch(0, v)
+  // returns its result cell inline (today's zero-overhead arithmetic) — or,
+  // when `land`, a freshly allocated RET cell {K_RET, landA, $fp, k}:
+  // the callee's dispatch tail-calls the land thunk over the caller's frame
+  // and k, which dispatches the result into the caller's continuation (k=0
+  // here, so the value comes back to this call site and the body continues
+  // inline; the rest-of-site fragment machinery is in place for the
+  // suspendable constructs of later steps).
+  // A RET cell {K_RET, fragIdx, $fp, next} (§3): the continuation cell that
+  // tail-calls fragment `fragIdx` (T_III_I) over the caller's frame (local
+  // 0). `nextE` pushes the cell's next-pointer operand. Returns the cell.
+  retCell(fragIdx: number, nextE: () => void): number {
+    // Calls the closure in local `fc`; argEmit(k, ffp) stores argument k into
+    // the fresh frame at local ffp. The callee has the uniform CPS ABI
+    // (frame, k) -> i32. Leaves the result cell on the stack — or, when `tail`,
+    // returns the callee's result from the enclosing function directly
+    // (return_call_indirect passing the caller's k through, so tail recursion
+    // uses O(1) stack). A non-tail call passes k=0: the callee's dispatch(0, v)
+    // returns its result cell inline (today's zero-overhead arithmetic) — or,
+    // when `land`, a freshly allocated RET cell {K_RET, landA, $fp, k}:
+    // the callee's dispatch tail-calls the land thunk over the caller's frame
+    // and k, which dispatches the result into the caller's continuation (k=0
+    // here, so the value comes back to this call site and the body continues
+    // inline; the rest-of-site fragment machinery is in place for the
+    // suspendable constructs of later steps).
+    // A RET cell {K_RET, fragIdx, $fp, next} (§3): the continuation cell that
+    // tail-calls fragment `fragIdx` (T_III_I) over the caller's frame (local
+    // 0). `nextE` pushes the cell's next-pointer operand. Returns the cell.
+    const b = this.body;
+    const cell = this.anyref();
+    b.i32Const(w.K_RET);
+    b.refI31();
+    b.i32Const(fragIdx);
+    b.refI31();
+    b.localGet(0); // b = the frame the fragment runs over
+    nextE();
+    b.refCast(5, true);
+    b.structNew(5);
+    b.localSet(cell);
+    return cell;
+  }
+
+  // A K_SPILL cell {K_SPILL, snapshot, null, next} chained in front of a
+  // split site's rest fragment. The snapshot freezes the values the rest
+  // fragment reloads from operand-spill slots: on the fresh path it is a
+  // copy of the current frame image taken at the split site (per capture —
+  // this cell is allocated at runtime on every site execution and copied
+  // into every continuation captured here, so multi-shot resumes each see
+  // the pre-perform values, matching the interpreter's CPS accs); on a
+  // fragment re-emission it is the enclosing fragment's snapshot (the same
+  // capture's frozen values — nested split sites inside the fragment must
+  // not re-freeze the already-mutated frame).
+  snapWrap(ctx: Ctx, nextE: () => void): number {
+    // A K_SPILL cell {K_SPILL, snapshot, null, next} chained in front of a
+    // split site's rest fragment. The snapshot freezes the values the rest
+    // fragment reloads from operand-spill slots: on the fresh path it is a
+    // copy of the current frame image taken at the split site (per capture —
+    // this cell is allocated at runtime on every site execution and copied
+    // into every continuation captured here, so multi-shot resumes each see
+    // the pre-perform values, matching the interpreter's CPS accs); on a
+    // fragment re-emission it is the enclosing fragment's snapshot (the same
+    // capture's frozen values — nested split sites inside the fragment must
+    // not re-freeze the already-mutated frame).
+    const b = this.body;
+    const ksp = this.anyref(), snapv = this.anyref();
+    if (ctx.snap !== undefined) {
+      b.localGet(ctx.snap);
+      b.localSet(snapv);
+    } else {
+      // Fresh $FRAME {same parent, slots array copied via array.copy} — the
+      // per-capture freeze (shallow slot copy, same as the old block copy).
+      b.localGet(0); b.structGet(4, 1); b.arrayLen();
+      b.arrayNew(1);
+      b.localSet(snapv);
+      b.localGet(snapv);
+      b.refCast(1, true);
+      b.i32Const(0);
+      b.localGet(0); b.structGet(4, 1);
+      b.i32Const(0);
+      b.localGet(0); b.structGet(4, 1); b.arrayLen();
+      b.arrayCopy(1, 1);
+      b.localGet(0); b.structGet(4, 0);
+      b.localGet(snapv);
+      b.refCast(1, true);
+      b.structNew(4);
+      b.localSet(snapv);
+    }
+    b.i32Const(w.K_SPILL);
+    b.refI31();
+    b.localGet(snapv);
+    b.refNull(w.ANYREF); // b unused (was UNIT_CELL)
+    nextE();
+    b.refCast(5, true);
+    b.structNew(5);
+    b.localSet(ksp);
+    return ksp;
+  }
+}
 
 // Value-explicit rewrite (stage 1): every expression emitter RETURNS a
 // ValueRef instead of leaving a cell pointer on the wasm operand stack.
@@ -926,14 +1048,6 @@ class Split extends Error {
 
 // The cut-path child check: when re-emitting along a split's chain, the
 // --- compiler ---------------------------------------------------------------
-
-type Scope = {
-  frame: {slots: number}, // frame identity: changes only at lambda boundaries
-  parent: Scope | null,
-  map: Map<string, number>,
-};
-
-export class WasmError extends Error {}
 
 export function compile(src: string): Uint8Array {
   return compileWithOps(src).bytes;
@@ -1337,7 +1451,7 @@ function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
     switch (e.t) {
       case "lambda":
         ix.lambdaIdx.set(id, ix.fLambda0 + ix.lambdaIdx.size);
-        ix.funcRefTypes.set(ix.lambdaIdx.get(id)!, T_KABI); // sigs resolve before emission
+        ix.funcRefTypes.set(ix.lambdaIdx.get(id)!, w.T_KABI); // sigs resolve before emission
         assignLambdas(e.body);
         break;
       case "let":
@@ -1491,29 +1605,29 @@ function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
   const idf = new Fn(2);
   idf.idx = ix.fLambda0 + ix.lambdaIdx.size;
   ix.identityRet = idf;
-  ix.funcRefTypes.set(idf.idx, T_KABI);
+  ix.funcRefTypes.set(idf.idx, w.T_KABI);
   let next = idf.idx + 1;
   for (const [hdlId, info] of d.hdlCases) {
     const fs = frameSizeOf(ix, info.scope);
     for (const c of info.cases) {
       c.fn.idx = next++;
-      ix.funcRefTypes.set(c.fn.idx, T_KABI);
+      ix.funcRefTypes.set(c.fn.idx, w.T_KABI);
       c.fsize = fs;
     }
     if (info.retCase !== null) {
       info.retCase.fn.idx = next++;
-      ix.funcRefTypes.set(info.retCase.fn.idx, T_KABI);
+      ix.funcRefTypes.set(info.retCase.fn.idx, w.T_KABI);
       info.retCase.fsize = fs;
     } else if (info.npMax > 0) {
       const idr = new Fn(2);
       idr.idx = next++;
-      ix.funcRefTypes.set(idr.idx, T_KABI);
+      ix.funcRefTypes.set(idr.idx, w.T_KABI);
       ix.hdlIdRet.set(hdlId, idr);
     }
   }
   const rf = new Fn(2);
   rf.idx = next++;
-  ix.funcRefTypes.set(rf.idx, T_KABI);
+  ix.funcRefTypes.set(rf.idx, w.T_KABI);
   ix.resumeFn = rf;
   ix.caseFnTotal = next - idf.idx;
   // Land thunks occupy the table slots between builtins and main; builtin
@@ -1524,7 +1638,7 @@ function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
   ix.thunk0 = ix.builtin0 + builtins.length;
   for (let i = 0; i < builtins.length; i++) {
     ix.builtinFnIdx.set(builtins[i].name, ix.builtin0 + i);
-    ix.funcRefTypes.set(ix.builtin0 + i, T_KABI); // sigs resolve before emission
+    ix.funcRefTypes.set(ix.builtin0 + i, w.T_KABI); // sigs resolve before emission
   }
   return ix;
 }
@@ -1606,32 +1720,32 @@ function layoutStatics(d: Discovery, ix: Indices, o: Opt): Layout {
 // Reads Discovery's split-site set; shared by assignIndices'
 // spill walk and the emitters' cut machinery.
 function splits(prog: Program, d: Discovery, id: ExprID): boolean {
-    const e = prog.nodes[id];
-    switch (e.t) {
-      case "perform":
-      case "handle":
-        return true;
-      case "lambda":
-        return false;
-      case "block":
-        return e.stmts.some(st2 => splits(prog, d, st2));
-      case "let":
-      case "assign":
-      case "dlet":
-        return splits(prog, d, e.val);
-      case "if":
-        return splits(prog, d, e.c) || splits(prog, d, e.a) || splits(prog, d, e.b);
-      case "while":
-        return splits(prog, d, e.c) || splits(prog, d, e.body);
-      case "app":
-        return d.landCalls.has(id) || splits(prog, d, e.fn) || e.args.some(a => splits(prog, d, a));
-      case "arr":
-        return e.elems.some(el => splits(prog, d, el));
-      case "field":
-        return splits(prog, d, e.obj);
-      default:
-        return false; // num/str/bool/unit/sym
-    }
+  const e = prog.nodes[id];
+  switch (e.t) {
+    case "perform":
+    case "handle":
+      return true;
+    case "lambda":
+      return false;
+    case "block":
+      return e.stmts.some(st2 => splits(prog, d, st2));
+    case "let":
+    case "assign":
+    case "dlet":
+      return splits(prog, d, e.val);
+    case "if":
+      return splits(prog, d, e.c) || splits(prog, d, e.a) || splits(prog, d, e.b);
+    case "while":
+      return splits(prog, d, e.c) || splits(prog, d, e.body);
+    case "app":
+      return d.landCalls.has(id) || splits(prog, d, e.fn) || e.args.some(a => splits(prog, d, a));
+    case "arr":
+      return e.elems.some(el => splits(prog, d, el));
+    case "field":
+      return splits(prog, d, e.obj);
+    default:
+      return false; // num/str/bool/unit/sym
+  }
 }
 
 // Frame size of a scope's frame: named slots + perform spill slots (§4.2).
@@ -1642,86 +1756,86 @@ function frameSizeOf(ix: Indices, sc: Scope): number {
 }
 
 function resolve(sc: Scope, name: string): {d: number, i: number} | null {
-    let d = 0;
-    let s: Scope | null = sc;
-    while (s !== null) {
-      const i = s.map.get(name);
-      if (i !== undefined) return {d, i};
-      if (s.parent !== null && s.parent.frame !== s.frame) d++;
-      s = s.parent;
-    }
-    return null;
+  let d = 0;
+  let s: Scope | null = sc;
+  while (s !== null) {
+    const i = s.map.get(name);
+    if (i !== undefined) return {d, i};
+    if (s.parent !== null && s.parent.frame !== s.frame) d++;
+    s = s.parent;
+  }
+  return null;
 }
 
 // --- assembly -----------------------------------------------------------------
 
 function staticInit(m: binaryen.Module, d: StaticDesc): binaryen.ExpressionRef {
-    const HT = _T.HT;
-    switch (d.t) {
-      case "null": return m.ref.null(binaryen.anyref);
-      case "i31": return m.ref.i31(m.i32.const(d.v));
-      case "num": return m.struct.new([m.f64.const(d.v)], HT[0]);
-      case "str": {
-        const cs: binaryen.ExpressionRef[] = [];
-        for (let i = 0; i < d.s.length; i++) cs.push(m.i32.const(d.s.charCodeAt(i)));
-        return m.array.new_fixed(HT[2], cs);
-      }
-      case "clo":
-        return m.struct.new([
-          m.ref.i31(m.i32.const(d.fni)),
-          m.ref.null(heapTypes(4).n), // env: builtins run over the call frame itself
-          m.ref.i31(m.i32.const(d.fsize)),
-        ], HT[6]);
-      case "elems":
-        return m.array.new_fixed(HT[1], d.ws.map((w) => m.ref.i31(m.i32.const(w))));
+  const {HT} = _T;
+  switch (d.t) {
+    case "null": return m.ref.null(binaryen.anyref);
+    case "i31": return m.ref.i31(m.i32.const(d.v));
+    case "num": return m.struct.new([m.f64.const(d.v)], HT[0]);
+    case "str": {
+      const cs: binaryen.ExpressionRef[] = [];
+      for (let i = 0; i < d.s.length; i++) cs.push(m.i32.const(d.s.charCodeAt(i)));
+      return m.array.new_fixed(HT[2], cs);
     }
+    case "clo":
+      return m.struct.new([
+        m.ref.i31(m.i32.const(d.fni)),
+        m.ref.null(w.heapTypes(4).n), // env: builtins run over the call frame itself
+        m.ref.i31(m.i32.const(d.fsize)),
+      ], HT[6]);
+    case "elems":
+      return m.array.new_fixed(HT[1], d.ws.map((w) => m.ref.i31(m.i32.const(w))));
+  }
 }
 
 function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]): Uint8Array {
-    // import section
-    for (let i = 0; i < o.liveImports.length; i++) {
-      const n = o.liveImports[i];
-      const sig = SIGS[impType(n)];
-      m.addFunctionImport(`f${i}`, "env", n,
-        binaryen.createType(sig.p.map(vt)), sig.r === null ? binaryen.none : vt(sig.r));
-    }
-    // global section: immutable statics, each initialized by a GC constant
-    // expression (§5) — instantiation builds the value, no runtime fill.
-    for (let i = 0; i < lay.statics.length; i++)
-      m.addGlobal(`g${i}`, binaryen.anyref, false, staticInit(m, lay.statics[i]));
-    // table + functions + identity element segment (slot i → func i).
-    const total = o.liveImports.length + funcs.length;
-    m.addTable("t0", total, total);
-    for (let i = 0; i < funcs.length; i++) {
-      const f = funcs[i];
-      const funcrefIdx = o.liveImports.length + i;
-      const sig = SIGS[f.typeIdx] as {p: (number | number[])[], r: number | number[] | null} | undefined;
-      if (sig === undefined) throw new WasmError(`internal: fn ${funcrefIdx} has unknown type ${f.typeIdx}`);
-      m.addFunction(`f${funcrefIdx}`, binaryen.createType(sig.p.map(vt)),
-        sig.r === null ? binaryen.none : vt(sig.r), f.locals, f.body.finish());
-    }
-    m.addActiveElementSegment("t0", "e0",
-      Array.from({length: total}, (_, i) => `f${i}`), m.i32.const(0));
-    // exports: run + the 12 accessors (§4) — the last 13 functions
-    const expNames = ["run", "__tag", "__num", "__str_len", "__str_get",
-      "__arr_len", "__arr_get", "__mk_num", "__mk_bool", "__str_new",
-      "__str_set", "__arr_new", "__arr_set"];
-    for (let i = 0; i < expNames.length; i++)
-      m.addFunctionExport(`f${total - expNames.length + i}`, expNames[i]);
-    // shrink pass (wasm-opt in-process; shrink level 2 alone matches -Oz
-    // output size on our modules at ~1/3 the cost of full -Oz).
-    if (process.env["EF_SKIP_WASM_OPT"] !== "1") {
-      binaryen.setOptimizeLevel(0);
-      binaryen.setShrinkLevel(2);
-      m.optimize();
-    }
-    if (m.validate() === 0) {
-      if (DBGEMIT) console.error(m.emitText());
-      throw new WasmError("binaryen: compiled module failed validation");
-    }
-    const bytes = m.emitBinary();
-    m.dispose();
-    return bytes;
+  // import section
+  for (let i = 0; i < o.liveImports.length; i++) {
+    const n = o.liveImports[i];
+    const sig = SIGS[w.impType(n)];
+    m.addFunctionImport(`f${i}`, "env", n,
+      binaryen.createType(sig.p.map(vt)), sig.r === null ? binaryen.none : vt(sig.r));
+  }
+  // global section: immutable statics, each initialized by a GC constant
+  // expression (§5) — instantiation builds the value, no runtime fill.
+  for (let i = 0; i < lay.statics.length; i++)
+    m.addGlobal(`g${i}`, binaryen.anyref, false, staticInit(m, lay.statics[i]));
+  // table + functions + identity element segment (slot i → func i).
+  const total = o.liveImports.length + funcs.length;
+  m.addTable("t0", total, total);
+  for (let i = 0; i < funcs.length; i++) {
+    const f = funcs[i];
+    const funcrefIdx = o.liveImports.length + i;
+    const sig = SIGS[f.typeIdx] as {p: (number | number[])[], r: number | number[] | null} | undefined;
+    if (sig === undefined) throw new WasmError(`internal: fn ${funcrefIdx} has unknown type ${f.typeIdx}`);
+    m.addFunction(`f${funcrefIdx}`, binaryen.createType(sig.p.map(vt)),
+      sig.r === null ? binaryen.none : vt(sig.r), f.locals, f.body.finish());
+  }
+  m.addActiveElementSegment("t0", "e0",
+    Array.from({length: total}, (_, i) => `f${i}`), m.i32.const(0));
+  // exports: run + the 12 accessors (§4) — the last 13 functions
+  const expNames = ["run", "__tag", "__num", "__str_len", "__str_get",
+    "__arr_len", "__arr_get", "__mk_num", "__mk_bool", "__str_new",
+    "__str_set", "__arr_new", "__arr_set"];
+  for (let i = 0; i < expNames.length; i++)
+    m.addFunctionExport(`f${total - expNames.length + i}`, expNames[i]);
+  // shrink pass (wasm-opt in-process; shrink level 2 alone matches -Oz
+  // output size on our modules at ~1/3 the cost of full -Oz).
+  if (process.env["EF_SKIP_WASM_OPT"] !== "1") {
+    binaryen.setOptimizeLevel(0);
+    binaryen.setShrinkLevel(2);
+    m.optimize();
+  }
+  if (m.validate() === 0) {
+    if (DBGEMIT) console.error(m.emitText());
+    throw new WasmError("binaryen: compiled module failed validation");
+  }
+  const bytes = m.emitBinary();
+  m.dispose();
+  return bytes;
 }
 
 // --- compiler -----------------------------------------------------------------
@@ -1802,16 +1916,13 @@ function emit(prog: Program, d: Discovery, o: Opt, ix: Indices, lay: Layout): Fn
   return em.funcs;
 }
 
-
-const constF64 = (f: Fn, x: number) => () => f.body.f64Const(x);
-
 // Signature of a direct-call target by funcref index: imports carry their
 // type by name; defined functions registered at index assignment.
 function sigOf(em: Emit, funcrefIdx: number): {ps: binaryen.Type[], r: binaryen.Type | null} {
-// Signature of a direct-call target by funcref index: imports carry their
-// type by name; defined functions registered at index assignment.
+  // Signature of a direct-call target by funcref index: imports carry their
+  // type by name; defined functions registered at index assignment.
   const typeIdx = funcrefIdx < em.o.liveImports.length
-    ? impType(em.o.liveImports[funcrefIdx])
+    ? w.impType(em.o.liveImports[funcrefIdx])
     : em.ix.funcRefTypes.get(funcrefIdx);
   const sig = SIGS[typeIdx!] as {p: (number | number[])[], r: number | number[] | null} | undefined;
   if (sig === undefined) {
@@ -1829,7 +1940,7 @@ function emitLambdas(em: Emit, id: ExprID): void {
     case "lambda": {
       const f = new Fn(2, em);
       f.idx = em.ix.lambdaIdx.get(id)!; // funcref index (assignLambdas order)
-      em.ix.funcRefTypes.set(f.idx, T_KABI);
+      em.ix.funcRefTypes.set(f.idx, w.T_KABI);
       // bodyCatch emits the body and its completion dispatch (dead when
       // the body ended in a tail call or split).
       bodyCatch(em, e.body, f, em.d.scopes.get(id)!, true, INLINE);
@@ -1884,15 +1995,15 @@ function emitLambdas(em: Emit, id: ExprID): void {
 // slot npMax+1 for a per-handler fn — where emitDispatch stashes it for
 // the matching nparams) through their k — eval.ts:132's (v, k2) => k2(v).
 function emitCaseFns(em: Emit): void {
-// 4b. Handler case function bodies (§4.4). Each case body runs over the
-// handler's shared hframe (its frame param) with k = HDL.next — the
-// two-k rule: the ambient continuation is the one captured OUTSIDE the
-// handler, so a perform inside a case body walks from there and never
-// re-enters its own handler, and a case body finishing normally
-// dispatches straight through it (no Return re-wrap). The identity fns
-// dispatch their frame's Return value (slot 1 for the shared npMax=0 fn,
-// slot npMax+1 for a per-handler fn — where emitDispatch stashes it for
-// the matching nparams) through their k — eval.ts:132's (v, k2) => k2(v).
+  // 4b. Handler case function bodies (§4.4). Each case body runs over the
+  // handler's shared hframe (its frame param) with k = HDL.next — the
+  // two-k rule: the ambient continuation is the one captured OUTSIDE the
+  // handler, so a perform inside a case body walks from there and never
+  // re-enters its own handler, and a case body finishing normally
+  // dispatches straight through it (no Return re-wrap). The identity fns
+  // dispatch their frame's Return value (slot 1 for the shared npMax=0 fn,
+  // slot npMax+1 for a per-handler fn — where emitDispatch stashes it for
+  // the matching nparams) through their k — eval.ts:132's (v, k2) => k2(v).
   const idf = em.ix.identityRet;
   idf.em = em;
   {
@@ -1969,10 +2080,10 @@ function emitCaseFns(em: Emit): void {
     b.refCast(5, true);
     b.localGet(hdl);
     b.refCast(5, true);
-    b.u8(CALL);
+    b.u8(w.CALL);
     b.lebU(em.ix.fCapture);
     b.localSet(copy);
-    b.i32Const(K_HDL);
+    b.i32Const(w.K_HDL);
     b.refI31();
     b.localGet(hdl);
     b.refCast(5, true);
@@ -1987,9 +2098,9 @@ function emitCaseFns(em: Emit): void {
     b.localSet(fresh);
     b.localGet(copy);
     b.localSet(cur);
-    b.u8(BLOCK);
+    b.u8(w.BLOCK);
     b.u8(0x40);
-    b.u8(LOOP);
+    b.u8(w.LOOP);
     b.u8(0x40);
     b.localGet(cur);
     b.refCast(5, true);
@@ -1997,16 +2108,16 @@ function emitCaseFns(em: Emit): void {
     b.localGet(hdl);
     b.refCast(5, true);
     b.refEq();
-    b.u8(BR_IF);
+    b.u8(w.BR_IF);
     b.lebU(1); // cur is the bottom copy (its next is the old HDL)
     b.localGet(cur);
     b.refCast(5, true);
     b.structGet(5, 3);
     b.localSet(cur);
-    b.u8(BR);
+    b.u8(w.BR);
     b.lebU(0);
-    b.u8(END);
-    b.u8(END);
+    b.u8(w.END);
+    b.u8(w.END);
     b.localGet(cur);
     b.refCast(5, true);
     b.localGet(fresh);
@@ -2021,7 +2132,7 @@ function emitStmtSeq(em: Emit, stmts: ExprID[], f: Fn, sc: Scope, tail: boolean,
   const b = f.body;
   if (stmts.length === 0) {
     const v = f.anyref();
-    pushRef(f, em.lay.unitRef);
+    f.pushRef(em.lay.unitRef);
     b.localSet(v);
     emitDispatch(em, f, v, ctx.kL);
     return;
@@ -2029,7 +2140,7 @@ function emitStmtSeq(em: Emit, stmts: ExprID[], f: Fn, sc: Scope, tail: boolean,
   for (let k = 0; k < stmts.length; k++) {
     const r = expr(em, stmts[k], f, sc, tail && k === stmts.length - 1, ctx);
     if (k === stmts.length - 1) {
-      pushRef(f, r);
+      f.pushRef(r);
       const v = f.anyref();
       b.localSet(v);
       emitDispatch(em, f, v, ctx.kL);
@@ -2042,10 +2153,10 @@ function emitStmtSeq(em: Emit, stmts: ExprID[], f: Fn, sc: Scope, tail: boolean,
 // Lambda and case bodies are split boundaries: the chain never crosses a
 // lambda call, so each body's catcher owns its sites' fragments.
 function bodyCatch(em: Emit, bodyId: ExprID, f: Fn, sc: Scope, tail: boolean, ctx: Ctx): void {
-// Emit a lambda/case body, catching the Split of a perform/handle site
-// inside it and filling that site's rest-of-site fragment (see fillRest).
-// Lambda and case bodies are split boundaries: the chain never crosses a
-// lambda call, so each body's catcher owns its sites' fragments.
+  // Emit a lambda/case body, catching the Split of a perform/handle site
+  // inside it and filling that site's rest-of-site fragment (see fillRest).
+  // Lambda and case bodies are split boundaries: the chain never crosses a
+  // lambda call, so each body's catcher owns its sites' fragments.
   const savedCut = em.sp.cutStack;
   const bodyE = em.nodes[bodyId];
   const stmts = bodyE.t === "block" ? bodyE.stmts : [bodyId];
@@ -2073,12 +2184,12 @@ function bodyCatch(em: Emit, bodyId: ExprID, f: Fn, sc: Scope, tail: boolean, ct
 // the v param, statements after it re-emit inline. A further split during
 // re-emission chains another fragment off this one's split site.
 function fillRest(em: Emit, sp: Split, root: ExprID[], sc: Scope, tail: boolean): void {
-// Fill a split's rest-of-site fragment (T_III_I: frame, v, kNext) by
-// re-emitting from the body root along the split's chain: statements
-// before the cut already executed (skipped; surviving values reload from
-// spill slots), the cut site continues the fragment with its value being
-// the v param, statements after it re-emit inline. A further split during
-// re-emission chains another fragment off this one's split site.
+  // Fill a split's rest-of-site fragment (T_III_I: frame, v, kNext) by
+  // re-emitting from the body root along the split's chain: statements
+  // before the cut already executed (skipped; surviving values reload from
+  // spill slots), the cut site continues the fragment with its value being
+  // the v param, statements after it re-emit inline. A further split during
+  // re-emission chains another fragment off this one's split site.
   const gf = sp.restFn;
   if (DBGEMIT) console.error("FILL_REST fn=", gf.idx, "root=", root.length, "chain=", sp.chain.length, "types=", "[" + sp.chain.map((x) => em.nodes[x]?.t).join(",") + "]", "tail=", tail);
   // A shared after-rest fragment (e.g. a handle's) may be routed here
@@ -2098,18 +2209,18 @@ function fillRest(em: Emit, sp: Split, root: ExprID[], sc: Scope, tail: boolean)
   const snap = gf.anyref();
   b.localGet(2);
   b.u8(0xd1); // ref.is_null: k = null → nothing froze a snapshot
-  b.u8(IF);
+  b.u8(w.IF);
   b.u8(0x40);
   b.localGet(0); // live frame: snapSlot reads hit the frame param
   b.localSet(snap);
-  b.u8(ELSE);
+  b.u8(w.ELSE);
   b.localGet(2);
   b.refCast(5, true);
   b.structGet(5, 0);
   b.i31Get();
-  b.i32Const(K_SPILL);
-  b.u8(EQ);
-  b.u8(IF);
+  b.i32Const(w.K_SPILL);
+  b.u8(w.EQ);
+  b.u8(w.IF);
   b.u8(0x40);
   b.localGet(2);
   b.refCast(5, true);
@@ -2119,8 +2230,8 @@ function fillRest(em: Emit, sp: Split, root: ExprID[], sc: Scope, tail: boolean)
   b.refCast(5, true);
   b.structGet(5, 3);
   b.localSet(2);
-  b.u8(END);
-  b.u8(END);
+  b.u8(w.END);
+  b.u8(w.END);
   const ci = root.indexOf(sp.chain[0]);
   if (ci < 0) throw new WasmError("internal: split chain root mismatch");
   const savedCut = em.sp.cutStack;
@@ -2131,7 +2242,7 @@ function fillRest(em: Emit, sp: Split, root: ExprID[], sc: Scope, tail: boolean)
         ? expr(em, sp.chain[0], gf, sc, tail && k === root.length - 1, {kL: 2, cut: sp.chain.slice(1), snap})
         : expr(em, root[k], gf, sc, tail && k === root.length - 1, {kL: 2, snap});
       if (k === root.length - 1) {
-        pushRef(gf, r);
+        gf.pushRef(r);
         const v = gf.anyref();
         gf.body.localSet(v);
         emitDispatch(em, gf, v, 2); // kNext param
@@ -2157,12 +2268,12 @@ function fillRest(em: Emit, sp: Split, root: ExprID[], sc: Scope, tail: boolean)
 // Returns the last statement's ref; pushRef it where the caller needs the
 // legacy stack operand (handle/while-cut do, block-cut returns it).
 function emitStmtsFrom(em: Emit, stmts: ExprID[], f: Fn, s: Scope, ctx: Ctx, ci: number, cut: ExprID[], tail: boolean): ValueRef {
-// Fragment re-emission of a statement sequence from a cut statement:
-// statements before index ci already executed (skipped — surviving values
-// reload from spill slots), stmts[ci] continues the fragment with its
-// value being the fragment's v param, statements after it re-emit inline.
-// Returns the last statement's ref; pushRef it where the caller needs the
-// legacy stack operand (handle/while-cut do, block-cut returns it).
+  // Fragment re-emission of a statement sequence from a cut statement:
+  // statements before index ci already executed (skipped — surviving values
+  // reload from spill slots), stmts[ci] continues the fragment with its
+  // value being the fragment's v param, statements after it re-emit inline.
+  // Returns the last statement's ref; pushRef it where the caller needs the
+  // legacy stack operand (handle/while-cut do, block-cut returns it).
   let r: ValueRef = em.lay.unitRef;
   for (let k = ci; k < stmts.length; k++) {
     r = (k === ci)
@@ -2177,27 +2288,27 @@ function emitHelpers(em: Emit): Fn[] {
   // any) and the bool i31 0 (matches `c !== false && c !== null`); every
   // $NUM (including 0.0), $STR, $ARR and $CLO is truthy.
   const truthy = new Fn(1, em);
-  truthy.typeIdx = T_TRUTHY;
-  em.ix.funcRefTypes.set(em.ix.fTruthy, T_TRUTHY);
+  truthy.typeIdx = w.T_TRUTHY;
+  em.ix.funcRefTypes.set(em.ix.fTruthy, w.T_TRUTHY);
   {
     const b = truthy.body;
     b.localGet(0);
     b.u8(0xd1); // ref.is_null
-    b.u8(IF);
+    b.u8(w.IF);
     b.u8(0x7f);
     b.i32Const(0);
-    b.u8(ELSE);
+    b.u8(w.ELSE);
     b.localGet(0);
-    b.refTest(I31REF, true); // ref.test (ref null i31)
-    b.u8(IF);
+    b.refTest(w.I31REF, true); // ref.test (ref null i31)
+    b.u8(w.IF);
     b.u8(0x7f);
     b.localGet(0);
-    b.refCast(I31REF, false);
+    b.refCast(w.I31REF, false);
     b.i31Get(); // i31.get_u
-    b.u8(ELSE);
+    b.u8(w.ELSE);
     b.i32Const(1);
-    b.u8(END);
-    b.u8(END);
+    b.u8(w.END);
+    b.u8(w.END);
   }
   // $eq(a: anyref, b: anyref) -> anyref bool: JS === — nums by f64
   // payload, bools by i31 payload, strings by i16 content, arrays/
@@ -2205,8 +2316,8 @@ function emitHelpers(em: Emit): Fn[] {
   // identity survives `set` growth because growth repoints the wrapper's
   // backing, not the wrapper), unit (null) equal only to unit.
   const eq = new Fn(2, em);
-  eq.typeIdx = T_EQ;
-  em.ix.funcRefTypes.set(em.ix.fEq, T_EQ);
+  eq.typeIdx = w.T_EQ;
+  em.ix.funcRefTypes.set(em.ix.fEq, w.T_EQ);
   {
     const b = eq.body;
     const res = eq.i32();
@@ -2219,56 +2330,56 @@ function emitHelpers(em: Emit): Fn[] {
     b.u8(0xd1);
     b.localGet(1);
     b.u8(0xd1);
-    b.u8(EQ);
-    b.u8(IF);
+    b.u8(w.EQ);
+    b.u8(w.IF);
     b.u8(0x7f);
     b.localGet(0);
     b.u8(0xd1);
-    b.u8(ELSE);
+    b.u8(w.ELSE);
     b.i32Const(0);
-    b.u8(END);
+    b.u8(w.END);
     b.localSet(res);
     // one null, one not: the ladder answered (false).
     b.localGet(0);
     b.u8(0xd1);
     b.localGet(1);
     b.u8(0xd1);
-    b.u8(EQ);
-    b.u8(EQZ);
+    b.u8(w.EQ);
+    b.u8(w.EQZ);
     b.localSet(decided);
     // bool == bool: i31 payloads.
     b.localGet(0);
-    b.refTest(I31REF, true);
+    b.refTest(w.I31REF, true);
     b.localGet(1);
-    b.refTest(I31REF, true);
-    b.u8(AND);
-    b.u8(IF);
+    b.refTest(w.I31REF, true);
+    b.u8(w.AND);
+    b.u8(w.IF);
     b.u8(0x40);
     b.localGet(0);
-    b.refCast(I31REF, false);
+    b.refCast(w.I31REF, false);
     b.i31Get();
     b.localGet(1);
-    b.refCast(I31REF, false);
+    b.refCast(w.I31REF, false);
     b.i31Get();
-    b.u8(EQ);
+    b.u8(w.EQ);
     b.localSet(res);
     // decided: the bool path answered.
     b.localGet(0);
-    b.refTest(I31REF, true);
+    b.refTest(w.I31REF, true);
     b.localGet(1);
-    b.refTest(I31REF, true);
-    b.u8(AND);
+    b.refTest(w.I31REF, true);
+    b.u8(w.AND);
     b.localGet(decided);
-    b.u8(OR); // i32.or
+    b.u8(w.OR); // i32.or
     b.localSet(decided);
-    b.u8(END);
+    b.u8(w.END);
     // num == num: f64 payloads.
     b.localGet(0);
     b.refTest(0, true);
     b.localGet(1);
     b.refTest(0, true);
-    b.u8(AND);
-    b.u8(IF);
+    b.u8(w.AND);
+    b.u8(w.IF);
     b.u8(0x40);
     b.localGet(0);
     b.refCast(0, true);
@@ -2276,25 +2387,25 @@ function emitHelpers(em: Emit): Fn[] {
     b.localGet(1);
     b.refCast(0, true);
     b.structGet(0, 0);
-    b.u8(FEQ);
+    b.u8(w.FEQ);
     b.localSet(res);
     // decided: the num path answered.
     b.localGet(0);
     b.refTest(0, true);
     b.localGet(1);
     b.refTest(0, true);
-    b.u8(AND);
+    b.u8(w.AND);
     b.localGet(decided);
-    b.u8(OR); // i32.or
+    b.u8(w.OR); // i32.or
     b.localSet(decided);
-    b.u8(END);
+    b.u8(w.END);
     // str == str: i16 content.
     b.localGet(0);
     b.refTest(2, true);
     b.localGet(1);
     b.refTest(2, true);
-    b.u8(AND);
-    b.u8(IF);
+    b.u8(w.AND);
+    b.u8(w.IF);
     b.u8(0x40);
     const la = eq.i32(), lb = eq.i32();
     b.localGet(0);
@@ -2307,9 +2418,9 @@ function emitHelpers(em: Emit): Fn[] {
     b.localSet(lb);
     b.localGet(la);
     b.localGet(lb);
-    b.u8(EQ);
+    b.u8(w.EQ);
     b.localSet(res);
-    loop(eq, () => {
+    eq.loop(() => {
       b.localGet(la);
     }, i => {
       b.localGet(res);
@@ -2321,32 +2432,32 @@ function emitHelpers(em: Emit): Fn[] {
       b.refCast(2, true);
       b.localGet(i);
       b.arrayGet(2);
-      b.u8(EQ);
-      b.u8(AND);
+      b.u8(w.EQ);
+      b.u8(w.AND);
       b.localSet(res);
     });
-    b.u8(END);
+    b.u8(w.END);
     // Mixed/same-shape-arr/clo → identity (both operands cast through
     // (ref null eq); a nullable cast accepts null but the null ladder
     // already left). Only runs when no typed path answered.
     b.localGet(decided);
-    b.u8(EQZ);
-    b.u8(IF);
+    b.u8(w.EQZ);
+    b.u8(w.IF);
     b.u8(0x40);
     b.localGet(0);
-    b.refCast(EQREF, true);
+    b.refCast(w.EQREF, true);
     b.localGet(1);
-    b.refCast(EQREF, true);
+    b.refCast(w.EQREF, true);
     b.refEq();
     b.localSet(res);
-    b.u8(END);
+    b.u8(w.END);
     b.localGet(res);
     b.refI31();
   }
   // $box(x: f64) -> anyref: number struct.
   const box = new Fn(1, em);
-  box.typeIdx = T_BOX;
-  em.ix.funcRefTypes.set(em.ix.fBox, T_BOX);
+  box.typeIdx = w.T_BOX;
+  em.ix.funcRefTypes.set(em.ix.fBox, w.T_BOX);
   box.body.localGet(0);
   box.body.structNew(0);
   // $captureSlice(k: (ref null $K), until: (ref null $K)) -> (ref null $K):
@@ -2356,8 +2467,8 @@ function emitHelpers(em: Emit): Fn[] {
   // n cells into a temp $ELEMS and link them (a $K cell is singly linked
   // forward, so the copies are chained bottom-up out of the temp array).
   const capture = new Fn(2, em);
-  capture.typeIdx = T_CAPTURE;
-  em.ix.funcRefTypes.set(em.ix.fCapture, T_CAPTURE);
+  capture.typeIdx = w.T_CAPTURE;
+  em.ix.funcRefTypes.set(em.ix.fCapture, w.T_CAPTURE);
   {
     const b = capture.body;
     const n = capture.i32(), cur = capture.anyref(), tmp = capture.anyref();
@@ -2366,28 +2477,28 @@ function emitHelpers(em: Emit): Fn[] {
     b.localSet(n);
     b.localGet(0);
     b.localSet(cur);
-    b.u8(BLOCK);
+    b.u8(w.BLOCK);
     b.u8(0x40);
-    b.u8(LOOP);
+    b.u8(w.LOOP);
     b.u8(0x40);
     b.localGet(cur);
     b.refCast(5, true);
     b.localGet(1);
     b.refEq();
-    b.u8(BR_IF);
+    b.u8(w.BR_IF);
     b.lebU(1);
     b.localGet(n);
     b.i32Const(1);
-    b.u8(ADD);
+    b.u8(w.ADD);
     b.localSet(n);
     b.localGet(cur);
     b.refCast(5, true);
     b.structGet(5, 3);
     b.localSet(cur);
-    b.u8(BR);
+    b.u8(w.BR);
     b.lebU(0);
-    b.u8(END);
-    b.u8(END);
+    b.u8(w.END);
+    b.u8(w.END);
     b.localGet(n);
     b.arrayNew(1);
     b.localSet(tmp);
@@ -2395,14 +2506,14 @@ function emitHelpers(em: Emit): Fn[] {
     b.localSet(src);
     b.i32Const(0);
     b.localSet(i);
-    b.u8(BLOCK);
+    b.u8(w.BLOCK);
     b.u8(0x40);
-    b.u8(LOOP);
+    b.u8(w.LOOP);
     b.u8(0x40);
     b.localGet(i);
     b.localGet(n);
-    b.u8(GEU);
-    b.u8(BR_IF);
+    b.u8(w.GEU);
+    b.u8(w.BR_IF);
     b.lebU(1);
     b.localGet(tmp);
     b.refCast(1, true);
@@ -2421,26 +2532,26 @@ function emitHelpers(em: Emit): Fn[] {
     b.arraySet();
     b.localGet(i);
     b.i32Const(1);
-    b.u8(ADD);
+    b.u8(w.ADD);
     b.localSet(i);
     b.localGet(src);
     b.refCast(5, true);
     b.structGet(5, 3);
     b.localSet(src);
-    b.u8(BR);
+    b.u8(w.BR);
     b.lebU(0);
-    b.u8(END);
-    b.u8(END);
+    b.u8(w.END);
+    b.u8(w.END);
     b.i32Const(0);
     b.localSet(i);
-    b.u8(BLOCK);
+    b.u8(w.BLOCK);
     b.u8(0x40);
-    b.u8(LOOP);
+    b.u8(w.LOOP);
     b.u8(0x40);
     b.localGet(i);
     b.localGet(n);
-    b.u8(GEU);
-    b.u8(BR_IF);
+    b.u8(w.GEU);
+    b.u8(w.BR_IF);
     b.lebU(1);
     b.localGet(tmp);
     b.refCast(1, true);
@@ -2452,29 +2563,29 @@ function emitHelpers(em: Emit): Fn[] {
     // (an op-pushed read would re-read the incremented i at its consumer).
     b.localGet(i);
     b.i32Const(1);
-    b.u8(ADD);
+    b.u8(w.ADD);
     b.localSet(i);
     b.localGet(cell);
     b.refCast(5, true); // the local is anyref; struct.set needs the exact $K type
     b.localGet(i);
     b.localGet(n);
-    b.u8(GEU);
-    b.u8(IF);
+    b.u8(w.GEU);
+    b.u8(w.IF);
     b.u8(0x63);
     b.u8(5); // next = until (the bottom of the slice)
     b.localGet(1);
-    b.u8(ELSE);
+    b.u8(w.ELSE);
     b.localGet(tmp);
     b.refCast(1, true);
     b.localGet(i);
     b.arrayGet(1);
     b.refCast(5, true);
-    b.u8(END);
+    b.u8(w.END);
     b.structSet(3);
-    b.u8(BR);
+    b.u8(w.BR);
     b.lebU(0);
-    b.u8(END);
-    b.u8(END);
+    b.u8(w.END);
+    b.u8(w.END);
     b.localGet(tmp);
     b.refCast(1, true);
     b.i32Const(0);
@@ -2507,109 +2618,6 @@ function emitSym(em: Emit, f: Fn, sc: Scope, name: string): ValueRef {
   const clo = em.lay.cloOffsets.get(name);
   if (clo !== undefined) return {k: "g", gi: clo};
   throw new WasmError(`Unbound symbol: ${name}`);
-}
-
-// Calls the closure in local `fc`; argEmit(k, ffp) stores argument k into
-// the fresh frame at local ffp. The callee has the uniform CPS ABI
-// (frame, k) -> i32. Leaves the result cell on the stack — or, when `tail`,
-// returns the callee's result from the enclosing function directly
-// (return_call_indirect passing the caller's k through, so tail recursion
-// uses O(1) stack). A non-tail call passes k=0: the callee's dispatch(0, v)
-// returns its result cell inline (today's zero-overhead arithmetic) — or,
-// when `land`, a freshly allocated RET cell {K_RET, landA, $fp, k}:
-// the callee's dispatch tail-calls the land thunk over the caller's frame
-// and k, which dispatches the result into the caller's continuation (k=0
-// here, so the value comes back to this call site and the body continues
-// inline; the rest-of-site fragment machinery is in place for the
-// suspendable constructs of later steps).
-// A RET cell {K_RET, fragIdx, $fp, next} (§3): the continuation cell that
-// tail-calls fragment `fragIdx` (T_III_I) over the caller's frame (local
-// 0). `nextE` pushes the cell's next-pointer operand. Returns the cell.
-function retCell(f: Fn, fragIdx: number, nextE: () => void): number {
-// Calls the closure in local `fc`; argEmit(k, ffp) stores argument k into
-// the fresh frame at local ffp. The callee has the uniform CPS ABI
-// (frame, k) -> i32. Leaves the result cell on the stack — or, when `tail`,
-// returns the callee's result from the enclosing function directly
-// (return_call_indirect passing the caller's k through, so tail recursion
-// uses O(1) stack). A non-tail call passes k=0: the callee's dispatch(0, v)
-// returns its result cell inline (today's zero-overhead arithmetic) — or,
-// when `land`, a freshly allocated RET cell {K_RET, landA, $fp, k}:
-// the callee's dispatch tail-calls the land thunk over the caller's frame
-// and k, which dispatches the result into the caller's continuation (k=0
-// here, so the value comes back to this call site and the body continues
-// inline; the rest-of-site fragment machinery is in place for the
-// suspendable constructs of later steps).
-// A RET cell {K_RET, fragIdx, $fp, next} (§3): the continuation cell that
-// tail-calls fragment `fragIdx` (T_III_I) over the caller's frame (local
-// 0). `nextE` pushes the cell's next-pointer operand. Returns the cell.
-  const b = f.body;
-  const cell = f.anyref();
-  b.i32Const(K_RET);
-  b.refI31();
-  b.i32Const(fragIdx);
-  b.refI31();
-  b.localGet(0); // b = the frame the fragment runs over
-  nextE();
-  b.refCast(5, true);
-  b.structNew(5);
-  b.localSet(cell);
-  return cell;
-}
-
-// A K_SPILL cell {K_SPILL, snapshot, null, next} chained in front of a
-// split site's rest fragment. The snapshot freezes the values the rest
-// fragment reloads from operand-spill slots: on the fresh path it is a
-// copy of the current frame image taken at the split site (per capture —
-// this cell is allocated at runtime on every site execution and copied
-// into every continuation captured here, so multi-shot resumes each see
-// the pre-perform values, matching the interpreter's CPS accs); on a
-// fragment re-emission it is the enclosing fragment's snapshot (the same
-// capture's frozen values — nested split sites inside the fragment must
-// not re-freeze the already-mutated frame).
-function snapWrap(f: Fn, ctx: Ctx, nextE: () => void): number {
-// A K_SPILL cell {K_SPILL, snapshot, null, next} chained in front of a
-// split site's rest fragment. The snapshot freezes the values the rest
-// fragment reloads from operand-spill slots: on the fresh path it is a
-// copy of the current frame image taken at the split site (per capture —
-// this cell is allocated at runtime on every site execution and copied
-// into every continuation captured here, so multi-shot resumes each see
-// the pre-perform values, matching the interpreter's CPS accs); on a
-// fragment re-emission it is the enclosing fragment's snapshot (the same
-// capture's frozen values — nested split sites inside the fragment must
-// not re-freeze the already-mutated frame).
-  const b = f.body;
-  const ksp = f.anyref(), snapv = f.anyref();
-  if (ctx.snap !== undefined) {
-    b.localGet(ctx.snap);
-    b.localSet(snapv);
-  } else {
-    // Fresh $FRAME {same parent, slots array copied via array.copy} — the
-    // per-capture freeze (shallow slot copy, same as the old block copy).
-    b.localGet(0); b.structGet(4, 1); b.arrayLen();
-    b.arrayNew(1);
-    b.localSet(snapv);
-    b.localGet(snapv);
-    b.refCast(1, true);
-    b.i32Const(0);
-    b.localGet(0); b.structGet(4, 1);
-    b.i32Const(0);
-    b.localGet(0); b.structGet(4, 1); b.arrayLen();
-    b.arrayCopy(1, 1);
-    b.localGet(0); b.structGet(4, 0);
-    b.localGet(snapv);
-    b.refCast(1, true);
-    b.structNew(4);
-    b.localSet(snapv);
-  }
-  b.i32Const(K_SPILL);
-  b.refI31();
-  b.localGet(snapv);
-  b.refNull(ANYREF); // b unused (was UNIT_CELL)
-  nextE();
-  b.refCast(5, true);
-  b.structNew(5);
-  b.localSet(ksp);
-  return ksp;
 }
 
 // `direct` (direct builtin call specialization): when set, the callee is
@@ -2651,8 +2659,8 @@ function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEmit: (k:
   b.i32Const(argc);
   b.localGet(fs);
   b.i32Const(argc);
-  b.u8(GTU);
-  b.u8(SELECT);
+  b.u8(w.GTU);
+  b.u8(w.SELECT);
   b.localSet(maxL);
   b.localGet(maxL);
   b.arrayNew(1);
@@ -2677,7 +2685,7 @@ function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEmit: (k:
       // a tail call: the callback's completion always tails into landA
       // (never returns here), and a terminal k=0 return must unwind past
       // the whole loop to the caller's own call site.
-      b.localGet(retCell(f, landA!, () => b.localGet(kL))); // next = ambient k
+      b.localGet(f.retCell(landA!, () => b.localGet(kL))); // next = ambient k
       b.refCast(5, true);
     } else {
       // Non-tail lambda call (§3 emitCall): the caller's body ENDS at
@@ -2696,8 +2704,8 @@ function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEmit: (k:
       // (pre-cut operand reloads — sibling operands of the call — read
       // the frozen values under multi-shot resume).
       const rest = makeRestThunk(em, "handle:after-handle");
-      const ksp = snapWrap(f, ctx!, () => b.localGet(kL));
-      b.localGet(retCell(f, rest.idx, () => b.localGet(ksp))); // next = K_SPILL{frozen frame, ambient k}
+      const ksp = f.snapWrap(ctx!, () => b.localGet(kL));
+      b.localGet(f.retCell(rest.idx, () => b.localGet(ksp))); // next = K_SPILL{frozen frame, ambient k}
       b.refCast(5, true);
       if (DBGEMIT) console.error("THROW handle-split cutStack=", em.sp.cutStack.length);
       splitAt = new Split(rest, [...em.sp.cutStack]);
@@ -2705,11 +2713,11 @@ function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEmit: (k:
   } else b.refNull(5); // k=0 (ref.null $K): the callee's dispatch returns its value inline
   if (direct === undefined) {
     b.localGet(idx);
-    b.u8(tail || land ? RETURN_CALL_INDIRECT : CALL_INDIRECT); // noSplit land calls tail too (see above)
-    b.lebU(T_KABI);
+    b.u8(tail || land ? w.RETURN_CALL_INDIRECT : w.CALL_INDIRECT); // noSplit land calls tail too (see above)
+    b.lebU(w.T_KABI);
     b.lebU(0);
   } else {
-    b.u8(tail || land ? RETURN_CALL : CALL); // direct: fn index is static, not a stack operand
+    b.u8(tail || land ? w.RETURN_CALL : w.CALL); // direct: fn index is static, not a stack operand
     b.lebU(direct.idx);
   }
   if (splitAt !== null) {
@@ -2736,9 +2744,9 @@ function makeRestThunk(em: Emit, role?: string): Fn {
 // registered in the funcref table. Filled later by the body-level catcher
 // that catches this site's Split (bodyCatch/emitMain/fillRest).
   const f = new Fn(3, em);
-  f.typeIdx = T_III_I;
+  f.typeIdx = w.T_III_I;
   f.idx = em.ix.thunk0 + em.thunks.length;
-  em.ix.funcRefTypes.set(f.idx, T_III_I);
+  em.ix.funcRefTypes.set(f.idx, w.T_III_I);
   if (DBGEMIT && role !== undefined) console.error("THUNK", f.idx, role);
   em.thunks.push(f);
   return f;
@@ -2747,29 +2755,29 @@ function makeRestThunk(em: Emit, role?: string): Fn {
 function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
   const b = f.body;
   const kind = () => { b.localGet(k); b.refCast(5, true); b.structGet(5, 0); b.i31Get(); };
-  const i31of = () => { b.refCast(I31REF, false); b.i31Get(); }; // anyref → i32 (i31 payload)
-  b.u8(BLOCK);
-  b.u8(ANYREF); // block (result anyref)
-  b.u8(LOOP);
+  const i31of = () => { b.refCast(w.I31REF, false); b.i31Get(); }; // anyref → i32 (i31 payload)
+  b.u8(w.BLOCK);
+  b.u8(w.ANYREF); // block (result anyref)
+  b.u8(w.LOOP);
   b.u8(0x40);
   b.localGet(k);
   b.u8(0xd1); // ref.is_null: final return → the value itself
-  b.u8(IF);
+  b.u8(w.IF);
   b.u8(0x40);
   b.localGet(v);
-  b.u8(BR); b.lebU(2); // leave the block with v
-  b.u8(END);
-  kind(); b.i32Const(K_RET); b.u8(EQ);
-  b.u8(IF);
+  b.u8(w.BR); b.lebU(2); // leave the block with v
+  b.u8(w.END);
+  kind(); b.i32Const(w.K_RET); b.u8(w.EQ);
+  b.u8(w.IF);
   b.u8(0x40);
   b.localGet(k); b.refCast(5, true); b.structGet(5, 2); b.refCast(4, true);
   b.localGet(v);
   b.localGet(k); b.refCast(5, true); b.structGet(5, 3);
   b.localGet(k); b.refCast(5, true); b.structGet(5, 1); i31of();
-  b.u8(RETURN_CALL_INDIRECT);
-  b.lebU(T_III_I);
+  b.u8(w.RETURN_CALL_INDIRECT);
+  b.lebU(w.T_III_I);
   b.lebU(0);
-  b.u8(END);
+  b.u8(w.END);
   // K_HDL: scan the case table at k.a (a $ELEMS of flat [opid, fnIdx,
   // fsize, nparams] i31 quadruples; the Return case, opid -1, goes last).
   // A K_SPILL cell (a rest fragment's frozen-frame marker) is transparent:
@@ -2779,58 +2787,58 @@ function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
   // program's scan is dead code — skipping it drops a nested scan loop
   // (plus ~30 instructions of table probing) from every dispatch site.
   if (em.d.hasHandle) {
-    kind(); b.i32Const(K_HDL); b.u8(EQ);
-    b.u8(IF);
+    kind(); b.i32Const(w.K_HDL); b.u8(w.EQ);
+    b.u8(w.IF);
     b.u8(0x40);
     const tbl = f.anyref(), nL = f.i32(), iL = f.i32(), found = f.i32(),
       fnIdx = f.i32(), nparams = f.i32(), ent = f.i32();
     b.localGet(k); b.refCast(5, true); b.structGet(5, 1); b.localSet(tbl);
-    b.localGet(tbl); b.refCast(1, true); b.arrayLen(); b.i32Const(4); b.u8(DIVU); b.localSet(nL);
+    b.localGet(tbl); b.refCast(1, true); b.arrayLen(); b.i32Const(4); b.u8(w.DIVU); b.localSet(nL);
     b.i32Const(0); b.localSet(found);
     b.i32Const(0); b.localSet(iL);
-    b.u8(BLOCK);
+    b.u8(w.BLOCK);
     b.u8(0x40);
-    b.u8(LOOP);
+    b.u8(w.LOOP);
     b.u8(0x40);
-    b.localGet(iL); b.localGet(nL); b.u8(GEU); b.u8(BR_IF); b.lebU(1);
-    b.localGet(iL); b.i32Const(4); b.u8(MUL); b.localSet(ent);
+    b.localGet(iL); b.localGet(nL); b.u8(w.GEU); b.u8(w.BR_IF); b.lebU(1);
+    b.localGet(iL); b.i32Const(4); b.u8(w.MUL); b.localSet(ent);
     b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.arrayGet(1); i31of();
-    b.i32Const(-1); b.u8(EQ);
-    b.u8(IF);
+    b.i32Const(-1); b.u8(w.EQ);
+    b.u8(w.IF);
     b.u8(0x40);
     b.i32Const(1); b.localSet(found);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(1); b.u8(ADD); b.arrayGet(1); i31of(); b.localSet(fnIdx);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(3); b.u8(ADD); b.arrayGet(1); i31of(); b.localSet(nparams);
-    b.u8(BR); b.lebU(2); // exit the scan block
-    b.u8(END);
-    b.localGet(iL); b.i32Const(1); b.u8(ADD); b.localSet(iL);
-    b.u8(BR); b.lebU(0);
-    b.u8(END);
-    b.u8(END);
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(1); b.u8(w.ADD); b.arrayGet(1); i31of(); b.localSet(fnIdx);
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(3); b.u8(w.ADD); b.arrayGet(1); i31of(); b.localSet(nparams);
+    b.u8(w.BR); b.lebU(2); // exit the scan block
+    b.u8(w.END);
+    b.localGet(iL); b.i32Const(1); b.u8(w.ADD); b.localSet(iL);
+    b.u8(w.BR); b.lebU(0);
+    b.u8(w.END);
+    b.u8(w.END);
     b.localGet(found);
-    b.u8(IF);
+    b.u8(w.IF);
     b.u8(0x40);
     // Return case: store v into the hframe's Return param slot, then
     // tail-call the case body as (hframe, k.next); funcref index last.
     b.localGet(k); b.refCast(5, true); b.structGet(5, 2); b.refCast(4, true); b.structGet(4, 1);
-    b.localGet(nparams); b.i32Const(1); b.u8(ADD);
+    b.localGet(nparams); b.i32Const(1); b.u8(w.ADD);
     b.localGet(v);
     b.arraySet();
     b.localGet(k); b.refCast(5, true); b.structGet(5, 2); b.refCast(4, true);
     b.localGet(k); b.refCast(5, true); b.structGet(5, 3);
     b.localGet(fnIdx);
-    b.u8(RETURN_CALL_INDIRECT);
-    b.lebU(T_KABI);
+    b.u8(w.RETURN_CALL_INDIRECT);
+    b.lebU(w.T_KABI);
     b.lebU(0);
-    b.u8(END);
-    b.u8(END); // kind==K_HDL guard
+    b.u8(w.END);
+    b.u8(w.END); // kind==K_HDL guard
   }
   // No Return case (or a skipped K_SPILL): k = k.next and dispatch again.
   b.localGet(k); b.refCast(5, true); b.structGet(5, 3); b.localSet(k);
-  b.u8(BR); b.lebU(0);
-  b.u8(END); // loop
+  b.u8(w.BR); b.lebU(0);
+  b.u8(w.END); // loop
   b.u8(0x00); // unreachable: the loop exits only through the k==0 branch
-  b.u8(END); // block
+  b.u8(w.END); // block
 }
 
 // Calls ef_fail(code, name, a, b); the import throws, so unreachable.
@@ -2840,120 +2848,13 @@ function emitFail(em: Emit, f: Fn, code: number, nameG: number | null, pushA: ()
 // `name` is a $STR static global index (field-access failures) or null.
   const b = f.body;
   b.i32Const(code);
-  if (nameG === null) b.refNull(ANYREF);
+  if (nameG === null) b.refNull(w.ANYREF);
   else b.globalGet(nameG);
   pushA();
   pushB();
-  b.u8(CALL);
+  b.u8(w.CALL);
   b.lebU(em.o.impIdx.get("ef_fail")!);
   b.u8(0x00); // unreachable
-}
-
-// String concatenation of $STR locals a, b → new $STR on the stack.
-function emitStrCat(f: Fn, a: number, b: number): void {
-// String concatenation of $STR locals a, b → new $STR on the stack.
-  const body = f.body;
-  const res = f.anyref();
-  body.localGet(a); body.refCast(2, true); body.arrayLen();
-  body.localGet(b); body.refCast(2, true); body.arrayLen();
-  body.u8(ADD);
-  body.arrayNew(2);
-  body.localSet(res);
-  // copy a then b (b starts at unit offset la)
-  body.localGet(res);
-  body.refCast(2, true);
-  body.i32Const(0);
-  body.localGet(a); body.refCast(2, true);
-  body.i32Const(0);
-  body.localGet(a); body.refCast(2, true); body.arrayLen();
-  body.arrayCopy(2, 2);
-  body.localGet(res);
-  body.refCast(2, true);
-  body.localGet(a); body.refCast(2, true); body.arrayLen();
-  body.localGet(b); body.refCast(2, true);
-  body.i32Const(0);
-  body.localGet(b); body.refCast(2, true); body.arrayLen();
-  body.arrayCopy(2, 2);
-  body.localGet(res);
-}
-
-// for (i = 0; i < n; i++) iter(i) — n pushed by pushN (const or local).
-// Emits BLOCK { LOOP { cond; br_if out; iter; incr; br; } }.
-function loop(f: Fn, pushN: () => void, iter: (i: number) => void): void {
-// for (i = 0; i < n; i++) iter(i) — n pushed by pushN (const or local).
-// Emits BLOCK { LOOP { cond; br_if out; iter; incr; br; } }.
-  const b = f.body;
-  const i = f.i32();
-  b.i32Const(0);
-  b.localSet(i); // reset: a loop nested in another loop's body reuses this local across outer iterations
-  b.u8(BLOCK);
-  b.u8(0x40);
-  b.u8(LOOP);
-  b.u8(0x40);
-  b.localGet(i);
-  pushN();
-  b.u8(GEU);
-  b.u8(BR_IF);
-  b.lebU(1);
-  iter(i);
-  b.localGet(i);
-  b.i32Const(1);
-  b.u8(ADD);
-  b.localSet(i);
-  b.u8(BR);
-  b.lebU(0);
-  b.u8(END);
-  b.u8(END);
-}
-
-// Pushes (arrayref, index) of element i (local) of raw $ELEMS local
-// `blk`; callers finish with aget (read) or push the value + aset (write).
-function elemAddr(f: Fn, blk: number, i: number): void {
-// Pushes (arrayref, index) of element i (local) of raw $ELEMS local
-// `blk`; callers finish with aget (read) or push the value + aset (write).
-  f.body.localGet(blk);
-  f.body.refCast(1, true);
-  f.body.localGet(i);
-}
-
-// Allocates a raw $ELEMS array of length local `n`; returns the local.
-function allocArrBlk(f: Fn, n: number): number {
-// Allocates a raw $ELEMS array of length local `n`; returns the local.
-  const blk = f.anyref();
-  f.body.localGet(n);
-  f.body.arrayNew(1);
-  f.body.localSet(blk);
-  return blk;
-}
-
-// Wraps the raw $ELEMS local `blk` → new $ARR wrapper on the stack.
-// Growth (`set`) repoints the wrapper's backing array, so every alias
-// sharing the wrapper sees the growth (§7.1).
-function boxArr(f: Fn, blk: number): void {
-// Wraps the raw $ELEMS local `blk` → new $ARR wrapper on the stack.
-// Growth (`set`) repoints the wrapper's backing array, so every alias
-// sharing the wrapper sees the growth (§7.1).
-  f.body.localGet(blk);
-  f.body.refCast(1, true);
-  f.body.structNew(3);
-}
-
-// Copies n (local) elements from srcBlk's elements starting at srcOff into
-// a fresh array; leaves the boxed $ARR wrapper on the stack.
-function emitArrCopy(f: Fn, srcBlk: number, srcOff: number, n: number): void {
-// Copies n (local) elements from srcBlk's elements starting at srcOff into
-// a fresh array; leaves the boxed $ARR wrapper on the stack.
-  const b = f.body;
-  const blk = allocArrBlk(f, n);
-  b.localGet(blk);
-  b.refCast(1, true);
-  b.i32Const(0);
-  b.localGet(srcBlk);
-  b.refCast(1, true);
-  b.i32Const(srcOff);
-  b.localGet(n);
-  b.arrayCopy(1, 1);
-  boxArr(f, blk);
 }
 
 // true/false i31 selected by the i32 condition emitted by emitCond.
@@ -2963,25 +2864,10 @@ function selectBool(em: Emit, f: Fn, emitCond: () => void): void {
   const t = f.i32();
   emitCond();
   b.localSet(t);
-  pushRef(f, em.lay.trueRef);
-  pushRef(f, em.lay.falseRef);
+  f.pushRef(em.lay.trueRef);
+  f.pushRef(em.lay.falseRef);
   b.localGet(t);
   b.typedSelect(); // typed select (result anyref)
-}
-
-// Materialize a ValueRef onto the operand stack, at its consume point.
-// This is the ONLY sanctioned place short-lived stack values cross an
-// emitter boundary (the helper fully balances the stack per ref).
-function pushRef(f: Fn, r: ValueRef): void {
-// Materialize a ValueRef onto the operand stack, at its consume point.
-// This is the ONLY sanctioned place short-lived stack values cross an
-// emitter boundary (the helper fully balances the stack per ref).
-  const b = f.body;
-  if (r.k === "g") b.globalGet(r.gi);
-  else if (r.k === "bool") { b.i32Const(r.v); b.refI31(); }
-  else if (r.k === "local") b.localGet(r.l);
-  else if (r.k === "snapSlot") { b.localGet(r.snap); b.refCast(4, true); b.structGet(4, 1); b.i32Const(r.i); b.arrayGet(1); }
-  else { b.localGet(0); b.structGet(4, 1); b.i32Const(r.i); b.arrayGet(1); }
 }
 
 // Persist a ref into the operand spill slot computeSpills allocated for
@@ -2994,7 +2880,7 @@ function keepRef(em: Emit, id: ExprID, f: Fn, r: ValueRef): ValueRef {
   const sp = em.ix.operandSpill.get(id);
   if (sp === undefined) return r;
   const b = f.body;
-  pushRef(f, r);
+  f.pushRef(r);
   const t = f.anyref();
   b.localSet(t);
   b.localGet(0); b.structGet(4, 1); b.i32Const(sp); b.localGet(t); b.arraySet();
@@ -3032,7 +2918,7 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
   const argMode = (i: number): "cut" | "pre" | "post" =>
     ci === i + 1 ? "cut" : i === 0 && ci > 1 ? "pre" : "post";
   const pushArg = (i: number): void => {
-    pushRef(f, cutChildRef(em, e.args[i], f, s, ctx, argMode(i)));
+    f.pushRef(cutChildRef(em, e.args[i], f, s, ctx, argMode(i)));
   };
   switch (name) {
     case "+": {
@@ -3040,16 +2926,16 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
       pushArg(0); b.localSet(a);
       pushArg(1); b.localSet(bv);
       b.localGet(a); b.refTest(0, false); b.localGet(bv); b.refTest(0, false);
-      b.u8(AND); b.u8(IF); b.u8(ANYREF);
+      b.u8(w.AND); b.u8(w.IF); b.u8(w.ANYREF);
       b.localGet(a); b.refCast(0, false); b.structGet(0, 0);
       b.localGet(bv); b.refCast(0, false); b.structGet(0, 0);
-      b.u8(FADD);
-      b.u8(CALL); b.lebU(em.ix.fBox);
-      b.u8(ELSE);
-      b.localGet(a); b.refTest(2, false); b.localGet(bv); b.refTest(2, false); b.u8(AND);
-      b.u8(IF); b.u8(ANYREF);
-      emitStrCat(f, a, bv);
-      b.u8(ELSE); b.refNull(ANYREF); b.u8(END); b.u8(END);
+      b.u8(w.FADD);
+      b.u8(w.CALL); b.lebU(em.ix.fBox);
+      b.u8(w.ELSE);
+      b.localGet(a); b.refTest(2, false); b.localGet(bv); b.refTest(2, false); b.u8(w.AND);
+      b.u8(w.IF); b.u8(w.ANYREF);
+      f.emitStrCat(a, bv);
+      b.u8(w.ELSE); b.refNull(w.ANYREF); b.u8(w.END); b.u8(w.END);
       break;
     }
     case "-": case "*": case "%": {
@@ -3059,25 +2945,25 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
       if (name === "%") {
         // JS fmod: a - b * trunc(a/b)
         const t = f.f64();
-        b.localGet(x); b.localGet(y); b.u8(FDIV); b.u8(FTRUNC); b.localSet(t);
-        b.localGet(x); b.localGet(y); b.localGet(t); b.u8(FMUL); b.u8(FSUB);
+        b.localGet(x); b.localGet(y); b.u8(w.FDIV); b.u8(w.FTRUNC); b.localSet(t);
+        b.localGet(x); b.localGet(y); b.localGet(t); b.u8(w.FMUL); b.u8(w.FSUB);
       } else {
-        b.localGet(x); b.localGet(y); b.u8(name === "-" ? FSUB : FMUL);
+        b.localGet(x); b.localGet(y); b.u8(name === "-" ? w.FSUB : w.FMUL);
       }
-      b.u8(CALL); b.lebU(em.ix.fBox);
+      b.u8(w.CALL); b.lebU(em.ix.fBox);
       break;
     }
     case "neg": {
       pushArg(0); b.refCast(0, false); b.structGet(0, 0);
-      b.u8(FNEG);
-      b.u8(CALL); b.lebU(em.ix.fBox);
+      b.u8(w.FNEG);
+      b.u8(w.CALL); b.lebU(em.ix.fBox);
       break;
     }
     case "<": case ">": case "<=": case ">=": {
       const x = f.anyref(), y = f.anyref();
       pushArg(0); b.localSet(x);
       pushArg(1); b.localSet(y);
-      const cmp = name === "<" ? FLT : name === ">" ? FGT : name === "<=" ? FLE : FGE;
+      const cmp = name === "<" ? w.FLT : name === ">" ? w.FGT : name === "<=" ? w.FLE : w.FGE;
       selectBool(em, f, () => {
         b.localGet(x); b.refCast(0, false); b.structGet(0, 0);
         b.localGet(y); b.refCast(0, false); b.structGet(0, 0);
@@ -3087,22 +2973,22 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
     }
     case "==": {
       pushArg(0); pushArg(1);
-      b.u8(CALL); b.lebU(em.ix.fEq);
+      b.u8(w.CALL); b.lebU(em.ix.fEq);
       break;
     }
     case "!=": {
       pushArg(0); pushArg(1);
-      b.u8(CALL); b.lebU(em.ix.fEq);
-      b.refCast(I31REF, false); // eq result's i31 bool payload
+      b.u8(w.CALL); b.lebU(em.ix.fEq);
+      b.refCast(w.I31REF, false); // eq result's i31 bool payload
       b.i31Get();
-      b.u8(EQZ); // 1 when $eq said false
+      b.u8(w.EQZ); // 1 when $eq said false
       selectBool(em, f, () => {});
       break;
     }
     case "not": {
       pushArg(0);
-      b.u8(CALL); b.lebU(em.ix.fTruthy);
-      b.u8(EQZ);
+      b.u8(w.CALL); b.lebU(em.ix.fTruthy);
+      b.u8(w.EQZ);
       selectBool(em, f, () => {});
       break;
     }
@@ -3193,14 +3079,14 @@ function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = 
       const vr = expr(em, e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
       b.localGet(0); b.structGet(4, 1);
       b.i32Const(slot);
-      pushRef(f, vr);
+      f.pushRef(vr);
       b.arraySet();
       return em.lay.unitRef;
     }
     case "dlet": {
       const blk = f.anyref();
       const vr = expr(em, e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
-      pushRef(f, vr);
+      f.pushRef(vr);
       b.refCast(3, true);
       b.structGet(3, 0);
       b.localSet(blk);
@@ -3225,7 +3111,7 @@ function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = 
       for (let k = 0; k < r.d; k++) b.structGet(4, 0);
       b.structGet(4, 1);
       b.i32Const(r.i);
-      pushRef(f, vr);
+      f.pushRef(vr);
       b.arraySet();
       return em.lay.unitRef;
     }
@@ -3259,15 +3145,15 @@ function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = 
       // are value-explicit; each arm's ref is pushed as the IF block's
       // result value. Fragment re-emission never tail-calls the arms.
       const at = ci === undefined && tail;
-      pushRef(f, cutChildRef(em, e.c, f, s, ctx, ci === undefined ? "post" : ci === 0 ? "cut" : "pre"));
-      b.u8(CALL);
+      f.pushRef(cutChildRef(em, e.c, f, s, ctx, ci === undefined ? "post" : ci === 0 ? "cut" : "pre"));
+      b.u8(w.CALL);
       b.lebU(em.ix.fTruthy);
-      b.u8(IF);
+      b.u8(w.IF);
       b.u8(0x6e); // result anyref
-      pushRef(f, cutChildRef(em, e.a, f, s, ctx, ci === undefined ? "post" : ci === 1 ? "cut" : ci === 2 ? "pre" : "post", at));
-      b.u8(ELSE);
-      pushRef(f, cutChildRef(em, e.b, f, s, ctx, ci === undefined ? "post" : ci === 2 ? "cut" : "post", at));
-      b.u8(END);
+      f.pushRef(cutChildRef(em, e.a, f, s, ctx, ci === undefined ? "post" : ci === 1 ? "cut" : ci === 2 ? "pre" : "post", at));
+      b.u8(w.ELSE);
+      f.pushRef(cutChildRef(em, e.b, f, s, ctx, ci === undefined ? "post" : ci === 2 ? "cut" : "post", at));
+      b.u8(w.END);
       const v = f.anyref();
       b.localSet(v);
       return keepRef(em, id, f, {k: "local", l: v});
@@ -3282,21 +3168,21 @@ function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = 
         return em.lay.unitRef; // unreachable: the split-mode while throws Split
       }
       if (cut !== undefined) throw new WasmError("internal: split crossing a while");
-      b.u8(BLOCK);
+      b.u8(w.BLOCK);
       b.u8(0x40);
-      b.u8(LOOP);
+      b.u8(w.LOOP);
       b.u8(0x40);
-      pushRef(f, expr(em, e.c, f, s, false, ctx));
-      b.u8(CALL);
+      f.pushRef(expr(em, e.c, f, s, false, ctx));
+      b.u8(w.CALL);
       b.lebU(em.ix.fTruthy);
-      b.u8(EQZ);
-      b.u8(BR_IF);
+      b.u8(w.EQZ);
+      b.u8(w.BR_IF);
       b.lebU(1);
       expr(em, e.body, f, s, false, ctx); // body value dropped: nothing on the stack
-      b.u8(BR);
+      b.u8(w.BR);
       b.lebU(0);
-      b.u8(END);
-      b.u8(END);
+      b.u8(w.END);
+      b.u8(w.END);
       return em.lay.unitRef;
     }
     case "block": {
@@ -3334,7 +3220,7 @@ function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = 
         b.localGet(blk);
         b.refCast(1, true);
         b.i32Const(k);
-        pushRef(f, r);
+        f.pushRef(r);
         b.arraySet();
       }
       b.localGet(blk);
@@ -3346,7 +3232,7 @@ function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = 
     }
     case "field": {
       const blk = f.anyref();
-      pushRef(f, expr(em, e.obj, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)}));
+      f.pushRef(expr(em, e.obj, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)}));
       b.refCast(3, true);
       b.structGet(3, 0);
       b.localSet(blk);
@@ -3355,15 +3241,15 @@ function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = 
       b.refCast(1, true);
       b.arrayLen();
       b.i32Const(e.idx!);
-      b.u8(LEU);
-      b.u8(IF);
+      b.u8(w.LEU);
+      b.u8(w.IF);
       b.u8(0x40);
       emitFail(em, 
         f, 2, em.lay.strStatics.get(e.name)!,
-        constF64(f, e.idx!),
-        constF64(f, -1),
+        f.constF64(e.idx!),
+        f.constF64(-1),
       );
-      b.u8(END);
+      b.u8(w.END);
       b.localGet(blk);
       b.refCast(1, true);
       b.i32Const(e.idx!);
@@ -3399,7 +3285,7 @@ function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = 
         const bsc = em.d.scopes.get(e.body) ?? s;
         const ci = stmts.indexOf(cut[0]);
         if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-        pushRef(f, emitStmtsFrom(em, stmts, f, bsc, ctx, ci, cut, false));
+        f.pushRef(emitStmtsFrom(em, stmts, f, bsc, ctx, ci, cut, false));
         const v = f.anyref();
         b.localSet(v);
         emitDispatch(em, f, v, ctx.kL);
@@ -3446,18 +3332,18 @@ function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = 
         // A non-number operand traps at the ref.cast (frozen deviation —
         // the checker rejects non-num arithmetic statically).
         if (ci === 0) throw new WasmError("internal: split chain root mismatch");
-        pushRef(f, cutChildRef(em, e.args[0], f, s, ctx, ci === 1 ? "cut" : ci < 0 ? "post" : "pre"));
+        f.pushRef(cutChildRef(em, e.args[0], f, s, ctx, ci === 1 ? "cut" : ci < 0 ? "post" : "pre"));
         b.refCast(0, false);
         b.structGet(0, 0);
-        pushRef(f, cutChildRef(em, e.args[1], f, s, ctx, ci === 2 ? "cut" : "post"));
+        f.pushRef(cutChildRef(em, e.args[1], f, s, ctx, ci === 2 ? "cut" : "post"));
         b.refCast(0, false);
         b.structGet(0, 0);
-        b.u8(FDIV);
-        if (e.div === "int") b.u8(FTRUNC);
+        b.u8(w.FDIV);
+        if (e.div === "int") b.u8(w.FTRUNC);
         // Box inline (never return_call $box: at a tail position the raw
         // return would bypass the caller's RET cell — the wrapper's
         // dispatch must see the value).
-        b.u8(CALL);
+        b.u8(w.CALL);
         b.lebU(em.ix.fBox);
       } else if (bname !== null && OPERATOR_OPS.has(bname)) {
         emitOperatorInline(em, f, bname, e, s, ctx, ci);
@@ -3469,7 +3355,7 @@ function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = 
             k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
           b.localGet(ffp); b.refCast(4, true); b.structGet(4, 1);
           b.i32Const(k);
-          pushRef(f, r);
+          f.pushRef(r);
           b.arraySet();
         }, cut === undefined && tail,
         em.d.landCalls.has(id),
@@ -3480,7 +3366,7 @@ function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = 
         {idx: em.ix.builtinFnIdx.get(bname)!, fsize: bi.params + mapLikeFrameWords(bname)});
       } else {
         const fc = f.anyref();
-        pushRef(f, cutChildRef(em, e.fn, f, s, ctx, ci === 0 ? "cut" : ci < 0 ? "post" : "pre"));
+        f.pushRef(cutChildRef(em, e.fn, f, s, ctx, ci === 0 ? "cut" : ci < 0 ? "post" : "pre"));
         b.localSet(fc);
         emitCallClosure(em, f, fc, e.args.length, (k, ffp) => {
           // Value-explicit arg order: the child's ref is computed (and
@@ -3491,7 +3377,7 @@ function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = 
             k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
           b.localGet(ffp); b.refCast(4, true); b.structGet(4, 1);
           b.i32Const(k);
-          pushRef(f, r);
+          f.pushRef(r);
           b.arraySet();
         }, cut === undefined && tail,
         // Builtins never perform or capture, so they keep the k=0
@@ -3547,7 +3433,7 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
     b.localGet(blk);
     b.refCast(1, true);
     b.i32Const(k);
-    pushRef(f, r);
+    f.pushRef(r);
     b.arraySet();
   }
   b.localGet(blk);
@@ -3570,74 +3456,74 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   const kL = f.anyref(), hdl = f.anyref(), found = f.i32();
   const tbl = f.anyref(), nL = f.i32(), ent = f.i32();
   const fnIdx = f.i32(), fsz = f.i32(), nparams = f.i32(), amb = f.anyref();
-  const i31of = () => { b.refCast(I31REF, false); b.i31Get(); }; // anyref → i32 (i31 payload)
+  const i31of = () => { b.refCast(w.I31REF, false); b.i31Get(); }; // anyref → i32 (i31 payload)
   b.localGet(ctx.kL); // the ambient continuation
   b.localSet(kL);
   b.localGet(ctx.kL);
   b.localSet(amb);
   b.i32Const(0);
   b.localSet(found);
-  b.u8(BLOCK);
+  b.u8(w.BLOCK);
   b.u8(0x40);
-  b.u8(LOOP);
+  b.u8(w.LOOP);
   b.u8(0x40);
   b.localGet(kL);
   b.u8(0xd1); // ref.is_null: k=0 → no handler anywhere → host fallback
-  b.u8(BR_IF);
+  b.u8(w.BR_IF);
   b.lebU(1);
   b.localGet(kL); b.refCast(5, true); b.structGet(5, 0); b.i31Get();
-  b.i32Const(K_HDL);
-  b.u8(EQ);
-  b.u8(IF);
+  b.i32Const(w.K_HDL);
+  b.u8(w.EQ);
+  b.u8(w.IF);
   b.u8(0x40);
   b.localGet(kL); b.refCast(5, true); b.structGet(5, 1);
   b.localSet(tbl);
-  b.localGet(tbl); b.refCast(1, true); b.arrayLen(); b.i32Const(4); b.u8(DIVU);
+  b.localGet(tbl); b.refCast(1, true); b.arrayLen(); b.i32Const(4); b.u8(w.DIVU);
   b.localSet(nL);
-  loop(f, () => {
+  f.loop(() => {
     b.localGet(nL);
   }, i => {
-    b.localGet(i); b.i32Const(4); b.u8(MUL);
+    b.localGet(i); b.i32Const(4); b.u8(w.MUL);
     b.localSet(ent);
     b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.arrayGet(1); i31of();
     b.i32Const(opid);
-    b.u8(EQ);
-    b.u8(IF);
+    b.u8(w.EQ);
+    b.u8(w.IF);
     b.u8(0x40);
     b.i32Const(1);
     b.localSet(found);
     b.localGet(kL);
     b.localSet(hdl);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(1); b.u8(ADD); b.arrayGet(1); i31of();
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(1); b.u8(w.ADD); b.arrayGet(1); i31of();
     b.localSet(fnIdx);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(2); b.u8(ADD); b.arrayGet(1); i31of();
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(2); b.u8(w.ADD); b.arrayGet(1); i31of();
     b.localSet(fsz);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(3); b.u8(ADD); b.arrayGet(1); i31of();
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(3); b.u8(w.ADD); b.arrayGet(1); i31of();
     b.localSet(nparams);
-    b.u8(BR);
+    b.u8(w.BR);
     b.lebU(2); // exit the table scan
-    b.u8(END);
+    b.u8(w.END);
   });
   b.localGet(found);
-  b.u8(BR_IF);
+  b.u8(w.BR_IF);
   b.lebU(2); // matched handler → leave the walk
-  b.u8(END);
+  b.u8(w.END);
   b.localGet(kL); b.refCast(5, true); b.structGet(5, 3);
   b.localSet(kL);
-  b.u8(BR);
+  b.u8(w.BR);
   b.lebU(0);
-  b.u8(END);
-  b.u8(END);
+  b.u8(w.END);
+  b.u8(w.END);
   // Freeze the frame image for this capture and chain the rest fragment
   // behind a K_SPILL cell carrying it: the fragment's pre-cut operand
   // reloads read the frozen values, so a multi-shot resume re-runs the
   // rest against the pre-perform state (the interpreter's CPS accs),
   // not the frame as mutated by earlier resumes / loop iterations.
-  const ksp = snapWrap(f, ctx, () => {
+  const ksp = f.snapWrap(ctx, () => {
     b.localGet(amb);
   });
   b.localGet(found);
-  b.u8(IF);
+  b.u8(w.IF);
   b.u8(0x7f); // handler found: invoke the matched case body
   // Per-invocation frame copy: case invocations of one handler nest (a
   // resumed segment can re-enter the handler), and each invocation needs
@@ -3654,7 +3540,7 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   b.localGet(fsz);
   b.arrayNew(1);
   b.localSet(hfs);
-  loop(f, () => {
+  f.loop(() => {
     b.localGet(fsz);
   }, i => {
     b.localGet(hfs);
@@ -3674,7 +3560,7 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   // K_SPILL cell (the rest fragment's prologue loads the snapshot and
   // skips the cell before dispatching, so K_SPILL stays invisible to
   // every other dispatch and to fCapture's slice walk).
-  const ret = retCell(f, restFn.idx, () => {
+  const ret = f.retCell(restFn.idx, () => {
     b.localGet(ksp); // next = K_SPILL{frozen frame image, pre-walk ambient}
   }); // b = the current frame (holds the spilled args cell)
   // Capture the slice above the handler into fresh cells (originals
@@ -3684,7 +3570,7 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   b.refCast(5, true);
   b.localGet(hdl);
   b.refCast(5, true);
-  b.u8(CALL);
+  b.u8(w.CALL);
   b.lebU(em.ix.fCapture);
   b.localSet(slice);
   // The resume binder (§4.6): a $CLO over the shared resume fn and a
@@ -3699,7 +3585,7 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   b.i32Const(4);
   b.arrayNew(1);
   b.localSet(recs);
-  b.localGet(recs); b.refCast(1, true); b.i32Const(0); b.refNull(ANYREF); b.arraySet(); // slot 0 unused
+  b.localGet(recs); b.refCast(1, true); b.i32Const(0); b.refNull(w.ANYREF); b.arraySet(); // slot 0 unused
   b.localGet(recs); b.refCast(1, true); b.i32Const(1); b.localGet(slice); b.arraySet(); // slot 1: the captured slice
   b.localGet(recs); b.refCast(1, true); b.i32Const(2); b.localGet(hdl); b.arraySet(); // slot 2: the matched HDL (sentinel)
   b.localGet(recs); b.refCast(1, true); b.i32Const(3); b.localGet(hfc); b.arraySet(); // slot 3: this invocation's hframe copy
@@ -3722,7 +3608,7 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   // with (hframe, hdl.next) — its continuation never contains this
   // handler (two-k rule).
   b.localGet(hfc); b.refCast(4, true); b.structGet(4, 1);
-  loop(f, () => {
+  f.loop(() => {
     b.localGet(nparams);
   }, i2 => {
     b.localGet(hfc); b.refCast(4, true); b.structGet(4, 1);
@@ -3740,10 +3626,10 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   b.refCast(4, true);
   b.localGet(hdl); b.refCast(5, true); b.structGet(5, 3);
   b.localGet(fnIdx);
-  b.u8(RETURN_CALL_INDIRECT);
-  b.lebU(T_KABI);
+  b.u8(w.RETURN_CALL_INDIRECT);
+  b.lebU(w.T_KABI);
   b.lebU(0);
-  b.u8(ELSE);
+  b.u8(w.ELSE);
   // No matching handler: bare host call, then the rest-of-site fragment —
   // the SAME fragment the RET cell carries — continues with the resumed
   // value over this frame and the ambient continuation. The args cell is
@@ -3751,7 +3637,7 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   const v = f.anyref();
   b.i32Const(opid);
   b.localGet(0); b.structGet(4, 1); b.i32Const(spillSlot); b.arrayGet(1);
-  b.u8(CALL);
+  b.u8(w.CALL);
   b.lebU(em.o.impIdx.get("ef_perform")!);
   b.localSet(v);
   b.localGet(0); b.structGet(4, 1); b.i32Const(em.ix.valSpill.get(id)!);
@@ -3762,10 +3648,10 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   b.localGet(ksp);
   b.refCast(5, true);
   b.i32Const(restFn.idx);
-  b.u8(RETURN_CALL_INDIRECT);
-  b.lebU(T_III_I);
+  b.u8(w.RETURN_CALL_INDIRECT);
+  b.lebU(w.T_III_I);
   b.lebU(0);
-  b.u8(END);
+  b.u8(w.END);
   b.u8(0x00); // unreachable: both arms end in a tail call
   // The inline body ends at the split site; the catcher fills restFn.
   if (DBGEMIT) console.error("THROW perform-split op=", e.op, "cut=", em.sp.cutStack.length, "[" + em.sp.cutStack.map((x) => em.nodes[x]?.t).join(",") + "]");
@@ -3815,16 +3701,16 @@ function emitHandle(em: Emit, id: ExprID, e: Expr & {t: "handle"}, f: Fn, s: Sco
   // rest's pre-cut operand reloads (chain levels above the handle, e.g.
   // sibling operands of `s + handle {...}`) must see the values as of
   // the install, not as mutated by the handler body / resumes.
-  const ksp = snapWrap(f, ctx, () => {
+  const ksp = f.snapWrap(ctx, () => {
     b.localGet(ctx.kL);
   });
   // RET cell over the handle-site frame; next = the continuation outside
   // the handler (the two-k rule: the case body's ambient continuation is
   // the one captured OUTSIDE the handler).
-  const ret = retCell(f, restFn.idx, () => {
+  const ret = f.retCell(restFn.idx, () => {
     b.localGet(ksp);
   });
-  b.i32Const(K_HDL);
+  b.i32Const(w.K_HDL);
   b.refI31();
   b.globalGet(em.lay.hdlTableOff.get(id)!); // a = the case table
   b.localGet(hf);
@@ -3879,10 +3765,10 @@ function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Sco
   const restAfterIf = makeRestThunk(em, "if:after");
   // K_SPILL cell freezing the pre-if frame image for the after-if rest's
   // pre-cut operand reloads (see snapWrap).
-  const ksp = snapWrap(f, ctx, () => {
+  const ksp = f.snapWrap(ctx, () => {
     b.localGet(ctx.kL); // the ambient continuation
   });
-  const ifk = retCell(f, restAfterIf.idx, () => {
+  const ifk = f.retCell(restAfterIf.idx, () => {
     b.localGet(ksp); // next = K_SPILL{frozen frame image, ambient k}
   });
   // Inside the dispatch shape the arms' ambient continuation is the arm
@@ -3893,8 +3779,8 @@ function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Sco
   const ctxArm: Ctx = {...ctx, kL: ifk};
   let condSplit: Split | null = null;
   try {
-    if (ci === undefined) pushRef(f, cutChildRef(em, e.c, f, s, ctx, "post"));
-    else pushRef(f, cutChildRef(em, e.c, f, s, ctx, ci === 0 ? "cut" : "pre"));
+    if (ci === undefined) f.pushRef(cutChildRef(em, e.c, f, s, ctx, "post"));
+    else f.pushRef(cutChildRef(em, e.c, f, s, ctx, ci === 0 ? "cut" : "pre"));
   } catch (spC) {
     if (!(spC instanceof Split)) throw spC;
     condSplit = spC;
@@ -3915,23 +3801,23 @@ function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Sco
     } finally {
       em.sp.cutStack = savedCutC;
     }
-    b.u8(UNREACHABLE); // close the aborted fragment (the condition never falls through)
+    b.u8(w.UNREACHABLE); // close the aborted fragment (the condition never falls through)
     throw condSplit;
   }
-  b.u8(CALL);
+  b.u8(w.CALL);
   b.lebU(em.ix.fTruthy);
-  b.u8(IF);
+  b.u8(w.IF);
   b.u8(0x40); // void: each arm ends in dispatch + return
   const arm = (armE: ExprID, cutArm: boolean): Split | null => {
     const va = f.anyref();
     let sp: Split | null = null;
     try {
       if (cutArm) {
-        pushRef(f, cutChildRef(em, armE, f, s, ctxArm, "cut"));
+        f.pushRef(cutChildRef(em, armE, f, s, ctxArm, "cut"));
       } else {
         // The other arm re-emits without the cut: the cut path belongs to
         // the cut arm's subtree only.
-        pushRef(f, cutChildRef(em, armE, f, s, ctxArm, "post"));
+        f.pushRef(cutChildRef(em, armE, f, s, ctxArm, "post"));
       }
       b.localSet(va);
     } catch (sp2) {
@@ -3960,18 +3846,18 @@ function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Sco
           em.sp.cutStack = savedCutA;
         }
       }
-      b.u8(UNREACHABLE);
+      b.u8(w.UNREACHABLE);
       return cutArm ? sp : null; // fresh arm: filled locally, arm "completes"
     }
     emitDispatch(em, f, va, ifk);
-    b.u8(RETURN); // the dispatch's result is this function's result
+    b.u8(w.RETURN); // the dispatch's result is this function's result
     return null;
   };
   const spA = arm(e.a, ci === 1);
-  b.u8(ELSE);
+  b.u8(w.ELSE);
   const spB = arm(e.b, ci === 2);
-  b.u8(END);
-  b.u8(UNREACHABLE); // unreachable: each arm returned or trapped
+  b.u8(w.END);
+  b.u8(w.UNREACHABLE); // unreachable: each arm returned or trapped
   const root = em.sp.bodyRoots[em.sp.bodyRoots.length - 1];
   // This if's own expr frame is still on the cut stack; the arm fragment
   // re-emissions must not see it (they push a fresh if frame along the
@@ -4044,17 +3930,17 @@ function emitWhileCPS(em: Emit, id: ExprID, e: Expr & {t: "while"}, f: Fn, s: Sc
     }
     // K_SPILL cell freezing the pre-loop frame image for the after-while
     // rest's pre-cut operand reloads (see snapWrap).
-    const ksp = snapWrap(f, ctx, () => {
+    const ksp = f.snapWrap(ctx, () => {
       b.localGet(ctx.kL); // the ambient continuation
     });
-    const ifk = retCell(f, restAfter.idx, () => {
+    const ifk = f.retCell(restAfter.idx, () => {
       b.localGet(ksp); // next = K_SPILL{frozen frame image, ambient k}
     });
-    const loopk = retCell(f, loopEntry.idx, () => {
+    const loopk = f.retCell(loopEntry.idx, () => {
       b.localGet(ifk); // next = the after-while cell
     });
     const u = f.anyref();
-    pushRef(f, em.lay.unitRef);
+    f.pushRef(em.lay.unitRef);
     b.localSet(u);
     emitDispatch(em, f, u, loopk); // enter the loop (tail call)
     // The loop pass's emission ends at a split site inside it (that is
@@ -4074,14 +3960,14 @@ function emitWhileCPS(em: Emit, id: ExprID, e: Expr & {t: "while"}, f: Fn, s: Sc
     // loop pass re-runs over the ambient continuation (fresh loop-back
     // cell inside emitLoopPass).
     emitLoopPass(em, f, e, s, ctx.kL, loop.entry.idx, cut.slice(1), ctx.snap);
-    b.u8(UNREACHABLE); // each path dispatched (loop back / exit)
+    b.u8(w.UNREACHABLE); // each path dispatched (loop back / exit)
     throw new Split(loop.rest, [...em.sp.cutStack]);
   }
   if (cut[0] === e.body) {
     // Mid-iteration re-entry with a non-block body: it continues the
     // fragment with the cut site's value.
     const bsc = em.d.scopes.get(e.body) ?? s;
-    pushRef(f, expr(em, e.body, f, bsc, false, {kL: ctx.kL, cut: cut.slice(1)}));
+    f.pushRef(expr(em, e.body, f, bsc, false, {kL: ctx.kL, cut: cut.slice(1)}));
   } else {
     // Mid-iteration re-entry: skip the condition (already run). Like
     // handler bodies, a block body is bypassed by emitStmtSeq, so the
@@ -4094,12 +3980,12 @@ function emitWhileCPS(em: Emit, id: ExprID, e: Expr & {t: "while"}, f: Fn, s: Sc
     const bsc = em.d.scopes.get(e.body) ?? s;
     const ci = stmts.indexOf(cut[0]);
     if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-    pushRef(f, emitStmtsFrom(em, stmts, f, bsc, ctx, ci, cut, false));
+    f.pushRef(emitStmtsFrom(em, stmts, f, bsc, ctx, ci, cut, false));
   }
   const v = f.anyref();
   b.localSet(v);
   emitDispatch(em, f, v, ctx.kL); // loop back through the k chain
-  b.u8(UNREACHABLE);
+  b.u8(w.UNREACHABLE);
   throw new Split(loop.rest, [...em.sp.cutStack]);
 }
 
@@ -4143,17 +4029,17 @@ function emitLoopPass(em: Emit, f: Fn, e: Expr & {t: "while"}, s: Scope, kNext: 
         : keepRef(em, e.c, f, expr(em, e.c, f, s, false, {kL: kNext, cut: condCut, snap}));
   } catch (sp) {
     if (!(sp instanceof Split)) throw sp;
-    b.u8(UNREACHABLE); // the pass never completes inline at this site
+    b.u8(w.UNREACHABLE); // the pass never completes inline at this site
     throw sp;
   }
-  pushRef(f, condRef);
-  b.u8(CALL);
+  f.pushRef(condRef);
+  b.u8(w.CALL);
   b.lebU(em.ix.fTruthy);
-  b.u8(IF);
+  b.u8(w.IF);
   b.u8(0x40); // void: the body path tails into the loop-back cell
   try {
     // RET cell over the pass's frame; next = the after-loop continuation
-    const lb = retCell(f, entryIdx, () => {
+    const lb = f.retCell(entryIdx, () => {
       b.localGet(kNext);
     });
     const bodyE = em.nodes[e.body];
@@ -4164,46 +4050,22 @@ function emitLoopPass(em: Emit, f: Fn, e: Expr & {t: "while"}, s: Scope, kNext: 
     // result on the stack (the k=0 terminal-return value): consume it as
     // this pass's return. When the body splits, the catch below closes
     // the arm before this line.
-    b.u8(RETURN);
+    b.u8(w.RETURN);
   } catch (sp) {
     if (!(sp instanceof Split)) throw sp;
-    b.u8(UNREACHABLE); // the body never completes inline at this site
-    b.u8(END);
+    b.u8(w.UNREACHABLE); // the body never completes inline at this site
+    b.u8(w.END);
     const u = f.anyref();
-    pushRef(f, em.lay.unitRef);
+    f.pushRef(em.lay.unitRef);
     b.localSet(u);
     emitDispatch(em, f, u, kNext); // condition false: exit
     throw sp;
   }
-  b.u8(END);
+  b.u8(w.END);
   const u = f.anyref();
-  pushRef(f, em.lay.unitRef);
+  f.pushRef(em.lay.unitRef);
   b.localSet(u);
   emitDispatch(em, f, u, kNext); // condition false: exit
-}
-
-// Frame slot i (anyref) of the current frame (local 0) — the args/builtin
-// access path. Writes push (arrayref, index) + value + aset at the .
-function slot(f: Fn, i: number): void {
-// Frame slot i (anyref) of the current frame (local 0) — the args/builtin
-// access path. Writes push (arrayref, index) + value + aset at the .
-  f.body.localGet(0);
-  f.body.structGet(4, 1);
-  f.body.i32Const(i);
-  f.body.arrayGet(1);
-}
-
-// f64 payload of slot i's number; ref.cast traps on non-numbers (the
-// frozen §7.7 deviation — unreachable in well-typed programs).
-function slotF64(f: Fn, i: number): number {
-// f64 payload of slot i's number; ref.cast traps on non-numbers (the
-// frozen §7.7 deviation — unreachable in well-typed programs).
-  const l = f.f64();
-  slot(f, i);
-  f.body.refCast(0, false);
-  f.body.structGet(0, 0);
-  f.body.localSet(l);
-  return l;
 }
 
 function emitBuiltins(em: Emit, builtin0: number): Fn[] {
@@ -4211,27 +4073,27 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
   for (const {name} of BUILTINS) {
     if (!em.o.usedBuiltins.has(name)) continue;
     const f = new Fn(2, em); // (frame, k): builtins are T_KABI trampolines
-    f.typeIdx = T_KABI;
+    f.typeIdx = w.T_KABI;
     f.idx = builtin0 + out.length; // matches the push order (usedBuiltins filter)
-    em.ix.funcRefTypes.set(f.idx, T_KABI);
+    em.ix.funcRefTypes.set(f.idx, w.T_KABI);
     const b = f.body;
     const box = () => {
-      b.u8(CALL);
+      b.u8(w.CALL);
       b.lebU(em.ix.fBox);
     };
     switch (name) {
       case "+": {
         const a = f.anyref(), bv = f.anyref();
-        slot(f, 0);
+        f.slot(0);
         b.localSet(a);
-        slot(f, 1);
+        f.slot(1);
         b.localSet(bv);
         b.localGet(a);
         b.refTest(0, false);
         b.localGet(bv);
         b.refTest(0, false);
-        b.u8(AND);
-        b.u8(IF);
+        b.u8(w.AND);
+        b.u8(w.IF);
         b.u8(0x6e); // result anyref
         b.localGet(a);
         b.refCast(0, false);
@@ -4239,59 +4101,59 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.localGet(bv);
         b.refCast(0, false);
         b.structGet(0, 0);
-        b.u8(FADD);
+        b.u8(w.FADD);
         box();
-        b.u8(ELSE);
+        b.u8(w.ELSE);
         b.localGet(a);
         b.refTest(2, false);
         b.localGet(bv);
         b.refTest(2, false);
-        b.u8(AND);
-        b.u8(IF);
+        b.u8(w.AND);
+        b.u8(w.IF);
         b.u8(0x6e);
-        emitStrCat(f, a, bv);
-        b.u8(ELSE);
-        b.refNull(ANYREF);
-        b.u8(END);
-        b.u8(END);
+        f.emitStrCat(a, bv);
+        b.u8(w.ELSE);
+        b.refNull(w.ANYREF);
+        b.u8(w.END);
+        b.u8(w.END);
         break;
       }
       case "-": {
-        const x = slotF64(f, 0), y = slotF64(f, 1);
+        const x = f.slotF64(0), y = f.slotF64(1);
         b.localGet(x);
         b.localGet(y);
-        b.u8(FSUB);
+        b.u8(w.FSUB);
         box();
         break;
       }
       case "*": {
-        const x = slotF64(f, 0), y = slotF64(f, 1);
+        const x = f.slotF64(0), y = f.slotF64(1);
         b.localGet(x);
         b.localGet(y);
-        b.u8(FMUL);
+        b.u8(w.FMUL);
         box();
         break;
       }
       case "%": {
         // JS fmod: a - b * trunc(a/b)
-        const x = slotF64(f, 0), y = slotF64(f, 1), t = f.f64();
+        const x = f.slotF64(0), y = f.slotF64(1), t = f.f64();
         b.localGet(x);
         b.localGet(y);
-        b.u8(FDIV);
-        b.u8(FTRUNC);
+        b.u8(w.FDIV);
+        b.u8(w.FTRUNC);
         b.localSet(t);
         b.localGet(x);
         b.localGet(y);
         b.localGet(t);
-        b.u8(FMUL);
-        b.u8(FSUB);
+        b.u8(w.FMUL);
+        b.u8(w.FSUB);
         box();
         break;
       }
       case "neg": {
-        const x = slotF64(f, 0);
+        const x = f.slotF64(0);
         b.localGet(x);
-        b.u8(FNEG);
+        b.u8(w.FNEG);
         box();
         break;
       }
@@ -4299,8 +4161,8 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
       case ">":
       case "<=":
       case ">=": {
-        const x = slotF64(f, 0), y = slotF64(f, 1);
-        const cmp = name === "<" ? FLT : name === ">" ? FGT : name === "<=" ? FLE : FGE;
+        const x = f.slotF64(0), y = f.slotF64(1);
+        const cmp = name === "<" ? w.FLT : name === ">" ? w.FGT : name === "<=" ? w.FLE : w.FGE;
         selectBool(em, f, () => {
           b.localGet(x);
           b.localGet(y);
@@ -4309,28 +4171,28 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         break;
       }
       case "==": {
-        slot(f, 0);
-        slot(f, 1);
-        b.u8(CALL);
+        f.slot(0);
+        f.slot(1);
+        b.u8(w.CALL);
         b.lebU(em.ix.fEq);
         break;
       }
       case "!=": {
-        slot(f, 0);
-        slot(f, 1);
-        b.u8(CALL);
+        f.slot(0);
+        f.slot(1);
+        b.u8(w.CALL);
         b.lebU(em.ix.fEq);
-        b.refCast(I31REF, false); // eq result's i31 bool payload
+        b.refCast(w.I31REF, false); // eq result's i31 bool payload
         b.i31Get();
-        b.u8(EQZ); // 1 when $eq said false
+        b.u8(w.EQZ); // 1 when $eq said false
         selectBool(em, f, () => {});
         break;
       }
       case "not": {
-        slot(f, 0);
-        b.u8(CALL);
+        f.slot(0);
+        b.u8(w.CALL);
         b.lebU(em.ix.fTruthy);
-        b.u8(EQZ);
+        b.u8(w.EQZ);
         selectBool(em, f, () => {});
         break;
       }
@@ -4342,31 +4204,31 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.structGet(4, 1);
         b.arrayLen();
         b.localSet(n);
-        const blk = allocArrBlk(f, n);
-        loop(f, () => {
+        const blk = f.allocArrBlk(n);
+        f.loop(() => {
           b.localGet(n);
         }, i => {
-          elemAddr(f, blk, i);
-          slot(f, i);
+          f.elemAddr(blk, i);
+          f.slot(i);
           b.arraySet();
         });
-        boxArr(f, blk);
+        f.boxArr(blk);
         break;
       }
       case "head": {
         const blk = f.anyref();
-        slot(f, 0);
+        f.slot(0);
         b.refCast(3, true);
         b.structGet(3, 0);
         b.localSet(blk);
         b.localGet(blk);
         b.refCast(1, true);
         b.arrayLen();
-        b.u8(EQZ);
-        b.u8(IF);
+        b.u8(w.EQZ);
+        b.u8(w.IF);
         b.u8(0x40);
-        emitFail(em, f, 0, null, constF64(f, 0), constF64(f, 0));
-        b.u8(END);
+        emitFail(em, f, 0, null, f.constF64(0), f.constF64(0));
+        b.u8(w.END);
         b.localGet(blk);
         b.refCast(1, true);
         b.i32Const(0);
@@ -4375,7 +4237,7 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
       }
       case "tail": {
         const blk = f.anyref(), len = f.i32(), n1 = f.i32();
-        slot(f, 0);
+        f.slot(0);
         b.refCast(3, true);
         b.structGet(3, 0);
         b.localSet(blk);
@@ -4384,26 +4246,26 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.arrayLen();
         b.localSet(len);
         b.localGet(len);
-        b.u8(EQZ);
-        b.u8(IF);
+        b.u8(w.EQZ);
+        b.u8(w.IF);
         b.u8(0x7f);
         b.i32Const(0);
-        b.u8(ELSE);
+        b.u8(w.ELSE);
         b.localGet(len);
         b.i32Const(1);
-        b.u8(SUB);
-        b.u8(END);
+        b.u8(w.SUB);
+        b.u8(w.END);
         b.localSet(n1);
-        emitArrCopy(f, blk, 1, n1);
+        f.emitArrCopy(blk, 1, n1);
         break;
       }
       case "concat": {
         const aBlk = f.anyref(), bBlk = f.anyref(), la = f.i32(), lb = f.i32(), n = f.i32();
-        slot(f, 0);
+        f.slot(0);
         b.refCast(3, true);
         b.structGet(3, 0);
         b.localSet(aBlk);
-        slot(f, 1);
+        f.slot(1);
         b.refCast(3, true);
         b.structGet(3, 0);
         b.localSet(bBlk);
@@ -4417,33 +4279,33 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.localSet(lb);
         b.localGet(la);
         b.localGet(lb);
-        b.u8(ADD);
+        b.u8(w.ADD);
         b.localSet(n);
-        const blk = allocArrBlk(f, n);
-        loop(f, () => {
+        const blk = f.allocArrBlk(n);
+        f.loop(() => {
           b.localGet(la);
         }, i => {
-          elemAddr(f, blk, i);
-          elemAddr(f, aBlk, i);
+          f.elemAddr(blk, i);
+          f.elemAddr(aBlk, i);
           b.arrayGet(1);
           b.arraySet();
         });
-        loop(f, () => {
+        f.loop(() => {
           b.localGet(lb);
         }, i => {
-          elemAddr(f, blk, i);
+          f.elemAddr(blk, i);
           b.localGet(la);
-          b.u8(ADD);
-          elemAddr(f, bBlk, i);
+          b.u8(w.ADD);
+          f.elemAddr(bBlk, i);
           b.arrayGet(1);
           b.arraySet();
         });
-        boxArr(f, blk);
+        f.boxArr(blk);
         break;
       }
       case "flat": {
         const xss = f.anyref(), n = f.i32(), total = f.i32();
-        slot(f, 0);
+        f.slot(0);
         b.refCast(3, true);
         b.structGet(3, 0);
         b.localSet(xss);
@@ -4456,16 +4318,16 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         // JS Array.prototype.flat parity: non-array elements pass through
         // instead of being read as inner arrays (a resumed scalar flowing
         // back through a map-like land path lands exactly here).
-        loop(f, () => {
+        f.loop(() => {
           b.localGet(n);
         }, k => {
           const cell = f.anyref();
-          elemAddr(f, xss, k);
+          f.elemAddr(xss, k);
           b.arrayGet(1);
           b.localSet(cell);
           b.localGet(cell);
           b.refTest(3, false); // is $ARR?
-          b.u8(IF);
+          b.u8(w.IF);
           b.u8(0x40);
           b.localGet(cell);
           b.refCast(3, true);
@@ -4473,29 +4335,29 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.refCast(1, true);
           b.arrayLen(); // inner len
           b.localGet(total);
-          b.u8(ADD);
+          b.u8(w.ADD);
           b.localSet(total);
-          b.u8(ELSE);
+          b.u8(w.ELSE);
           b.localGet(total);
           b.i32Const(1);
-          b.u8(ADD);
+          b.u8(w.ADD);
           b.localSet(total);
-          b.u8(END);
+          b.u8(w.END);
         });
-        const blk = allocArrBlk(f, total);
-        const w = f.i32();
+        const blk = f.allocArrBlk(total);
+        const ww = f.i32();
         b.i32Const(0);
-        b.localSet(w);
-        loop(f, () => {
+        b.localSet(ww);
+        f.loop(() => {
           b.localGet(n);
         }, k => {
           const cell = f.anyref(), xb = f.anyref(), xl = f.i32();
-          elemAddr(f, xss, k);
+          f.elemAddr(xss, k);
           b.arrayGet(1);
           b.localSet(cell);
           b.localGet(cell);
           b.refTest(3, false);
-          b.u8(IF);
+          b.u8(w.IF);
           b.u8(0x40);
           b.localGet(cell);
           b.refCast(3, true);
@@ -4505,46 +4367,46 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.refCast(1, true);
           b.arrayLen();
           b.localSet(xl);
-          loop(f, () => {
+          f.loop(() => {
             b.localGet(xl);
           }, j => {
-            elemAddr(f, blk, w);
-            elemAddr(f, xb, j);
+            f.elemAddr(blk, ww);
+            f.elemAddr(xb, j);
             b.arrayGet(1);
             b.arraySet();
-            b.localGet(w);
+            b.localGet(ww);
             b.i32Const(1);
-            b.u8(ADD);
-            b.localSet(w);
+            b.u8(w.ADD);
+            b.localSet(ww);
           });
-          b.u8(ELSE);
-          elemAddr(f, blk, w);
+          b.u8(w.ELSE);
+          f.elemAddr(blk, ww);
           b.localGet(cell);
           b.arraySet();
-          b.localGet(w);
+          b.localGet(ww);
           b.i32Const(1);
-          b.u8(ADD);
-          b.localSet(w);
-          b.u8(END);
+          b.u8(w.ADD);
+          b.localSet(ww);
+          b.u8(w.END);
         });
-        boxArr(f, blk);
+        f.boxArr(blk);
         break;
       }
       case "len": {
-        slot(f, 0);
+        f.slot(0);
         b.refCast(3, true);
         b.structGet(3, 0);
         b.refCast(1, true);
         b.arrayLen();
-        b.u8(CONV_I32);
+        b.u8(w.CONV_I32);
         box();
         break;
       }
       case "strlen": {
-        slot(f, 0);
+        f.slot(0);
         b.refCast(2, true);
         b.arrayLen();
-        b.u8(CONV_I32);
+        b.u8(w.CONV_I32);
         box();
         break;
       }
@@ -4552,105 +4414,105 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.globalGet(em.lay.piG);
         break;
       case "cos":
-        slot(f, 0);
-        b.u8(CALL);
+        f.slot(0);
+        b.u8(w.CALL);
         b.lebU(em.o.impIdx.get("ef_cos")!);
         break;
       case "sin":
-        slot(f, 0);
-        b.u8(CALL);
+        f.slot(0);
+        b.u8(w.CALL);
         b.lebU(em.o.impIdx.get("ef_sin")!);
         break;
       case "sqrt": {
-        const x = slotF64(f, 0);
+        const x = f.slotF64(0);
         b.localGet(x);
-        b.u8(FSQRT);
+        b.u8(w.FSQRT);
         box();
         break;
       }
       case "abs": {
-        const x = slotF64(f, 0);
+        const x = f.slotF64(0);
         b.localGet(x);
-        b.u8(FABS);
+        b.u8(w.FABS);
         box();
         break;
       }
       case "round": {
-        const x = slotF64(f, 0);
+        const x = f.slotF64(0);
         b.localGet(x);
         b.f64Const(0.5);
-        b.u8(FADD);
-        b.u8(FFLOOR);
+        b.u8(w.FADD);
+        b.u8(w.FFLOOR);
         box();
         break;
       }
       case "range": {
-        const s = slotF64(f, 0), e = slotF64(f, 1), stepv = slotF64(f, 2);
+        const s = f.slotF64(0), e = f.slotF64(1), stepv = f.slotF64(2);
         const n = f.i32();
         b.localGet(stepv);
         b.f64Const(0);
-        b.u8(FEQ);
-        b.u8(IF);
+        b.u8(w.FEQ);
+        b.u8(w.IF);
         b.u8(0x7f);
         b.i32Const(0);
-        b.u8(ELSE);
+        b.u8(w.ELSE);
         b.localGet(e);
         b.localGet(s);
-        b.u8(FSUB);
+        b.u8(w.FSUB);
         b.localGet(stepv);
-        b.u8(FDIV);
-        b.u8(FCEIL);
+        b.u8(w.FDIV);
+        b.u8(w.FCEIL);
         b.f64Const(0);
-        b.u8(FGT);
-        b.u8(IF);
+        b.u8(w.FGT);
+        b.u8(w.IF);
         b.u8(0x7f);
         b.localGet(e);
         b.localGet(s);
-        b.u8(FSUB);
+        b.u8(w.FSUB);
         b.localGet(stepv);
-        b.u8(FDIV);
-        b.u8(FCEIL);
-        b.u8(TRUNC_F64);
-        b.u8(ELSE);
+        b.u8(w.FDIV);
+        b.u8(w.FCEIL);
+        b.u8(w.TRUNC_F64);
+        b.u8(w.ELSE);
         b.i32Const(0);
-        b.u8(END);
-        b.u8(END);
+        b.u8(w.END);
+        b.u8(w.END);
         b.localSet(n);
-        const blk = allocArrBlk(f, n);
-        loop(f, () => {
+        const blk = f.allocArrBlk(n);
+        f.loop(() => {
           b.localGet(n);
         }, k => {
-          elemAddr(f, blk, k);
+          f.elemAddr(blk, k);
           b.localGet(s);
           b.localGet(k);
-          b.u8(CONV_I32);
+          b.u8(w.CONV_I32);
           b.localGet(stepv);
-          b.u8(FMUL);
-          b.u8(FADD);
+          b.u8(w.FMUL);
+          b.u8(w.FADD);
           box();
           b.arraySet();
         });
-        boxArr(f, blk);
+        f.boxArr(blk);
         break;
       }
       case "char":
-        slot(f, 0);
-        b.u8(CALL);
+        f.slot(0);
+        b.u8(w.CALL);
         b.lebU(em.o.impIdx.get("ef_char")!);
         break;
       case "number":
-        slot(f, 0);
-        b.u8(CALL);
+        f.slot(0);
+        b.u8(w.CALL);
         b.lebU(em.o.impIdx.get("ef_number")!);
         break;
       case "args":
-        b.u8(CALL);
+        b.u8(w.CALL);
         b.lebU(em.o.impIdx.get("ef_args")!);
         break;
       case "get": {
         const blk = f.anyref(), len = f.i32(), idx = f.i32();
-        const idxF = slotF64(f, 1);
-        slot(f, 0);
+        const idxF = f.slotF64(1);
+        f.slot(0);
         b.refCast(3, true);
         b.structGet(3, 0);
         b.localSet(blk);
@@ -4659,32 +4521,32 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.arrayLen();
         b.localSet(len);
         b.localGet(idxF);
-        b.u8(TRUNC_F64);
+        b.u8(w.TRUNC_F64);
         b.localSet(idx);
         b.localGet(idx);
         b.i32Const(0);
-        b.u8(LTS); // idx < 0
+        b.u8(w.LTS); // idx < 0
         b.localGet(idx);
         b.localGet(len);
-        b.u8(GEU); // idx >= len
-        b.u8(OR);
-        b.u8(IF);
+        b.u8(w.GEU); // idx >= len
+        b.u8(w.OR);
+        b.u8(w.IF);
         b.u8(0x40);
         emitFail(em, f, 1, null, () => {
           b.localGet(idxF);
         }, () => {
           b.localGet(len);
-          b.u8(CONV_I32);
+          b.u8(w.CONV_I32);
         });
-        b.u8(END);
-        elemAddr(f, blk, idx);
+        b.u8(w.END);
+        f.elemAddr(blk, idx);
         b.arrayGet(1);
         break;
       }
       case "set": {
         const xs = f.anyref(), blk = f.anyref(), len = f.i32(), idx = f.i32(), v = f.anyref();
-        const idxF = slotF64(f, 1);
-        slot(f, 0);
+        const idxF = f.slotF64(1);
+        f.slot(0);
         b.localSet(xs);
         b.localGet(xs);
         b.refCast(3, true);
@@ -4695,31 +4557,31 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.arrayLen();
         b.localSet(len);
         b.localGet(idxF);
-        b.u8(TRUNC_F64);
+        b.u8(w.TRUNC_F64);
         b.localSet(idx);
-        slot(f, 2);
+        f.slot(2);
         b.localSet(v);
         b.localGet(idx);
         b.localGet(len);
-        b.u8(LTU); // idx < len → in-place
-        b.u8(IF);
+        b.u8(w.LTU); // idx < len → in-place
+        b.u8(w.IF);
         b.u8(0x40);
-        elemAddr(f, blk, idx);
+        f.elemAddr(blk, idx);
         b.localGet(v);
         b.arraySet();
-        b.u8(ELSE);
+        b.u8(w.ELSE);
         // grow: fresh slots array of len idx+1, copy old, fill holes with
         // unit, repoint the wrapper's backing (aliases share the wrapper,
         // so they all see the growth — §7.1).
         const nb = f.anyref(), nlen = f.i32();
         b.localGet(idx);
         b.i32Const(1);
-        b.u8(ADD);
+        b.u8(w.ADD);
         b.localSet(nlen);
         b.localGet(nlen);
         b.arrayNew(1);
         b.localSet(nb);
-        loop(f, () => {
+        f.loop(() => {
           b.localGet(nlen);
         }, k => {
           b.localGet(nb);
@@ -4727,14 +4589,14 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.localGet(k);
           b.localGet(k);
           b.localGet(len);
-          b.u8(LTU); // k < old len → copy
-          b.u8(IF);
+          b.u8(w.LTU); // k < old len → copy
+          b.u8(w.IF);
           b.u8(0x6e); // result anyref
-          elemAddr(f, blk, k);
+          f.elemAddr(blk, k);
           b.arrayGet(1);
-          b.u8(ELSE);
-          b.refNull(ANYREF);
-          b.u8(END);
+          b.u8(w.ELSE);
+          b.refNull(w.ANYREF);
+          b.u8(w.END);
           b.arraySet();
         });
         b.localGet(nb);
@@ -4747,8 +4609,8 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.localGet(nb);
         b.refCast(1, true);
         b.structSet(0); // point the wrapper at the new backing
-        b.u8(END);
-        b.refNull(ANYREF);
+        b.u8(w.END);
+        b.refNull(w.ANYREF);
         break;
       }
       case "map":
@@ -4806,34 +4668,34 @@ function emitMapLike(em: Emit, f: Fn, name: string): void {
     const t = iterLand, tb = t.body;
     if (name !== "each") {
       const blk = t.anyref(), iL = t.i32();
-      slot(t, resSlot);
+      t.slot(resSlot);
       tb.refCast(3, true);
       tb.structGet(3, 0);
       tb.localSet(blk);
-      slot(t, iSlot);
+      t.slot(iSlot);
       tb.refCast(0, false);
       tb.structGet(0, 0);
-      tb.u8(TRUNC_F64);
+      tb.u8(w.TRUNC_F64);
       tb.localSet(iL);
-      elemAddr(t, blk, iL);
+      t.elemAddr(blk, iL);
       tb.localGet(1);
       tb.arraySet();
     }
     // counter += 1 (boxed back into the slot)
     tb.localGet(0); tb.structGet(4, 1);
     tb.i32Const(iSlot);
-    slot(t, iSlot);
+    t.slot(iSlot);
     tb.refCast(0, false);
     tb.structGet(0, 0);
     tb.f64Const(1);
-    tb.u8(FADD);
-    tb.u8(CALL);
+    tb.u8(w.FADD);
+    tb.u8(w.CALL);
     tb.lebU(em.ix.fBox);
     tb.arraySet();
     tb.localGet(0);
-    pushRef(t, em.lay.unitRef);
+    t.pushRef(em.lay.unitRef);
     tb.localGet(2);
-    tb.u8(RETURN_CALL);
+    tb.u8(w.RETURN_CALL);
     tb.lebU(loopEntry.idx);
   }
 
@@ -4842,7 +4704,7 @@ function emitMapLike(em: Emit, f: Fn, name: string): void {
   {
     const t = loopEntry, tb = t.body;
     const xb = t.anyref(), n = t.i32(), iL = t.i32(), fc = t.anyref();
-    slot(t, 1); // the xs wrapper (arg 1) → its backing array and length
+    t.slot(1); // the xs wrapper (arg 1) → its backing array and length
     tb.refCast(3, true);
     tb.structGet(3, 0);
     tb.localSet(xb);
@@ -4850,47 +4712,47 @@ function emitMapLike(em: Emit, f: Fn, name: string): void {
     tb.refCast(1, true);
     tb.arrayLen();
     tb.localSet(n);
-    slot(t, iSlot);
+    t.slot(iSlot);
     tb.refCast(0, false);
     tb.structGet(0, 0);
-    tb.u8(TRUNC_F64);
+    tb.u8(w.TRUNC_F64);
     tb.localSet(iL);
     tb.localGet(iL);
     tb.localGet(n);
-    tb.u8(GEU);
-    tb.u8(IF);
+    tb.u8(w.GEU);
+    tb.u8(w.IF);
     tb.u8(0x40);
     const v = t.anyref();
     if (name === "map") {
       const res = t.anyref();
-      slot(t, resSlot);
+      t.slot(resSlot);
       tb.refCast(3, true);
       tb.structGet(3, 0);
       tb.localSet(res);
-      boxArr(t, res);
+      t.boxArr(res);
     } else if (name === "each") {
-      pushRef(t, em.lay.unitRef);
+      t.pushRef(em.lay.unitRef);
     } else {
       // flatmap: total = Σ per-element lengths; allocate; copy; box.
       const tmp = t.anyref(), total = t.i32();
-      slot(t, resSlot);
+      t.slot(resSlot);
       tb.refCast(3, true);
       tb.structGet(3, 0);
       tb.localSet(tmp);
       tb.i32Const(0);
       tb.localSet(total);
-      loop(t, () => {
+      t.loop(() => {
         tb.localGet(n);
       }, i => {
         // total += len of callback result i: elem → its backing array →
         // len (scalar elements count as 1 — the tag test, not the value).
         const cell = t.anyref();
-        elemAddr(t, tmp, i);
+        t.elemAddr(tmp, i);
         tb.arrayGet(1);
         tb.localSet(cell);
         tb.localGet(cell);
         tb.refTest(3, false);
-        tb.u8(IF);
+        tb.u8(w.IF);
         tb.u8(0x40);
         tb.localGet(cell);
         tb.refCast(3, true);
@@ -4898,30 +4760,30 @@ function emitMapLike(em: Emit, f: Fn, name: string): void {
         tb.refCast(1, true);
         tb.arrayLen();
         tb.localGet(total);
-        tb.u8(ADD);
+        tb.u8(w.ADD);
         tb.localSet(total);
-        tb.u8(ELSE);
+        tb.u8(w.ELSE);
         tb.localGet(total);
         tb.i32Const(1);
-        tb.u8(ADD);
+        tb.u8(w.ADD);
         tb.localSet(total);
-        tb.u8(END);
+        tb.u8(w.END);
       });
-      const res = allocArrBlk(t, total);
-      const w = t.i32();
+      const res = t.allocArrBlk(total);
+      const ww = t.i32();
       tb.i32Const(0);
-      tb.localSet(w);
-      loop(t, () => {
+      tb.localSet(ww);
+      t.loop(() => {
         tb.localGet(n);
       }, i => {
         const xb2 = t.anyref(), xl = t.i32();
         const cell = t.anyref();
-        elemAddr(t, tmp, i);
+        t.elemAddr(tmp, i);
         tb.arrayGet(1);
         tb.localSet(cell);
         tb.localGet(cell);
         tb.refTest(3, false);
-        tb.u8(IF);
+        tb.u8(w.IF);
         tb.u8(0x40);
         tb.localGet(cell);
         tb.refCast(3, true);
@@ -4931,42 +4793,42 @@ function emitMapLike(em: Emit, f: Fn, name: string): void {
         tb.refCast(1, true);
         tb.arrayLen();
         tb.localSet(xl);
-        loop(t, () => {
+        t.loop(() => {
           tb.localGet(xl);
         }, j => {
           // dst = res[w], src = xb2[j] (element values, same layout the
           // box/collect path reads back).
-          elemAddr(t, res, w);
-          elemAddr(t, xb2, j);
+          t.elemAddr(res, ww);
+          t.elemAddr(xb2, j);
           tb.arrayGet(1);
           tb.arraySet();
-          tb.localGet(w);
+          tb.localGet(ww);
           tb.i32Const(1);
-          tb.u8(ADD);
-          tb.localSet(w);
+          tb.u8(w.ADD);
+          tb.localSet(ww);
         });
-        tb.u8(ELSE);
-        elemAddr(t, res, w);
+        tb.u8(w.ELSE);
+        t.elemAddr(res, ww);
         tb.localGet(cell);
         tb.arraySet();
-        tb.localGet(w);
+        tb.localGet(ww);
         tb.i32Const(1);
-        tb.u8(ADD);
-        tb.localSet(w);
-        tb.u8(END);
+        tb.u8(w.ADD);
+        tb.localSet(ww);
+        tb.u8(w.END);
       });
-      boxArr(t, res);
+      t.boxArr(res);
     }
     tb.localSet(v);
     emitDispatch(em, t, v, 2); // k = this thunk's k param
-    tb.u8(RETURN); // only the k=0 branch reaches here, with the value
-    tb.u8(ELSE);
+    tb.u8(w.RETURN); // only the k=0 branch reaches here, with the value
+    tb.u8(w.ELSE);
     // Iteration: elem = xs[i]; the callback's RET cell lands in iterLand
     // (landA) over this thunk's frame, with next = this thunk's k.
-    slot(t, 0);
+    t.slot(0);
     tb.localSet(fc);
     const elem = t.anyref();
-    elemAddr(t, xb, iL);
+    t.elemAddr(xb, iL);
     tb.arrayGet(1);
     tb.localSet(elem);
     emitCallClosure(em, t, fc, name === "map" ? 1 : 2, (k, ffp) => {
@@ -4977,20 +4839,20 @@ function emitMapLike(em: Emit, f: Fn, name: string): void {
       if (k === 0) tb.localGet(elem);
       else {
         tb.localGet(iL);
-        tb.u8(CONV_I32);
-        tb.u8(CALL);
+        tb.u8(w.CONV_I32);
+        tb.u8(w.CALL);
         tb.lebU(em.ix.fBox);
       }
       tb.arraySet();
     }, false, true, 2, true, iterLand.idx);
-    tb.u8(UNREACHABLE); // the callback always tails into iterLand
-    tb.u8(END);
-    tb.u8(UNREACHABLE); // both if arms diverge; keep the implicit end typed
+    tb.u8(w.UNREACHABLE); // the callback always tails into iterLand
+    tb.u8(w.END);
+    tb.u8(w.UNREACHABLE); // both if arms diverge; keep the implicit end typed
   }
   // Entry (this builtin Fn): allocate the result array, init the counter,
   // tail-call the loop entry.
   const xb = f.anyref(), n = f.i32();
-  slot(f, 1);
+  f.slot(1);
   b.refCast(3, true);
   b.structGet(3, 0);
   b.localSet(xb);
@@ -4999,24 +4861,24 @@ function emitMapLike(em: Emit, f: Fn, name: string): void {
   b.arrayLen();
   b.localSet(n);
   if (resSlot >= 0) {
-    const res = allocArrBlk(f, n);
+    const res = f.allocArrBlk(n);
     b.localGet(0); b.structGet(4, 1);
     b.i32Const(resSlot);
-    boxArr(f, res); // the slot holds the $ARR wrapper (iterLand + the
+    f.boxArr(res); // the slot holds the $ARR wrapper (iterLand + the
                          // done path read it back as a wrapper)
     b.arraySet();
   }
   b.localGet(0); b.structGet(4, 1);
   b.i32Const(iSlot);
   b.i32Const(0);
-  b.u8(CONV_I32);
-  b.u8(CALL);
+  b.u8(w.CONV_I32);
+  b.u8(w.CALL);
   b.lebU(em.ix.fBox);
   b.arraySet();
   b.localGet(0);
-  pushRef(f, em.lay.unitRef);
+  f.pushRef(em.lay.unitRef);
   b.localGet(1);
-  b.u8(RETURN_CALL);
+  b.u8(w.RETURN_CALL);
   b.lebU(loopEntry.idx);
 }
 
@@ -5026,7 +4888,7 @@ function emitMain(em: Emit, f: Fn): void {
   const exprs = em.prog.items.filter((it): it is {e: ExprID} => "e" in it);
   const v = f.anyref();
   if (exprs.length === 0) {
-    pushRef(f, em.lay.unitRef);
+    f.pushRef(em.lay.unitRef);
     b.localSet(v);
   } else {
     // Same split protocol as bodyCatch: a perform/handle at the top level
@@ -5039,7 +4901,7 @@ function emitMain(em: Emit, f: Fn): void {
         for (let k = 0; k < exprs.length; k++) {
           const r = expr(em, exprs[k].e, f, em.d.globalScope);
           if (k < exprs.length - 1) { /* dropped: nothing on the stack */ }
-          else { pushRef(f, r); b.localSet(v); }
+          else { f.pushRef(r); b.localSet(v); }
         }
       } catch (sp) {
         em.sp.cutStack = savedCut;
@@ -5065,11 +4927,11 @@ function emitInits(em: Emit): void {
 // 12 host accessors (§4 — JS cannot read GC fields directly). Appended
 // after main; indices computed here.
   const mainIdx = em.o.liveImports.length + em.funcs.length - 1; // main is last
-  em.ix.funcRefTypes.set(mainIdx, T_KABI); // main's funcref slot (after thunks)
+  em.ix.funcRefTypes.set(mainIdx, w.T_KABI); // main's funcref slot (after thunks)
   const run = new Fn(0, em);
-  run.typeIdx = T_RUN;
+  run.typeIdx = w.T_RUN;
   run.idx = mainIdx + 1;
-  em.ix.funcRefTypes.set(run.idx, T_RUN);
+  em.ix.funcRefTypes.set(run.idx, w.T_RUN);
   {
     const b = run.body;
     b.refNull(4); // global frame parent = null
@@ -5077,7 +4939,7 @@ function emitInits(em: Emit): void {
     b.arrayNew(1);
     b.structNew(4);
     b.refNull(5); // k = null: main's dispatch returns its value
-    b.u8(CALL);
+    b.u8(w.CALL);
     b.lebU(mainIdx);
   }
   em.funcs.push(run);
@@ -5094,35 +4956,35 @@ function emitInits(em: Emit): void {
   acc(1, 14, (b) => {
     b.localGet(0);
     b.u8(0xd1);
-    b.u8(IF);
+    b.u8(w.IF);
     b.u8(0x7f);
     b.i32Const(0);
-    b.u8(ELSE);
+    b.u8(w.ELSE);
     const tag = (ht: number, t: number) => {
       b.localGet(0);
       b.refTest(ht, false);
-      b.u8(IF);
+      b.u8(w.IF);
       b.u8(0x7f);
       b.i32Const(t);
-      b.u8(ELSE);
+      b.u8(w.ELSE);
     };
-    tag(I31REF, 2);
+    tag(w.I31REF, 2);
     tag(0, 1); // $NUM
     tag(2, 3); // $STR
     tag(3, 4); // $ARR
     b.localGet(0);
     b.refTest(6, false); // $CLO
-    b.u8(IF);
+    b.u8(w.IF);
     b.u8(0x7f);
     b.i32Const(5);
-    b.u8(ELSE);
-    b.u8(UNREACHABLE);
-    b.u8(END);
-    b.u8(END);
-    b.u8(END);
-    b.u8(END);
-    b.u8(END);
-    b.u8(END);
+    b.u8(w.ELSE);
+    b.u8(w.UNREACHABLE);
+    b.u8(w.END);
+    b.u8(w.END);
+    b.u8(w.END);
+    b.u8(w.END);
+    b.u8(w.END);
+    b.u8(w.END);
   });
   // __num(v) -> f64
   acc(1, 19, (b) => {
@@ -5222,12 +5084,6 @@ function treeShakeBuiltins(prog: Program, o: Opt): void {
   // call sites compile inline.
   o.usedBuiltins = new Set([...refs].filter(n => o.valueBuiltins.has(n) || !OPERATOR_OPS.has(n)));
 }
-
-// Import names that serve exactly one builtin each (import → builtin).
-const BUILTIN_IMPORTS: Record<string, string> = {
-  ef_char: "char", ef_number: "number", ef_args: "args",
-  ef_cos: "cos", ef_sin: "sin",
-};
 
 // Drops dead host imports: a builtin-served import is live iff its builtin
 // is in usedBuiltins (treeShakeBuiltins — shadowing-correct); ef_perform is

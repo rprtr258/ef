@@ -100,6 +100,9 @@ function parseStr(t: string): string {
   return out;
 }
 
+const PREC: Record<string, number> = {"||": 1, "&&": 2, "==": 3, "!=": 3, "<": 4, ">": 4, "<=": 4, ">=": 4, "+": 5, "-": 5, "*": 6, "/": 6, "%": 6};
+const binOps = new Set(Object.keys(PREC));
+
 // Parser (recursive descent + Pratt for infix)
 export class Parser {
   toks: Tok[];
@@ -364,9 +367,6 @@ export class Parser {
   }
 
   // --- Pratt ---
-  static PREC: Record<string, number> = {"||": 1, "&&": 2, "==": 3, "!=": 3, "<": 4, ">": 4, "<=": 4, ">=": 4, "+": 5, "-": 5, "*": 6, "/": 6, "%": 6};
-  binOps = new Set(Object.keys(Parser.PREC));
-
   parseExpr(): ExprID {
     return this.parseBinary(0);
   }
@@ -375,9 +375,9 @@ export class Parser {
     let left = this.parseUnary();
     while (true) {
       const op = this.peek();
-      if (op === undefined || !this.binOps.has(op))
+      if (op === undefined || !binOps.has(op))
         break;
-      const prec = Parser.PREC[op];
+      const prec = PREC[op];
       if (prec < min)
         break;
       this.next();
