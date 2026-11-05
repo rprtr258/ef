@@ -338,10 +338,6 @@ class Buf {
     return this;
   }
 
-  lebS(n: number): this {
-    return this.lebU(n);
-  } // immediates arrive pre-decoded
-
   // Immediates a stream opcode needs (before its completion handler runs).
   private needs(op: number, gc: number): ("bt" | "lebU")[] {
     if (gc >= 0)
@@ -732,8 +728,6 @@ class Fn {
   // Frame slot i (anyref) of the current frame (local 0) — the args/builtin
   // access path. Writes push (arrayref, index) + value + aset at the .
   slot(i: number): void {
-    // Frame slot i (anyref) of the current frame (local 0) — the args/builtin
-    // access path. Writes push (arrayref, index) + value + aset at the .
     this.body.localGet(0);
     this.body.structGet(4, 1);
     this.body.i32Const(i);
@@ -743,8 +737,6 @@ class Fn {
   // f64 payload of slot i's number; ref.cast traps on non-numbers (the
   // frozen §7.7 deviation — unreachable in well-typed programs).
   slotF64(i: number): number {
-    // f64 payload of slot i's number; ref.cast traps on non-numbers (the
-    // frozen §7.7 deviation — unreachable in well-typed programs).
     const l = this.f64();
     this.slot(i);
     this.body.refCast(0, false);
@@ -756,7 +748,6 @@ class Fn {
 
   // String concatenation of $STR locals a, b → new $STR on the stack.
   emitStrCat(a: number, b: number): void {
-    // String concatenation of $STR locals a, b → new $STR on the stack.
     const body = this.body;
     const res = this.anyref();
     body.localGet(a); body.refCast(2, true); body.arrayLen();
@@ -785,8 +776,6 @@ class Fn {
   // for (i = 0; i < n; i++) iter(i) — n pushed by pushN (const or local).
   // Emits BLOCK { LOOP { cond; br_if out; iter; incr; br; } }.
   loop(pushN: () => void, iter: (i: number) => void): void {
-    // for (i = 0; i < n; i++) iter(i) — n pushed by pushN (const or local).
-    // Emits BLOCK { LOOP { cond; br_if out; iter; incr; br; } }.
     const b = this.body;
     const i = this.i32();
     b.i32Const(0);
@@ -814,8 +803,6 @@ class Fn {
   // Pushes (arrayref, index) of element i (local) of raw $ELEMS local
   // `blk`; callers finish with aget (read) or push the value + aset (write).
   elemAddr(blk: number, i: number): void {
-    // Pushes (arrayref, index) of element i (local) of raw $ELEMS local
-    // `blk`; callers finish with aget (read) or push the value + aset (write).
     this.body.localGet(blk);
     this.body.refCast(1, true);
     this.body.localGet(i);
@@ -823,7 +810,6 @@ class Fn {
 
   // Allocates a raw $ELEMS array of length local `n`; returns the local.
   allocArrBlk(n: number): number {
-    // Allocates a raw $ELEMS array of length local `n`; returns the local.
     const blk = this.anyref();
     this.body.localGet(n);
     this.body.arrayNew(1);
@@ -835,9 +821,6 @@ class Fn {
   // Growth (`set`) repoints the wrapper's backing array, so every alias
   // sharing the wrapper sees the growth (§7.1).
   boxArr(blk: number): void {
-    // Wraps the raw $ELEMS local `blk` → new $ARR wrapper on the stack.
-    // Growth (`set`) repoints the wrapper's backing array, so every alias
-    // sharing the wrapper sees the growth (§7.1).
     this.body.localGet(blk);
     this.body.refCast(1, true);
     this.body.structNew(3);
@@ -846,8 +829,6 @@ class Fn {
   // Copies n (local) elements from srcBlk's elements starting at srcOff into
   // a fresh array; leaves the boxed $ARR wrapper on the stack.
   emitArrCopy(srcBlk: number, srcOff: number, n: number): void {
-    // Copies n (local) elements from srcBlk's elements starting at srcOff into
-    // a fresh array; leaves the boxed $ARR wrapper on the stack.
     const b = this.body;
     const blk = this.allocArrBlk(n);
     b.localGet(blk);
@@ -865,9 +846,6 @@ class Fn {
   // This is the ONLY sanctioned place short-lived stack values cross an
   // emitter boundary (the helper fully balances the stack per ref).
   pushRef(r: ValueRef): void {
-    // Materialize a ValueRef onto the operand stack, at its consume point.
-    // This is the ONLY sanctioned place short-lived stack values cross an
-    // emitter boundary (the helper fully balances the stack per ref).
     const b = this.body;
     if (r.k === "g") b.globalGet(r.gi);
     else if (r.k === "bool") { b.i32Const(r.v); b.refI31(); }
@@ -897,22 +875,6 @@ class Fn {
   // tail-calls fragment `fragIdx` (T_III_I) over the caller's frame (local
   // 0). `nextE` pushes the cell's next-pointer operand. Returns the cell.
   retCell(fragIdx: number, nextE: () => void): number {
-    // Calls the closure in local `fc`; argEmit(k, ffp) stores argument k into
-    // the fresh frame at local ffp. The callee has the uniform CPS ABI
-    // (frame, k) -> i32. Leaves the result cell on the stack — or, when `tail`,
-    // returns the callee's result from the enclosing function directly
-    // (return_call_indirect passing the caller's k through, so tail recursion
-    // uses O(1) stack). A non-tail call passes k=0: the callee's dispatch(0, v)
-    // returns its result cell inline (today's zero-overhead arithmetic) — or,
-    // when `land`, a freshly allocated RET cell {K_RET, landA, $fp, k}:
-    // the callee's dispatch tail-calls the land thunk over the caller's frame
-    // and k, which dispatches the result into the caller's continuation (k=0
-    // here, so the value comes back to this call site and the body continues
-    // inline; the rest-of-site fragment machinery is in place for the
-    // suspendable constructs of later steps).
-    // A RET cell {K_RET, fragIdx, $fp, next} (§3): the continuation cell that
-    // tail-calls fragment `fragIdx` (T_III_I) over the caller's frame (local
-    // 0). `nextE` pushes the cell's next-pointer operand. Returns the cell.
     const b = this.body;
     const cell = this.anyref();
     b.i32Const(w.K_RET);
@@ -1045,7 +1007,6 @@ class Split extends Error {
   ) { super("internal: compile-time split"); }
 }
 
-// The cut-path child check: when re-emitting along a split's chain, the
 // --- compiler ---------------------------------------------------------------
 
 export function compile(src: string): Uint8Array {
@@ -1098,8 +1059,6 @@ export const BIN_FEATURES = binaryen.Features.MVP | binaryen.Features.ReferenceT
 // (the GC probe test passes binaryen.Features.GC; the rewrite flips the mask
 // for real in step 2).
 
-
-// --- compiler ---------------------------------------------------------------
 
 // --- compile phases ----------------------------------------------------------
 // The backend pipeline is a composition of free functions over plain artifact
@@ -1837,8 +1796,6 @@ function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]): Uint
   return bytes;
 }
 
-// --- compiler -----------------------------------------------------------------
-
 // --- emission -----------------------------------------------------------------
 // Emission is free functions over one local Emit context, created inside
 // emit() and dropped when it returns: nothing outside emission can touch
@@ -1930,8 +1887,6 @@ function emit(prog: Program, d: Discovery, o: Opt, ix: Indices, lay: Layout): Fn
 // Signature of a direct-call target by funcref index: imports carry their
 // type by name; defined functions registered at index assignment.
 function sigOf(em: Emit, funcrefIdx: number): {ps: binaryen.Type[], r: binaryen.Type | null} {
-  // Signature of a direct-call target by funcref index: imports carry their
-  // type by name; defined functions registered at index assignment.
   const typeIdx = funcrefIdx < em.o.liveImports.length
     ? w.impType(em.o.liveImports[funcrefIdx])
     : em.ix.funcRefTypes.get(funcrefIdx);
@@ -2006,15 +1961,6 @@ function emitLambdas(em: Emit, id: ExprID): void {
 // slot npMax+1 for a per-handler fn — where emitDispatch stashes it for
 // the matching nparams) through their k — eval.ts:132's (v, k2) => k2(v).
 function emitCaseFns(em: Emit): void {
-  // 4b. Handler case function bodies (§4.4). Each case body runs over the
-  // handler's shared hframe (its frame param) with k = HDL.next — the
-  // two-k rule: the ambient continuation is the one captured OUTSIDE the
-  // handler, so a perform inside a case body walks from there and never
-  // re-enters its own handler, and a case body finishing normally
-  // dispatches straight through it (no Return re-wrap). The identity fns
-  // dispatch their frame's Return value (slot 1 for the shared npMax=0 fn,
-  // slot npMax+1 for a per-handler fn — where emitDispatch stashes it for
-  // the matching nparams) through their k — eval.ts:132's (v, k2) => k2(v).
   const idf = em.ix.identityRet;
   idf.em = em;
   {
@@ -2164,10 +2110,6 @@ function emitStmtSeq(em: Emit, stmts: ExprID[], f: Fn, sc: Scope, tail: boolean,
 // Lambda and case bodies are split boundaries: the chain never crosses a
 // lambda call, so each body's catcher owns its sites' fragments.
 function bodyCatch(em: Emit, bodyId: ExprID, f: Fn, sc: Scope, tail: boolean, ctx: Ctx): void {
-  // Emit a lambda/case body, catching the Split of a perform/handle site
-  // inside it and filling that site's rest-of-site fragment (see fillRest).
-  // Lambda and case bodies are split boundaries: the chain never crosses a
-  // lambda call, so each body's catcher owns its sites' fragments.
   const savedCut = em.sp.cutStack;
   const bodyE = em.nodes[bodyId];
   const stmts = bodyE.t === "block" ? bodyE.stmts : [bodyId];
@@ -2195,12 +2137,6 @@ function bodyCatch(em: Emit, bodyId: ExprID, f: Fn, sc: Scope, tail: boolean, ct
 // the v param, statements after it re-emit inline. A further split during
 // re-emission chains another fragment off this one's split site.
 function fillRest(em: Emit, sp: Split, root: ExprID[], sc: Scope, tail: boolean): void {
-  // Fill a split's rest-of-site fragment (T_III_I: frame, v, kNext) by
-  // re-emitting from the body root along the split's chain: statements
-  // before the cut already executed (skipped; surviving values reload from
-  // spill slots), the cut site continues the fragment with its value being
-  // the v param, statements after it re-emit inline. A further split during
-  // re-emission chains another fragment off this one's split site.
   const gf = sp.restFn;
   if (DBGEMIT) console.error("FILL_REST fn=", gf.idx, "root=", root.length, "chain=", sp.chain.length, "types=", "[" + sp.chain.map((x) => em.nodes[x]?.t).join(",") + "]", "tail=", tail);
   // A shared after-rest fragment (e.g. a handle's) may be routed here
@@ -2287,12 +2223,6 @@ function fillRest(em: Emit, sp: Split, root: ExprID[], sc: Scope, tail: boolean)
 // Returns the last statement's ref; pushRef it where the caller needs the
 // legacy stack operand (handle/while-cut do, block-cut returns it).
 function emitStmtsFrom(em: Emit, stmts: ExprID[], f: Fn, s: Scope, ctx: Ctx, ci: number, cut: ExprID[], tail: boolean): ValueRef {
-  // Fragment re-emission of a statement sequence from a cut statement:
-  // statements before index ci already executed (skipped — surviving values
-  // reload from spill slots), stmts[ci] continues the fragment with its
-  // value being the fragment's v param, statements after it re-emit inline.
-  // Returns the last statement's ref; pushRef it where the caller needs the
-  // legacy stack operand (handle/while-cut do, block-cut returns it).
   let r: ValueRef = em.lay.unitRef;
   for (let k = ci; k < stmts.length; k++) {
     r = (k === ci)
@@ -2618,9 +2548,6 @@ function emitHelpers(em: Emit): Fn[] {
 // current frame, a fresh local for parent frames (the frame walk balances
 // its own stack), or a static global for placed closures.
 function emitSym(em: Emit, f: Fn, sc: Scope, name: string): ValueRef {
-// Returns the anyref value of `name` as a ValueRef: a frame slot for the
-// current frame, a fresh local for parent frames (the frame walk balances
-// its own stack), or a static global for placed closures.
   const b = f.body;
   const r = resolve(sc, name);
   if (r !== null) {
@@ -2645,11 +2572,6 @@ function emitSym(em: Emit, f: Fn, sc: Scope, name: string): ValueRef {
 // the code index and dispatching through the table. The frame/k
 // convention is identical in both modes.
 function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false, landA?: number, direct?: {idx: number, fsize: number}): void {
-// `direct` (direct builtin call specialization): when set, the callee is
-// a known builtin trampoline — skip the $CLO load (env = null, static
-// fsize, funcref index known) and emit a direct call instead of reading
-// the code index and dispatching through the table. The frame/k
-// convention is identical in both modes.
   const b = f.body;
   const clob = f.anyref(), idx = f.i32(), cf = f.anyref(), fs = f.i32(),
     maxL = f.i32(), slots = f.anyref(), ffp = f.anyref();
@@ -2782,9 +2704,6 @@ function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEmit: (k:
 // registered in the funcref table. Filled later by the body-level catcher
 // that catches this site's Split (bodyCatch/emitMain/fillRest).
 function makeRestThunk(em: Emit, role?: string): Fn {
-// One rest-of-site fragment: a T_III_I function (frame, v, kNext) -> i32
-// registered in the funcref table. Filled later by the body-level catcher
-// that catches this site's Split (bodyCatch/emitMain/fillRest).
   const f = new Fn(3, em);
   f.typeIdx = w.T_III_I;
   f.idx = em.ix.thunk0 + em.thunks.length;
@@ -2886,8 +2805,6 @@ function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
 // Calls ef_fail(code, name, a, b); the import throws, so unreachable.
 // `name` is a $STR static global index (field-access failures) or null.
 function emitFail(em: Emit, f: Fn, code: number, nameG: number | null, pushA: () => void, pushB: () => void): void {
-// Calls ef_fail(code, name, a, b); the import throws, so unreachable.
-// `name` is a $STR static global index (field-access failures) or null.
   const b = f.body;
   b.i32Const(code);
   if (nameG === null) b.refNull(w.ANYREF);
@@ -2901,7 +2818,6 @@ function emitFail(em: Emit, f: Fn, code: number, nameG: number | null, pushA: ()
 
 // true/false i31 selected by the i32 condition emitted by emitCond.
 function selectBool(em: Emit, f: Fn, emitCond: () => void): void {
-// true/false i31 selected by the i32 condition emitted by emitCond.
   const b = f.body;
   const t = f.i32();
   emitCond();
@@ -2916,9 +2832,6 @@ function selectBool(em: Emit, f: Fn, emitCond: () => void): void {
 // `id` (if any) and return the slot ref: a value that must survive a
 // later split is read back from the frame by the fragment machinery.
 function keepRef(em: Emit, id: ExprID, f: Fn, r: ValueRef): ValueRef {
-// Persist a ref into the operand spill slot computeSpills allocated for
-// `id` (if any) and return the slot ref: a value that must survive a
-// later split is read back from the frame by the fragment machinery.
   const sp = em.ix.operandSpill.get(id);
   if (sp === undefined) return r;
   const b = f.body;
@@ -2946,13 +2859,6 @@ function preCut(em: Emit, id: ExprID, f: Fn, s: Scope, ctx: Ctx): ValueRef {
 // result on the stack; the wrapper dispatches it (never return_call $box:
 // a raw tail return would bypass the caller's RET cell).
 function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"}, s: Scope, ctx: Ctx, ci: number): void {
-// Inline operator computation (§OPERATOR_OPS): the operands' refs are
-// computed and spilled first (same discipline as `/`), then the operator
-// computation runs on the caller's operand stack — no call, no frame.
-// Mirrors each operator's $-trampoline body in emitBuiltins (same dynamic
-// dispatch: `+` falls back to string concat then null). Leaves the boxed
-// result on the stack; the wrapper dispatches it (never return_call $box:
-// a raw tail return would bypass the caller's RET cell).
   const b = f.body;
   // Operand cut modes, mirroring the `/` path: the arg holding the cut
   // site continues the fragment ("cut"), an earlier sibling reloads its
@@ -3048,14 +2954,6 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
 // cut at all) — re-emit inline, with the caller's tail flag. Persists any
 // mapped operand spill slot.
 function cutChildRef(em: Emit, child: ExprID, f: Fn, s: Scope, ctx: Ctx, mode: "cut" | "pre" | "post", tail = false): ValueRef {
-// One child of a cut node, ref-native — also used for fresh emission
-// (mode "post"), so fresh and cut bodies can share one shape.
-// "cut": the child holding the deeper split site — continues the fragment
-// chain (its value is the fragment's v param). "pre": a sibling evaluated
-// BEFORE the cut child — a slot ref into its spill, or re-emit pure code
-// inline (preCut). "post": a sibling evaluated AFTER the cut child (or no
-// cut at all) — re-emit inline, with the caller's tail flag. Persists any
-// mapped operand spill slot.
   if (mode === "cut") return keepRef(em, child, f, expr(em, child, f, s, false, {kL: ctx.kL, cut: ctx.cut!.slice(1), snap: ctx.snap}));
   if (mode === "pre") return keepRef(em, child, f, preCut(em, child, f, s, ctx));
   return keepRef(em, child, f, expr(em, child, f, s, tail, {kL: ctx.kL, snap: ctx.snap}));
@@ -3064,8 +2962,6 @@ function cutChildRef(em: Emit, child: ExprID, f: Fn, s: Scope, ctx: Ctx, mode: "
 // The split site is this node itself inside a fragment: its value is the
 // fragment's v param (local 1), persisted for later fragments that reload it.
 function fragV(em: Emit, id: ExprID, f: Fn): ValueRef {
-// The split site is this node itself inside a fragment: its value is the
-// fragment's v param (local 1), persisted for later fragments that reload it.
   return keepRef(em, id, f, {k: "local", l: 1});
 }
 
@@ -3711,20 +3607,6 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
 // shared identity); like a perform site, the handle ends the inline body
 // and the after-handle rest lives in its own fragment.
 function emitHandle(em: Emit, id: ExprID, e: Expr & {t: "handle"}, f: Fn, s: Scope, ctx: Ctx): void {
-// §4.4 handle. Installs the handler's continuation state and runs the
-// body inline with the K_HDL cell as the ambient continuation k':
-// - hframe: the handler's shared frame (op-param slots, resume binders,
-//   the Return value slot, case-body spills — frameSizeOf(info.scope)).
-// - RET cell for the after-handle rest: {K_RET, restFn, $fp, ambient k} —
-//   the continuation OUTSIDE the handler; the Return case (and the
-//   identity default) delivers the handle's value through it.
-// - K_HDL cell: {K_HDL, case-table global, hframe, next = the RET cell}.
-// The cell is spilled to the handle's frame slot so a perform inside the
-// body (whose split re-emits this node in fragment mode) reloads the
-// installed handler instead of reinstalling it. The body's completion
-// dispatches through the cell (Return entry — explicit case fn or the
-// shared identity); like a perform site, the handle ends the inline body
-// and the after-handle rest lives in its own fragment.
   const b = f.body;
   const info = em.d.hdlCases.get(id)!;
   const restFn = makeRestThunk(em, "handle:restFn");
@@ -3785,16 +3667,6 @@ function emitHandle(em: Emit, id: ExprID, e: Expr & {t: "handle"}, f: Fn, s: Sco
 // condition continues the fragment, 1/2 = the arm does); undefined when
 // emitting fresh.
 function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Scope, ctx: Ctx, ci?: number): void {
-// Dispatch-shape if (§3): used when an arm can split, or when re-emitting
-// a fragment whose cut lands inside the if. Both arms dispatch their
-// values through a RET cell {K_RET, restAfterIf, frame, ambient k} and
-// return; the if itself becomes a split site whose fragment (filled by
-// the body-level catcher) receives the if's value as v. An arm whose
-// emission throws is closed with unreachable; its fragment is filled
-// here against the enclosing body root along the split's chain.
-// `ci` is the cut descent index when re-emitting a fragment (0 = the
-// condition continues the fragment, 1/2 = the arm does); undefined when
-// emitting fresh.
   const b = f.body;
   // The split chain for this if: the path from the body root to here.
   // Frames pushed while emitting the arms (nested re-emissions) are not
@@ -3951,27 +3823,6 @@ function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Sco
 //   continues with the fragment's v, then one loop pass re-runs
 //   (emitLoopPass with kNext = the fragment's ambient continuation).
 function emitWhileCPS(em: Emit, id: ExprID, e: Expr & {t: "while"}, f: Fn, s: Scope, ctx: Ctx, cut?: ExprID[]): void {
-// Split-mode while (§6b): a perform/handle/land call inside the condition
-// or body cannot keep the wasm block/loop shape — the site's return_call
-// would end the function mid-loop and no captured continuation may cross a
-// wasm label. The loop becomes a split site:
-// - pass 1 (fresh): allocates the after-while RET cell {K_RET, restAfter,
-//   $fp, ambient k} and the loop-entry RET cell {K_RET, loopEntry, $fp,
-//   ifk}, fills the loopEntry fragment (one loop pass), and enters the
-//   loop by dispatching unit through the entry cell. The body's ambient
-//   continuation is a fresh per-pass loop-back cell {K_RET, loopEntry,
-//   $fp, kNext} — the body re-enters the loop through the k chain, never
-//   a label, and a perform inside the body captures that cell (so a
-//   resumed copy re-enters the loop on the resumed chain).
-// - cut = [] (fragment re-emission after the loop exited): the loop's
-//   unit value is the fragment's v param.
-// - cut through the body (a split inside it resumed): the rest of the
-//   current iteration runs with the fragment's ambient continuation (the
-//   loop-back cell in effect) and the iteration re-enters the loop
-//   through it; the after-while rest chains off a fresh Split.
-// - cut through the condition (a split inside it resumed): the condition
-//   continues with the fragment's v, then one loop pass re-runs
-//   (emitLoopPass with kNext = the fragment's ambient continuation).
   const b = f.body;
   if (cut === undefined) {
     const chainToWhile = [...em.sp.cutStack];
@@ -4056,15 +3907,6 @@ function emitWhileCPS(em: Emit, id: ExprID, e: Expr & {t: "while"}, f: Fn, s: Sc
 // body path) and propagates — the enclosing catcher fills that site's
 // fragment along the chain through this while.
 function emitLoopPass(em: Emit, f: Fn, e: Expr & {t: "while"}, s: Scope, kNext: number, entryIdx: number, condCut?: ExprID[], snap?: number): void {
-// One loop pass (§6b loop-entry fragment): evaluate the condition (fresh,
-// or continuing a fragment's v when `condCut` is set), then truthy?
-// body-then-loop-back : exit with the loop's unit value. The loop-back
-// cell is allocated per pass and chained to `kNext` (the after-loop
-// continuation in effect), so every capture of it resumes on the chain it
-// was captured from. The body's completion dispatches through the cell;
-// a Split inside the body leaves the pass closed at the site (unreachable
-// body path) and propagates — the enclosing catcher fills that site's
-// fragment along the chain through this while.
   const b = f.body;
   // Value-explicit cond: the ref is materialized at its consume point
   // (fTruthy); keepRef persists it into the operand spill slot when the
@@ -4701,18 +4543,6 @@ function emitBuiltins(em: Emit, builtin0: number): Fn[] {
 // number (slots are anyref); it is unboxed for comparisons and boxed
 // again when passed to the callback as the iteration index.
 function emitMapLike(em: Emit, f: Fn, name: string): void {
-// map/each/flatmap CPS (§3): a map-like call site is a landCalls split
-// site, so the entry (this builtin Fn) runs with the caller's RET cell as
-// its k and its result dispatches through the caller's continuation. The
-// entry reads the array, allocates the result array into its own frame,
-// and tail-calls the loop-entry thunk; each iteration calls the callback
-// with a RET cell {K_RET, iter-land, entry frame, ambient k} — so a
-// performing callback walks the caller's handler chain, and a completed
-// callback lands in the per-iteration thunk (res[i] = v, i+1, loop-entry).
-// All loop state (result/tmp array, counter) lives in the entry frame
-// slots, so the loop survives suspension. The counter slot holds a boxed
-// number (slots are anyref); it is unboxed for comparisons and boxed
-// again when passed to the callback as the iteration index.
   const b = f.body;
   const resSlot = name === "each" ? -1 : 2; // map: res, flatmap: tmp
   const iSlot = name === "each" ? 2 : 3;
@@ -4980,9 +4810,6 @@ function emitMain(em: Emit, f: Fn): void {
 // 12 host accessors (§4 — JS cannot read GC fields directly). Appended
 // after main; indices computed here.
 function emitInits(em: Emit): void {
-// run (allocates the global frame, calls main with k = null) and the
-// 12 host accessors (§4 — JS cannot read GC fields directly). Appended
-// after main; indices computed here.
   const mainIdx = em.o.liveImports.length + em.funcs.length - 1; // main is last
   em.ix.funcRefTypes.set(mainIdx, w.T_KABI); // main's funcref slot (after thunks)
   const run = new Fn(0, em);
