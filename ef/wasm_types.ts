@@ -63,3 +63,23 @@ export type Ctx = {
   snap?: number,
 };
 export const INLINE: Ctx = {kL: 1};
+
+// One operand-stack value reference the emitters pass around (§3): a
+// materializable anyref source consumed at its use site.
+export type ValueRef =
+  | {k: "g", gi: number}   // static anyref global (§5)
+  | {k: "bool", v: 0 | 1}  // i31 bool
+  | {k: "local", l: number}   // anyref local (single-use)
+  | {k: "slot", i: number}    // frame slot i of local 0's frame
+  | {k: "snapSlot", snap: number, i: number}; // frozen-frame slot (fragment re-emission)
+
+// Initializer descriptor of one static global (§5): the data buildModule
+// turns into a GC constant expression. Statics are immutable, so
+// instantiation itself builds the value — no runtime fill.
+export type StaticDesc =
+  | {t: "null"}                       // unit
+  | {t: "i31", v: number}             // true/false
+  | {t: "num", v: number}             // $NUM box (number literals, PI)
+  | {t: "str", s: string}             // $STR code-unit array
+  | {t: "clo", fni: number, fsize: number} // builtin $CLO
+  | {t: "elems", ws: number[]};       // handler case table ($ELEMS i31s)

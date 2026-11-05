@@ -10,8 +10,10 @@ Hindley-Milner-flavoured type system with effect tracking.
   values), `builtins.ts` (the one builtin table), `analysis.ts` (frontend
   passes: builtin surface, op discovery, builtin-ref tree-shaking — shared
   by the wasm backend, parser-types-only leaf module), `eval.ts` (evaluator
-  + pipeline), `wasm.ts` (wasm backend: CPS→wasm codegen, binaryen shrink
-  pass), `wasm_host.ts` (wasm host runtime: instantiation, GC↔JS boxing,
+  + pipeline), `wasm.ts` (wasm backend entry: CPS→wasm codegen, binaryen
+  shrink pass; split into `wasm_types.ts`/`wasm_tables.ts`/`wasm_body.ts`/
+  `wasm_pipeline.ts`/`wasm_emit.ts`/`wasm_module.ts` — see item 8),
+  `wasm_host.ts` (wasm host runtime: instantiation, GC↔JS boxing,
   effect interpretation), `lint.ts`, `prims.ts`, frontends `cli.ts`/`repl.ts`.
 - Tests: `index.test.ts` + `lint.test.ts` + `wasm.test.ts` +
   `analysis.test.ts` (`bun:test`).
@@ -54,7 +56,7 @@ Hindley-Milner-flavoured type system with effect tracking.
    tables (static, sync enforced by `analysis.test.ts`), `performsAnyOp`,
    `collectEffectOps` (op discovery in wasm op-table order), `builtinRefs`
    (shadowing-correct builtin references; binding order mirrors the
-   checker). Consumed by wasm.ts's OPT_PASSES and eval.ts's exec (fail-fast
+   checker). Consumed by wasm_pipeline.ts's OPT_PASSES and eval.ts's exec (fail-fast
    unhandled-op check + per-call env seeding); the rows also surface via
    `ef types`'s result line.
 7. **`eval.ts`** — CPS evaluator (`evalE`/`apply`), multi-shot resume via
@@ -78,7 +80,16 @@ Hindley-Milner-flavoured type system with effect tracking.
    lastIsExpr}`; `run(src, interp?)` is a one-shot `exec`.
 8. **`wasm.ts`** — WebAssembly backend: CPS→wasm codegen over the same
    parser/types output, OPT_PASSES seam (tree-shaking, dead host-import
-   elimination), in-process binaryen shrink pass. Its host runtime lives in
+   elimination), in-process binaryen shrink pass. Split into strictly-layered
+   sub-modules (no import cycles; §-numbered design doc at the top of
+   `wasm.ts`): **`wasm_types.ts`** (GC shape types, Ctx, ValueRef/StaticDesc
+   leaf), **`wasm_tables.ts`** (signatures, host-import layout, binaryen
+   module binding), **`wasm_body.ts`** (Buf + Fn body-emission primitives),
+   **`wasm_pipeline.ts`** (discover/optimize/assignIndices/layoutStatics/
+   buildModule + OPT_PASSES), **`wasm_emit.ts`** (expr() + statement/effect
+   emitters, split protocol), **`wasm_module.ts`** (builtin trampolines, main,
+   run/accessor init fns); `wasm.ts` itself is the entry: compile/
+   compileWithOps + the emit() orchestration. Its host runtime lives in
    **`wasm_host.ts`** (direct-style: instantiation, GC↔JS boxing through the
    §4 accessor ABI, `runWasm`; effect interpretation comes from builtins.ts's
    `builtinEffectHosts`).
