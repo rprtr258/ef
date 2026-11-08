@@ -246,11 +246,26 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
     `bool`): float → int truncates toward zero, bool → numeric gives `0/1`,
     every other conversion preserves the value. `@as` targets must be one of
     the six widths.
-  - **Runtime semantics**: `f32` values round to f32 precision after every
-    producing step (`0.1f32 + 0.2f32 == 0.30000001192092896`); `u32`/`u64`
-    hold unsigned ranges (operands must stay non-negative); `i64`/`u64` are
-    exact up to 2^53 (values are JS numbers under the hood; there is no
-    wraparound).
+  - **Runtime semantics (width-exact in both backends)**: `f32` values round
+    to f32 precision after every producing step
+    (`0.1f32 + 0.2f32 == 0.30000001192092896`); integer widths **wrap around**
+    like wasm's arithmetic (`i32`/`u32` mod 2^32, `i64`/`u64` mod 2^64 —
+    `2147483647i32 + 1 == -2147483648`, `u32`/`u64` hold unsigned ranges);
+    `i64`/`u64` values are **exact beyond 2^53** — the interpreter represents
+    them as BigInt (and BigInt values flowing through the wasm host boundary
+    are exact too). Integer `/` and `%` **trap** on division by zero, and `/`
+    additionally traps on `INT_MIN / -1` (signed overflow), matching wasm's
+    `div_s`/`div_u` traps; float division by zero is not a trap
+    (`1.0 / 0.0 == Infinity`).
+  - **Widths must be static where values are computed**: arithmetic on
+    `any`-typed operands is a type error (`any is not a numeric width`) —
+    pin the width with `@as` first. Equality (`==`/`!=`) on `any` stays
+    allowed. A `let`-bound lambda whose body performs numeric ops on an
+    **unannotated** parameter is rejected (`ambiguous numeric width —
+    annotate the parameter (e.g. n: i64)`): the lambda is generalized, so the
+    width would flex per call site while the body fixed one. Directly-passed
+    lambdas are exempt — their parameter types come from the instantiation
+    (`map(fn(x) { x * x }, range(0, 4, 1))` needs no annotation).
 - `[T]` — array of `T` (homogeneous).
 - `[T1, ..., Tn]` — **tuple**: fixed arity, positional field types. Fields
   may be named (`[x: f64, y: f64]`) or unnamed (`[i64, string]`); names
@@ -357,7 +372,7 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
 Unary `-` (neg) : numeric, width-preserving (`i32` in → `i32` out). Unary `!` (not) : `(bool) -> bool`.
 
 `/` is **type-preserving and truncates toward zero** for integer widths (`7 / 2 == 3`, `-7 / 2 == -3`); float division is exact (`7.0 / 2.0 == 3.5`).
-The type checker stamps each `/` node as integer or float division at check time (the runtime sees untyped JS numbers and cannot tell `7` from `7.0`).
+The type checker stamps each `/` node as integer or float division at check time, and every numeric node with its result width — the runtime computes per width (BigInt for `i64`/`u64`, wrap/round per width otherwise) and traps on integer division by zero and `INT_MIN / -1` (§3.1 runtime semantics).
 
 ### 4.2 Functions
 
@@ -368,7 +383,7 @@ The type checker stamps each `/` node as integer or float division at check time
 | `tail`    | `([A]) -> [A]`                  | All but first. |
 | `concat`  | `([A], [A]) -> [A]`             | Append; both arrays share element type `A`. |
 | `flat`    | `([[A]]) -> [A]`                | Flatten one level. |
-| `len`     | `([A]) -> i64`                  | Array length (untyped-int result: defaults to i64). |
+| `len`     | `([A]) -> i64`                  | Array length. |
 | `strlen` | `(string) -> i64`               | String length. |
 | `map`     | `((A) -> B, [A]) -> [B]`        | Apply; fresh `A`/`B` per use. |
 | `get`     | `([A], i64) -> A`               | Array index; indices are `i64` (untyped int literals flex). |

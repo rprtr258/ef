@@ -7,8 +7,8 @@
 
 let apply = fn (f, x) { f(x) };
 
-let inc = fn (n) { n + 1 };
-let quote = fn (n) { "n=" + char(48 + n) }; # '0'+n as a 1-char string
+let inc = fn (n: i64) { n + 1 };
+let quote = fn (n: i64) { "n=" + char(48 + n) }; # '0'+n as a 1-char string
 
 let a = apply(inc, 41);                            # (i64  )->i64    applied to i64   => i64
 let b = apply(quote, 7);                           # (i64  )->string applied to i64   => string

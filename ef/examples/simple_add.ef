@@ -4,7 +4,7 @@
 
 let id = fn (x) { x };
 
-let x = fn (y, z) { if (y < z) { y * z } else { y / z } };
+let x = fn (y: i64, z: i64) { if (y < z) { y * z } else { y / z } };
 
 let q = fn (f, g) { fn (x) { f(g(x)) } };
 

@@ -31,18 +31,109 @@ export function apply(f: Value, args: Value[], k: Cont): Outcome {
 
 // Evaluator (CPS). `id` indexes into the program's flat node slice `nodes`.
 export function evalE(id: ExprID, nodes: Expr[], env: Env, k: Cont): Outcome {
-  const e = nodes[id] as Expr & { f32?: true };
-  // An f32-stamped node's value is rounded to f32 precision (the checker
-  // stamps every node whose type is f32; wasm emits the same round-trip).
-  if (e.f32 === true)
-    return evalEInner(id, nodes, env, (v) => k(typeof v === "number" ? Math.fround(v) : v));
-  return evalEInner(id, nodes, env, k);
+  // Width normalization: the checker stamps every node whose type is a
+  // numeric width (concrete widths as-is, untyped literals defaulted to
+  // i64/f64); the node's value is normalized to that width's runtime
+  // representation exactly like the wasm backend's per-width ops. Unstamped
+  // nodes (polymorphic uses) pass values through — operators then dispatch
+  // on the value's runtime representation.
+  const nk = (nodes[id] as Expr & { numKind?: string }).numKind;
+  if (nk === undefined) return evalEInner(id, nodes, env, k);
+  return evalEInner(id, nodes, env, (v) => k(normWidth(v, nk)));
+}
+
+// Normalize a value to its stamped width's representation: i32 wraps via |0,
+// u32 via >>>0, f32 rounds via fround, f64 is a plain number, i64/u64 are
+// BigInt (exact beyond 2^53) wrapped mod 2^64 signed/unsigned. Non-numeric
+// values (unit/bool/string/array/fn) pass through — stamps only exist on
+// numeric-typed nodes, so this only guards polymorphic flow.
+function normWidth(v: Value, nk: string): Value {
+  if (typeof v !== "number" && typeof v !== "bigint") return v;
+  switch (nk) {
+    case "i32": return (typeof v === "bigint" ? Number(v) : v) | 0;
+    case "u32": return (typeof v === "bigint" ? Number(v) : v) >>> 0;
+    case "f32": return Math.fround(Number(v));
+    case "f64": return Number(v);
+    case "i64": return BigInt.asIntN(64, toBig(v));
+    case "u64": return BigInt.asUintN(64, toBig(v));
+    default: return v;
+  }
+}
+
+function toBig(v: Value): bigint {
+  return typeof v === "bigint" ? v : BigInt(Math.trunc(num(v)));
+}
+
+// Stamped operator application (all numeric ops except string `+`): coerce
+// both operands to the stamp's representation and compute the raw
+// mathematical result — evalE's normWidth wraps it to the width (i32 |0,
+// u32 >>>0, f32 fround, i64/u64 asIntN/asUintN). Comparisons return bool.
+// Integer / and % trap on ÷0 and INT_MIN÷-1 like wasm's div_s/rem ops;
+// BigInt division truncates toward zero natively, so no Math.trunc needed.
+const NUM_OPS = new Set(["+", "-", "*", "<", ">", "<=", ">=", "==", "!=", "neg"]);
+
+function widthOp(op: string, a: Value, b: Value | undefined, nk: string): Value {
+  const big = nk === "i64" || nk === "u64";
+  if (op === "/" || op === "%") {
+    if (big || nk === "i32" || nk === "u32") {
+      const ba = toBig(a), bb = toBig(b!);
+      if (bb === 0n) throw new Error("integer divide by zero");
+      if (op === "/" && bb === -1n) {
+        // Signed-width overflow: INT_MIN ÷ -1 has no in-width result (wasm
+        // div_s traps). Unsigned widths can't hold INT_MIN — no trap.
+        const min = nk === "i32" ? -(1n << 31n) : nk === "i64" ? -(1n << 63n) : null;
+        if (min !== null && ba === min) throw new Error("integer overflow");
+      }
+      return op === "/" ? ba / bb : ba % bb;
+    }
+    const na = Number(a), nb = Number(b);
+    return op === "/" ? na / nb : na % nb;
+  }
+  if (op === "==" || op === "!=") {
+    const eq = big ? toBig(a) === toBig(b!) : Number(a) === Number(b);
+    return op === "==" ? eq : !eq;
+  }
+  if (big) {
+    const ba = toBig(a);
+    if (op === "neg") return -ba;
+    const bb = toBig(b!);
+    switch (op) {
+      case "+": return ba + bb;
+      case "-": return ba - bb;
+      case "*": return ba * bb;
+      case "<": return ba < bb;
+      case ">": return ba > bb;
+      case "<=": return ba <= bb;
+      case ">=": return ba >= bb;
+      default: return assertNever(op as never); // unreachable
+    }
+  }
+  const x = Number(a);
+  if (op === "neg") return -x;
+  const y = Number(b);
+  switch (op) {
+    case "+": return x + y;
+    case "-": return x - y;
+    case "*": return x * y;
+    case "<": return x < y;
+    case ">": return x > y;
+    case "<=": return x <= y;
+    default: return x >= y; // >=
+  }
 }
 
 function evalEInner(id: ExprID, nodes: Expr[], env: Env, k: Cont): Outcome {
   const e = nodes[id];
   switch (e.t) {
-    case "num":
+    case "num": {
+      // i64/u64-stamped integer literals evaluate to BigInt from the raw
+      // lexeme — JS numbers lose the low bits beyond 2^53. The width stamp
+      // normalizes (asIntN/asUintN), as does every read of the value at an
+      // i64/u64-typed site.
+      if (!e.isFloat && (e.numKind === "i64" || e.numKind === "u64"))
+        return k(BigInt(e.raw ?? String(e.v)));
+      return k(e.v);
+    }
     case "str":
     case "bool":
       return k(e.v);
@@ -109,15 +200,26 @@ function evalEInner(id: ExprID, nodes: Expr[], env: Env, k: Cont): Outcome {
         return k(null);
       });
     case "app": {
-      // `/` is stamped by the checker with int vs float division (the runtime
-      // can't tell, since JS erases 7 and 7.0 to the same value).
+      // Operator application dispatches on the app node's width stamp (the
+      // checker stamps the result width; operands are strict same-width or
+      // untyped literals that defaulted). The stamp decides the operand
+      // representation — BigInt for i64/u64, JS number otherwise — which
+      // value dispatch alone can't (an i64-stamped literal 100 in an f64
+      // context must coerce DOWN, not truncate the f64 up). `/` and `%` add
+      // the int/float division stamp: integer division truncates and traps
+      // on ÷0 and INT_MIN÷-1 exactly like wasm's div/rem ops; unstamped
+      // (polymorphic) operator apps fall through to the value-dispatch
+      // natives in env.ts (string +, polymorphic ==, untyped / %).
       const fn = nodes[e.fn];
-      if (fn.t === "sym" && fn.v === "/") {
-        return evalArgs(e.args, nodes, env, [], (args) => {
-          const a = args[0]!, b = args[1]!;
-          const r = num(a) / num(b);
-          return k(e.div === "int" ? Math.trunc(r) : r);
-        });
+      if (fn.t === "sym") {
+        const op = fn.v;
+        const nk = e.numKind;
+        if (op === "/" || op === "%") {
+          const wnk = nk ?? (op === "/" && e.div === "int" ? "i64" : "f64");
+          return evalArgs(e.args, nodes, env, [], (args) => k(widthOp(op, args[0], args[1], wnk)));
+        }
+        if (nk !== undefined && NUM_OPS.has(op))
+          return evalArgs(e.args, nodes, env, [], (args) => k(widthOp(op, args[0], args[1], nk)));
       }
       return evalE(e.fn, nodes, env, (f) =>
         evalArgs(e.args, nodes, env, [], (args) => apply(f, args, k)),

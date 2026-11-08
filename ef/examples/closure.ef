@@ -2,7 +2,7 @@
 # `adder` returned by closure(3) closes over x = 3 and keeps reading it
 # after closure has returned, so add3(4) computes 3 + 4.
 
-let add = fn(x, y) { x + y };
+let add = fn(x: i64, y: i64) { x + y };
 
 let closure = fn(x) {
   let adder = fn(y) { add(x, y) };

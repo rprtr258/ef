@@ -22,6 +22,7 @@ export type Native = {
 export type Value =
   | null
   | number
+  | bigint
   | string
   | boolean
   | Value[]
@@ -32,7 +33,22 @@ function lift(fn: (...a: Value[]) => Value): Native {
   return {tag: "native", fn: (args, k) => k(fn(...args))};
 }
 
+// Width dispatch for the interpreter's operator natives: i64/u64 values are
+// BigInt, every other width a JS number — the operator computes on the
+// representation it receives, and the app node's width stamp (evalE's norm)
+// normalizes the result (i32 |0, u32 >>>0, f32 fround, i64/u64 asIntN/
+// asUintN). Mixed number/bigint operands (possible only through polymorphic
+// uses) compute as BigInt.
+function asBig(v: Value): bigint {
+  return typeof v === "bigint" ? v : BigInt(Math.trunc(num(v)));
+}
+const eitherBig = (a: Value, b: Value): boolean =>
+  typeof a === "bigint" || typeof b === "bigint";
+
 export function num(v: Value): number {
+  // i64/u64 values are BigInt (exact beyond 2^53); coerce for the JS-number
+  // consumers (indices, char codes, exit codes, ms delays).
+  if (typeof v === "bigint") return Number(v);
   if (typeof v !== "number")
     throw new Error("Expected number, got " + show(v));
   return v;
@@ -42,6 +58,7 @@ export function show(v: Value): string {
   if (v === null) return "unit";
   if (v === true) return "true";
   if (v === false) return "false";
+  if (typeof v === "bigint") return String(v);
   if (typeof v === "number") return String(v);
   if (typeof v === "string") return "\"" + v + "\"";
   if (Array.isArray(v))
@@ -106,18 +123,21 @@ export function globalEnv(refs?: Set<string>): Env {
   const bin = (s: string, f: (a: Value, b: Value) => Value) => g.vars.set(s, lift(f));
   bin("+",  (a, b) =>
     typeof a === "string" && typeof b === "string" ? a + b :
+    eitherBig(a, b) ? asBig(a) + asBig(b) :
     typeof a === "number" && typeof b === "number" ? num(a) + num(b) :
     null);
-  bin("-",  (a, b) => num(a) - num(b));
-  bin("*",  (a, b) => num(a) * num(b));
-  bin("%",  (a, b) => num(a) % num(b));
+  bin("-",  (a, b) => eitherBig(a, b) ? asBig(a) - asBig(b) : num(a) - num(b));
+  bin("*",  (a, b) => eitherBig(a, b) ? asBig(a) * asBig(b) : num(a) * num(b));
+  // `%` handles only unstamped (polymorphic) app nodes — width-stamped ones
+  // are intercepted in eval.ts's widthOp with the ÷0 trap.
+  bin("%",  (a, b) => eitherBig(a, b) ? asBig(a) % asBig(b) : num(a) % num(b));
   bin("==", (a, b) => a === b);
   bin("!=", (a, b) => a !== b);
-  bin("<",  (a, b) => num(a) <  num(b));
-  bin(">",  (a, b) => num(a) >  num(b));
-  bin("<=", (a, b) => num(a) <= num(b));
-  bin(">=", (a, b) => num(a) >= num(b));
-  g.vars.set("neg", lift(a => -num(a)));
+  bin("<",  (a, b) => eitherBig(a, b) ? asBig(a) <  asBig(b) : num(a) <  num(b));
+  bin(">",  (a, b) => eitherBig(a, b) ? asBig(a) >  asBig(b) : num(a) >  num(b));
+  bin("<=", (a, b) => eitherBig(a, b) ? asBig(a) <= asBig(b) : num(a) <= num(b));
+  bin(">=", (a, b) => eitherBig(a, b) ? asBig(a) >= asBig(b) : num(a) >= num(b));
+  g.vars.set("neg", lift(a => typeof a === "bigint" ? -a : -num(a)));
   // Named builtins and their impls come from the one table in builtins.ts.
   // With `refs`, only referenced builtins bind — exec seeds missing ones
   // incrementally per call, matching the wasm module's tree-shaken builtin

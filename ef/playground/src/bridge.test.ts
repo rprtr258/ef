@@ -13,7 +13,7 @@ describe("bridge", () => {
       buf += s;
     });
     expect(buf).toBe("[1, 2]\nraw");
-    expect(r.value).toBe(3);
+    expect(r.value).toBe(3n);
     // ops are a typecheck byproduct, reported without a build
     expect(r.ops).toEqual(["Println", "Out"]);
   });

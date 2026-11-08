@@ -61,12 +61,16 @@ export type Item =
 export type ExprID = number;
 export type Program = { nodes: Expr[], items: Item[] };
 export type Expr =
-  | { t: "num", v: number, isFloat: boolean, pos?: Pos }
+  | { t: "num", v: number, isFloat: boolean, raw?: string, numKind?: string, pos?: Pos }
   | { t: "str", v: string, pos?: Pos }
   | { t: "bool", v: boolean, pos?: Pos }
   | { t: "unit", pos?: Pos }
   | { t: "sym", v: string, pos?: Pos }
-  | { t: "lambda", params: Param[], retTyp: Type | null, retEffs: Set<string> | null, body: ExprID, typ?: FunT, pos?: Pos }
+  | { t: "lambda", params: Param[], retTyp: Type | null, retEffs: Set<string> | null, body: ExprID, typ?: FunT, pos?: Pos,
+      // Checker-stamped (width-ambiguity rule): unannotated params' type-var
+      // ids, and the union-find roots of those vars that numeric ops touched
+      // during body inference.
+      unannParams?: {name: string, id: number}[], numTouched?: Set<number>, }
   | { t: "let", name: string, typ: Type | null, val: ExprID, pos?: Pos }
   | { t: "if", c: ExprID, a: ExprID, b: ExprID, pos?: Pos }
   | { t: "while", c: ExprID, body: ExprID, pos?: Pos }
@@ -74,8 +78,8 @@ export type Expr =
   | { t: "block", stmts: ExprID[], pos?: Pos }
   | { t: "perform", op: string, args: ExprID[], pos?: Pos }
   | { t: "handle", body: ExprID, cases: HandlerCase[], pos?: Pos }
-  | { t: "app", fn: ExprID, args: ExprID[], div?: "int" | "float", pos?: Pos }
-  | { t: "as", e: ExprID, typ: Type, asKind?: "trunc" | "boolnum", f32?: true, pos?: Pos } // `@as(expr, T)` numeric cast; asKind stamped by the checker.
+  | { t: "app", fn: ExprID, args: ExprID[], div?: "int" | "float", numKind?: string, pos?: Pos }
+  | { t: "as", e: ExprID, typ: Type, asKind?: "trunc" | "boolnum", pos?: Pos } // `@as(expr, T)` numeric cast; asKind stamped by the checker.
   | { t: "arr", elems: ExprID[], pos?: Pos } // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous.
   | { t: "field", obj: ExprID, name: string, idx?: number, pos?: Pos } // `obj.x` / `obj.0` field access; `idx` is resolved by the checker.
   | { t: "dlet", fields: { name: string, typ: Type | null }[], val: ExprID, pos?: Pos }; // `let [a, b] = val;` tuple/array destructuring bind.
@@ -453,7 +457,7 @@ export class Parser {
     }
     if (/^-?\d/.test(t)) {
       this.next();
-      return this.add({t: "num", v: Number(t), isFloat: t.includes("."), pos: p});
+      return this.add({t: "num", v: Number(t), isFloat: t.includes("."), raw: t.includes(".") ? undefined : t, pos: p});
     }
     if (t.startsWith("\"")) {
       this.next();

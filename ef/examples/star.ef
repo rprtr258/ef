@@ -11,9 +11,9 @@ let radius = 20;
 let SIZE = GRID_SIZE * 2 + 1;
 let m_grid = map(fn(_) {map(fn(_) {" "}, range(0, SIZE, 1))}, range(0, SIZE, 1));
 
-let paint = fn(x: f64, y: f64, color: string): unit {
-  let gx = round(x) + GRID_SIZE;
-  let gy = GRID_SIZE - round(y);
+let paint = fn(x: i64, y: i64, color: string): unit {
+  let gx = x + GRID_SIZE;
+  let gy = GRID_SIZE - y;
   set(get(m_grid, gx), gy, color)
 };
 
@@ -33,10 +33,10 @@ let clear = fn(): unit {
       paint(i, j, " ")
     }, range(0 - GRID_SIZE, GRID_SIZE + 1, 1))
   }, range(0 - GRID_SIZE, GRID_SIZE + 1, 1));
-  line(0, -GRID_SIZE, 0, GRID_SIZE, "|");
-  line(-GRID_SIZE, 0, GRID_SIZE, 0, "-");
+  line(0, @as(0 - GRID_SIZE, f64), 0, @as(GRID_SIZE, f64), "|");
+  line(@as(0 - GRID_SIZE, f64), 0, @as(GRID_SIZE, f64), 0, "-");
   paint(0, 0, "O");
-  paint(0, GRID_SIZE/3, "^");
+  paint(0, GRID_SIZE / 3, "^");
   paint(GRID_SIZE, 0, ">")
 };
 
@@ -50,7 +50,7 @@ let drawPolygon = fn(points: [V3]): unit {
     let [i, j] = ij;
     let p = get(points, i);
     let q = get(points, j);
-    paint(p.0, p.1, "*");
+    paint(round(p.0), round(p.1), "*");
     line(p.0, p.1, q.0, q.1, "*")
   }, idx)
 };
@@ -85,10 +85,10 @@ if (step < 0 || step > vertices / 2) { Out!("Incorrect step value\n"); Exit!(1) 
 let poly = flatmap(fn(i, _) {
   map(fn(t): V3 {
     let k = i + step * t;
-    let angle = 2.0 * PI * k / vertices + PI / 2.0;
+    let angle = 2.0 * PI * @as(k, f64) / @as(vertices, f64) + PI / 2.0;
     [
-      round(radius * cos(angle)),
-      round(radius * sin(angle)),
+      @as(round(radius * cos(angle)), f64),
+      @as(round(radius * sin(angle)), f64),
       0.0
     ]
   }, range(0, vertices, 1))

@@ -1216,8 +1216,8 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
   // Math.fround, so f32 arithmetic never observes a wider intermediate.
   // Statics stay shared with f64 uses of the same literal — the rounded copy
   // lands in a fresh local.
-  const en = em.nodes[id] as Expr & { f32?: true };
-  if (en.f32 === true && (r.k === "g" || r.k === "local" || r.k === "snapSlot" || r.k === "slot")) {
+  const en = em.nodes[id] as Expr & { numKind?: string };
+  if (en.numKind === "f32" && (r.k === "g" || r.k === "local" || r.k === "snapSlot" || r.k === "slot")) {
     const v = f.anyref();
     f.pushRef(r);
     f.body.refCast(0, false);

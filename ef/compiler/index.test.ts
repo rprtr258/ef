@@ -23,7 +23,7 @@ test("exec drives a REPL session: bindings persist, lastType resolved", () => {
   const l2 = exec(new Parser("add(1, 2)").parseProgram(), ctx);
   expect(l1.value).toBe(null);
   expect(l1.lastIsExpr).toBe(false);
-  expect(l2.value).toBe(3);
+  expect(l2.value).toBe(3n);
   expect(l2.lastIsExpr).toBe(true);
   expect(showT(l2.lastType)).toBe("i64");
 });
@@ -510,17 +510,17 @@ test("show prints function arity and type, natives stay [fn]", () => {
 test("nested tuple field access chains (m.0.0)", () => {
   // The lexer reads `0.0` as one f64 token; the parser splits it so
   // `m.0.0` is two field accesses, not one.
-  expect(run(`let m: [[i64,i64,i64],[i64,i64,i64],[i64,i64,i64]] = [[1,2,3],[4,5,6],[7,8,9]]; m.0.0`)).toBe(1);
-  expect(run(`let m: [[i64,i64,i64],[i64,i64,i64],[i64,i64,i64]] = [[1,2,3],[4,5,6],[7,8,9]]; m.2.1`)).toBe(8);
+  expect(run(`let m: [[i64,i64,i64],[i64,i64,i64],[i64,i64,i64]] = [[1,2,3],[4,5,6],[7,8,9]]; m.0.0`)).toBe(1n);
+  expect(run(`let m: [[i64,i64,i64],[i64,i64,i64],[i64,i64,i64]] = [[1,2,3],[4,5,6],[7,8,9]]; m.2.1`)).toBe(8n);
 });
 
 test("array literal infers as tuple against a tuple-typed context", () => {
   // Return type: a `[x, y, z]` body literal conforms to `[i64,i64,i64]`.
-  expect(run(`let f = fn(): [i64,i64,i64] { [1, 2, 3] }; f().1`)).toBe(2);
+  expect(run(`let f = fn(): [i64,i64,i64] { [1, 2, 3] }; f().1`)).toBe(2n);
   // Argument: an `[...]` literal passed to a tuple parameter becomes a tuple.
-  expect(run(`let f = fn(p: [i64,i64,i64]): i64 { p.2 }; f([1,2,3])`)).toBe(3);
+  expect(run(`let f = fn(p: [i64,i64,i64]): i64 { p.2 }; f([1,2,3])`)).toBe(3n);
   // Nested: `[[...],[...]]` argument against a tuple-of-tuples parameter.
-  expect(run(`let f = fn(m: [[i64,i64,i64],[i64,i64,i64]]): i64 { m.1.0 }; f([[1,2,3],[4,5,6]])`)).toBe(4);
+  expect(run(`let f = fn(m: [[i64,i64,i64],[i64,i64,i64]]): i64 { m.1.0 }; f([[1,2,3],[4,5,6]])`)).toBe(4n);
 });
 
 test("REPL: bindings persist across lines", () => {
@@ -548,14 +548,14 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
   test("an interp override covers a program op (the same path runTop uses)", () => {
     const seen: Value[][] = [];
     expect(run(`effect T(x: i64): i64; 1 + T!(2)`, {
-      T: (args, k) => { seen.push(args); return k((args[0] as number) * 10); },
-    })).toBe(21);
-    expect(seen).toEqual([[2]]);
+      T: (args, k) => { seen.push(args); return k(Number(args[0]) * 10); },
+    })).toBe(21n);
+    expect(seen).toEqual([[2n]]);
   });
 
   test("handled ops pass; performs inside lambdas are handled at the call site", () => {
-    expect(run(`effect T(x: i64): i64; handle { T!(2) } case T(n) => k { n * 3 }`)).toBe(6);
-    expect(run(`effect T(x: i64): i64; let f = fn(y: i64): i64 ! { T } { T!(y) }; handle { f(5) } case T(n) => k { n + 1 }`)).toBe(6);
+    expect(run(`effect T(x: i64): i64; handle { T!(2) } case T(n) => k { n * 3 }`)).toBe(6n);
+    expect(run(`effect T(x: i64): i64; let f = fn(y: i64): i64 ! { T } { T!(y) }; handle { f(5) } case T(n) => k { n + 1 }`)).toBe(6n);
   });
 
   test("an unhandled op through a call is caught statically, not just a bare perform", () => {
@@ -567,7 +567,7 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
     expect(() => run(`effect T(x: i64): i64; effect U(x: i64): i64; handle { T!(1) } case T(n) => k { U!(2) }`))
       .toThrow("Unhandled effect: U");
     expect(run(`effect T(x: i64): i64; effect U(x: i64): i64; handle { T!(1) } case T(n) => k { U!(2) }`,
-      {U: (_args, k) => k(7)})).toBe(7);
+      {U: (_args, k) => k(7)})).toBe(7n);
   });
 
   test("builtin effects are never flagged", () => {
@@ -580,14 +580,14 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
     const ctx = newCtx();
     exec(new Parser(`let x = 1;`).parseProgram(), ctx);
     expect(ctx.env.vars.has("len")).toBe(false); // not referenced yet -> not bound
-    expect(exec(new Parser(`len([1, 2]);`).parseProgram(), ctx).value).toBe(2);
+    expect(exec(new Parser(`len([1, 2]);`).parseProgram(), ctx).value).toBe(2n);
     expect(ctx.env.vars.has("len")).toBe(true);
   });
 
   test("seeded bindings never overwrite a user shadow", () => {
     const ctx = newCtx();
     exec(new Parser(`let len = fn(a, b) { 42 };`).parseProgram(), ctx);
-    expect(exec(new Parser(`len([1], [2])`).parseProgram(), ctx).value).toBe(42);
+    expect(exec(new Parser(`len([1], [2])`).parseProgram(), ctx).value).toBe(42n);
   });
 
   test("ef types prints symbols, then the program result type and effect row", () => {
@@ -609,5 +609,102 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
     } finally {
       unlinkSync(f);
     }
+  });
+});
+
+// Numeric widths (step 1 of the typed-widths plan): the interpreter is
+// width-exact — i32/u32/f32/f64 values are JS numbers, i64/u64 values are
+// BigInt (exact beyond 2^53) — and integer division/remainder trap on ÷0 and
+// INT_MIN÷-1 like wasm's div/rem ops. Interp-only by design: the wasm
+// backend still runs a single f64 plane until steps 2-4.
+describe("numeric widths", () => {
+  test("i32 sign-wraps", () => {
+    expect(show(run(`let x: i32 = 2147483647; x + 1`))).toBe("-2147483648");
+    expect(show(run(`let x: i32 = 2147483647; x * 2`))).toBe("-2");
+    expect(show(run(`let x: i32 = -2147483648; x - 1`))).toBe("2147483647");
+  });
+
+  test("u32 wraps mod 2^32", () => {
+    expect(show(run(`let u: u32 = 4294967295; u + 1`))).toBe("0");
+    expect(show(run(`let u: u32 = 4294967295; u * 2`))).toBe("4294967294");
+    expect(show(run(`let u: u32 = 1; u - 2`))).toBe("4294967295");
+  });
+
+  test("i64 is exact beyond 2^53 (BigInt values)", () => {
+    expect(run(`let big: i64 = 9007199254740993; big + 1`)).toBe(9007199254740994n);
+    expect(run(`let big: i64 = 9007199254740993; big * 2`)).toBe(18014398509481986n);
+    expect(show(run(`9007199254740993 % 1000`))).toBe("993");
+    expect(show(run(`9007199254740993 / 1000`))).toBe("9007199254740");
+  });
+
+  test("i64 division truncates toward zero; modulo takes the dividend's sign", () => {
+    expect(show(run(`9007199254740993 / 1000000000000`))).toBe("9007");
+    expect(show(run(`-7 / 2`))).toBe("-3");
+    expect(show(run(`-7 % 2`))).toBe("-1");
+    expect(show(run(`7 % -2`))).toBe("1");
+  });
+
+  test("u64 wraps mod 2^64", () => {
+    expect(show(run(`let u: u64 = 18446744073709551615; u + 1`))).toBe("0");
+    expect(show(run(`let u: u64 = 18446744073709551615; u * 2`))).toBe("18446744073709551614");
+  });
+
+  test("integer division/remainder traps: ÷0 and INT_MIN ÷ -1 (wasm div/rem parity)", () => {
+    expect(() => run(`1 / 0`)).toThrow(/integer divide by zero/);
+    expect(() => run(`17 % 0`)).toThrow(/integer divide by zero/);
+    expect(() => run(`let b: i64 = 0 - 9223372036854775807 - 1; b / -1`)).toThrow(/integer overflow/);
+    expect(() => run(`let x: i32 = 0 - 2147483648; x / -1`)).toThrow(/integer overflow/);
+    // INT_MIN % -1 does NOT trap (wasm rem has no overflow case).
+    expect(show(run(`let b: i64 = 0 - 9223372036854775807 - 1; b % -1`))).toBe("0");
+    // float division by zero is not a trap.
+    expect(show(run(`1.0 / 0.0`))).toBe("Infinity");
+  });
+
+  test("f32 rounds to f32 precision at every producing node", () => {
+    expect(show(run(`@as(0.1 + 0.2, f32)`))).toBe("0.30000001192092896");
+    expect(show(run(`@as(0.1, f32) + @as(0.2, f32)`))).toBe("0.30000001192092896");
+    expect(show(run(`@as(1.0 / 3.0, f32)`))).toBe("0.3333333432674408");
+    // f32 arithmetic is exact within f32: 0.1f32 + 0.2f32 == 0.3f32.
+    expect(run(`@as(0.1, f32) + @as(0.2, f32) == @as(0.3, f32)`)).toBe(true);
+  });
+
+  test("untyped literals default to i64/f64 (literal defaulting, not conversion)", () => {
+    expect(run(`2147483647 + 1`)).toBe(2147483648n); // i64: no i32 wrap
+    expect(show(run(`1.5 + 1`))).toBe("2.5"); // f64 + i64-literal -> f64
+    expect(typeOf(`1 + 2`)).toBe("i64");
+    expect(typeOf(`1.5 + 1.5`)).toBe("f64");
+  });
+
+  test("builtins return concrete widths (D7)", () => {
+    expect(typeOf(`range(0, 4, 1)`)).toBe("[i64]");
+    expect(typeOf(`len([1, 2])`)).toBe("i64");
+    expect(typeOf(`strlen("ab")`)).toBe("i64");
+    expect(typeOf(`round(2.7)`)).toBe("i64");
+    expect(run(`len([1, 2, 3])`)).toBe(3n);
+    expect(run(`round(2.7)`)).toBe(3n);
+    expect(typeOf(`PI`)).toBe("f64");
+  });
+
+  test("ambiguous numeric width in a let-generalized lambda is a static error", () => {
+    expect(() => run(`let inc = fn(n) { n + 1 }; inc(1)`))
+      .toThrow(/ambiguous numeric width — annotate the parameter \(e\.g\. n: i64\)/);
+    expect(() => run(`let add = fn(x, y) { x + y }; add(1, 2)`))
+      .toThrow(/ambiguous numeric width — annotate the parameter/);
+    // Annotating fixes it; directly-passed lambdas are exempt (their param
+    // types come from the instantiation); numeric-free bodies stay polymorphic.
+    expect(run(`let inc = fn(n: i64) { n + 1 }; inc(41)`)).toBe(42n);
+    expect(run(`map(fn(x) { x * x }, range(0, 4, 1))`)).toEqual([0n, 1n, 4n, 9n]);
+    expect(showT(checkProgram(new Parser(`let id = fn(x) { x }; id`).parseProgram()).lastType)).toBe("(a) -> a");
+  });
+
+  test("arithmetic on any is a static error (use @as to pin a width)", () => {
+    expect(() => run(`let a: any = 1; a + 1`))
+      .toThrow(/any is not a numeric width/);
+    expect(() => run(`let a: any = 1; a < 1`))
+      .toThrow(/any is not a numeric width/);
+    expect(() => run(`let a: any = "s"; a + "!"`))
+      .toThrow(/any is not a numeric width/);
+    // equality on any stays allowed.
+    expect(run(`let a: any = 1; a == 1`)).toBe(true);
   });
 });

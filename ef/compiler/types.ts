@@ -63,6 +63,12 @@ export class Unifier {
   effParent = new Map<number, number>();
   effBinds = new Map<number, Set<string>>();
   effCounter = 0;
+  // Inferred type per node for the CURRENT checkProgram call — the width
+  // stamp post-pass reads it after all items are checked (a node's width can
+  // only be resolved once the whole program has unified). Reset per call:
+  // REPL lines share the unifier but not the node slice, so per-line types
+  // must not leak across lines' ExprID spaces.
+  nodeTypes = new Map<ExprID, Type>();
 
   fresh(): Var {
     const id = this.n++;
@@ -493,6 +499,25 @@ const EQOPS = new Set(["==", "!="]);
 function isNum(t: Type): t is Prim {
   return t.tag === "prim" && NUMERIC_NAMES.has(t.name as NumName);
 }
+
+// Width-ambiguity tracking (strict-width rule): while a lambda body is being
+// inferred, its unannotated params' type-var ids are registered on the
+// innermost active context; numeric ops mark the vars they see. At the `let`
+// that binds the lambda, a param that a numeric op touched but whose width
+// never resolved concrete is rejected: the body already fixed ONE width while
+// the generalized type would let each instantiation pick another.
+type LamCtx = { unann: Set<number>, touched: Set<number> };
+const lamStack: LamCtx[] = [];
+
+function touchNumericVar(u: Unifier, t: Type): void {
+  if (lamStack.length === 0) return;
+  const r = u.res(t);
+  if (r.tag !== "var") return;
+  const root = u.find(r.id);
+  for (const c of lamStack) if (c.unann.has(root)) c.touched.add(root);
+}
+
+const ANY_ARITH = "any is not a numeric width — concrete widths required for arithmetic";
 // `==` / `!=` are special-cased in `infer` (see EQOPS): they are NOT installed
 // as ordinary `(any, any) -> bool` function bindings, so they can't be used as
 // first-class values and can't silently compare unrelated types.
@@ -524,8 +549,10 @@ function numericResult(u: Unifier, ra: Type, rb: Type, op: string): Type {
 // Unify two operand types under a numeric op and return the widened result
 // (float if either side is float, else int; `any` if either is `any`).
 function numeric(u: Unifier, a: Type, b: Type, op: string): Type {
+  touchNumericVar(u, a);
+  touchNumericVar(u, b);
   const ra = u.res(a), rb = u.res(b);
-  if (ra.tag === "any" || rb.tag === "any") return TANY;
+  if (ra.tag === "any" || rb.tag === "any") throw new TypeError_(ANY_ARITH);
   return numericResult(u, ra, rb, op);
 }
 
@@ -533,8 +560,10 @@ function numeric(u: Unifier, a: Type, b: Type, op: string): Type {
 // string+string -> string. Mixed (`"a" + 1`) is a type error. `any` on either
 // side stays `any`.
 function plusType(u: Unifier, a: Type, b: Type): Type {
+  touchNumericVar(u, a);
+  touchNumericVar(u, b);
   const ra = u.res(a), rb = u.res(b);
-  if (ra.tag === "any" || rb.tag === "any") return TANY;
+  if (ra.tag === "any" || rb.tag === "any") throw new TypeError_(ANY_ARITH);
   const sa = isNum(ra), sb = isNum(rb);
   if (sa && sb) return numericResult(u, ra, rb, "+");
   const stra = ra.tag === "prim" && ra.name === "string";
@@ -549,10 +578,13 @@ function plusType(u: Unifier, a: Type, b: Type): Type {
 }
 
 // infer: returns the type, side-effecting `effs` with performed effects.
-// `id` indexes into the program's flat node slice `nodes`. Every node whose
-// type resolves to f32 is stamped `f32` — the evaluator and the wasm backend
-// round such nodes' values to f32 precision, so f32 arithmetic never observes
-// a wider intermediate.
+// `id` indexes into the program's flat node slice `nodes`. Every node's
+// inferred type is recorded in `uni.nodeTypes`; after checking completes, a
+// post-pass stamps each node whose type resolves to a numeric width with
+// `numKind` (concrete widths as-is, untyped int/float literals defaulted to
+// i64/f64). The evaluator normalizes each node's value to that width's
+// runtime representation (i32/u32/f32/f64: JS number, i64/u64: BigInt) and
+// the wasm backend reads f32 stamps for its fround round-trip.
 function infer(
   id: ExprID,
   nodes: Expr[],
@@ -561,7 +593,7 @@ function infer(
   effects: Map<string, EffectSig>,
 ): Type {
   const t = inferNode(id, nodes, env, effs, effects);
-  if (t.tag === "prim" && t.name === "f32") (nodes[id] as Expr & {f32?: true}).f32 = true;
+  env.uni.nodeTypes.set(id, t);
   return t;
 }
 
@@ -588,15 +620,36 @@ function inferNode(
     case "lambda": {
       const n = env.extend();
       const ps: Type[] = [];
+      const unann: {name: string, id: number}[] = [];
       for (const p of e.params) {
-        const pt = p.typ ?? env.uni.fresh();
-        n.vars.set(p.name, pt);
-        ps.push(pt);
+        if (p.typ === null) {
+          const pt = env.uni.fresh();
+          unann.push({name: p.name, id: pt.id});
+          n.vars.set(p.name, pt);
+          ps.push(pt);
+        } else {
+          n.vars.set(p.name, p.typ);
+          ps.push(p.typ);
+        }
       }
       const innerEffs = new Set<string>();
-      const ret = e.retTyp !== null && env.uni.res(e.retTyp).tag === "tup"
-        ? inferWith(e.body, nodes, e.retTyp, n, innerEffs, effects)
-        : infer(e.body, nodes, n, innerEffs, effects);
+      // Width-ambiguity tracking: register this lambda's unannotated param
+      // vars for the body's numeric ops; the `let` binding the lambda runs
+      // the rejection check (checkLamWidths).
+      const ctx: LamCtx = {unann: new Set(unann.map(p => p.id)), touched: new Set()};
+      if (ctx.unann.size > 0) lamStack.push(ctx);
+      let ret: Type;
+      try {
+        ret = e.retTyp !== null && env.uni.res(e.retTyp).tag === "tup"
+          ? inferWith(e.body, nodes, e.retTyp, n, innerEffs, effects)
+          : infer(e.body, nodes, n, innerEffs, effects);
+      } finally {
+        if (ctx.unann.size > 0) {
+          lamStack.pop();
+          e.unannParams = unann;
+          e.numTouched = ctx.touched;
+        }
+      }
       if (e.retTyp !== null)
         env.uni.unify(e.retTyp, ret);
       // Effect annotation is optional: if `! { ... }` is omitted, the
@@ -627,8 +680,11 @@ function inferNode(
       // The lambda's stamped type is final: its parameter variables have been
       // bound (or not), so deep-resolve it — display never needs the unifier.
       const lam = nodes[e.val];
-      if (lam.t === "lambda" && lam.typ !== undefined)
-        lam.typ = env.uni.deepRes(lam.typ) as FunT;
+      if (lam.t === "lambda") {
+        if (lam.typ !== undefined)
+          lam.typ = env.uni.deepRes(lam.typ) as FunT;
+        checkLamWidths(env.uni, lam);
+      }
       // Exclude the self-binding from the free-var context before
       // generalizing (otherwise its own vars read as free-in-env → no-op).
       env.vars.delete(e.name);
@@ -806,6 +862,11 @@ function inferNode(
         const at = infer(e.args[0], nodes, env, effs, effects);
         const bt = infer(e.args[1], nodes, env, effs, effects);
         const widened = numeric(env.uni, at, bt, fn.v);
+        // Stamp the COMPUTE width (the operand width; the result type would
+        // be bool for comparisons) — the evaluator's widthOp coerces both
+        // operands to this representation before operating.
+        const wo = widthOf(env.uni.res(widened));
+        if (wo !== null) e.numKind = wo.w;
         if (CMPOPS.has(fn.v)) return TBOOL;
         // `/` is type-preserving: int/int -> int (truncated at runtime),
         // float/float -> float, and any-operand -> float (don't truncate
@@ -831,6 +892,12 @@ function inferNode(
         const at = infer(e.args[0], nodes, env, effs, effects);
         const bt = infer(e.args[1], nodes, env, effs, effects);
         env.uni.unify(at, bt);
+        // Numeric equality is stamped with the compute width too (concrete
+        // side wins between a width and a wildcard literal; float beats int
+        // between two wildcards) so `PI == 3` and `1 == 1.0` coerce right.
+        const ea = widthOf(env.uni.res(at)), eb = widthOf(env.uni.res(bt));
+        if (ea !== null && eb !== null)
+          e.numKind = ea.concrete ? ea.w : eb.concrete ? eb.w : (ea.w === "f64" || eb.w === "f64") ? "f64" : "i64";
         return TBOOL;
       }
       const ft = infer(e.fn, nodes, env, effs, effects);
@@ -882,6 +949,54 @@ function inferNode(
   }
 }
 
+// Strict-width rejection for let-bound lambdas (runs at every let whose RHS
+// is a lambda, annotation or not — the body's width stamps are fixed either
+// way): an unannotated param is rejected when (a) numeric ops touched its var
+// but the width never resolved concrete (the generalized type would flex per
+// instantiation while the body fixed one width), or (b) it was pinned to an
+// untyped-literal wildcard (int/float) by anything — numeric ops, `==`, or an
+// int-wildcard builtin param. Truly polymorphic params (unbound vars, `any`)
+// and non-numeric pins (string, arrays, functions) pass. Directly-passed
+// lambdas never reach here: their params get concrete types from the
+// instantiation.
+function checkLamWidths(u: Unifier, lam: Expr & {unannParams?: {name: string, id: number}[], numTouched?: Set<number>}): void {
+  if (lam.unannParams === undefined) return;
+  const touched = new Set<number>();
+  if (lam.numTouched !== undefined)
+    for (const r of lam.numTouched) touched.add(u.find(r)); // unions after a touch may have re-rooted
+  for (const p of lam.unannParams) {
+    const rt = u.res({tag: "var", id: p.id});
+    if (rt.tag === "prim" && (rt.name === "int" || rt.name === "float"))
+      throw new TypeError_(`ambiguous numeric width — annotate the parameter (e.g. ${p.name}: i64)`);
+    if (rt.tag === "var" && touched.has(u.find(rt.id)))
+      throw new TypeError_(`ambiguous numeric width — annotate the parameter (e.g. ${p.name}: i64)`);
+  }
+}
+
+// The numeric width of a resolved type: concrete widths as-is, untyped
+// int/float literals defaulted to i64/f64 (literal defaulting, not width
+// conversion). null for non-numeric types.
+function widthOf(t: Type): {w: NumName, concrete: boolean} | null {
+  if (t.tag !== "prim") return null;
+  const n = t.name as NumName;
+  if (INT_NAMES.has(n) || FLOAT_NAMES.has(n)) return {w: n, concrete: true};
+  if (n === "int") return {w: "i64", concrete: false};
+  if (n === "float") return {w: "f64", concrete: false};
+  return null;
+}
+
+// Width stamps: after all items are checked, stamp every node whose type
+// resolved to a numeric width with `numKind` — concrete widths as-is, untyped
+// int/float literals defaulted to i64/f64 (literal defaulting, not width
+// conversion). Unstamped nodes (type still an unbound var — polymorphic
+// uses) compute by value-based dispatch at runtime.
+function stampNumKinds(nodes: Expr[], uni: Unifier): void {
+  for (const [id, t] of uni.nodeTypes) {
+    const w = widthOf(uni.res(t));
+    if (w !== null) (nodes[id] as Expr & {numKind?: string}).numKind = w.w;
+  }
+}
+
 export type Checked = {
   env: Env,
   effects: Map<string, EffectSig>,
@@ -904,6 +1019,7 @@ export function checkProgram(
   acc?: Checked,
 ): Checked {
   const uni = acc?.uni ?? new Unifier();
+  uni.nodeTypes = new Map();
   let env: Env;
   let effects: Map<string, EffectSig>;
   if (acc !== undefined) {
@@ -931,6 +1047,8 @@ export function checkProgram(
   const unhandled = new Set<string>();
   for (const it of prog.items.filter(it => "e" in it))
     lastType = infer(it.e, prog.nodes, env, unhandled, effects);
+
+  stampNumKinds(prog.nodes, uni);
 
   return {env, effects, uni, lastType: uni.deepRes(lastType), unhandled};
 }

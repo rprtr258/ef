@@ -90,7 +90,9 @@ describe("wasm backend", () => {
     expect(parity("7.0 / 2")).toBe("3.5");
     expect(parity("-5 + 3")).toBe("-2");
     expect(parity("17 % 5")).toBe("2");
-    expect(parity("1 / 0")).toBe("Infinity");
+    // Interp-only until the wasm backend grows per-width div (steps 2-4):
+    // integer division by zero traps instead of producing Infinity.
+    expect(() => run("1 / 0")).toThrow(/integer divide by zero/);
   });
 
   test("arithmetic on non-numbers traps via ref.cast (frozen documented deviation)", () => {
@@ -150,15 +152,15 @@ describe("wasm backend", () => {
   });
 
   test("closures: creation, capture, immediate call of a returned closure", () => {
-    expect(parity("let addn = fn(n) { fn(x) { x + n } }; addn(10)(5)")).toBe("15");
+    expect(parity("let addn = fn(n: i64) { fn(x) { x + n } }; addn(10)(5)")).toBe("15");
     expect(parity("let mk = fn() { let c = 0; fn() { c = c + 1; c } }; let f = mk(); f(); f(); f()")).toBe("3");
-    expect(parity("let f = fn(a) { fn(b) { fn(c) { a + b + c } } }; f(1)(2)(3)")).toBe("6");
+    expect(parity("let f = fn(a: i64) { fn(b: i64) { fn(c: i64) { a + b + c } } }; f(1)(2)(3)")).toBe("6");
     expect(parity("let id = fn(x) { x }; id(id)(3)")).toBe("3");
   });
 
   test("recursion: non-tail and tail (return_call_indirect, O(1) wasm stack)", () => {
-    expect(parity("let fib = fn(n) { if (n < 2) { n } else { fib(n-1) + fib(n-2) } }; fib(15)")).toBe("610");
-    expect(parity("let lp = fn(n, acc) { if (n == 0) { acc } else { lp(n - 1, acc + n) } }; lp(100000, 0)")).toBe("5000050000");
+    expect(parity("let fib = fn(n: i64) { if (n < 2) { n } else { fib(n-1) + fib(n-2) } }; fib(15)")).toBe("610");
+    expect(parity("let lp = fn(n: i64, acc: i64) { if (n == 0) { acc } else { lp(n - 1, acc + n) } }; lp(100000, 0)")).toBe("5000050000");
   });
 
   test("math builtins", () => {

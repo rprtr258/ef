@@ -78,8 +78,8 @@ export const builtins: Builtin[] = [
     {kind: "fn", name: "tail", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a)], tArr(a), new Set()); }, fn: xs => (xs as Value[]).slice(1)},
     {kind: "fn", name: "concat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), tArr(a)], tArr(a), new Set()); }, fn: (a, b) => (a as Value[]).concat(b as Value[])},
     {kind: "fn", name: "flat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(tArr(a))], tArr(a), new Set()); }, fn: xs => (xs as Value[]).flat()},
-    {kind: "fn", name: "len", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a)], TINT, new Set()); }, fn: xs => (xs as Value[]).length},
-    {kind: "fn", name: "strlen", t: tFun([TSTR], TINT, new Set()), fn: s => (s as string).length},
+    {kind: "fn", name: "len", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a)], TI64, new Set()); }, fn: xs => (xs as Value[]).length},
+    {kind: "fn", name: "strlen", t: tFun([TSTR], TI64, new Set()), fn: s => (s as string).length},
     {kind: "native", name: "map", t: (u: Unifier) => {
       const a = u.fresh(), b = u.fresh(), e = u.freshEff();
       return tFun([tFun([a], b, e), tArr(a)], tArr(b), e);
@@ -100,9 +100,12 @@ export const builtins: Builtin[] = [
     {kind: "fn", name: "cos", t: tFun([TFLOAT], TFLOAT, new Set()), fn: a => Math.cos(num(a))},
     {kind: "fn", name: "sin", t: tFun([TFLOAT], TFLOAT, new Set()), fn: a => Math.sin(num(a))},
     {kind: "fn", name: "abs", t: tFun([TFLOAT], TFLOAT, new Set()), fn: a => Math.abs(num(a))},
-    {kind: "fn", name: "round", t: tFun([TFLOAT], TINT, new Set()), fn: a => Math.round(num(a))},
+    {kind: "fn", name: "round", t: tFun([TFLOAT], TI64, new Set()), fn: a => Math.round(num(a))},
     {kind: "fn", name: "sqrt", t: tFun([TFLOAT], TFLOAT, new Set()), fn: a => Math.sqrt(num(a))},
-    {kind: "fn", name: "range", t: tFun([TINT, TINT, TINT], tArr(TINT), new Set()), fn: (a, b, c) => {
+    // D7: builtins return concrete widths — range is (i64, i64, i64) -> [i64],
+    // so its output is never width-ambiguous. Elements are plain JS numbers;
+    // every read at an i64-typed site (get, callbacks) re-normalizes to BigInt.
+    {kind: "fn", name: "range", t: tFun([TI64, TI64, TI64], tArr(TI64), new Set()), fn: (a, b, c) => {
       const s = num(a), e = num(b), st = num(c);
       const n = st === 0 ? 0 : Math.max(0, Math.ceil((e - s) / st));
       return Array.from({length: n}, (_, k) => s + k * st);
