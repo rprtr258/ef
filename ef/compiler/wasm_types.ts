@@ -9,20 +9,23 @@ export type Scope = {
 
 export class WasmError extends Error {}
 
-// WasmGC types (§1): one rec group of 7 struct/array shapes. binaryen types
+// WasmGC types (§1): one rec group of 12 struct/array shapes. binaryen types
 // are process-global interned ids, so they build once and are reused by every
 // compiled module. HT[i] = bare heap type (the immediate GC instruction
 // builders take); RF[i] = (ref null $i) (params, fields, ref.null);
 // RN[i] = (ref $i) (non-null casts). $STR packs i16 over an i32 element type.
+// Shapes 0–6 are the original plane ($F64 was "$NUM" — one f64-backed number
+// box); 7–11 are the per-width number boxes appended by the typed-widths plan
+// (append-only: existing indices 0–6 untouched).
 export const _T: {
   HT: binaryen.HeapType[],
   RF: binaryen.Type[],
   RN: binaryen.Type[],
 } = (() => {
-  const tb = new binaryen.TypeBuilder(7);
-  tb.createRecGroup(0, 7);
+  const tb = new binaryen.TypeBuilder(12);
+  tb.createRecGroup(0, 12);
   const fld = (ty: binaryen.Type, mutable: boolean) => ({type: ty, packedType: binaryen.notPacked, mutable});
-  tb.setStructType(0, [fld(binaryen.f64, false)]);                       // 0 $NUM
+  tb.setStructType(0, [fld(binaryen.f64, false)]);                       // 0 $F64 (f64 plane)
   tb.setArrayType(1, binaryen.anyref, binaryen.notPacked, true);         // 1 $ELEMS
   tb.setArrayType(2, binaryen.i32, binaryen.i16, true);                  // 2 $STR
   tb.setStructType(3, [fld(tb.getTempRefType(tb.getTempHeapType(1), true), true)]); // 3 $ARR
@@ -40,6 +43,11 @@ export const _T: {
     fld(tb.getTempRefType(tb.getTempHeapType(4), true), false),
     fld(binaryen.i31ref, false),
   ]);
+  tb.setStructType(7, [fld(binaryen.i32, false)]);                       // 7 $I32
+  tb.setStructType(8, [fld(binaryen.i32, false)]);                       // 8 $U32
+  tb.setStructType(9, [fld(binaryen.i64, false)]);                       // 9 $I64
+  tb.setStructType(10, [fld(binaryen.i64, false)]);                      // 10 $U64
+  tb.setStructType(11, [fld(binaryen.f32, false)]);                      // 11 $F32
   const HT = tb.buildAndDispose();
   return {
     HT,
@@ -47,6 +55,10 @@ export const _T: {
     RN: HT.map(h => binaryen.getTypeFromHeapType(h, false)),
   };
 })();
+
+// Shape indices of the number boxes (tag codes are shape-1 for 7..11, see
+// __tag in wasm_module.ts).
+export const T_F64 = 0, T_I32 = 7, T_U32 = 8, T_I64 = 9, T_U64 = 10, T_F32S = 11;
 
 // Emission context: which local holds the ambient continuation cell (1 = a
 // T_KABI function's k param, 2 = a rest-of-site fragment's kNext param, any
@@ -79,7 +91,9 @@ export type ValueRef =
 export type StaticDesc =
   | {t: "null"}                       // unit
   | {t: "i31", v: number}             // true/false
-  | {t: "num", v: number}             // $NUM box (number literals, PI)
+  | {t: "num", w: string, v: number}  // number box: w = the value's width
+                                      // (f64 plane today for every width
+                                      // except f32; per-width const forms)
   | {t: "str", s: string}             // $STR code-unit array
   | {t: "clo", fni: number, fsize: number} // builtin $CLO
   | {t: "elems", ws: number[]};       // handler case table ($ELEMS i31s)

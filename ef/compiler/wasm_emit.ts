@@ -566,20 +566,22 @@ export function emitHelpers(em: Emit): Fn[] {
     b.u8(w.OR); // i32.or
     b.localSet(decided);
     b.u8(w.END);
-    // num == num: f64 payloads.
+    // num == num: adaptive unbox ($F64 payload or promoted $F32 payload —
+    // the promote is exact, so f64 comparison of promoted f32s matches f32
+    // equality) then f64 compare.
     b.localGet(0);
     b.refTest(0, true);
     b.localGet(1);
     b.refTest(0, true);
-    b.u8(w.AND);
+    b.u8(w.OR);
     b.u8(w.IF);
     b.u8(0x40);
     b.localGet(0);
-    b.refCast(0, true);
-    b.structGet(0, 0);
+    b.u8(w.CALL);
+    b.lebU(em.ix.fNum64);
     b.localGet(1);
-    b.refCast(0, true);
-    b.structGet(0, 0);
+    b.u8(w.CALL);
+    b.lebU(em.ix.fNum64);
     b.u8(w.FEQ);
     b.localSet(res);
     // decided: the num path answered.
@@ -587,7 +589,7 @@ export function emitHelpers(em: Emit): Fn[] {
     b.refTest(0, true);
     b.localGet(1);
     b.refTest(0, true);
-    b.u8(w.AND);
+    b.u8(w.OR);
     b.localGet(decided);
     b.u8(w.OR); // i32.or
     b.localSet(decided);
@@ -785,7 +787,51 @@ export function emitHelpers(em: Emit): Fn[] {
     b.arrayGet(1);
     b.refCast(5, true);
   }
-  return [truthy, eq, box, capture];
+  // $num64(v: anyref) -> f64: adaptive numeric unbox for the f64 plane —
+  // $F64 payload as-is; an $F32 box promotes (exact). Typed-widths step 2:
+  // float-wildcard values can flow into f64-plane positions (builtin params,
+  // counters), so numeric unboxes must accept both shapes.
+  const num64 = new Fn(1, em);
+  num64.typeIdx = 19; // __num's shape: (anyref) -> f64 (sig pre-registered in assignIndices)
+  {
+    const b = num64.body;
+    b.localGet(0);
+    b.refTest(11, false);
+    b.u8(w.IF);
+    b.u8(0x7c);
+    b.localGet(0);
+    b.refCast(11, false);
+    b.structGet(11, 0);
+    b.u8(w.F64_PROMOTE);
+    b.u8(w.ELSE);
+    b.localGet(0);
+    b.refCast(0, false);
+    b.structGet(0, 0);
+    b.u8(w.END);
+  }
+  // $f32of(v: anyref) -> f32: adaptive numeric unbox for f32 sites — $F32
+  // payload as-is; an $F64 box demotes (the operand-width adaptation for
+  // wildcard values that flexed into f32 positions; matches the
+  // interpreter's fround normalization of f32-stamped reads).
+  const f32of = new Fn(1, em);
+  f32of.typeIdx = w.T_F32; // (anyref) -> f32 (sig pre-registered in assignIndices)
+  {
+    const b = f32of.body;
+    b.localGet(0);
+    b.refTest(11, false);
+    b.u8(w.IF);
+    b.u8(0x7d);
+    b.localGet(0);
+    b.refCast(11, false);
+    b.structGet(11, 0);
+    b.u8(w.ELSE);
+    b.localGet(0);
+    b.refCast(0, false);
+    b.structGet(0, 0);
+    b.u8(w.F32_DEMOTE);
+    b.u8(w.END);
+  }
+  return [truthy, eq, box, capture, num64, f32of];
 }
 
 // Returns the anyref value of `name` as a ValueRef: a frame slot for the
@@ -1104,6 +1150,12 @@ function preCut(em: Emit, id: ExprID, f: Fn, s: Scope, ctx: Ctx): ValueRef {
 // a raw tail return would bypass the caller's RET cell).
 function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"}, s: Scope, ctx: Ctx, ci: number): void {
   const b = f.body;
+  // Typed-widths step 2: f32-stamped sites compute with the f32 opcode
+  // family on $F32 boxes; everything else stays on the f64 plane (steps 3-4
+  // grow the int widths). Operand unboxing goes through $f32of/$num64, the
+  // adaptive helpers: a wildcard value that flexed into an f32 position may
+  // still sit in an $F64 box.
+  const f32 = e.numKind === "f32";
   // Operand cut modes, mirroring the `/` path: the arg holding the cut
   // site continues the fragment ("cut"), an earlier sibling reloads its
   // spill ("pre"), a later sibling re-emits fresh ("post").
@@ -1112,8 +1164,27 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
   const pushArg = (i: number): void => {
     f.pushRef(cutChildRef(em, e.args[i], f, s, ctx, argMode(i)));
   };
+  // Unbox the just-pushed operand ref to an f32/f64 local.
+  const unbox = (_i: number, loc: number): void => {
+    if (f32) {
+      b.u8(w.CALL);
+      b.lebU(em.ix.fF32of);
+    } else {
+      b.u8(w.CALL);
+      b.lebU(em.ix.fNum64);
+    }
+    b.localSet(loc);
+  };
   switch (name) {
     case "+": {
+      if (f32) {
+        const x = f.f32(), y = f.f32();
+        pushArg(0); unbox(0, x);
+        pushArg(1); unbox(1, y);
+        b.localGet(x); b.localGet(y); b.u8(w.F32_ADD);
+        b.structNew(11);
+        break;
+      }
       const a = f.anyref(), bv = f.anyref();
       pushArg(0); b.localSet(a);
       pushArg(1); b.localSet(bv);
@@ -1131,50 +1202,67 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
       break;
     }
     case "-": case "*": case "%": {
-      const x = f.f64(), y = f.f64();
-      pushArg(0); b.refCast(0, false); b.structGet(0, 0); b.localSet(x);
-      pushArg(1); b.refCast(0, false); b.structGet(0, 0); b.localSet(y);
+      const x = f32 ? f.f32() : f.f64(), y = f32 ? f.f32() : f.f64();
+      pushArg(0); unbox(0, x);
+      pushArg(1); unbox(1, y);
       if (name === "%") {
         // JS fmod: a - b * trunc(a/b)
         const t = f.f64();
-        b.localGet(x); b.localGet(y); b.u8(w.FDIV); b.u8(w.FTRUNC); b.localSet(t);
-        b.localGet(x); b.localGet(y); b.localGet(t); b.u8(w.FMUL); b.u8(w.FSUB);
+        b.localGet(x); b.localGet(y); b.u8(f32 ? w.F32_DIV : w.FDIV); b.u8(f32 ? w.F32_TRUNC : w.FTRUNC); b.localSet(t);
+        b.localGet(x); b.localGet(y); b.localGet(t); b.u8(f32 ? w.F32_MUL : w.FMUL); b.u8(f32 ? w.F32_SUB : w.FSUB);
       } else {
-        b.localGet(x); b.localGet(y); b.u8(name === "-" ? w.FSUB : w.FMUL);
+        b.localGet(x); b.localGet(y); b.u8(name === "-" ? (f32 ? w.F32_SUB : w.FSUB) : (f32 ? w.F32_MUL : w.FMUL));
       }
-      b.u8(w.CALL); b.lebU(em.ix.fBox);
+      if (f32) b.structNew(11);
+      else { b.u8(w.CALL); b.lebU(em.ix.fBox); }
       break;
     }
     case "neg": {
-      pushArg(0); b.refCast(0, false); b.structGet(0, 0);
-      b.u8(w.FNEG);
-      b.u8(w.CALL); b.lebU(em.ix.fBox);
+      const x = f32 ? f.f32() : f.f64();
+      pushArg(0); unbox(0, x);
+      b.localGet(x);
+      b.u8(f32 ? w.F32_NEG : w.FNEG);
+      if (f32) b.structNew(11);
+      else { b.u8(w.CALL); b.lebU(em.ix.fBox); }
       break;
     }
     case "<": case ">": case "<=": case ">=": {
-      const x = f.anyref(), y = f.anyref();
-      pushArg(0); b.localSet(x);
-      pushArg(1); b.localSet(y);
-      const cmp = name === "<" ? w.FLT : name === ">" ? w.FGT : name === "<=" ? w.FLE : w.FGE;
+      const x = f32 ? f.f32() : f.f64(), y = f32 ? f.f32() : f.f64();
+      pushArg(0); unbox(0, x);
+      pushArg(1); unbox(1, y);
+      const cmp = name === "<" ? (f32 ? w.F32_LT : w.FLT) : name === ">" ? (f32 ? w.F32_GT : w.FGT) : name === "<=" ? (f32 ? w.F32_LE : w.FLE) : (f32 ? w.F32_GE : w.FGE);
       selectBool(em, f, () => {
-        b.localGet(x); b.refCast(0, false); b.structGet(0, 0);
-        b.localGet(y); b.refCast(0, false); b.structGet(0, 0);
+        b.localGet(x);
+        b.localGet(y);
         b.u8(cmp);
       });
       break;
     }
-    case "==": {
+    case "==": case "!=": {
+      if (f32) {
+        const x = f.f32(), y = f.f32();
+        pushArg(0); unbox(0, x);
+        pushArg(1); unbox(1, y);
+        selectBool(em, f, () => {
+          b.localGet(x); b.localGet(y); b.u8(w.F32_EQ);
+        });
+        if (name === "!=") {
+          // negate: the i31 bool payload flips
+          b.refCast(w.I31REF, false);
+          b.i31Get();
+          b.u8(w.EQZ);
+          selectBool(em, f, () => {});
+        }
+        break;
+      }
       pushArg(0); pushArg(1);
       b.u8(w.CALL); b.lebU(em.ix.fEq);
-      break;
-    }
-    case "!=": {
-      pushArg(0); pushArg(1);
-      b.u8(w.CALL); b.lebU(em.ix.fEq);
-      b.refCast(w.I31REF, false); // eq result's i31 bool payload
-      b.i31Get();
-      b.u8(w.EQZ); // 1 when $eq said false
-      selectBool(em, f, () => {});
+      if (name === "!=") {
+        b.refCast(w.I31REF, false); // eq result's i31 bool payload
+        b.i31Get();
+        b.u8(w.EQZ); // 1 when $eq said false
+        selectBool(em, f, () => {});
+      }
       break;
     }
     case "not": {
@@ -1210,26 +1298,11 @@ function fragV(em: Emit, id: ExprID, f: Fn): ValueRef {
 }
 
 export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = INLINE): ValueRef {
-  const r = exprInner(em, id, f, sc, tail, ctx);
-  // f32 precision: the checker stamps every node whose type is f32; round
-  // its value through f32 (f64 -> f32 -> f64) exactly like the interpreter's
-  // Math.fround, so f32 arithmetic never observes a wider intermediate.
-  // Statics stay shared with f64 uses of the same literal — the rounded copy
-  // lands in a fresh local.
-  const en = em.nodes[id] as Expr & { numKind?: string };
-  if (en.numKind === "f32" && (r.k === "g" || r.k === "local" || r.k === "snapSlot" || r.k === "slot")) {
-    const v = f.anyref();
-    f.pushRef(r);
-    f.body.refCast(0, false);
-    f.body.structGet(0, 0);
-    f.body.u8(w.F32_DEMOTE);
-    f.body.u8(w.F64_PROMOTE);
-    f.body.u8(w.CALL);
-    f.body.lebU(em.ix.fBox);
-    f.body.localSet(v);
-    return {k: "local", l: v};
-  }
-  return r;
+  // Typed-widths step 2 removed the old implicit f32 demote/promote
+  // round-trip that used to live here: f32-stamped nodes now produce real
+  // $F32 boxes (typed ops, $F32 statics, explicit @as conversions) and
+  // operand-width adaptation happens in $f32of/$num64 at unbox sites.
+  return exprInner(em, id, f, sc, tail, ctx);
 }
 
 function exprInner(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = INLINE): ValueRef {
@@ -1255,7 +1328,9 @@ function exprInner(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: C
   try {
   switch (e.t) {
     case "num":
-      return {k: "g", gi: em.lay.numStatics.get(e.v)!};
+      // The static's key carries the node's stamped width (f32 literals box
+      // as $F32; everything else rides the f64 plane in step 2).
+      return {k: "g", gi: em.lay.numStatics.get(`${e.numKind === "f32" ? "f32" : "f64"}:${e.v}`)!};
     case "str":
       return {k: "g", gi: em.lay.strStatics.get(e.v)!};
     case "bool":
@@ -1436,27 +1511,76 @@ function exprInner(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: C
       return {k: "local", l: v};
     }
     case "as": {
-      // @as conversion. Value-preserving widths forward the child ref;
-      // float -> int truncates toward zero; bool -> numeric converts the
-      // i31 bool; an f32 target rounds via this node's f32 stamp in the
-      // expr() wrapper.
+      // @as conversion, per-width (typed-widths step 2 implements the float
+      // half; int↔int lands in steps 3-4). Box shapes adapt at the unbox:
+      // a wildcard value that flexed into an f32-typed slot still sits in
+      // an $F64 box, so f32 reads go through $f32of (whose $F64 arm applies
+      // the f32 rounding the interpreter's f32-stamped reads apply) and
+      // f64-plane reads through $num64 (promote arm for real $F32 boxes).
+      const targetW = e.typ.tag === "prim" ? e.typ.name : "";
+      const childF32 = (em.nodes[e.e] as Expr & {numKind?: string}).numKind === "f32";
       const v = f.anyref();
       const childRef = expr(em, e.e, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
-      if (e.asKind === undefined) return childRef;
-      f.pushRef(childRef);
+      if (targetW === "f32") {
+        if (e.asKind === "boolnum") {
+          f.pushRef(childRef);
+          b.refCast(w.I31REF, false); // boolnum: i31 bool payload -> 0/1
+          b.i31Get();
+          b.u8(w.CONV_I32); // f64.convert_i32_s
+          b.u8(w.F32_DEMOTE);
+          b.structNew(11);
+          b.localSet(v);
+          return {k: "local", l: v};
+        }
+        if (childF32) {
+          // f32 -> f32: forward (the box shape adapts at the next unbox).
+          return childRef;
+        }
+        // f64-plane source -> f32: adapt + rebox ($f32of's $F64 arm is the
+        // explicit demote this conversion performs).
+        f.pushRef(childRef);
+        b.u8(w.CALL);
+        b.lebU(em.ix.fF32of);
+        b.structNew(11);
+        b.localSet(v);
+        return {k: "local", l: v};
+      }
+      if (childF32) {
+        // f32-typed source -> f64-plane target: adapt to the f32-rounded
+        // payload ($f32of), widen exactly, then the f64-plane path.
+        f.pushRef(childRef);
+        b.u8(w.CALL);
+        b.lebU(em.ix.fF32of);
+        b.u8(w.F64_PROMOTE);
+        if (e.asKind === "trunc") b.u8(w.FTRUNC);
+        b.u8(w.CALL);
+        b.lebU(em.ix.fBox);
+        b.localSet(v);
+        return {k: "local", l: v};
+      }
       if (e.asKind === "trunc") {
+        f.pushRef(childRef);
         b.refCast(0, false);
         b.structGet(0, 0);
         b.u8(w.FTRUNC);
-      } else {
+        b.u8(w.CALL);
+        b.lebU(em.ix.fBox);
+        b.localSet(v);
+        return {k: "local", l: v};
+      }
+      if (e.asKind === "boolnum") {
+        f.pushRef(childRef);
         b.refCast(w.I31REF, false); // boolnum: i31 bool payload -> f64 0/1
         b.i31Get();
         b.u8(w.CONV_I32);
+        b.u8(w.CALL);
+        b.lebU(em.ix.fBox);
+        b.localSet(v);
+        return {k: "local", l: v};
       }
-      b.u8(w.CALL);
-      b.lebU(em.ix.fBox);
-      b.localSet(v);
-      return {k: "local", l: v};
+      // Value-preserving into the f64 plane from an f64 source: forward the
+      // child ref (already an $F64 box or non-numeric).
+      return childRef;
     }
     case "field": {
       const blk = f.anyref();
@@ -1558,21 +1682,37 @@ function exprInner(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: C
         // refs are computed (and spilled) before either is materialized,
         // so a split inside a child aborts on a clean operand stack.
         // A non-number operand traps at the ref.cast (frozen deviation —
-        // the checker rejects non-num arithmetic statically).
+        // the checker rejects non-num arithmetic statically). f32-stamped
+        // sites compute typed f32 division (step 2); int/float on the f64
+        // plane keep the f64 path with the int truncation stamp.
+        const f32Div = e.numKind === "f32";
         if (ci === 0) throw new WasmError("internal: split chain root mismatch");
         f.pushRef(cutChildRef(em, e.args[0], f, s, ctx, ci === 1 ? "cut" : ci < 0 ? "post" : "pre"));
-        b.refCast(0, false);
-        b.structGet(0, 0);
+        if (f32Div) {
+          b.u8(w.CALL);
+          b.lebU(em.ix.fF32of);
+        } else {
+          b.refCast(0, false);
+          b.structGet(0, 0);
+        }
         f.pushRef(cutChildRef(em, e.args[1], f, s, ctx, ci === 2 ? "cut" : "post"));
-        b.refCast(0, false);
-        b.structGet(0, 0);
-        b.u8(w.FDIV);
-        if (e.div === "int") b.u8(w.FTRUNC);
+        if (f32Div) {
+          b.u8(w.CALL);
+          b.lebU(em.ix.fF32of);
+        } else {
+          b.refCast(0, false);
+          b.structGet(0, 0);
+        }
+        b.u8(f32Div ? w.F32_DIV : w.FDIV);
+        if (!f32Div && e.div === "int") b.u8(w.FTRUNC);
         // Box inline (never return_call $box: at a tail position the raw
         // return would bypass the caller's RET cell — the wrapper's
         // dispatch must see the value).
-        b.u8(w.CALL);
-        b.lebU(em.ix.fBox);
+        if (f32Div) b.structNew(11);
+        else {
+          b.u8(w.CALL);
+          b.lebU(em.ix.fBox);
+        }
       } else if (bname !== null && OPERATOR_OPS.has(bname)) {
         emitOperatorInline(em, f, bname, e, s, ctx, ci);
       } else if (bname !== null && em.ix.builtinFnIdx.has(bname)) {

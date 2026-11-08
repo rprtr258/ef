@@ -11,8 +11,14 @@ export const GTU = 0x4b, LEU = 0x4d, GEU = 0x4f, DIVU = 0x6e;
 export const FABS = 0x99, FNEG = 0x9a, FCEIL = 0x9b, FFLOOR = 0x9c, FTRUNC = 0x9d, FSQRT = 0x9f;
 export const FADD = 0xa0, FSUB = 0xa1, FMUL = 0xa2, FDIV = 0xa3;
 export const FLT = 0x63, FGT = 0x64, FLE = 0x65, FGE = 0x66, FEQ = 0x61;
+// f32 arithmetic/comparison (typed-widths step 2)
+export const F32_ABS = 0x8b, F32_NEG = 0x8c, F32_TRUNC = 0x8f, F32_SQRT = 0x91;
+export const F32_ADD = 0x92, F32_SUB = 0x93, F32_MUL = 0x94, F32_DIV = 0x95;
+export const F32_EQ = 0x5b, F32_NE = 0x5c, F32_LT = 0x5d, F32_GT = 0x5e, F32_LE = 0x5f, F32_GE = 0x60;
 export const TRUNC_F64 = 0xaa, CONV_I32 = 0xb7; // i32.trunc_f64_s, f64.convert_i32_s
-export const F32_DEMOTE = 0xb6, F64_PROMOTE = 0xbb; // f32.demote_f64, f64.promote_f32 — the f32 rounding round-trip
+export const F32_DEMOTE = 0xb6, F64_PROMOTE = 0xbb; // f32.demote_f64, f64.promote_f32 —
+// the explicit f64 <-> f32 conversions (@as and the operand-width adaptation
+// in $numf64/$f32of); no implicit per-node round-trip exists anymore.
 export const CALL = 0x10, CALL_INDIRECT = 0x11, RETURN_CALL = 0x12, RETURN_CALL_INDIRECT = 0x13, SELECT = 0x1b;
 export const BR = 0x0c, BR_IF = 0x0d, IF = 0x04, ELSE = 0x05, END = 0x0b, LOOP = 0x03, BLOCK = 0x02;
 export const RETURN = 0x0f, UNREACHABLE = 0x00;
@@ -44,20 +50,21 @@ export const GC = 0xfb;
 export const K_RET = 0, K_HDL = 1, K_SPILL = 2;
 
 // Type section indices — assemble() emits exactly this order: structs/
-// arrays 0..6 ($NUM, $ELEMS, $STR, $ARR, $FRAME, $K, $CLO), then func
-// types 7..23. Shared shapes dedupe by position: 7 () -> anyref (run +
-// ef_args), 8 () -> (), 9 (i32, anyref) -> anyref (ef_perform), 10 (i32,
-// anyref, f64, f64) -> () (ef_fail), 11 (anyref) -> anyref (ef_char/
-// number/cos/sin), 12 (i32) -> anyref (__mk_bool/__str_new/__arr_new),
-// 13 (f64) -> anyref (fBox/__mk_num), 14 (anyref) -> i32 (fTruthy/__tag/
-// __str_len/__arr_len), 15 (anyref, anyref) -> anyref (fEq), 16 ((ref null
-// $K), (ref null $K)) -> (ref null $K) (fCapture), 17 T_KABI ((ref null
-// $FRAME), (ref null $K)) -> anyref, 18 T_III_I ((ref null $FRAME), anyref,
-// (ref null $K)) -> anyref; 19..23 are accessor-only shapes named in
-// assemble().
+// arrays 0..11 ($F64, $ELEMS, $STR, $ARR, $FRAME, $K, $CLO, $I32, $U32,
+// $I64, $U64, $F32), then func types 7..25. Shared shapes dedupe by
+// position: 7 () -> anyref (run + ef_args), 8 () -> (), 9 (i32, anyref) ->
+// anyref (ef_perform), 10 (i32, anyref, f64, f64) -> () (ef_fail), 11
+// (anyref) -> anyref (ef_char/number/cos/sin), 12 (i32) -> anyref
+// (__mk_bool/__str_new/__arr_new), 13 (f64) -> anyref (fBox/__mk_num), 14
+// (anyref) -> i32 (fTruthy/__tag/__str_len/__arr_len), 15 (anyref, anyref)
+// -> anyref (fEq), 16 ((ref null $K), (ref null $K)) -> (ref null $K)
+// (fCapture), 17 T_KABI ((ref null $FRAME), (ref null $K)) -> anyref, 18
+// T_III_I ((ref null $FRAME), anyref, (ref null $K)) -> anyref; 19..25 are
+// accessor/helper shapes named in assemble() (24/25 appended by the
+// typed-widths plan: __mk_f32, __f32/fF32of).
 export const T_RUN = 7, T_PERFORM = 9, T_FAIL = 10, T_STRNUM = 11,
   T_BOX = 13, T_TRUTHY = 14, T_EQ = 15, T_CAPTURE = 16, T_KABI = 17,
-  T_III_I = 18;
+  T_III_I = 18, T_MKF32 = 24, T_F32 = 25;
 
 export function impType(n: string): number {
   if (n === "ef_perform") return T_PERFORM;
@@ -86,6 +93,6 @@ export function heapTypes(ht: number): {h: binaryen.HeapType, n: binaryen.Type} 
   if (ht === ANYREF) return {h: absHeaps.any, n: binaryen.anyref};
   if (ht === EQREF) return {h: absHeaps.eq, n: binaryen.eqref};
   if (ht === I31REF) return {h: absHeaps.i31, n: binaryen.i31ref};
-  if (ht >= 0 && ht <= 6) return {h: _T.HT[ht], n: _T.RF[ht]};
+  if (ht >= 0 && ht <= 11) return {h: _T.HT[ht], n: _T.RF[ht]};
   throw new WasmError(`internal: bad heaptype byte ${ht}`);
 }

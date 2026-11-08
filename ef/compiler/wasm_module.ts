@@ -60,56 +60,107 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.u8(w.END);
         break;
       }
-      case "-": {
-        const x = f.slotF64(0), y = f.slotF64(1);
-        b.localGet(x);
-        b.localGet(y);
-        b.u8(w.FSUB);
-        box();
-        break;
-      }
-      case "*": {
-        const x = f.slotF64(0), y = f.slotF64(1);
-        b.localGet(x);
-        b.localGet(y);
-        b.u8(w.FMUL);
-        box();
-        break;
-      }
-      case "%": {
-        // JS fmod: a - b * trunc(a/b)
-        const x = f.slotF64(0), y = f.slotF64(1), t = f.f64();
-        b.localGet(x);
-        b.localGet(y);
-        b.u8(w.FDIV);
-        b.u8(w.FTRUNC);
-        b.localSet(t);
-        b.localGet(x);
-        b.localGet(y);
-        b.localGet(t);
-        b.u8(w.FMUL);
-        b.u8(w.FSUB);
-        box();
-        break;
-      }
-      case "neg": {
-        const x = f.slotF64(0);
-        b.localGet(x);
-        b.u8(w.FNEG);
-        box();
-        break;
-      }
+      case "-":
+      case "*":
+      case "%":
+      case "neg":
       case "<":
       case ">":
       case "<=":
       case ">=": {
-        const x = f.slotF64(0), y = f.slotF64(1);
-        const cmp = name === "<" ? w.FLT : name === ">" ? w.FGT : name === "<=" ? w.FLE : w.FGE;
-        selectBool(em, f, () => {
-          b.localGet(x);
-          b.localGet(y);
-          b.u8(cmp);
-        });
+        // Typed-widths step 2: operators reached as values dispatch on the
+        // boxed operands' tags — both $F32 computes with the f32 family,
+        // anything else takes the f64 plane (matches the inline emitters,
+        // which dispatch statically on the site's numKind stamp).
+        const f32op = name !== "neg"; // binary ops test both operands
+        if (f32op) {
+          const a = f.anyref(), bv = f.anyref();
+          f.slot(0);
+          b.localSet(a);
+          f.slot(1);
+          b.localSet(bv);
+          b.localGet(a);
+          b.refTest(11, false);
+          b.localGet(bv);
+          b.refTest(11, false);
+          b.u8(w.AND);
+          b.u8(w.IF);
+          b.u8(0x6e);
+          const fx = f.f32(), fy = f.f32();
+          b.localGet(a);
+          b.refCast(11, false);
+          b.structGet(11, 0);
+          b.localSet(fx);
+          b.localGet(bv);
+          b.refCast(11, false);
+          b.structGet(11, 0);
+          b.localSet(fy);
+          if (name === "%") {
+            // JS fmod: a - b * trunc(a/b)
+            const ft = f.f32();
+            b.localGet(fx);
+            b.localGet(fy);
+            b.u8(w.F32_DIV);
+            b.u8(w.F32_TRUNC);
+            b.localSet(ft);
+            b.localGet(fx);
+            b.localGet(fy);
+            b.localGet(ft);
+            b.u8(w.F32_MUL);
+            b.u8(w.F32_SUB);
+          } else {
+            b.localGet(fx);
+            b.localGet(fy);
+            b.u8(name === "-" ? w.F32_SUB : name === "*" ? w.F32_MUL : name === "<" ? w.F32_LT : name === ">" ? w.F32_GT : name === "<=" ? w.F32_LE : w.F32_GE);
+          }
+          if (name === "<" || name === ">" || name === "<=" || name === ">=") {
+            // i32 bool on the stack → i31 bool anyref
+            selectBool(em, f, () => {});
+          } else {
+            b.structNew(11);
+          }
+          b.u8(w.ELSE);
+        }
+        if (name === "<" || name === ">" || name === "<=" || name === ">=") {
+          const r = f.i32();
+          {
+            const x = f.slotF64(0), y = f.slotF64(1);
+            const cmp = name === "<" ? w.FLT : name === ">" ? w.FGT : name === "<=" ? w.FLE : w.FGE;
+            b.localGet(x);
+            b.localGet(y);
+            b.u8(cmp);
+            b.localSet(r);
+          }
+          selectBool(em, f, () => {
+            b.localGet(r);
+          });
+        } else {
+          const x = f.slotF64(0), y = name === "neg" ? 0 : f.slotF64(1);
+          if (name === "%") {
+            // JS fmod: a - b * trunc(a/b)
+            const t = f.f64();
+            b.localGet(x);
+            b.localGet(y);
+            b.u8(w.FDIV);
+            b.u8(w.FTRUNC);
+            b.localSet(t);
+            b.localGet(x);
+            b.localGet(y);
+            b.localGet(t);
+            b.u8(w.FMUL);
+            b.u8(w.FSUB);
+          } else {
+            b.localGet(x);
+            if (name === "neg") {
+              b.u8(w.FNEG);
+            } else {
+              b.localGet(y);
+              b.u8(name === "-" ? w.FSUB : w.FMUL);
+            }
+          }
+          box();
+        }
+        if (f32op) b.u8(w.END);
         break;
       }
       case "==": {
@@ -366,14 +417,22 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.lebU(em.o.impIdx.get("ef_sin")!);
         break;
       case "sqrt": {
-        const x = f.slotF64(0);
+        const x = f.f64();
+        f.slot(0);
+        b.u8(w.CALL);
+        b.lebU(em.ix.fNum64); // adaptive: an $F32 box promotes
+        b.localSet(x);
         b.localGet(x);
         b.u8(w.FSQRT);
         box();
         break;
       }
       case "abs": {
-        const x = f.slotF64(0);
+        const x = f.f64();
+        f.slot(0);
+        b.u8(w.CALL);
+        b.lebU(em.ix.fNum64);
+        b.localSet(x);
         b.localGet(x);
         b.u8(w.FABS);
         box();
@@ -879,7 +938,9 @@ export function emitInits(em: Emit): void {
     em.funcs.push(f);
     return f;
   };
-  // __tag(v) -> i32: 0 unit (null) 1 num 2 bool 3 str 4 arr 5 clo
+  // __tag(v) -> i32: 0 unit (null) 1 $F64 2 bool 3 str 4 arr 5 clo,
+  // 6..10 = $I32/$U32/$I64/$U64/$F32 (tag = box shape − 1 for the appended
+  // per-width number shapes 7..11).
   acc(1, 14, (b) => {
     b.localGet(0);
     b.u8(0xd1);
@@ -896,7 +957,7 @@ export function emitInits(em: Emit): void {
       b.u8(w.ELSE);
     };
     tag(w.I31REF, 2);
-    tag(0, 1); // $NUM
+    tag(0, 1); // $F64
     tag(2, 3); // $STR
     tag(3, 4); // $ARR
     b.localGet(0);
@@ -905,7 +966,25 @@ export function emitInits(em: Emit): void {
     b.u8(0x7f);
     b.i32Const(5);
     b.u8(w.ELSE);
+    const tagNum = (ht: number, t: number) => {
+      b.localGet(0);
+      b.refTest(ht, false);
+      b.u8(w.IF);
+      b.u8(0x7f);
+      b.i32Const(t);
+      b.u8(w.ELSE);
+    };
+    tagNum(7, 6); // $I32
+    tagNum(8, 7); // $U32
+    tagNum(9, 8); // $I64
+    tagNum(10, 9); // $U64
+    tagNum(11, 10); // $F32
     b.u8(w.UNREACHABLE);
+    b.u8(w.END);
+    b.u8(w.END);
+    b.u8(w.END);
+    b.u8(w.END);
+    b.u8(w.END);
     b.u8(w.END);
     b.u8(w.END);
     b.u8(w.END);
@@ -951,6 +1030,17 @@ export function emitInits(em: Emit): void {
   acc(1, 13, (b) => {
     b.localGet(0);
     b.structNew(0);
+  });
+  // __mk_f32(x: f32) -> anyref (typed-widths step 2)
+  acc(1, w.T_MKF32, (b) => {
+    b.localGet(0);
+    b.structNew(11);
+  });
+  // __f32(v) -> f32: $F32 payload (typed-widths step 2)
+  acc(1, w.T_F32, (b) => {
+    b.localGet(0);
+    b.refCast(11, false);
+    b.structGet(11, 0);
   });
   // __mk_bool(b) -> anyref
   acc(1, 12, (b) => {

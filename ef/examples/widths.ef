@@ -1,0 +1,42 @@
+# Numeric widths end to end: f32 precision, per-width @as conversions, and
+# integer division semantics — printed so the parity harness compares both
+# backends digit for digit. (The i32/u32 wraparound and i64-beyond-2^53
+# prints join this example in steps 3-4, when the wasm backend grows typed
+# integer ops; see §3.1 runtime semantics in the README.)
+
+# f32 rounds to f32 precision at every producing step: 0.1f32 + 0.2f32 is
+# 0.30000001192092896, not the f64 0.30000000000000004.
+let a: f32 = 0.1;
+let b: f32 = 0.2;
+Println!(a + b);
+Println!(@as(0.1 + 0.2, f64));
+Println!(@as(1.0 / 3.0, f32));
+Println!(@as(1.0 / 3.0, f64));
+
+# f32 through a function and an array: the boxes stay $F32 across calls.
+let scale = fn(v: f32, k: f32): f32 { v * k };
+Println!(scale(a, @as(100.0, f32)));
+let thirds = map(fn(v: f32): f32 { v / @as(3.0, f32) }, [a, b]);
+Println!(thirds.0);
+Println!(thirds.1);
+
+# f32 equality is f32-exact: 0.1f32 + 0.2f32 == 0.3f32.
+Println!(a + b == @as(0.3, f32));
+
+# Untyped literals default to i64/f64; annotations pin the other widths.
+# (The literal below prints identically in both backends; the exact
+# beyond-2^53 prints join in step 4 with BigInt at the wasm boundary.)
+let i: i64 = 9007199254740993;
+Println!(i / 1000000000000);
+
+# Integer division truncates toward zero; modulo takes the dividend's sign.
+Println!(-7 / 2);
+Println!(-7 % 2);
+Println!(7 % -2);
+
+# @as conversions: float -> int truncates toward zero; int -> float widens;
+# bool -> numeric gives 0/1.
+Println!(@as(3.99, i64));
+Println!(@as(-3.99, i64));
+Println!(@as(7, f64) / 2.0);
+Println!(@as(true, i64) + @as(false, i64));

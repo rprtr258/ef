@@ -425,6 +425,19 @@ export class Buf {
       case w.FFLOOR: un((v) => MOD.f64.floor(v)); return;
       case w.FTRUNC: un((v) => MOD.f64.trunc(v)); return;
       case w.FSQRT: un((v) => MOD.f64.sqrt(v)); return;
+      case w.F32_ADD: bin((l, r) => MOD.f32.add(l, r)); return;
+      case w.F32_SUB: bin((l, r) => MOD.f32.sub(l, r)); return;
+      case w.F32_MUL: bin((l, r) => MOD.f32.mul(l, r)); return;
+      case w.F32_DIV: bin((l, r) => MOD.f32.div(l, r)); return;
+      case w.F32_EQ: bin((l, r) => MOD.f32.eq(l, r)); return;
+      case w.F32_LT: bin((l, r) => MOD.f32.lt(l, r)); return;
+      case w.F32_GT: bin((l, r) => MOD.f32.gt(l, r)); return;
+      case w.F32_LE: bin((l, r) => MOD.f32.le(l, r)); return;
+      case w.F32_GE: bin((l, r) => MOD.f32.ge(l, r)); return;
+      case w.F32_ABS: un((v) => MOD.f32.abs(v)); return;
+      case w.F32_NEG: un((v) => MOD.f32.neg(v)); return;
+      case w.F32_TRUNC: un((v) => MOD.f32.trunc(v)); return;
+      case w.F32_SQRT: un((v) => MOD.f32.sqrt(v)); return;
       case w.TRUNC_F64: un((v) => MOD.i32.trunc_s.f64(v)); return;
       case w.CONV_I32: un((v) => MOD.f64.convert_s.i32(v)); return;
       case w.F32_DEMOTE: un((v) => MOD.f32.demote(v)); return;
@@ -572,6 +585,7 @@ export class Fn {
   }
   i32(): number { return this.typed(binaryen.i32); }
   f64(): number { return this.typed(binaryen.f64); }
+  f32(): number { return this.typed(binaryen.f32); }
   anyref(): number { return this.typed(binaryen.anyref); }
   // Precise-type local (spill slots keep GC ref types exact).
   typed(t: binaryen.Type): number {
@@ -595,6 +609,17 @@ export class Fn {
     this.slot(i);
     this.body.refCast(0, false);
     this.body.structGet(0, 0);
+    this.body.localSet(l);
+    return l;
+  }
+
+  // f32 payload of slot i's number ($F32 box). Same trap semantics as
+  // slotF64; used by f32-dispatched trampoline arms.
+  slotF32(i: number): number {
+    const l = this.f32();
+    this.slot(i);
+    this.body.refCast(11, false);
+    this.body.structGet(11, 0);
     this.body.localSet(l);
     return l;
   }

@@ -6,4 +6,4 @@ let add = fn(a: f32, b: f32): f32 {
   a + b
 };
 
-round(add(3.34, 2.71))
+round(@as(add(3.34, 2.71), f64))

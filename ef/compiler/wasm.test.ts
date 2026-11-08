@@ -171,6 +171,34 @@ describe("wasm backend", () => {
     expect(show(runWasm("round(PI * 100)"))).toBe("314");
   });
 
+  test("f32 precision: typed f32 ops, $F32 boxes and @as conversions", () => {
+    // Graduated from the step-1 interp-only block: every case now runs
+    // through BOTH backends (parity) — f32 values are real $F32 boxes
+    // computed with the f32 opcode family.
+    expect(parity("@as(0.1, f32) + @as(0.2, f32)")).toBe("0.30000001192092896");
+    expect(parity("@as(0.1 + 0.2, f32)")).toBe("0.30000001192092896");
+    expect(parity("@as(1.0 / 3.0, f32)")).toBe("0.3333333432674408");
+    expect(parity("@as(0.1, f32) + @as(0.2, f32) == @as(0.3, f32)")).toBe("true");
+    // f64 stays f64: the same sum differs in the last digits.
+    expect(parity("0.1 + 0.2")).toBe("0.30000000000000004");
+    // f32 literals flowing through f32-typed positions (lets, params,
+    // arrays) keep their box: the wildcard sources adapt at the unbox.
+    expect(parity("let a: f32 = 0.1; let b: f32 = 0.2; a + b")).toBe("0.30000001192092896");
+    expect(parity("let add = fn(x: f32, y: f32): f32 { x + y }; add(3.34, 2.71)")).toBe("6.050000190734863");
+    expect(parity("let x: f32 = 1; x + 1")).toBe("2");
+    expect(parity("map(fn(v: f32): f32 { v * v }, [@as(0.5, f32)]).0")).toBe("0.25");
+    expect(parity("sqrt(@as(4.0, f32))")).toBe("2");
+    expect(parity("neg(@as(1.5, f32))")).toBe("-1.5");
+    expect(parity("@as(3.34, f32) * @as(2.71, f32)")).toBe("9.051400184631348");
+    // f32 -> f64 promotes exactly; f64 -> f32 demotes (@as only).
+    expect(parity("@as(@as(0.1, f32), f64)")).toBe("0.10000000149011612");
+    expect(parity("@as(@as(0.1, f64), f32)")).toBe("0.10000000149011612");
+    // Comparisons dispatch on the f32 stamp.
+    expect(parity("@as(0.5, f32) < @as(0.7, f32)")).toBe("true");
+    // f32 division is f32-precision (no int truncation).
+    expect(parity("@as(1.0, f32) / @as(3.0, f32)")).toBe("0.3333333432674408");
+  });
+
   test("builtin shadowing: a user binding keeps the builtin unreferenced", () => {
     // A `let` shadowing a builtin name must resolve to the user binding,
     // not reach the builtin's closure.

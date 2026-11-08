@@ -49,11 +49,13 @@ export const SIGS: Record<number, {p: (number | number[])[], r: number | number[
   [w.T_CAPTURE]: {p: [[0x63, 5], [0x63, 5]], r: [0x63, 5]}, // fCapture
   [w.T_KABI]: {p: [[0x63, 4], [0x63, 5]], r: w.ANYREF},       // (frame, k) program fns
   [w.T_III_I]: {p: [[0x63, 4], w.ANYREF, [0x63, 5]], r: w.ANYREF}, // land thunks
-  [19]: {p: [w.ANYREF], r: 0x7c},                   // __num
+  [19]: {p: [w.ANYREF], r: 0x7c},                   // __num/fNum64
   [20]: {p: [w.ANYREF, 0x7f], r: 0x7f},             // __str_get
   [21]: {p: [w.ANYREF, 0x7f, 0x7f], r: null},       // __str_set
   [22]: {p: [w.ANYREF, 0x7f], r: w.ANYREF},           // __arr_get
   [23]: {p: [w.ANYREF, 0x7f, w.ANYREF], r: null},     // __arr_set
+  [w.T_MKF32]: {p: [0x7d], r: w.ANYREF},              // __mk_f32 (step 2)
+  [w.T_F32]: {p: [w.ANYREF], r: 0x7d},                // __f32/fF32of (step 2)
 };
 
 // Valtype byte (or [0x63, idx] pair) → binaryen Type. 0x40 → none (void).
@@ -61,6 +63,8 @@ export function vt(t: number | number[] | null): binaryen.Type {
   if (t === null || t === 0x40) return binaryen.none;
   if (typeof t === "number") {
     if (t === 0x7f) return binaryen.i32;
+    if (t === 0x7e) return binaryen.i64;
+    if (t === 0x7d) return binaryen.f32;
     if (t === 0x7c) return binaryen.f64;
     if (t === w.ANYREF) return binaryen.anyref;
     if (t === w.EQREF) return binaryen.eqref;
@@ -82,9 +86,14 @@ export function bindMOD(m: binaryen.Module): void { MOD = m; }
 // Struct field valtypes by type index (struct.new pops fields in reverse
 // declaration order — the last field pushed is the first popped).
 export const STRUCT_FIELDS: Record<number, (number | number[])[]> = {
-  [0]: [0x7c],                       // $NUM: f64
+  [0]: [0x7c],                       // $F64: f64
   [3]: [[0x63, 1]],                  // $ARR: (ref null $ELEMS)
   [4]: [[0x63, 4], [0x63, 1]],       // $FRAME
   [5]: [w.I31REF, w.ANYREF, w.ANYREF, [0x63, 5]], // $K
   [6]: [w.I31REF, [0x63, 4], w.I31REF],  // $CLO
+  [7]: [0x7f],                       // $I32: i32
+  [8]: [0x7f],                       // $U32: i32
+  [9]: [0x7e],                       // $I64: i64
+  [10]: [0x7e],                      // $U64: i64
+  [11]: [0x7d],                      // $F32: f32
 };

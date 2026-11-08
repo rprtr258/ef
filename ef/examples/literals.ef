@@ -22,4 +22,4 @@ let sci_f64: f64 = 123.0;      # 1.23e2f64
 bin_i32_untyped + bin_i32 + @as(bin_i64, i32) + @as(bin_u32, i32) +
 @as(bin_u64, i32) + hex_i32_untyped + hex_i32 + @as(hex_i64, i32) +
 @as(hex_u32, i32) + @as(hex_u64, i32) +
-@as(round(sci_f32), i32) + @as(round(sci_f64), i32)
+@as(round(@as(sci_f32, f64)), i32) + @as(round(@as(sci_f64, f64)), i32)

@@ -9,7 +9,7 @@ import {
   tArr, tFun,
   type EffectSig, type Type,
 } from "./types.ts";
-import {TI64, TANY, TBOOL, TFLOAT, TINT, TNULL, TSTR} from "./prims.ts";
+import {TI64, TANY, TBOOL, TF64, TFLOAT, TINT, TNULL, TSTR} from "./prims.ts";
 
 export type Builtin =
   // A plain builtin: lifted to a runtime native as `k(fn(...args))`. `t` is its
@@ -100,7 +100,7 @@ export const builtins: Builtin[] = [
     {kind: "fn", name: "cos", t: tFun([TFLOAT], TFLOAT, new Set()), fn: a => Math.cos(num(a))},
     {kind: "fn", name: "sin", t: tFun([TFLOAT], TFLOAT, new Set()), fn: a => Math.sin(num(a))},
     {kind: "fn", name: "abs", t: tFun([TFLOAT], TFLOAT, new Set()), fn: a => Math.abs(num(a))},
-    {kind: "fn", name: "round", t: tFun([TFLOAT], TI64, new Set()), fn: a => Math.round(num(a))},
+    {kind: "fn", name: "round", t: tFun([TF64], TI64, new Set()), fn: a => Math.round(num(a))},
     {kind: "fn", name: "sqrt", t: tFun([TFLOAT], TFLOAT, new Set()), fn: a => Math.sqrt(num(a))},
     // D7: builtins return concrete widths — range is (i64, i64, i64) -> [i64],
     // so its output is never width-ambiguous. Elements are plain JS numbers;

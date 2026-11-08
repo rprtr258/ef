@@ -29,7 +29,9 @@ export type Discovery = {
   globalScope: Scope,
   // Literal presence maps (value → placeholder -1; static layout resolves
   // the global indices into Layout.numStatics/strStatics).
-  numLits: Map<number, number>,
+  // "width:value" → width — number literals with their stamped width (the
+  // f64 0.1 and the f32 0.1 are distinct statics).
+  numLits: Map<string, string>,
   strLits: Map<string, number>,
   // App nodes whose call is a non-builtin (lambda) call: split sites (§3
   // emitCall). map/each/flatmap are builtins but land-style too.
@@ -101,6 +103,8 @@ export type Indices = {
   fEq: number,
   fBox: number,
   fCapture: number,
+  fNum64: number,
+  fF32of: number,
   fLambda0: number,
   // Lambda funcref index per lambda node (deterministic AST order).
   lambdaIdx: Map<ExprID, number>,
@@ -160,7 +164,7 @@ export type Layout = {
   falseRef: ValueRef,
   // PI constant global (only when the program references PI).
   piG: number,
-  numStatics: Map<number, number>,   // literal value → static global idx
+  numStatics: Map<string, number>,   // "width:value" literal key → static global idx
   strStatics: Map<string, number>,   // literal value → static global idx
   cloOffsets: Map<string, number>,   // builtin name → static $CLO global idx
   hdlTableOff: Map<ExprID, number>,  // handle → case-table static global idx
@@ -198,9 +202,15 @@ export function discover(prog: Program): Discovery {
   const rec = (id: ExprID, sc: Scope): void => {
     const e = prog.nodes[id];
     switch (e.t) {
-      case "num":
-        d.numLits.set(e.v, -1);
+      case "num": {
+        // Dedup key includes the node's stamped width: the f64 literal 0.1
+        // and the f32 literal 0.1 are distinct statics (different boxes and
+        // const forms). Untyped literals carry their default (i64/f64 → the
+        // f64 plane in step 2).
+        const w = e.numKind === "f32" ? "f32" : "f64";
+        d.numLits.set(`${w}:${e.v}`, w);
         break;
+      }
       case "str":
         d.strLits.set(e.v, -1);
         break;
@@ -347,7 +357,9 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
     fEq: o.liveImports.length + 1,
     fBox: o.liveImports.length + 2,
     fCapture: o.liveImports.length + 3,
-    fLambda0: o.liveImports.length + 4,
+    fNum64: o.liveImports.length + 4,
+    fF32of: o.liveImports.length + 5,
+    fLambda0: o.liveImports.length + 6,
     lambdaIdx: new Map(),
     spillOf: new Map(),
     valSpill: new Map(),
@@ -361,6 +373,10 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
     thunk0: 0,
     builtinFnIdx: new Map(),
   };
+  // Helper sigs resolve before emission (a CALL's signature lookup is
+  // eager — $eq's body calls $num64, which is emitted later).
+  ix.funcRefTypes.set(ix.fNum64, 19); // __num's shape: (anyref) -> f64
+  ix.funcRefTypes.set(ix.fF32of, w.T_F32); // (anyref) -> f32
   // 2c. Function index assignment (deterministic AST order).
   const assignLambdas = (id: ExprID): void => {
     const e = prog.nodes[id];
@@ -600,12 +616,12 @@ export function layoutStatics(d: Discovery, ix: Indices, o: Opt): Layout {
   // Bools: i31(0/1).
   lay.trueRef = {k: "g", gi: newStatic({t: "i31", v: 1})};
   lay.falseRef = {k: "g", gi: newStatic({t: "i31", v: 0})};
-  // Number literals (deduped by value).
-  for (const [v] of d.numLits)
-    lay.numStatics.set(v, newStatic({t: "num", v}));
+  // Number literals (deduped by width + value; the Discovery keys carry both).
+  for (const [k, w] of d.numLits)
+    lay.numStatics.set(k, newStatic({t: "num", w, v: Number(k.slice(k.indexOf(":") + 1))}));
   // PI constant (only when the program references it).
   if (o.usedBuiltins.has("PI"))
-    lay.piG = newStatic({t: "num", v: Math.PI});
+    lay.piG = newStatic({t: "num", w: "f64", v: Math.PI});
   // String literals (field names included — same constant pool).
   for (const [v] of d.strLits)
     lay.strStatics.set(v, newStatic({t: "str", s: v}));
@@ -718,7 +734,12 @@ function staticInit(m: binaryen.Module, d: StaticDesc): binaryen.ExpressionRef {
   switch (d.t) {
     case "null": return m.ref.null(binaryen.anyref);
     case "i31": return m.ref.i31(m.i32.const(d.v));
-    case "num": return m.struct.new([m.f64.const(d.v)], HT[0]);
+    case "num": {
+      // Per-width const form + box shape. Step 2 boxes f32 as $F32; every
+      // other width still rides the f64 plane ($F64) until steps 3-4.
+      if (d.w === "f32") return m.struct.new([m.f32.const(d.v)], HT[11]);
+      return m.struct.new([m.f64.const(d.v)], HT[0]);
+    }
     case "str": {
       const cs: binaryen.ExpressionRef[] = [];
       for (let i = 0; i < d.s.length; i++) cs.push(m.i32.const(d.s.charCodeAt(i)));
@@ -760,9 +781,9 @@ export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]
   }
   m.addActiveElementSegment("t0", "e0",
     Array.from({length: total}, (_, i) => `f${i}`), m.i32.const(0));
-  // exports: run + the 12 accessors (§4) — the last 13 functions
+  // exports: run + the 14 accessors (§4) — the last 15 functions
   const expNames = ["run", "__tag", "__num", "__str_len", "__str_get",
-    "__arr_len", "__arr_get", "__mk_num", "__mk_bool", "__str_new",
+    "__arr_len", "__arr_get", "__mk_num", "__mk_f32", "__f32", "__mk_bool", "__str_new",
     "__str_set", "__arr_new", "__arr_set"];
   for (let i = 0; i < expNames.length; i++)
     m.addFunctionExport(`f${total - expNames.length + i}`, expNames[i]);

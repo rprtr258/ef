@@ -9,16 +9,18 @@ import {type Value, show} from "./env.ts";
 import {builtinEffectHosts} from "./builtins.ts";
 import {compileWithOps} from "./wasm.ts";
 
-// The §4 accessor ABI: 12 exported functions — the only way JS can touch GC
+// The §4 accessor ABI: 14 exported functions — the only way JS can touch GC
 // structs. hostBox/hostUnbox rebuild interpreter Values through them.
 type Accessors = {
   tag: (v: unknown) => number,
   num: (v: unknown) => number,
+  f32: (v: unknown) => number,
   strLen: (v: unknown) => number,
   strGet: (v: unknown, i: number) => number,
   arrLen: (v: unknown) => number,
   arrGet: (v: unknown, i: number) => unknown,
   mkNum: (x: number) => unknown,
+  mkF32: (x: number) => unknown,
   mkBool: (b: number) => unknown,
   strNew: (n: number) => unknown,
   strSet: (v: unknown, i: number, u: number) => void,
@@ -30,11 +32,13 @@ const accessorsOf = (inst: WebAssembly.Instance): Accessors => {
   const ex = inst.exports as unknown as {
     __tag(v: unknown): number,
     __num(v: unknown): number,
+    __f32(v: unknown): number,
     __str_len(v: unknown): number,
     __str_get(v: unknown, i: number): number,
     __arr_len(v: unknown): number,
     __arr_get(v: unknown, i: number): unknown,
     __mk_num(x: number): unknown,
+    __mk_f32(x: number): unknown,
     __mk_bool(b: number): unknown,
     __str_new(n: number): unknown,
     __str_set(v: unknown, i: number, u: number): void,
@@ -44,11 +48,13 @@ const accessorsOf = (inst: WebAssembly.Instance): Accessors => {
   return {
     tag: (v) => ex.__tag(v),
     num: (v) => ex.__num(v),
+    f32: (v) => ex.__f32(v),
     strLen: (v) => ex.__str_len(v),
     strGet: (v, i) => ex.__str_get(v, i),
     arrLen: (v) => ex.__arr_len(v),
     arrGet: (v, i) => ex.__arr_get(v, i),
     mkNum: (x) => ex.__mk_num(x),
+    mkF32: (x) => ex.__mk_f32(x),
     mkBool: (b) => ex.__mk_bool(b),
     strNew: (n) => ex.__str_new(n),
     strSet: (v, i, u) => ex.__str_set(v, i, u),
@@ -101,6 +107,8 @@ function hostUnbox(ex: Accessors, v: unknown): Value {
       return out;
     }
     case 5: return {tag: "fn"} as Value; // closures display as [fn]
+    case 10: return ex.f32(v); // $F32 box (typed-widths step 2)
+    // Tags 6..9 ($I32/$U32/$I64/$U64) first appear in steps 3-4.
   }
   throw new Error(`wasm host: unknown anyref tag ${ex.tag(v)}`);
 }

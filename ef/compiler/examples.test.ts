@@ -108,6 +108,20 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     label: "i64 -> f64 -> +1 -> i64 via @as",
     body: res => expect(res.stdout).toBe("42\n"),
   }],
+  "widths.ef": [{
+    label: "f32 precision, @as conversions and division parity",
+    body: res => {
+      const lines = res.stdout.split("\n");
+      // f32 rounding: 0.1f32 + 0.2f32 != 0.1f64 + 0.2f64.
+      expect(lines[0]).toBe("0.30000001192092896");
+      expect(lines[1]).toBe("0.30000000000000004");
+      expect(lines[2]).toBe("0.3333333432674408");
+      // f32 equality is f32-exact (line 8); truncation signs (lines 10-11).
+      expect(lines[7]).toBe("true");
+      expect(lines[9]).toBe("-3");
+      expect(lines[10]).toBe("-1");
+    },
+  }],
   "approx_pi.ef": [{
     label: "Monte Carlo pi estimate (Random!) needs an n argument",
     body: res => expect(res).toEqual({code: 1, stdout: "Usage: ef run examples/approx_pi.ef <n>\n"}),
