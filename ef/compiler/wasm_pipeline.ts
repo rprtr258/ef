@@ -105,6 +105,8 @@ export type Indices = {
   fCapture: number,
   fNum64: number,
   fF32of: number,
+  fI32of: number,
+  fU32of: number,
   fLambda0: number,
   // Lambda funcref index per lambda node (deterministic AST order).
   lambdaIdx: Map<ExprID, number>,
@@ -207,7 +209,7 @@ export function discover(prog: Program): Discovery {
         // and the f32 literal 0.1 are distinct statics (different boxes and
         // const forms). Untyped literals carry their default (i64/f64 → the
         // f64 plane in step 2).
-        const w = e.numKind === "f32" ? "f32" : "f64";
+        const w = e.numKind === "i32" || e.numKind === "u32" || e.numKind === "f32" ? e.numKind : "f64";
         d.numLits.set(`${w}:${e.v}`, w);
         break;
       }
@@ -359,7 +361,9 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
     fCapture: o.liveImports.length + 3,
     fNum64: o.liveImports.length + 4,
     fF32of: o.liveImports.length + 5,
-    fLambda0: o.liveImports.length + 6,
+    fI32of: o.liveImports.length + 6,
+    fU32of: o.liveImports.length + 7,
+    fLambda0: o.liveImports.length + 8,
     lambdaIdx: new Map(),
     spillOf: new Map(),
     valSpill: new Map(),
@@ -377,6 +381,8 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
   // eager — $eq's body calls $num64, which is emitted later).
   ix.funcRefTypes.set(ix.fNum64, 19); // __num's shape: (anyref) -> f64
   ix.funcRefTypes.set(ix.fF32of, w.T_F32); // (anyref) -> f32
+  ix.funcRefTypes.set(ix.fI32of, w.T_GETI32); // (anyref) -> i32
+  ix.funcRefTypes.set(ix.fU32of, w.T_GETI32); // (anyref) -> i32
   // 2c. Function index assignment (deterministic AST order).
   const assignLambdas = (id: ExprID): void => {
     const e = prog.nodes[id];
@@ -738,6 +744,8 @@ function staticInit(m: binaryen.Module, d: StaticDesc): binaryen.ExpressionRef {
       // Per-width const form + box shape. Step 2 boxes f32 as $F32; every
       // other width still rides the f64 plane ($F64) until steps 3-4.
       if (d.w === "f32") return m.struct.new([m.f32.const(d.v)], HT[11]);
+      if (d.w === "i32") return m.struct.new([m.i32.const(d.v)], HT[7]);
+      if (d.w === "u32") return m.struct.new([m.i32.const(d.v)], HT[8]);
       return m.struct.new([m.f64.const(d.v)], HT[0]);
     }
     case "str": {
@@ -783,7 +791,8 @@ export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]
     Array.from({length: total}, (_, i) => `f${i}`), m.i32.const(0));
   // exports: run + the 14 accessors (§4) — the last 15 functions
   const expNames = ["run", "__tag", "__num", "__str_len", "__str_get",
-    "__arr_len", "__arr_get", "__mk_num", "__mk_f32", "__f32", "__mk_bool", "__str_new",
+    "__arr_len", "__arr_get", "__mk_num", "__mk_f32", "__f32", "__mk_i32",
+    "__mk_u32", "__i32", "__u32", "__mk_bool", "__str_new",
     "__str_set", "__arr_new", "__arr_set"];
   for (let i = 0; i < expNames.length; i++)
     m.addFunctionExport(`f${total - expNames.length + i}`, expNames[i]);
@@ -792,7 +801,14 @@ export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]
   if (process.env["EF_SKIP_WASM_OPT"] !== "1") {
     binaryen.setOptimizeLevel(0);
     binaryen.setShrinkLevel(2);
-    m.optimize();
+    try {
+      m.optimize();
+    } catch (e) {
+      // Binaryen aborts are total (every later compile fails), so dump the
+      // module for post-mortem when emission debugging is on.
+      if (process.env["DBGEMIT"] === "1") console.error(m.emitText());
+      throw e;
+    }
   }
   if (m.validate() === 0) {
     if (DBGEMIT) console.error(m.emitText());

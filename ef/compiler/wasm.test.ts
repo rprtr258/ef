@@ -199,6 +199,49 @@ describe("wasm backend", () => {
     expect(parity("@as(1.0, f32) / @as(3.0, f32)")).toBe("0.3333333432674408");
   });
 
+  test("i32/u32 wraparound: native mod-2^32 ops, comparisons, @as", () => {
+    // Typed-widths step 3: i32/u32 sites compute with i32.add/sub/mul (the
+    // wrap IS the semantics) and the interpreter wraps through
+    // BigInt.asIntN/asUintN — parity.
+    expect(parity("let x: i32 = 2147483647; x + 1")).toBe("-2147483648");
+    expect(parity("let x: i32 = -2147483648; x - 1")).toBe("2147483647");
+    expect(parity("let x: i32 = 2147483647; x * 2")).toBe("-2");
+    expect(parity("let x: u32 = 4294967295; x + 1")).toBe("0");
+    expect(parity("let x: u32 = 0; x - 1")).toBe("4294967295");
+    expect(parity("let x: u32 = 3000000000; x * 3")).toBe("410065408");
+    // Signed vs unsigned comparison of the same bits (0xFFFFFFFF).
+    expect(parity("@as(-1, i32) < @as(1, i32)")).toBe("true");
+    expect(parity("@as(4294967295, u32) > @as(1, u32)")).toBe("true");
+    // Strict same-width ops (D6): a mixed-width compare is a static type
+    // error in both backends — the messages must match exactly.
+    expect(parity("@as(-1, i32) < @as(4294967295, u32)")).toBe(
+      "ERR: <: i32 and u32 are different numeric widths (use @as to convert)");
+    // @as wrap: i64 -> i32 truncates mod 2^32 (asIntN), i64 -> u32 via asUintN.
+    expect(parity("@as(4294967297, i32)")).toBe("1");
+    expect(parity("@as(4294967297, u32)")).toBe("1");
+    expect(parity("@as(-1, i32)")).toBe("-1");
+    expect(parity("@as(-1, u32)")).toBe("4294967295");
+    expect(parity("@as(@as(5, i32), i64)")).toBe("5");
+    expect(parity("@as(@as(-5, i32), i64)")).toBe("-5");
+    expect(parity("@as(@as(4294967295, u32), i64)")).toBe("4294967295");
+    // Equality on the narrow widths compares the payload bits.
+    expect(parity("@as(-1, i32) == @as(4294967295, i32)")).toBe("true");
+    expect(parity("@as(-1, i32) == @as(1, i32)")).toBe("false");
+  });
+
+  test("i32 division guards: divide by zero and INT_MIN / -1 fail identically", () => {
+    // The wasm side routes both through ef_fail (not native traps), so the
+    // error message and exit code match the interpreter exactly.
+    expect(parity("let x: i32 = 1; x / 0")).toBe("ERR: integer divide by zero");
+    expect(parity("let x: i32 = 1; x % 0")).toBe("ERR: integer divide by zero");
+    expect(parity("let x: u32 = 1; x / 0")).toBe("ERR: integer divide by zero");
+    expect(parity("let x: i32 = -2147483648; x / -1")).toBe("ERR: integer overflow");
+    expect(parity("let x: i32 = -2147483648; x % -1")).toBe("0"); // rem_i32_s of INT_MIN by -1 is 0, no overflow
+    // i64-plane division keeps the f64-trunc semantics until step 4.
+    expect(parity("7 / 2")).toBe("3");
+    expect(parity("-7 / 2")).toBe("-3");
+  });
+
   test("builtin shadowing: a user binding keeps the builtin unreferenced", () => {
     // A `let` shadowing a builtin name must resolve to the user binding,
     // not reach the builtin's closure.

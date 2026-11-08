@@ -109,7 +109,7 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     body: res => expect(res.stdout).toBe("42\n"),
   }],
   "widths.ef": [{
-    label: "f32 precision, @as conversions and division parity",
+    label: "f32 precision, @as conversions, division and wraparound parity",
     body: res => {
       const lines = res.stdout.split("\n");
       // f32 rounding: 0.1f32 + 0.2f32 != 0.1f64 + 0.2f64.
@@ -120,6 +120,15 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
       expect(lines[7]).toBe("true");
       expect(lines[9]).toBe("-3");
       expect(lines[10]).toBe("-1");
+      // i32/u32 wraparound (step 3): native mod-2^32 ops in both backends.
+      expect(lines[16]).toBe("-2147483648"); // INT_MAX + 1
+      expect(lines[17]).toBe("2147483647"); // INT_MIN - 1
+      expect(lines[18]).toBe("-2"); // INT_MAX * 2
+      expect(lines[19]).toBe("0"); // u32 4294967295 + 1 wraps to 0
+      expect(lines[20]).toBe("4294967295"); // u32 0 - 1 wraps to 2^32 - 1
+      // Signed vs unsigned ordering of the same bits.
+      expect(lines[22]).toBe("true");
+      expect(lines[23]).toBe("true");
     },
   }],
   "approx_pi.ef": [{

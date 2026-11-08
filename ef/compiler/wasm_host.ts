@@ -15,12 +15,16 @@ type Accessors = {
   tag: (v: unknown) => number,
   num: (v: unknown) => number,
   f32: (v: unknown) => number,
+  i32: (v: unknown) => number,
+  u32: (v: unknown) => number,
   strLen: (v: unknown) => number,
   strGet: (v: unknown, i: number) => number,
   arrLen: (v: unknown) => number,
   arrGet: (v: unknown, i: number) => unknown,
   mkNum: (x: number) => unknown,
   mkF32: (x: number) => unknown,
+  mkI32: (x: number) => unknown,
+  mkU32: (x: number) => unknown,
   mkBool: (b: number) => unknown,
   strNew: (n: number) => unknown,
   strSet: (v: unknown, i: number, u: number) => void,
@@ -33,12 +37,16 @@ const accessorsOf = (inst: WebAssembly.Instance): Accessors => {
     __tag(v: unknown): number,
     __num(v: unknown): number,
     __f32(v: unknown): number,
+    __i32(v: unknown): number,
+    __u32(v: unknown): number,
     __str_len(v: unknown): number,
     __str_get(v: unknown, i: number): number,
     __arr_len(v: unknown): number,
     __arr_get(v: unknown, i: number): unknown,
     __mk_num(x: number): unknown,
     __mk_f32(x: number): unknown,
+    __mk_i32(x: number): unknown,
+    __mk_u32(x: number): unknown,
     __mk_bool(b: number): unknown,
     __str_new(n: number): unknown,
     __str_set(v: unknown, i: number, u: number): void,
@@ -49,12 +57,17 @@ const accessorsOf = (inst: WebAssembly.Instance): Accessors => {
     tag: (v) => ex.__tag(v),
     num: (v) => ex.__num(v),
     f32: (v) => ex.__f32(v),
+    // JS i32 returns are already sign-extended; u32 masks the raw bits.
+    i32: (v) => ex.__i32(v),
+    u32: (v) => ex.__u32(v) >>> 0,
     strLen: (v) => ex.__str_len(v),
     strGet: (v, i) => ex.__str_get(v, i),
     arrLen: (v) => ex.__arr_len(v),
     arrGet: (v, i) => ex.__arr_get(v, i),
     mkNum: (x) => ex.__mk_num(x),
     mkF32: (x) => ex.__mk_f32(x),
+    mkI32: (x) => ex.__mk_i32(x),
+    mkU32: (x) => ex.__mk_u32(x),
     mkBool: (b) => ex.__mk_bool(b),
     strNew: (n) => ex.__str_new(n),
     strSet: (v, i, u) => ex.__str_set(v, i, u),
@@ -108,7 +121,9 @@ function hostUnbox(ex: Accessors, v: unknown): Value {
     }
     case 5: return {tag: "fn"} as Value; // closures display as [fn]
     case 10: return ex.f32(v); // $F32 box (typed-widths step 2)
-    // Tags 6..9 ($I32/$U32/$I64/$U64) first appear in steps 3-4.
+    case 6: return ex.i32(v); // $I32 box (typed-widths step 3)
+    case 7: return ex.u32(v); // $U32 box (masked; step 3)
+    // Tags 8..9 ($I64/$U64) first appear in step 4.
   }
   throw new Error(`wasm host: unknown anyref tag ${ex.tag(v)}`);
 }
@@ -153,6 +168,11 @@ export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[]
     ef_fail: (code: number, name: unknown, a: number, b: number) => {
       if (code === 0) throw new Error("head of empty array");
       if (code === 1) throw new Error(`get: index ${a} out of bounds [0, ${b})`);
+      // Typed-widths step 3: the i32/u32 division guards (emitFail at the
+      // / and % sites) reuse this channel; codes 3/4 carry the interpreter's
+      // exact trap messages (eval.ts widthOp) for parity.
+      if (code === 3) throw new Error("integer divide by zero");
+      if (code === 4) throw new Error("integer overflow");
       throw new Error(`.${hostStr(ex(), name)}: index ${a} out of bounds [0, ${b})`);
     },
   };

@@ -215,7 +215,7 @@ function evalEInner(id: ExprID, nodes: Expr[], env: Env, k: Cont): Outcome {
         const op = fn.v;
         const nk = e.numKind;
         if (op === "/" || op === "%") {
-          const wnk = nk ?? (op === "/" && e.div === "int" ? "i64" : "f64");
+          const wnk = nk ?? e.div ?? "f64";
           return evalArgs(e.args, nodes, env, [], (args) => k(widthOp(op, args[0], args[1], wnk)));
         }
         if (nk !== undefined && NUM_OPS.has(op))

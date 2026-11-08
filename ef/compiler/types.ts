@@ -677,6 +677,15 @@ function inferNode(
         : infer(e.val, nodes, env, effs, effects);
       env.uni.unify(declared, vt);
       const rt = env.uni.res(declared);
+      // Pin a wildcard-typed value literal to the binding's concrete width:
+      // `let x: i32 = 2147483647` boxes the literal as $I32 (wrapping at its
+      // own node, matching the interpreter's per-node normalization).
+      const rw = widthOf(rt);
+      if (rw !== null && rw.concrete && nodes[e.val].t === "num") {
+        const vt2 = env.uni.res(env.uni.nodeTypes.get(e.val) ?? TNULL);
+        if (vt2.tag === "prim" && (vt2.name === "int" || vt2.name === "float"))
+          env.uni.nodeTypes.set(e.val, rt);
+      }
       // The lambda's stamped type is final: its parameter variables have been
       // bound (or not), so deep-resolve it — display never needs the unifier.
       const lam = nodes[e.val];
@@ -866,24 +875,37 @@ function inferNode(
         // be bool for comparisons) — the evaluator's widthOp coerces both
         // operands to this representation before operating.
         const wo = widthOf(env.uni.res(widened));
-        if (wo !== null) e.numKind = wo.w;
+        if (wo !== null) {
+          e.numKind = wo.w;
+          // Pin wildcard-typed operands (untyped literals, non-generalized
+          // bindings) to the compute width: their recorded types flexed into
+          // this op, so their runtime representation is the op's width (the
+          // wasm backend boxes them as statics of this shape; a literal
+          // wider than the op width wraps here exactly like at the op).
+          pinWildcard(env.uni, e.args[0], at, widened);
+          pinWildcard(env.uni, e.args[1], bt, widened);
+        }
         if (CMPOPS.has(fn.v)) return TBOOL;
         // `/` is type-preserving: int/int -> int (truncated at runtime),
-        // float/float -> float, and any-operand -> float (don't truncate
-        // unknowns). The checker stamps which division this is on the node so
-        // the evaluator (which sees untyped JS numbers) knows whether to truncate.
+        // float/float -> float. The checker stamps the division's WIDTH on
+        // the node so the evaluator/emitters pick truncation and the
+        // signed/unsigned op variants (typed-widths step 3).
         if (fn.v === "/") {
-          // Division mode from the (strict) operand type: an untyped-literal
-          // or int-width result divides as integers, everything else as float.
-          const rw = env.uni.res(widened);
-          e.div = rw.tag === "prim" && (INT_NAMES.has(rw.name as NumName) || rw.name === "int") ? "int" : "float";
+          const rw = widthOf(env.uni.res(widened));
+          e.div = rw !== null ? rw.w : "f64";
           return widened;
         }
         return widened;
       }
       if (fn.t === "sym" && fn.v === "neg") {
         const at = infer(e.args[0], nodes, env, effs, effects);
-        return numeric(env.uni, at, at, "neg");
+        const widened = numeric(env.uni, at, at, "neg");
+        const wo = widthOf(env.uni.res(widened));
+        if (wo !== null) {
+          e.numKind = wo.w;
+          pinWildcard(env.uni, e.args[0], at, widened);
+        }
+        return widened;
       }
       // Equality: both operands must share a type (untyped literals flex,
       // concrete widths are strict — `i32 == i64` is an error). Cross-type
@@ -983,6 +1005,18 @@ function widthOf(t: Type): {w: NumName, concrete: boolean} | null {
   if (n === "int") return {w: "i64", concrete: false};
   if (n === "float") return {w: "f64", concrete: false};
   return null;
+}
+
+// Pin a wildcard-typed operand node's recorded type to the op's compute
+// width: the operand's type only reached this width by flexing, so its
+// runtime representation is the op's width (the wasm backend boxes pinned
+// literals as statics of this shape; the interpreter normalizes at the
+// node). Concrete-typed operands keep their own stamps.
+function pinWildcard(u: Unifier, argId: ExprID, at: Type, widened: Type): void {
+  const rt = u.res(at);
+  if (rt.tag !== "prim" || (rt.name !== "int" && rt.name !== "float")) return;
+  const w = widthOf(u.res(widened));
+  if (w !== null) u.nodeTypes.set(argId, u.res(widened));
 }
 
 // Width stamps: after all items are checked, stamp every node whose type

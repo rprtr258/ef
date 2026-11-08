@@ -79,6 +79,8 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.localSet(a);
           f.slot(1);
           b.localSet(bv);
+          // $F32 arm, then $I32/$U32 arms (same bit ops, unsigned compares);
+          // anything else falls to the f64 plane below.
           b.localGet(a);
           b.refTest(11, false);
           b.localGet(bv);
@@ -118,6 +120,82 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
             selectBool(em, f, () => {});
           } else {
             b.structNew(11);
+          }
+          b.u8(w.ELSE);
+          b.localGet(a);
+          b.refTest(7, false);
+          b.localGet(bv);
+          b.refTest(7, false);
+          b.u8(w.AND);
+          b.u8(w.IF);
+          b.u8(0x6e);
+          const ix32 = f.i32(), iy32 = f.i32();
+          b.localGet(a);
+          b.refCast(7, false);
+          b.structGet(7, 0);
+          b.localSet(ix32);
+          b.localGet(bv);
+          b.refCast(7, false);
+          b.structGet(7, 0);
+          b.localSet(iy32);
+          if (name === "%") {
+            const it = f.i32();
+            b.localGet(ix32);
+            b.localGet(iy32);
+            b.u8(w.REMS);
+            b.localSet(it);
+            b.localGet(ix32);
+            b.localGet(iy32);
+            b.localGet(it);
+            b.u8(w.MUL);
+            b.u8(w.SUB);
+          } else {
+            b.localGet(ix32);
+            b.localGet(iy32);
+            b.u8(name === "-" ? w.SUB : name === "*" ? w.MUL : name === "<" ? w.LTS : name === ">" ? w.GTS : name === "<=" ? w.LES : w.GES);
+          }
+          if (name === "<" || name === ">" || name === "<=" || name === ">=") {
+            selectBool(em, f, () => {});
+          } else {
+            b.structNew(7);
+          }
+          b.u8(w.ELSE);
+          b.localGet(a);
+          b.refTest(8, false);
+          b.localGet(bv);
+          b.refTest(8, false);
+          b.u8(w.AND);
+          b.u8(w.IF);
+          b.u8(0x6e);
+          const ux32 = f.i32(), uy32 = f.i32();
+          b.localGet(a);
+          b.refCast(8, false);
+          b.structGet(8, 0);
+          b.localSet(ux32);
+          b.localGet(bv);
+          b.refCast(8, false);
+          b.structGet(8, 0);
+          b.localSet(uy32);
+          if (name === "%") {
+            const ut = f.i32();
+            b.localGet(ux32);
+            b.localGet(uy32);
+            b.u8(w.REMU);
+            b.localSet(ut);
+            b.localGet(ux32);
+            b.localGet(uy32);
+            b.localGet(ut);
+            b.u8(w.MUL);
+            b.u8(w.SUB);
+          } else {
+            b.localGet(ux32);
+            b.localGet(uy32);
+            b.u8(name === "-" ? w.SUB : name === "*" ? w.MUL : name === "<" ? w.LTU : name === ">" ? w.GTU : name === "<=" ? w.LEU : w.GEU);
+          }
+          if (name === "<" || name === ">" || name === "<=" || name === ">=") {
+            selectBool(em, f, () => {});
+          } else {
+            b.structNew(8);
           }
           b.u8(w.ELSE);
         }
@@ -160,7 +238,11 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           }
           box();
         }
-        if (f32op) b.u8(w.END);
+        if (f32op) {
+          b.u8(w.END);
+          b.u8(w.END);
+          b.u8(w.END);
+        }
         break;
       }
       case "==": {
@@ -1041,6 +1123,27 @@ export function emitInits(em: Emit): void {
     b.localGet(0);
     b.refCast(11, false);
     b.structGet(11, 0);
+  });
+  // __mk_i32/__mk_u32(x: i32) -> anyref (typed-widths step 3)
+  acc(1, w.T_MKI32, (b) => {
+    b.localGet(0);
+    b.structNew(7);
+  });
+  acc(1, w.T_MKI32, (b) => {
+    b.localGet(0);
+    b.structNew(8);
+  });
+  // __i32/__u32(v) -> i32: the box payload raw (two's complement bits; the
+  // HOST masks __u32 with >>> 0)
+  acc(1, w.T_GETI32, (b) => {
+    b.localGet(0);
+    b.refCast(7, false);
+    b.structGet(7, 0);
+  });
+  acc(1, w.T_GETI32, (b) => {
+    b.localGet(0);
+    b.refCast(8, false);
+    b.structGet(8, 0);
   });
   // __mk_bool(b) -> anyref
   acc(1, 12, (b) => {

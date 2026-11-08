@@ -5,8 +5,9 @@ import {_T, WasmError} from "./wasm_types.ts";
 
 // i32 arithmetic/comparison
 export const ADD = 0x6a, SUB = 0x6b, MUL = 0x6c;
+export const DIVS = 0x6d, DIVU = 0x6e, REMS = 0x6f, REMU = 0x70;
 export const EQZ = 0x45, EQ = 0x46, LTS = 0x48, LTU = 0x49, OR = 0x72, AND = 0x71;
-export const GTU = 0x4b, LEU = 0x4d, GEU = 0x4f, DIVU = 0x6e;
+export const GTS = 0x4a, GTU = 0x4b, LES = 0x4c, LEU = 0x4d, GES = 0x4e, GEU = 0x4f;
 // f64 arithmetic/comparison
 export const FABS = 0x99, FNEG = 0x9a, FCEIL = 0x9b, FFLOOR = 0x9c, FTRUNC = 0x9d, FSQRT = 0x9f;
 export const FADD = 0xa0, FSUB = 0xa1, FMUL = 0xa2, FDIV = 0xa3;
@@ -15,7 +16,9 @@ export const FLT = 0x63, FGT = 0x64, FLE = 0x65, FGE = 0x66, FEQ = 0x61;
 export const F32_ABS = 0x8b, F32_NEG = 0x8c, F32_TRUNC = 0x8f, F32_SQRT = 0x91;
 export const F32_ADD = 0x92, F32_SUB = 0x93, F32_MUL = 0x94, F32_DIV = 0x95;
 export const F32_EQ = 0x5b, F32_NE = 0x5c, F32_LT = 0x5d, F32_GT = 0x5e, F32_LE = 0x5f, F32_GE = 0x60;
-export const TRUNC_F64 = 0xaa, CONV_I32 = 0xb7; // i32.trunc_f64_s, f64.convert_i32_s
+export const TRUNC_F64 = 0xaa, TRUNC_F64_U = 0xab, CONV_I32 = 0xb7, CONV_I32_U = 0xb8; // i32.trunc_f64_s/u, f64.convert_i32_s/u
+export const CONV_F32_I32 = 0xb2, CONV_F32_U32 = 0xb3; // f32.convert_i32_s/u
+export const I64_TRUNC_F64 = 0xb0, I32_WRAP_I64 = 0xa7; // i64.trunc_f64_s, i32.wrap_i64 — the $F64-plane -> i32 adaptive unbox
 export const F32_DEMOTE = 0xb6, F64_PROMOTE = 0xbb; // f32.demote_f64, f64.promote_f32 —
 // the explicit f64 <-> f32 conversions (@as and the operand-width adaptation
 // in $numf64/$f32of); no implicit per-node round-trip exists anymore.
@@ -64,7 +67,7 @@ export const K_RET = 0, K_HDL = 1, K_SPILL = 2;
 // typed-widths plan: __mk_f32, __f32/fF32of).
 export const T_RUN = 7, T_PERFORM = 9, T_FAIL = 10, T_STRNUM = 11,
   T_BOX = 13, T_TRUTHY = 14, T_EQ = 15, T_CAPTURE = 16, T_KABI = 17,
-  T_III_I = 18, T_MKF32 = 24, T_F32 = 25;
+  T_III_I = 18, T_MKF32 = 24, T_F32 = 25, T_MKI32 = 26, T_GETI32 = 27;
 
 export function impType(n: string): number {
   if (n === "ef_perform") return T_PERFORM;

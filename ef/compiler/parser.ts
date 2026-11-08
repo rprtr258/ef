@@ -1,5 +1,5 @@
 import {
-  type FunT, type Type, type EffectSig, type Var, type TupField,
+  type FunT, type Type, type EffectSig, type Var, type TupField, type NumName,
   TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TNULL, TANY,
   tArr, tTup, tFun,
 } from "./types.ts";
@@ -78,7 +78,7 @@ export type Expr =
   | { t: "block", stmts: ExprID[], pos?: Pos }
   | { t: "perform", op: string, args: ExprID[], pos?: Pos }
   | { t: "handle", body: ExprID, cases: HandlerCase[], pos?: Pos }
-  | { t: "app", fn: ExprID, args: ExprID[], div?: "int" | "float", numKind?: string, pos?: Pos }
+  | { t: "app", fn: ExprID, args: ExprID[], div?: NumName, numKind?: string, pos?: Pos }
   | { t: "as", e: ExprID, typ: Type, asKind?: "trunc" | "boolnum", pos?: Pos } // `@as(expr, T)` numeric cast; asKind stamped by the checker.
   | { t: "arr", elems: ExprID[], pos?: Pos } // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous.
   | { t: "field", obj: ExprID, name: string, idx?: number, pos?: Pos } // `obj.x` / `obj.0` field access; `idx` is resolved by the checker.

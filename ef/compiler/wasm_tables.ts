@@ -56,6 +56,8 @@ export const SIGS: Record<number, {p: (number | number[])[], r: number | number[
   [23]: {p: [w.ANYREF, 0x7f, w.ANYREF], r: null},     // __arr_set
   [w.T_MKF32]: {p: [0x7d], r: w.ANYREF},              // __mk_f32 (step 2)
   [w.T_F32]: {p: [w.ANYREF], r: 0x7d},                // __f32/fF32of (step 2)
+  [w.T_MKI32]: {p: [0x7f], r: w.ANYREF},              // __mk_i32/__mk_u32 (step 3)
+  [w.T_GETI32]: {p: [w.ANYREF], r: 0x7f},             // __i32/__u32/fI32of/fU32of (step 3)
 };
 
 // Valtype byte (or [0x63, idx] pair) → binaryen Type. 0x40 → none (void).
