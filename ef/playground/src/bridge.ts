@@ -3,8 +3,7 @@
 //
 // The compiler's frontend is plain TypeScript, so it runs in the browser as-is;
 // the only node-flavored corners are stubbed (`src/shim.ts` + bundle-time
-// stubs) and preempted by the browser effect interpreter. `buildWasm` imports
-// the wasm backend dynamically so binaryen stays an isolated lazy chunk.
+// stubs) and preempted by the browser effect interpreter.
 
 import "./shim.ts";
 import {Parser, type Program, type Expr} from "../../compiler/parser.ts";
@@ -14,6 +13,7 @@ import {exec, newCtx, type EffectInterp} from "../../compiler/eval.ts";
 import {num, show, type Cont, type Outcome, type Value} from "../../compiler/env.ts";
 import {KEYWORDS, lex} from "../../compiler/lexer.ts";
 import {collectEffectOps} from "../../compiler/analysis.ts";
+import {compileWithOps} from "../../compiler/wasm.ts";
 
 // --- effect interpretation ------------------------------------------------
 
@@ -99,12 +99,10 @@ export function interpret(src: string, out: (s: string) => void): RunResult {
   return {value: r.value, type: r.lastType, ops: collectEffectOps(prog)};
 }
 
-// Wasm backend emit (parse → check → CPS codegen → binaryen shrink). Dynamic
-// import so the binaryen chunk loads only when a build is requested. Reported
+// Wasm backend emit (parse → check → CPS codegen → binaryen shrink). Reported
 // ops are the performed/handled set — the same typecheck byproduct `run`
 // shows — not the wasm op table (which pre-seeds every builtin op).
 export async function buildWasm(src: string): Promise<{bytes: Uint8Array, ops: string[]}> {
-  const {compileWithOps} = await import("../../compiler/wasm.ts");
   const {bytes} = compileWithOps(src);
   return {bytes, ops: collectEffectOps(parse(src))};
 }
