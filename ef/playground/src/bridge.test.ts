@@ -12,6 +12,8 @@ describe("bridge", () => {
     });
     expect(buf).toBe("[1, 2]\nraw");
     expect(r.value).toBe(3);
+    // ops are a typecheck byproduct, reported without a build
+    expect(r.ops).toEqual(["Println", "Out"]);
   });
 
   test("custom effects are interpreted by handlers, not the host", () => {
@@ -45,10 +47,10 @@ describe("bridge", () => {
     expect(p[0]?.line).toBe(1);
   });
 
-  test("wasm backend emits bytes and reports performed ops", async () => {
+  test("wasm backend emits bytes and reports performed ops (typecheck byproduct)", async () => {
     const {bytes, ops} = await buildWasm("Println!(1 + 2)");
     expect(bytes.length).toBeGreaterThan(0);
-    expect(ops).toContain("Println");
+    expect(ops).toEqual(["Println"]);
   });
 
   test("outline, entry detection and project concat", () => {

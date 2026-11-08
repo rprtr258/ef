@@ -9,7 +9,8 @@
 //
 // Run interprets the project with the CPS evaluator and streams
 // Out!/Println! into the output pane; Build emits a WasmGC main.wasm
-// (downloadable) and reports performed ops.
+// (downloadable). Performed ops — a typecheck byproduct, not a wasm artifact —
+// are reported by both run and build.
 //
 // Shell: "Instrument" — explorer tree | editor + tabbed output | insight rail
 // (BUILD / OUTLINE cards), Ctrl+K command palette, light/dark themes
@@ -122,7 +123,8 @@ type State = {
   project: Project,
   active: string,
   tab: Tab,
-  wasm: {bytes: Uint8Array, ops: string[]} | null,
+  wasm: {bytes: Uint8Array} | null,
+  ops: string[] | null, // performed/handled ops of the last successful run or build
   runs: number,
   lastAction: {kind: "run" | "build", ms: number} | null,
 };
@@ -174,6 +176,7 @@ const state: State = {
   active: bootProject.files[bootProject.files.length - 1].name,
   tab: "output",
   wasm: null,
+  ops: null,
   runs: 0,
   lastAction: null,
 };
@@ -494,7 +497,7 @@ function renderBuildCard(): void {
   els.runCount.textContent = `run ${state.runs}`;
   els.statTime.textContent = state.lastAction === null ? "—" : fmtMs(state.lastAction.ms);
   els.statSize.textContent = state.wasm === null ? "—" : fmtBytes(state.wasm.bytes.length);
-  els.statOps.textContent = state.wasm === null || state.wasm.ops.length === 0 ? "—" : state.wasm.ops.join(", ");
+  els.statOps.textContent = state.ops === null || state.ops.length === 0 ? "—" : state.ops.join(", ");
 }
 
 function renderOutlineCard(): void {
@@ -634,6 +637,7 @@ function run(): void {
     stagesDone(ms);
     els.buildStatus.textContent = `ran in ${fmtMs(ms)} · ${showT(r.type)}`;
     state.lastAction = {kind: "run", ms};
+    state.ops = r.ops;
     state.runs += 1;
     renderBuildCard();
     renderStatusbar();
@@ -668,7 +672,8 @@ async function build(): Promise<void> {
   try {
     const {bytes, ops} = await buildWasm(src);
     const ms = performance.now() - t0;
-    state.wasm = {bytes, ops};
+    state.wasm = {bytes};
+    state.ops = ops;
     stagesDone(ms);
     outLine(`main.wasm · ${fmtBytes(bytes.length)} · ops: ${ops.length === 0 ? "none" : ops.join(", ")}`);
     outLine(`⇒ download from the build/ tree or the palette`, "dim");
@@ -765,6 +770,7 @@ function commands(): Cmd[] {
         if (name === "") return;
         state.project = {name, files: [{name: "main.ef", code: `# ${name}\n\n1 + 1\n`}]};
         state.wasm = null;
+        state.ops = null;
         state.lastAction = null;
         state.runs = 0;
         openFile("main.ef");

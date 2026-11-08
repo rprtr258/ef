@@ -13,6 +13,7 @@ import {lint} from "../../compiler/lint.ts";
 import {exec, newCtx, type EffectInterp} from "../../compiler/eval.ts";
 import {num, show, type Cont, type Outcome, type Value} from "../../compiler/env.ts";
 import {KEYWORDS, lex} from "../../compiler/lexer.ts";
+import {collectEffectOps} from "../../compiler/analysis.ts";
 
 // --- effect interpretation ------------------------------------------------
 
@@ -86,21 +87,26 @@ export function problems(src: string): Problem[] {
   }));
 }
 
-export type RunResult = {value: Value, type: Type};
+export type RunResult = {value: Value, type: Type, ops: string[]};
 
 // Check + evaluate the whole program with the browser interp. Throws on parse
 // or type errors; ExitSignal unwinds `Exit!`; other runtime errors propagate.
+// `ops` is a parse-time byproduct: performed/handled ops in first-appearance
+// order — the same list a build reports.
 export function interpret(src: string, out: (s: string) => void): RunResult {
   const prog = parse(src);
   const r = exec(prog, newCtx(browserInterp(out)));
-  return {value: r.value, type: r.lastType};
+  return {value: r.value, type: r.lastType, ops: collectEffectOps(prog)};
 }
 
 // Wasm backend emit (parse → check → CPS codegen → binaryen shrink). Dynamic
-// import so the binaryen chunk loads only when a build is requested.
+// import so the binaryen chunk loads only when a build is requested. Reported
+// ops are the performed/handled set — the same typecheck byproduct `run`
+// shows — not the wasm op table (which pre-seeds every builtin op).
 export async function buildWasm(src: string): Promise<{bytes: Uint8Array, ops: string[]}> {
   const {compileWithOps} = await import("../../compiler/wasm.ts");
-  return compileWithOps(src);
+  const {bytes} = compileWithOps(src);
+  return {bytes, ops: collectEffectOps(parse(src))};
 }
 
 // --- structure ------------------------------------------------------------
