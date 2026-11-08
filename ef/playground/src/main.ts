@@ -124,9 +124,10 @@ type State = {
   active: string,
   tab: Tab,
   wasm: {bytes: Uint8Array} | null,
-  ops: string[] | null, // performed/handled ops of the last successful run or build
-  runs: number,
-  lastAction: {kind: "run" | "build", ms: number} | null,
+  buildMs: number | null, // last successful build's time (BUILD stats)
+  runMs: number | null, // last successful run's time (RUN stats)
+  runOps: string[] | null, // performed/handled ops of the last successful run
+  lastKind: "run" | "build" | null, // last successful action, drives the statusbar
 };
 
 const els = {
@@ -149,9 +150,9 @@ const els = {
   buildStatus: $("#build-status"),
   clearBtn: $("#clear-btn"),
   out: $("#out"),
-  runCount: $("#run-count"),
-  statTime: $("#stat-time"),
+  statBuildTime: $("#stat-build-time"),
   statSize: $("#stat-size"),
+  statRunTime: $("#stat-run-time"),
   statOps: $("#stat-ops"),
   stages: $("#stages"),
   rail: $("#rail"),
@@ -176,9 +177,10 @@ const state: State = {
   active: bootProject.files[bootProject.files.length - 1].name,
   tab: "output",
   wasm: null,
-  ops: null,
-  runs: 0,
-  lastAction: null,
+  buildMs: null,
+  runMs: null,
+  runOps: null,
+  lastKind: null,
 };
 
 function loadProject(): Project {
@@ -494,10 +496,10 @@ function fmtBytes(n: number): string {
 // --- rail cards -------------------------------------------------------------
 
 function renderBuildCard(): void {
-  els.runCount.textContent = `run ${state.runs}`;
-  els.statTime.textContent = state.lastAction === null ? "—" : fmtMs(state.lastAction.ms);
+  els.statBuildTime.textContent = state.buildMs === null ? "—" : fmtMs(state.buildMs);
   els.statSize.textContent = state.wasm === null ? "—" : fmtBytes(state.wasm.bytes.length);
-  els.statOps.textContent = state.ops === null || state.ops.length === 0 ? "—" : state.ops.join(", ");
+  els.statRunTime.textContent = state.runMs === null ? "—" : fmtMs(state.runMs);
+  els.statOps.textContent = state.runOps === null || state.runOps.length === 0 ? "—" : state.runOps.join(", ");
 }
 
 function renderOutlineCard(): void {
@@ -636,9 +638,9 @@ function run(): void {
     outLine(`⇒ ${show(r.value)} · ${showT(r.type)}`, "result");
     stagesDone(ms);
     els.buildStatus.textContent = `ran in ${fmtMs(ms)} · ${showT(r.type)}`;
-    state.lastAction = {kind: "run", ms};
-    state.ops = r.ops;
-    state.runs += 1;
+    state.runMs = ms;
+    state.runOps = r.ops;
+    state.lastKind = "run";
     renderBuildCard();
     renderStatusbar();
   } catch (e) {
@@ -673,13 +675,12 @@ async function build(): Promise<void> {
     const {bytes, ops} = await buildWasm(src);
     const ms = performance.now() - t0;
     state.wasm = {bytes};
-    state.ops = ops;
     stagesDone(ms);
     outLine(`main.wasm · ${fmtBytes(bytes.length)} · ops: ${ops.length === 0 ? "none" : ops.join(", ")}`);
     outLine(`⇒ download from the build/ tree or the palette`, "dim");
     els.buildStatus.textContent = `built in ${fmtMs(ms)}`;
-    state.lastAction = {kind: "build", ms};
-    state.runs += 1;
+    state.buildMs = ms;
+    state.lastKind = "build";
     renderBuildCard();
     renderTree();
   } catch (e) {
@@ -770,9 +771,10 @@ function commands(): Cmd[] {
         if (name === "") return;
         state.project = {name, files: [{name: "main.ef", code: `# ${name}\n\n1 + 1\n`}]};
         state.wasm = null;
-        state.ops = null;
-        state.lastAction = null;
-        state.runs = 0;
+        state.buildMs = null;
+        state.runMs = null;
+        state.runOps = null;
+        state.lastKind = null;
         openFile("main.ef");
       }})},
     {label: "Download main.wasm", hint: state.wasm === null ? "build first" : `${fmtBytes(state.wasm.bytes.length)}`, run: () => downloadWasm()},
@@ -829,7 +831,8 @@ function closePalette(): void {
 function renderStatusbar(): void {
   els.statusLeft.textContent = `${state.project.name} · ${state.project.files.length} file${state.project.files.length === 1 ? "" : "s"}`;
   const bits = [];
-  if (state.lastAction !== null) bits.push(`${state.lastAction.kind} ${fmtMs(state.lastAction.ms)}`);
+  if (state.lastKind === "run" && state.runMs !== null) bits.push(`run ${fmtMs(state.runMs)}`);
+  else if (state.lastKind === "build" && state.buildMs !== null) bits.push(`build ${fmtMs(state.buildMs)}`);
   if (state.wasm !== null) bits.push(`wasm ${fmtBytes(state.wasm.bytes.length)}`);
   bits.push(theme);
   els.statusRight.textContent = bits.join(" · ");

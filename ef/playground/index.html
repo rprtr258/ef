@@ -54,12 +54,14 @@
 
       <aside id="rail" class="pane">
         <div id="build-card" class="card">
-          <div class="card-title">Build <span id="run-count"></span></div>
-          <div class="rail-row"><span>time</span><span class="mono" id="stat-time">—</span></div>
-          <div class="rail-row"><span>wasm size</span><span class="mono" id="stat-size">—</span></div>
-          <div class="rail-row"><span>ops</span><span class="mono" id="stat-ops">—</span></div>
-          <div class="card-sub">Pipeline</div>
+          <div class="card-title">Pipeline</div>
           <div id="stages"></div>
+          <div class="card-sub">Build</div>
+          <div class="rail-row"><span>time</span><span class="mono" id="stat-build-time">—</span></div>
+          <div class="rail-row"><span>wasm size</span><span class="mono" id="stat-size">—</span></div>
+          <div class="card-sub">Run</div>
+          <div class="rail-row"><span>time</span><span class="mono" id="stat-run-time">—</span></div>
+          <div class="rail-row"><span>ops</span><span class="mono" id="stat-ops">—</span></div>
         </div>
         <div id="outline-card" class="card">
           <div class="card-title">Outline</div>
