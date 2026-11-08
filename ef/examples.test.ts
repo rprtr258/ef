@@ -124,6 +124,10 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     label: "a let inside a block is local to that block",
     body: res => expect(res.stdout).toBe("5\nunit\n"),
   }],
+  "man_or_boy.ef": [{
+    label: "Knuth's man-or-boy test: mutable capture across recursive closures",
+    body: res => expect(res.stdout).toBe("-67\n"),
+  }],
   "newton.ef": [{
     label: "iterative numeric effect loop",
     body: res => expect(res.stdout).toMatch(/^1\.4142\d*\nunit\n$/),

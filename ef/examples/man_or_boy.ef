@@ -1,0 +1,31 @@
+# The man-or-boy test (Knuth, 1964): a stress test of nested closures with
+# mutable capture and deep mutual recursion. `b` closes over `a`'s parameter
+# `k` and decrements it on every call, so each recursive call shares state
+# with the closures passed into it. With n=10 the answer is -67.
+
+let a = fn(
+  k: int,
+  x1: () -> int,
+  x2: () -> int,
+  x3: () -> int,
+  x4: () -> int,
+  x5: () -> int
+): int {
+  let b = fn(): int {
+    k = k - 1;
+    a(k, b, x1, x2, x3, x4)
+  };
+  if (k > 0) {
+    b()
+  } else {
+    x4() + x5()
+  }
+};
+
+let x = fn(n: int): () -> int {
+  fn(): int {
+    n
+  }
+};
+
+a(10, x(1), x(-1), x(-1), x(1), x(0))
