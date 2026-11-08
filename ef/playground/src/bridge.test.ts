@@ -57,7 +57,7 @@ describe("bridge", () => {
 
   test("outline, entry detection and project concat", () => {
     const src = [
-      "effect Tick(): int;",
+      "effect Tick(v: int): int;",
       "type Pair = [int, int];",
       "let f = fn(x: int): int ! { Tick } { Tick!(x) };",
       "f(1)",
@@ -70,6 +70,12 @@ describe("bridge", () => {
     expect(ol[1]?.line).toBe(2);
     expect(ol[2]?.line).toBe(3);
     expect(ol[2]?.effs).toBe("{ Tick }");
+    // types: checker-resolved for bindings, written sig for effects, alias body
+    expect(ol[0]?.typ).toBe("(int) -> int");
+    expect(ol[1]?.typ).toBe("[int, int]");
+    expect(ol[2]?.typ).toBe("(int) -> int ! { Tick }");
+    // a type error elsewhere leaves typs null — the outline still lists names
+    expect(outline("let x = 1;\nx(2)").map((o) => o.typ)).toEqual([null]);
     expect(isEntryFile(src)).toBe(true);
     expect(isEntryFile("let x = 1;")).toBe(false);
     expect(entryFile(["let a = 1;", "2 + 2"])).toBe(1);

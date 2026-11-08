@@ -525,8 +525,15 @@ function renderOutlineCard(): void {
     k.textContent = {fn: "f", let: "l", effect: "e", type: "t"}[it.kind];
     const n = document.createElement("span");
     n.className = "name";
-    n.textContent = it.name + (it.effs === null ? "" : ` ${it.effs}`);
+    // with a resolved type, the effect row is part of it — no separate effs
+    n.textContent = it.name + (it.typ !== null || it.effs === null ? "" : ` ${it.effs}`);
     r.append(k, n);
+    if (it.typ !== null) {
+      const ty = document.createElement("span");
+      ty.className = "mono ty";
+      ty.textContent = it.typ;
+      r.appendChild(ty);
+    }
     if (it.line !== null) {
       r.title = `line ${it.line}`;
       r.addEventListener("click", () => {

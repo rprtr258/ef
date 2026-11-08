@@ -6,8 +6,8 @@
 // stubs) and preempted by the browser effect interpreters.
 
 import "./shim.ts";
-import {Parser, type Program, type Expr} from "../../compiler/parser.ts";
-import {checkProgram, type Type, type Effs} from "../../compiler/types.ts";
+import {Parser, type Program, type Expr, type Alias} from "../../compiler/parser.ts";
+import {checkProgram, showT, type Type, type Effs, type EffectSig} from "../../compiler/types.ts";
 import {lint} from "../../compiler/lint.ts";
 import {exec, newCtx, type EffectInterp} from "../../compiler/eval.ts";
 import {num, show, type Cont, type Outcome, type Value} from "../../compiler/env.ts";
@@ -159,11 +159,43 @@ export type OutlineItem = {
   name: string,
   line: number | null,
   effs: string | null, // effect row of a let-bound fn, e.g. "{ Choose, Emit }"
+  typ: string | null, // display type; null when the checker fails (names still shown)
 };
 
 function effRow(effs: Effs): string | null {
   if (!(effs instanceof Set) || effs.size === 0) return null;
   return "{ " + [...effs].join(", ") + " }";
+}
+
+// Effect signature for display: "(int, string) -> int". checkProgram has
+// replaced unannotated params with fresh vars, so showT prints a letter.
+function sigT(sig: EffectSig): string {
+  return "(" + sig.params.map((t) => showT(t!)).join(", ") + ") -> " + showT(sig.ret);
+}
+
+// Alias body for display, with type parameters shown by their declared names
+// (showT's first-appearance lettering would lie for `type Swap(a, b) = [b, a]`).
+function aliasT(al: Alias): string {
+  const names = new Map<number, string>();
+  for (const [n, v] of al.tparams) names.set(v.id, n);
+  const go = (t: Type): string => {
+    switch (t.tag) {
+      case "prim": return t.name;
+      case "arr": return "[" + go(t.elem) + "]";
+      case "tup":
+        return "[" + t.fields.map((f) =>
+          f.name === null ? go(f.type) : f.name + ": " + go(f.type)).join(", ") + "]";
+      case "fun": {
+        const e = t.effs instanceof Set
+          ? (t.effs.size > 0 ? " ! { " + [...t.effs].join(", ") + " }" : "")
+          : ` ! { e${t.effs.id} }`;
+        return "(" + t.params.map(go).join(", ") + ") -> " + go(t.ret) + e;
+      }
+      case "var": return names.get(t.id) ?? "a";
+      case "any": return "any";
+    }
+  };
+  return go(al.body);
 }
 
 // Effect/type items carry no position in the parser's Item union; find their
@@ -180,6 +212,12 @@ function declLine(src: string, kw: "effect" | "type", name: string): number | nu
 export function outline(src: string): OutlineItem[] {
   const prog = parse(src);
   const items: OutlineItem[] = [];
+  // Types come from a checker run; a type error elsewhere in the file leaves
+  // typ null instead of blanking the outline (problems pane shows the errors).
+  let checked: ReturnType<typeof checkProgram> | null = null;
+  try {
+    checked = checkProgram(prog);
+  } catch { /* typ stays null */ }
   for (const it of prog.items) {
     if ("e" in it) {
       const e: Expr = prog.nodes[it.e];
@@ -194,12 +232,22 @@ export function outline(src: string): OutlineItem[] {
           effs: val.t === "lambda" ?
             (val.retEffs instanceof Set ? effRow(val.retEffs) :
               val.typ !== undefined ? effRow(val.typ.effs) : null) : null,
+          typ: checked !== null ? showT(checked.env.lookupResolved(e.name)) : null,
         });
       }
     } else if ("effect" in it) {
-      items.push({kind: "effect", name: it.effect, line: declLine(src, "effect", it.effect), effs: null});
+      const sig = checked?.effects.get(it.effect);
+      items.push({
+        kind: "effect", name: it.effect,
+        line: declLine(src, "effect", it.effect), effs: null,
+        typ: sig !== undefined ? sigT(sig) : null,
+      });
     } else {
-      items.push({kind: "type", name: it.alias.name, line: declLine(src, "type", it.alias.name), effs: null});
+      items.push({
+        kind: "type", name: it.alias.name,
+        line: declLine(src, "type", it.alias.name), effs: null,
+        typ: aliasT(it.alias), // parse-only, needs no checker
+      });
     }
   }
   return items;

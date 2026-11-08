@@ -16,6 +16,7 @@
   --result: #0f766e;
   --sel: #dbeafe;
   --green: #16a34a;
+  --type: #6d28d9;
 }
 
 [data-theme="dark"] {
@@ -33,6 +34,7 @@
   --result: #5eead4;
   --sel: #1e3a5f;
   --green: #22c55e;
+  --type: #c4b5fd;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -271,6 +273,12 @@ body {
 .outline-row .k.type { color: var(--ok); }
 .outline-row .k.let { color: var(--faint); }
 .outline-row .name { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11.5px; }
+.outline-row .ty {
+  color: var(--type);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* --- statusbar --------------------------------------------------------------- */
 
