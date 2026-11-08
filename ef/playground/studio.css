@@ -87,6 +87,12 @@ body {
 }
 .tb-btn.icon { padding: 4px 8px; }
 
+/* theme-btn: moon in light mode, sun in dark mode (lucide via icones.js.org) */
+#theme-btn svg { display: block; width: 14px; height: 14px; }
+#theme-btn .i-sun { display: none; }
+html[data-theme="dark"] #theme-btn .i-sun { display: block; }
+html[data-theme="dark"] #theme-btn .i-moon { display: none; }
+
 /* --- main grid ----------------------------------------------------------- */
 
 #main {
