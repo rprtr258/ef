@@ -26,6 +26,13 @@
 import type {ExprID, Program} from "./parser.ts";
 import {assertNever} from "./assert.ts";
 
+// Operators of the surface language. Shared with the wasm backend: the
+// checker stamps numeric operator sites with a concrete width (numKind), but
+// polymorphic/escape-hatch sites stay unstamped — the wasm backend must
+// then fall back to the operator's dynamic trampoline (see treeShakeBuiltins
+// and emitOperatorInline).
+export const OPERATOR_OPS = new Set(["+", "-", "*", "%", "neg", "<", ">", "<=", ">=", "==", "!=", "not"]);
+
 // Builtin effect op names in op-table order (= builtins.ts table order).
 // The wasm op table seeds these at opids 0..n-1; performed/handled program
 // ops intern after them. Deliberately a static list: analysis.ts stays a
@@ -282,9 +289,18 @@ function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<str
       case "app": {
         // A builtin sym in callee position is a direct call, not a value
         // use; any other callee shape (lambda, app, ...) walks normally.
+        // Exception: an operator site the checker left unstamped (no
+        // numKind — polymorphic operands via the escape hatch). The
+        // interpreter dispatches those by value at runtime; the wasm
+        // backend needs the operator's dynamic trampoline, which only
+        // exists when the operator counts as a value use.
         const fn = prog.nodes[e.fn];
-        if (fn.t === "sym") walk(e.fn, sc, true);
-        else walk(e.fn, sc);
+        if (fn.t === "sym") {
+          if (OPERATOR_OPS.has(fn.v) && e.numKind === undefined) values.add(fn.v);
+          walk(e.fn, sc, true);
+        } else {
+          walk(e.fn, sc);
+        }
         for (const a of e.args)
           walk(a, sc);
         break;

@@ -55,7 +55,41 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.u8(0x6e);
         f.emitStrCat(a, bv);
         b.u8(w.ELSE);
+        b.localGet(a);
+        b.refTest(9, false);
+        b.localGet(bv);
+        b.refTest(9, false);
+        b.u8(w.AND);
+        b.u8(w.IF);
+        b.u8(0x6e);
+        b.localGet(a);
+        b.refCast(9, false);
+        b.structGet(9, 0);
+        b.localGet(bv);
+        b.refCast(9, false);
+        b.structGet(9, 0);
+        b.u8(w.I64_ADD);
+        b.structNew(9);
+        b.u8(w.ELSE);
+        b.localGet(a);
+        b.refTest(10, false);
+        b.localGet(bv);
+        b.refTest(10, false);
+        b.u8(w.AND);
+        b.u8(w.IF);
+        b.u8(0x6e);
+        b.localGet(a);
+        b.refCast(10, false);
+        b.structGet(10, 0);
+        b.localGet(bv);
+        b.refCast(10, false);
+        b.structGet(10, 0);
+        b.u8(w.I64_ADD);
+        b.structNew(10);
+        b.u8(w.ELSE);
         b.refNull(w.ANYREF);
+        b.u8(w.END);
+        b.u8(w.END);
         b.u8(w.END);
         b.u8(w.END);
         break;
@@ -198,6 +232,49 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
             b.structNew(8);
           }
           b.u8(w.ELSE);
+          // $I64/$U64 arms (typed-widths step 4): exact 64-bit compute.
+          for (const wide of [9, 10]) {
+            b.localGet(a);
+            b.refTest(wide, false);
+            b.localGet(bv);
+            b.refTest(wide, false);
+            b.u8(w.AND);
+            b.u8(w.IF);
+            b.u8(0x6e);
+            const wx = f.i64(), wy = f.i64();
+            b.localGet(a);
+            b.refCast(wide, false);
+            b.structGet(wide, 0);
+            b.localSet(wx);
+            b.localGet(bv);
+            b.refCast(wide, false);
+            b.structGet(wide, 0);
+            b.localSet(wy);
+            if (name === "%") {
+              const wt = f.i64();
+              b.localGet(wx);
+              b.localGet(wy);
+              b.u8(wide === 9 ? w.I64_REMS : w.I64_REMU);
+              b.localSet(wt);
+              b.localGet(wx);
+              b.localGet(wy);
+              b.localGet(wt);
+              b.u8(w.I64_MUL);
+              b.u8(w.I64_SUB);
+            } else {
+              b.localGet(wx);
+              b.localGet(wy);
+              b.u8(wide === 9
+                ? (name === "-" ? w.I64_SUB : name === "*" ? w.I64_MUL : name === "<" ? w.I64_LTS : name === ">" ? w.I64_GTS : name === "<=" ? w.I64_LES : w.I64_GES)
+                : (name === "-" ? w.I64_SUB : name === "*" ? w.I64_MUL : name === "<" ? w.I64_LTU : name === ">" ? w.I64_GTU : name === "<=" ? w.I64_LEU : w.I64_GEU));
+            }
+            if (name === "<" || name === ">" || name === "<=" || name === ">=") {
+              selectBool(em, f, () => {});
+            } else {
+              b.structNew(wide);
+            }
+            b.u8(w.ELSE);
+          }
         }
         if (name === "<" || name === ">" || name === "<=" || name === ">=") {
           const r = f.i32();
@@ -473,16 +550,16 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.structGet(3, 0);
         b.refCast(1, true);
         b.arrayLen();
-        b.u8(w.CONV_I32);
-        box();
+        b.u8(w.I64_EXTEND_I32_S); // len is i64 (D7)
+        b.structNew(9);
         break;
       }
       case "strlen": {
         f.slot(0);
         b.refCast(2, true);
         b.arrayLen();
-        b.u8(w.CONV_I32);
-        box();
+        b.u8(w.I64_EXTEND_I32_S);
+        b.structNew(9);
         break;
       }
       case "PI":
@@ -526,39 +603,93 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.f64Const(0.5);
         b.u8(w.FADD);
         b.u8(w.FFLOOR);
-        box();
+        b.u8(w.I64_TRUNC_F64); // round is i64 (D7)
+        b.structNew(9);
         break;
       }
       case "range": {
-        const s = f.slotF64(0), e = f.slotF64(1), stepv = f.slotF64(2);
-        const n = f.i32();
+        // range is an i64 builtin (D7): the bounds read adaptively ($I64
+        // boxes since step 4; legacy $F64 boxes truncate), the count and
+        // the elements compute in i64. Count = the interpreter's
+        // max(0, ceil((e - s) / step)): with span = |e - s| and mag =
+        // |step|, elements exist iff (step > 0) == (e > s) && step != 0,
+        // and the count is ceil(span / mag) = (span + mag - 1) / mag over
+        // non-negatives (unsigned division is exact there).
+        const s = f.i64(), ev = f.i64(), stepv = f.i64(), span = f.i64(), mag = f.i64();
+        const dirOK = f.i32(), n = f.i32();
+        const readI64 = (i: number, loc: number): void => {
+          f.pushRef({k: "slot", i});
+          b.u8(w.CALL);
+          b.lebU(em.ix.fI64of);
+          b.localSet(loc);
+        };
+        const abs = (loc: number): void => {
+          const neg = f.i32(), flip = f.i64();
+          b.localGet(loc);
+          b.i64Const(0n);
+          b.u8(w.I64_LTS);
+          b.localSet(neg);
+          b.localGet(neg);
+          b.u8(w.IF);
+          b.u8(0x7e);
+          b.i64Const(-1n); // neg: the XOR mask -1 (the two's-complement negate)
+          b.u8(w.ELSE);
+          b.i64Const(0n);
+          b.u8(w.END);
+          b.localSet(flip);
+          b.localGet(flip);
+          b.localGet(loc);
+          b.u8(w.I64_XOR);
+          b.localGet(neg);
+          b.u8(w.IF);
+          b.u8(0x7e);
+          b.i64Const(1n);
+          b.u8(w.ELSE);
+          b.i64Const(0n);
+          b.u8(w.END);
+          b.u8(w.I64_ADD);
+          b.localSet(loc);
+        };
+        readI64(0, s);
+        readI64(1, ev);
+        readI64(2, stepv);
+        // span = |e - s|, mag = |step|
+        b.localGet(ev);
+        b.localGet(s);
+        b.u8(w.I64_SUB);
+        b.localSet(span);
+        b.localGet(span);
+        abs(span);
         b.localGet(stepv);
-        b.f64Const(0);
-        b.u8(w.FEQ);
+        b.localSet(mag);
+        b.localGet(mag);
+        abs(mag);
+        // dirOK = step != 0 && (step > 0) == (e > s)
+        b.localGet(stepv);
+        b.i64Const(0n);
+        b.u8(w.I64_NE);
+        b.localGet(stepv);
+        b.i64Const(0n);
+        b.u8(w.I64_GTS);
+        b.localGet(ev);
+        b.localGet(s);
+        b.u8(w.I64_GTS);
+        b.u8(w.EQ);
+        b.u8(w.AND);
+        b.localSet(dirOK);
+        b.localGet(dirOK);
         b.u8(w.IF);
         b.u8(0x7f);
-        b.i32Const(0);
-        b.u8(w.ELSE);
-        b.localGet(e);
-        b.localGet(s);
-        b.u8(w.FSUB);
-        b.localGet(stepv);
-        b.u8(w.FDIV);
-        b.u8(w.FCEIL);
-        b.f64Const(0);
-        b.u8(w.FGT);
-        b.u8(w.IF);
-        b.u8(0x7f);
-        b.localGet(e);
-        b.localGet(s);
-        b.u8(w.FSUB);
-        b.localGet(stepv);
-        b.u8(w.FDIV);
-        b.u8(w.FCEIL);
-        b.u8(w.TRUNC_F64);
+        b.localGet(span);
+        b.localGet(mag);
+        b.u8(w.I64_ADD);
+        b.i64Const(1n);
+        b.u8(w.I64_SUB);
+        b.localGet(mag);
+        b.u8(w.I64_DIVU);
+        b.u8(w.I32_WRAP_I64);
         b.u8(w.ELSE);
         b.i32Const(0);
-        b.u8(w.END);
         b.u8(w.END);
         b.localSet(n);
         const blk = f.allocArrBlk(n);
@@ -568,21 +699,34 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           f.elemAddr(blk, k);
           b.localGet(s);
           b.localGet(k);
-          b.u8(w.CONV_I32);
+          b.u8(w.I64_EXTEND_I32_S);
           b.localGet(stepv);
-          b.u8(w.FMUL);
-          b.u8(w.FADD);
-          box();
+          b.u8(w.I64_MUL);
+          b.u8(w.I64_ADD);
+          b.structNew(9);
           b.arraySet();
         });
         f.boxArr(blk);
         break;
       }
-      case "char":
-        f.slot(0);
+      case "char": {
+        // char's code-point arg is i64 (D7): adapt the box, wrap to i32,
+        // hand the host a plain number box (the import reads the f64
+        // payload).
+        const cp = f.i64();
+        f.pushRef({k: "slot", i: 0});
+        b.u8(w.CALL);
+        b.lebU(em.ix.fI64of);
+        b.localSet(cp);
+        b.localGet(cp);
+        b.u8(w.I32_WRAP_I64);
+        b.u8(w.CONV_I32);
+        b.u8(w.CALL);
+        b.lebU(em.ix.fBox);
         b.u8(w.CALL);
         b.lebU(em.o.impIdx.get("ef_char")!);
         break;
+      }
       case "number":
         f.slot(0);
         b.u8(w.CALL);
@@ -594,7 +738,11 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         break;
       case "get": {
         const blk = f.anyref(), len = f.i32(), idx = f.i32();
-        const idxF = f.slotF64(1);
+        const idx64 = f.i64();
+        f.pushRef({k: "slot", i: 1});
+        b.u8(w.CALL);
+        b.lebU(em.ix.fI64of);
+        b.localSet(idx64);
         f.slot(0);
         b.refCast(3, true);
         b.structGet(3, 0);
@@ -603,8 +751,8 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.refCast(1, true);
         b.arrayLen();
         b.localSet(len);
-        b.localGet(idxF);
-        b.u8(w.TRUNC_F64);
+        b.localGet(idx64);
+        b.u8(w.I32_WRAP_I64);
         b.localSet(idx);
         b.localGet(idx);
         b.i32Const(0);
@@ -616,7 +764,8 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.u8(w.IF);
         b.u8(0x40);
         emitFail(em, f, 1, null, () => {
-          b.localGet(idxF);
+          b.localGet(idx64);
+          b.u8(w.CONV_F64_I64); // f64.convert_i64_s — the index as an f64
         }, () => {
           b.localGet(len);
           b.u8(w.CONV_I32);
@@ -628,7 +777,11 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
       }
       case "set": {
         const xs = f.anyref(), blk = f.anyref(), len = f.i32(), idx = f.i32(), v = f.anyref();
-        const idxF = f.slotF64(1);
+        const idx64 = f.i64();
+        f.pushRef({k: "slot", i: 1});
+        b.u8(w.CALL);
+        b.lebU(em.ix.fI64of);
+        b.localSet(idx64);
         f.slot(0);
         b.localSet(xs);
         b.localGet(xs);
@@ -639,8 +792,8 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.refCast(1, true);
         b.arrayLen();
         b.localSet(len);
-        b.localGet(idxF);
-        b.u8(w.TRUNC_F64);
+        b.localGet(idx64);
+        b.u8(w.I32_WRAP_I64);
         b.localSet(idx);
         f.slot(2);
         b.localSet(v);
@@ -1074,11 +1227,30 @@ export function emitInits(em: Emit): void {
     b.u8(w.END);
     b.u8(w.END);
   });
-  // __num(v) -> f64
+  // __num(v) -> f64: the full numeric-box ladder (the JS side reads any
+  // width's box as a Number — $F32 promotes, the int boxes convert, $F64 is
+  // the payload; a non-number still traps at the final cast).
   acc(1, 19, (b) => {
+    const arm = (ht: number, op?: number): void => {
+      b.localGet(0);
+      b.refTest(ht, false);
+      b.u8(w.IF);
+      b.u8(0x7c);
+      b.localGet(0);
+      b.refCast(ht, false);
+      b.structGet(ht, 0);
+      if (op !== undefined) b.u8(op);
+      b.u8(w.ELSE);
+    };
+    arm(11, w.F64_PROMOTE);
+    arm(7, w.CONV_I32);
+    arm(8, w.CONV_I32_U);
+    arm(9, w.CONV_F64_I64);
+    arm(10, w.CONV_F64_U64);
     b.localGet(0);
     b.refCast(0, false);
     b.structGet(0, 0);
+    for (let i = 0; i < 5; i++) b.u8(w.END);
   });
   // __str_len(v) -> i32
   acc(1, 14, (b) => {
@@ -1144,6 +1316,28 @@ export function emitInits(em: Emit): void {
     b.localGet(0);
     b.refCast(8, false);
     b.structGet(8, 0);
+  });
+  // __mk_i64/__mk_u64(x: i64) -> anyref (typed-widths step 4; the param is
+  // a JS BigInt through the standard wasm JS-BigInt integration)
+  acc(1, w.T_MKI64, (b) => {
+    b.localGet(0);
+    b.structNew(9);
+  });
+  acc(1, w.T_MKI64, (b) => {
+    b.localGet(0);
+    b.structNew(10);
+  });
+  // __i64/__u64(v) -> i64: the box payload raw (two's complement bits; the
+  // HOST masks __u64 with BigInt.asUintN(64, ...))
+  acc(1, w.T_GETI64, (b) => {
+    b.localGet(0);
+    b.refCast(9, false);
+    b.structGet(9, 0);
+  });
+  acc(1, w.T_GETI64, (b) => {
+    b.localGet(0);
+    b.refCast(10, false);
+    b.structGet(10, 0);
   });
   // __mk_bool(b) -> anyref
   acc(1, 12, (b) => {

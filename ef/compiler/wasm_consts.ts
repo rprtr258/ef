@@ -18,7 +18,16 @@ export const F32_ADD = 0x92, F32_SUB = 0x93, F32_MUL = 0x94, F32_DIV = 0x95;
 export const F32_EQ = 0x5b, F32_NE = 0x5c, F32_LT = 0x5d, F32_GT = 0x5e, F32_LE = 0x5f, F32_GE = 0x60;
 export const TRUNC_F64 = 0xaa, TRUNC_F64_U = 0xab, CONV_I32 = 0xb7, CONV_I32_U = 0xb8; // i32.trunc_f64_s/u, f64.convert_i32_s/u
 export const CONV_F32_I32 = 0xb2, CONV_F32_U32 = 0xb3; // f32.convert_i32_s/u
+export const CONV_F32_I64 = 0xb4, CONV_F32_U64 = 0xb5; // f32.convert_i64_s/u
+export const CONV_F64_I64 = 0xb9, CONV_F64_U64 = 0xba; // f64.convert_i64_s/u
 export const I64_TRUNC_F64 = 0xb0, I32_WRAP_I64 = 0xa7; // i64.trunc_f64_s, i32.wrap_i64 — the $F64-plane -> i32 adaptive unbox
+// i64 family (typed-widths step 4): arithmetic, signed/unsigned compares.
+export const I64_ADD = 0x7c, I64_SUB = 0x7d, I64_MUL = 0x7e, I64_DIVS = 0x7f, I64_DIVU = 0x80,
+  I64_REMS = 0x81, I64_REMU = 0x82, I64_EQ = 0x51, I64_LTS = 0x53, I64_LTU = 0x54, I64_GTS = 0x55,
+  I64_GT = 0x55, // alias: i64.gt_s == i64.gts opcode; kept for readability at plain-value compares
+  I64_GTU = 0x56, I64_LES = 0x57, I64_LEU = 0x58, I64_GES = 0x59, I64_GEU = 0x5a;
+export const I64_NE = 0x52, I64_XOR = 0x85; // i64.ne, i64.xor
+export const I64_EXTEND_I32_S = 0xac, I64_EXTEND_I32_U = 0xad, I64_EQZ = 0x50; // pinned @as int conversions
 export const F32_DEMOTE = 0xb6, F64_PROMOTE = 0xbb; // f32.demote_f64, f64.promote_f32 —
 // the explicit f64 <-> f32 conversions (@as and the operand-width adaptation
 // in $numf64/$f32of); no implicit per-node round-trip exists anymore.
@@ -67,7 +76,8 @@ export const K_RET = 0, K_HDL = 1, K_SPILL = 2;
 // typed-widths plan: __mk_f32, __f32/fF32of).
 export const T_RUN = 7, T_PERFORM = 9, T_FAIL = 10, T_STRNUM = 11,
   T_BOX = 13, T_TRUTHY = 14, T_EQ = 15, T_CAPTURE = 16, T_KABI = 17,
-  T_III_I = 18, T_MKF32 = 24, T_F32 = 25, T_MKI32 = 26, T_GETI32 = 27;
+  T_III_I = 18, T_MKF32 = 24, T_F32 = 25, T_MKI32 = 26, T_GETI32 = 27,
+  T_MKI64 = 28, T_GETI64 = 29;
 
 export function impType(n: string): number {
   if (n === "ef_perform") return T_PERFORM;

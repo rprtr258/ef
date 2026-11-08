@@ -13,11 +13,12 @@ export const MAP_LIKE = new Set(["map", "each", "flatmap"]);
 // result/tmp array (except each) and the iteration counter.
 export const mapLikeFrameWords = (name: string): number => name === "each" ? 1 : MAP_LIKE.has(name) ? 2 : 0;
 
-// Operators compile inline at call sites (like the checker-stamped `/`):
-// operands unbox to f64 (or dispatch to $eq/$truthy) right in the caller,
-// no call, no frame. A trampoline exists only for operators referenced as
-// values (e.g. passed to foldl) — see treeShakeBuiltins.
-export const OPERATOR_OPS = new Set(["+", "-", "*", "%", "neg", "<", ">", "<=", ">=", "==", "!=", "not"]);
+// Operators compile inline at call sites stamped with a concrete width (like
+// the checker-stamped `/`): operands unbox to their width right in the
+// caller, no call, no frame. Unstamped (polymorphic) sites and sites
+// referenced as values (e.g. passed to foldl) use the dynamic trampolines —
+// see treeShakeBuiltins and emitOperatorInline.
+export {OPERATOR_OPS} from "./analysis.ts";
 
 // Import names that serve exactly one builtin each (import → builtin).
 export const BUILTIN_IMPORTS: Record<string, string> = {
@@ -58,6 +59,8 @@ export const SIGS: Record<number, {p: (number | number[])[], r: number | number[
   [w.T_F32]: {p: [w.ANYREF], r: 0x7d},                // __f32/fF32of (step 2)
   [w.T_MKI32]: {p: [0x7f], r: w.ANYREF},              // __mk_i32/__mk_u32 (step 3)
   [w.T_GETI32]: {p: [w.ANYREF], r: 0x7f},             // __i32/__u32/fI32of/fU32of (step 3)
+  [w.T_MKI64]: {p: [0x7e], r: w.ANYREF},              // __mk_i64/__mk_u64 (step 4; BigInt at the host)
+  [w.T_GETI64]: {p: [w.ANYREF], r: 0x7e},             // __i64/__u64/fI64of/fU64of (step 4)
 };
 
 // Valtype byte (or [0x63, idx] pair) → binaryen Type. 0x40 → none (void).

@@ -129,6 +129,14 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
       // Signed vs unsigned ordering of the same bits.
       expect(lines[22]).toBe("true");
       expect(lines[23]).toBe("true");
+      // i64/u64 exactness beyond 2^53 (step 4): BigInt at the wasm
+      // boundary, wraps at 2^63/2^64, signed vs unsigned ordering.
+      expect(lines[25]).toBe("9007199254740993"); // 2^53 + 1 is exact
+      expect(lines[26]).toBe("false");
+      expect(lines[27]).toBe("-9223372036854775808"); // INT64_MAX + 1 wraps
+      expect(lines[28]).toBe("0"); // UINT64_MAX + 1 wraps
+      expect(lines[29]).toBe("true"); // 2^63 signed is negative
+      expect(lines[30]).toBe("true"); // 2^63 unsigned is positive
     },
   }],
   "approx_pi.ef": [{

@@ -91,9 +91,10 @@ export type ValueRef =
 export type StaticDesc =
   | {t: "null"}                       // unit
   | {t: "i31", v: number}             // true/false
-  | {t: "num", w: string, v: number}  // number box: w = the value's width
-                                      // (f64 plane today for every width
-                                      // except f32; per-width const forms)
+  | {t: "num", w: string, v: number, big?: bigint} // number box: w = the
+                                      // value's width (per-width const form;
+                                      // big carries the exact lexeme for
+                                      // i64/u64, which exceed f64 precision)
   | {t: "str", s: string}             // $STR code-unit array
   | {t: "clo", fni: number, fsize: number} // builtin $CLO
   | {t: "elems", ws: number[]};       // handler case table ($ELEMS i31s)

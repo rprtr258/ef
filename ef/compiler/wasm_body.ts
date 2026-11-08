@@ -416,6 +416,27 @@ export class Buf {
       case w.REMU: bin((l, r) => MOD.i32.rem_u(l, r)); return;
       case w.AND: bin((l, r) => MOD.i32.and(l, r)); return;
       case w.OR: bin((l, r) => MOD.i32.or(l, r)); return;
+      case w.I64_ADD: bin((l, r) => MOD.i64.add(l, r)); return;
+      case w.I64_SUB: bin((l, r) => MOD.i64.sub(l, r)); return;
+      case w.I64_MUL: bin((l, r) => MOD.i64.mul(l, r)); return;
+      case w.I64_DIVS: bin((l, r) => MOD.i64.div_s(l, r)); return;
+      case w.I64_DIVU: bin((l, r) => MOD.i64.div_u(l, r)); return;
+      case w.I64_REMS: bin((l, r) => MOD.i64.rem_s(l, r)); return;
+      case w.I64_REMU: bin((l, r) => MOD.i64.rem_u(l, r)); return;
+      case w.I64_EQ: bin((l, r) => MOD.i64.eq(l, r)); return;
+      case w.I64_NE: bin((l, r) => MOD.i64.ne(l, r)); return;
+      case w.I64_XOR: bin((l, r) => MOD.i64.xor(l, r)); return;
+      case w.I64_LTS: bin((l, r) => MOD.i64.lt_s(l, r)); return;
+      case w.I64_LTU: bin((l, r) => MOD.i64.lt_u(l, r)); return;
+      case w.I64_GTS: bin((l, r) => MOD.i64.gt_s(l, r)); return;
+      case w.I64_GTU: bin((l, r) => MOD.i64.gt_u(l, r)); return;
+      case w.I64_LES: bin((l, r) => MOD.i64.le_s(l, r)); return;
+      case w.I64_LEU: bin((l, r) => MOD.i64.le_u(l, r)); return;
+      case w.I64_GES: bin((l, r) => MOD.i64.ge_s(l, r)); return;
+      case w.I64_GEU: bin((l, r) => MOD.i64.ge_u(l, r)); return;
+      case w.I64_EXTEND_I32_S: un((v) => MOD.i64.extend_s(v)); return;
+      case w.I64_EXTEND_I32_U: un((v) => MOD.i64.extend_u(v)); return;
+      case w.I64_EQZ: un((v) => MOD.i64.eqz(v)); return;
       case w.FADD: bin((l, r) => MOD.f64.add(l, r)); return;
       case w.FSUB: bin((l, r) => MOD.f64.sub(l, r)); return;
       case w.FMUL: bin((l, r) => MOD.f64.mul(l, r)); return;
@@ -451,6 +472,10 @@ export class Buf {
       case w.CONV_I32_U: un((v) => MOD.f64.convert_u.i32(v)); return;
       case w.CONV_F32_I32: un((v) => MOD.f32.convert_s.i32(v)); return;
       case w.CONV_F32_U32: un((v) => MOD.f32.convert_u.i32(v)); return;
+      case w.CONV_F32_I64: un((v) => MOD.f32.convert_s.i64(v)); return;
+      case w.CONV_F32_U64: un((v) => MOD.f32.convert_u.i64(v)); return;
+      case w.CONV_F64_I64: un((v) => MOD.f64.convert_s.i64(v)); return;
+      case w.CONV_F64_U64: un((v) => MOD.f64.convert_u.i64(v)); return;
       case w.F32_DEMOTE: un((v) => MOD.f32.demote(v)); return;
       case w.F64_PROMOTE: un((v) => MOD.f64.promote(v)); return;
       default: throw new WasmError(`internal: unknown opcode 0x${op.toString(16)}`);
@@ -460,6 +485,7 @@ export class Buf {
   // --- instruction emit methods ---------------------------------------------
 
   i32Const(n: number): void { this.push(MOD.i32.const(n)); }
+  i64Const(v: bigint): void { this.push(MOD.i64.const(v)); }
   f64Const(x: number): void { this.push(MOD.f64.const(x)); }
   localGet(i: number): void { this.push(MOD.local.get(i, this.localType(i))); }
   localSet(i: number): void { this.stmt(MOD.local.set(i, this.pop())); }
@@ -595,6 +621,7 @@ export class Fn {
     this.body = new Buf(this);
   }
   i32(): number { return this.typed(binaryen.i32); }
+  i64(): number { return this.typed(binaryen.i64); }
   f64(): number { return this.typed(binaryen.f64); }
   f32(): number { return this.typed(binaryen.f32); }
   anyref(): number { return this.typed(binaryen.anyref); }

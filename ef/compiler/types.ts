@@ -69,11 +69,28 @@ export class Unifier {
   // REPL lines share the unifier but not the node slice, so per-line types
   // must not leak across lines' ExprID spaces.
   nodeTypes = new Map<ExprID, Type>();
+  // Fresh per-literal wildcard prims (newWild) and the concrete width each
+  // flexed to at unify time — a literal's numKind stamp is its flex, not the
+  // i64/f64 default. Keyed by instance identity; the shared TINT/TFLOAT
+  // singletons are never in `wilds`, so unifying against them never records.
+  wilds = new Set<Prim>();
+  wildFlex = new Map<Prim, NumName>();
+
+  newWild(name: "int" | "float"): Prim {
+    const p: Prim = {tag: "prim", name};
+    this.wilds.add(p);
+    return p;
+  }
 
   fresh(): Var {
     const id = this.n++;
     this.parent.set(id, id);
     return {tag: "var", id};
+  }
+  // Record that a fresh wildcard literal took a concrete numeric width in
+  // this unification (no-op for the shared TINT/TFLOAT singletons).
+  rememberFlex(wild: Prim, concrete: NumName): void {
+    if (this.wilds.has(wild)) this.wildFlex.set(wild, concrete);
   }
   freshEff(): EffVar {
     const id = this.effCounter++;
@@ -237,10 +254,10 @@ export class Unifier {
       // strict: i32 ~ i64 is a type error, use @as to convert.
       const an = ra.name as NumName, bn = rb.name as NumName;
       if (an === bn) return;                               // exact: i32 ~ i32, string ~ string, ...
-      if (an === "int" && NUMERIC_NAMES.has(bn)) return;   // `1` -> any numeric
-      if (bn === "int" && NUMERIC_NAMES.has(an)) return;
-      if (an === "float" && (bn === "float" || FLOAT_NAMES.has(bn))) return;  // `1.5` -> f32/f64
-      if (bn === "float" && (an === "float" || FLOAT_NAMES.has(an))) return;
+      if (an === "int" && NUMERIC_NAMES.has(bn)) { this.rememberFlex(ra, bn); return; }   // `1` -> any numeric
+      if (bn === "int" && NUMERIC_NAMES.has(an)) { this.rememberFlex(rb, an); return; }
+      if (an === "float" && (bn === "float" || FLOAT_NAMES.has(bn))) { this.rememberFlex(ra, bn); return; }  // `1.5` -> f32/f64
+      if (bn === "float" && (an === "float" || FLOAT_NAMES.has(an))) { this.rememberFlex(rb, an); return; }
       throw this.typeMismatch(ra, rb);
     }
     if (ra.tag === "arr" && rb.tag === "arr") { this.unify(ra.elem, rb.elem); return; }
@@ -537,9 +554,10 @@ function numericResult(u: Unifier, ra: Type, rb: Type, op: string): Type {
     if (na === "int" || na === "float") {
       if (nb === "int" || nb === "float")
         return na === "float" || nb === "float" ? TFLOAT : TINT;
-      return rb;                                  // concrete width wins
+      u.rememberFlex(ra, nb);                     // concrete width wins
+      return rb;
     }
-    if (nb === "int" || nb === "float") return ra;
+    if (nb === "int" || nb === "float") { u.rememberFlex(rb, na); return ra; }
     if (na === nb) return ra;                     // strict same-width
     throw new TypeError_(`${op}: ${showT(ra)} and ${showT(rb)} are different numeric widths (use @as to convert)`);
   }
@@ -607,7 +625,7 @@ function inferNode(
   const e = nodes[id];
   try {
   switch (e.t) {
-    case "num": return e.isFloat ? TFLOAT : TINT;
+    case "num": return env.uni.newWild(e.isFloat ? "float" : "int");
     case "str": return TSTR;
     case "bool": return TBOOL;
     case "unit": return TNULL;
@@ -863,7 +881,16 @@ function inferNode(
       if (fn.t === "sym" && fn.v === "+") {
         const at = infer(e.args[0], nodes, env, effs, effects);
         const bt = infer(e.args[1], nodes, env, effs, effects);
-        return plusType(env.uni, at, bt);
+        const widened = plusType(env.uni, at, bt);
+        // The numeric `+` stamps and pins exactly like the other arithmetic
+        // ops (the string case leaves no width to stamp).
+        const wo = widthOf(env.uni.res(widened));
+        if (wo !== null) {
+          e.numKind = wo.w;
+          pinWildcard(env.uni, e.args[0], at, widened);
+          pinWildcard(env.uni, e.args[1], bt, widened);
+        }
+        return widened;
       }
       // Numeric operators (- * / %) and comparisons (< > <= >=) widen int/float;
       // unary neg is handled below. Kept out of BINOPS so they get this logic.
@@ -920,6 +947,17 @@ function inferNode(
         const ea = widthOf(env.uni.res(at)), eb = widthOf(env.uni.res(bt));
         if (ea !== null && eb !== null)
           e.numKind = ea.concrete ? ea.w : eb.concrete ? eb.w : (ea.w === "f64" || eb.w === "f64") ? "f64" : "i64";
+        // Pin wildcard operands to the flexed concrete width (the same
+        // discipline as the arithmetic ops): an untyped literal compared
+        // against a concrete-width value takes that width's representation
+        // (the BigInt literal wraps at its own node, exactly like the wasm
+        // static's box shape).
+        const flexW = ea !== null && ea.concrete ? ea.w : eb !== null && eb.concrete ? eb.w : null;
+        if (flexW !== null) {
+          const prim = WIDTH_PRIMS[flexW];
+          pinWildcard(env.uni, e.args[0], at, prim);
+          pinWildcard(env.uni, e.args[1], bt, prim);
+        }
         return TBOOL;
       }
       const ft = infer(e.fn, nodes, env, effs, effects);
@@ -1012,6 +1050,11 @@ function widthOf(t: Type): {w: NumName, concrete: boolean} | null {
 // runtime representation is the op's width (the wasm backend boxes pinned
 // literals as statics of this shape; the interpreter normalizes at the
 // node). Concrete-typed operands keep their own stamps.
+// Concrete width name -> its prim type (pinWildcard records these).
+const WIDTH_PRIMS: Record<string, Prim> = {
+  i32: TI32, u32: TU32, i64: TI64, u64: TU64, f32: TF32, f64: TF64,
+};
+
 function pinWildcard(u: Unifier, argId: ExprID, at: Type, widened: Type): void {
   const rt = u.res(at);
   if (rt.tag !== "prim" || (rt.name !== "int" && rt.name !== "float")) return;
@@ -1026,8 +1069,17 @@ function pinWildcard(u: Unifier, argId: ExprID, at: Type, widened: Type): void {
 // uses) compute by value-based dispatch at runtime.
 function stampNumKinds(nodes: Expr[], uni: Unifier): void {
   for (const [id, t] of uni.nodeTypes) {
-    const w = widthOf(uni.res(t));
-    if (w !== null) (nodes[id] as Expr & {numKind?: string}).numKind = w.w;
+    const rt = uni.res(t);
+    let w: NumName | null = null;
+    if (rt.tag === "prim") {
+      const n = rt.name as NumName;
+      if (n === "int" || n === "float") {
+        // Untyped literal: its recorded flex at unify time, else the
+        // i64/f64 default (literal defaulting, not width conversion).
+        w = uni.wildFlex.get(rt) ?? (n === "int" ? "i64" : "f64");
+      } else if (INT_NAMES.has(n) || FLOAT_NAMES.has(n)) w = n;
+    }
+    if (w !== null) (nodes[id] as Expr & {numKind?: string}).numKind = w;
   }
 }
 

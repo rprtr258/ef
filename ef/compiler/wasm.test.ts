@@ -242,6 +242,39 @@ describe("wasm backend", () => {
     expect(parity("-7 / 2")).toBe("-3");
   });
 
+  test("i64/u64 wraparound: exact 64-bit BigInt arithmetic, comparisons, @as", () => {
+    // Typed-widths step 4: i64/u64 sites compute with i64.add/sub/mul (the
+    // wrap IS the semantics) and the interpreter wraps through
+    // BigInt.asIntN/asUintN — parity, exact to 2^63 and beyond 2^53.
+    expect(parity("let x: i64 = 9223372036854775807; x + 1")).toBe("-9223372036854775808");
+    expect(parity("let x: i64 = -9223372036854775808; x - 1")).toBe("9223372036854775807");
+    expect(parity("let x: i64 = 4611686018427387904; x * 2")).toBe("-9223372036854775808"); // 2^62 * 2 wraps to INT64_MIN
+    expect(parity("let x: i64 = 4294967296; x * x")).toBe("0"); // 2^64 wraps to 0
+    expect(parity("let x: u64 = 18446744073709551615; x + 1")).toBe("0");
+    expect(parity("let x: u64 = 0; x - 1")).toBe("18446744073709551615");
+    expect(parity("9007199254740993 + 0")).toBe("9007199254740993"); // 2^53 + 1 is exact
+    // Signed vs unsigned comparison of the same bits (2^63 - 1 vs 2^63).
+    expect(parity("let x: i64 = 9223372036854775807; x > 0")).toBe("true");
+    expect(parity("@as(9223372036854775808, i64) < 0")).toBe("true");
+    expect(parity("@as(9223372036854775808, u64) > 0")).toBe("true");
+    // Strict same-width ops (D6) on the wide widths too.
+    expect(parity("@as(1, i64) < @as(2, u64)")).toBe(
+      "ERR: <: i64 and u64 are different numeric widths (use @as to convert)");
+    // @as wrap: i64 -> i32 truncates mod 2^32 (asIntN), u64 -> u32 via asUintN.
+    expect(parity("@as(4294967297, i64)")).toBe("4294967297"); // no truncation i64 -> i64
+    expect(parity("@as(4294967297, i32)")).toBe("1");
+    expect(parity("@as(18446744073709551615, u32)")).toBe("4294967295");
+    expect(parity("@as(@as(5, i64), u64)")).toBe("5");
+    // Equality on the wide widths compares the payload bits.
+    expect(parity("@as(-1, i64) == @as(18446744073709551615, i64)")).toBe("true");
+    expect(parity("9007199254740993 == 9007199254740993")).toBe("true");
+    expect(parity("9007199254740993 == 9007199254740992")).toBe("false");
+    // Division guards on the wide widths route through ef_fail identically.
+    expect(parity("let x: i64 = 1; x / 0")).toBe("ERR: integer divide by zero");
+    expect(parity("let x: u64 = 1; x % 0")).toBe("ERR: integer divide by zero");
+    expect(parity("@as(-9223372036854775808, i64) / @as(-1, i64)")).toBe("ERR: integer overflow");
+  });
+
   test("builtin shadowing: a user binding keeps the builtin unreferenced", () => {
     // A `let` shadowing a builtin name must resolve to the user binding,
     // not reach the builtin's closure.
@@ -299,7 +332,8 @@ a + b`)).toBe("6");
     // Same unhandled-effect error message as the interpreter.
     parity("effect Foo(n: i64): i64; Foo!(1) + 2");
     // One-shot interp injection overrides the default interpretation.
-    expect(show(runWasm("effect Foo(n: i64): i64; Foo!(21) * 2", {Foo: args => (args[0] as number) + 1}))).toBe("44");
+    // i64 args unbox to BigInt at the host boundary (typed-widths step 4).
+    expect(show(runWasm("effect Foo(n: i64): i64; Foo!(21) * 2", {Foo: args => Number(args[0]) + 1}))).toBe("44");
   });
 
   test("handlers: user ops, resume, deep nesting, multi-shot", () => {

@@ -107,6 +107,8 @@ export type Indices = {
   fF32of: number,
   fI32of: number,
   fU32of: number,
+  fI64of: number,
+  fU64of: number,
   fLambda0: number,
   // Lambda funcref index per lambda node (deterministic AST order).
   lambdaIdx: Map<ExprID, number>,
@@ -209,8 +211,12 @@ export function discover(prog: Program): Discovery {
         // and the f32 literal 0.1 are distinct statics (different boxes and
         // const forms). Untyped literals carry their default (i64/f64 → the
         // f64 plane in step 2).
-        const w = e.numKind === "i32" || e.numKind === "u32" || e.numKind === "f32" ? e.numKind : "f64";
-        d.numLits.set(`${w}:${e.v}`, w);
+        const w = e.numKind === "i32" || e.numKind === "u32" || e.numKind === "f32"
+          || e.numKind === "i64" || e.numKind === "u64" ? e.numKind : "f64";
+        // The raw lexeme (int literals keep it) is the exactness source:
+        // Number(lex) rounds beyond 2^53, BigInt(lex) does not.
+        const lex = e.raw ?? String(e.v);
+        d.numLits.set(`${w}:${lex}`, w);
         break;
       }
       case "str":
@@ -363,7 +369,9 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
     fF32of: o.liveImports.length + 5,
     fI32of: o.liveImports.length + 6,
     fU32of: o.liveImports.length + 7,
-    fLambda0: o.liveImports.length + 8,
+    fI64of: o.liveImports.length + 8,
+    fU64of: o.liveImports.length + 9,
+    fLambda0: o.liveImports.length + 10,
     lambdaIdx: new Map(),
     spillOf: new Map(),
     valSpill: new Map(),
@@ -383,6 +391,8 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
   ix.funcRefTypes.set(ix.fF32of, w.T_F32); // (anyref) -> f32
   ix.funcRefTypes.set(ix.fI32of, w.T_GETI32); // (anyref) -> i32
   ix.funcRefTypes.set(ix.fU32of, w.T_GETI32); // (anyref) -> i32
+  ix.funcRefTypes.set(ix.fI64of, w.T_GETI64); // (anyref) -> i64
+  ix.funcRefTypes.set(ix.fU64of, w.T_GETI64); // (anyref) -> i64
   // 2c. Function index assignment (deterministic AST order).
   const assignLambdas = (id: ExprID): void => {
     const e = prog.nodes[id];
@@ -623,8 +633,11 @@ export function layoutStatics(d: Discovery, ix: Indices, o: Opt): Layout {
   lay.trueRef = {k: "g", gi: newStatic({t: "i31", v: 1})};
   lay.falseRef = {k: "g", gi: newStatic({t: "i31", v: 0})};
   // Number literals (deduped by width + value; the Discovery keys carry both).
-  for (const [k, w] of d.numLits)
-    lay.numStatics.set(k, newStatic({t: "num", w, v: Number(k.slice(k.indexOf(":") + 1))}));
+  for (const [k, w] of d.numLits) {
+    const lex = k.slice(k.indexOf(":") + 1);
+    lay.numStatics.set(k, newStatic({t: "num", w, v: Number(lex),
+      big: w === "i64" || w === "u64" ? BigInt(lex) : undefined}));
+  }
   // PI constant (only when the program references it).
   if (o.usedBuiltins.has("PI"))
     lay.piG = newStatic({t: "num", w: "f64", v: Math.PI});
@@ -746,6 +759,10 @@ function staticInit(m: binaryen.Module, d: StaticDesc): binaryen.ExpressionRef {
       if (d.w === "f32") return m.struct.new([m.f32.const(d.v)], HT[11]);
       if (d.w === "i32") return m.struct.new([m.i32.const(d.v)], HT[7]);
       if (d.w === "u32") return m.struct.new([m.i32.const(d.v)], HT[8]);
+      // The 64-bit widths are exact beyond 2^53: the const form reads the
+      // literal's full lexeme as a BigInt (m.i64.const takes bigint).
+      if (d.w === "i64") return m.struct.new([m.i64.const(d.big ?? BigInt(d.v))], HT[9]);
+      if (d.w === "u64") return m.struct.new([m.i64.const(d.big ?? BigInt(d.v))], HT[10]);
       return m.struct.new([m.f64.const(d.v)], HT[0]);
     }
     case "str": {
@@ -789,11 +806,12 @@ export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]
   }
   m.addActiveElementSegment("t0", "e0",
     Array.from({length: total}, (_, i) => `f${i}`), m.i32.const(0));
+  if (process.env["DBGEMIT"] === "1") console.error(m.emitText());
   // exports: run + the 14 accessors (§4) — the last 15 functions
   const expNames = ["run", "__tag", "__num", "__str_len", "__str_get",
     "__arr_len", "__arr_get", "__mk_num", "__mk_f32", "__f32", "__mk_i32",
-    "__mk_u32", "__i32", "__u32", "__mk_bool", "__str_new",
-    "__str_set", "__arr_new", "__arr_set"];
+    "__mk_u32", "__i32", "__u32", "__mk_i64", "__mk_u64", "__i64", "__u64",
+    "__mk_bool", "__str_new", "__str_set", "__arr_new", "__arr_set"];
   for (let i = 0; i < expNames.length; i++)
     m.addFunctionExport(`f${total - expNames.length + i}`, expNames[i]);
   // shrink pass (wasm-opt in-process; shrink level 2 alone matches -Oz

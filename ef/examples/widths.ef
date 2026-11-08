@@ -1,8 +1,7 @@
-# Numeric widths end to end: f32 precision, per-width @as conversions, and
-# integer division semantics — printed so the parity harness compares both
-# backends digit for digit. (The i64-beyond-2^53 exactness prints join in
-# step 4, when the wasm backend grows typed i64 ops; see §3.1 runtime
-# semantics in the README.)
+# Numeric widths end to end: f32 precision, per-width @as conversions,
+# integer division semantics, and exact 64-bit i64/u64 arithmetic beyond
+# 2^53 — printed so the parity harness compares both backends digit for
+# digit.
 
 # f32 rounds to f32 precision at every producing step: 0.1f32 + 0.2f32 is
 # 0.30000001192092896, not the f64 0.30000000000000004.
@@ -24,8 +23,6 @@ Println!(thirds.1);
 Println!(a + b == @as(0.3, f32));
 
 # Untyped literals default to i64/f64; annotations pin the other widths.
-# (The literal below prints identically in both backends; the exact
-# beyond-2^53 prints join in step 4 with BigInt at the wasm boundary.)
 let i: i64 = 9007199254740993;
 Println!(i / 1000000000000);
 
@@ -58,3 +55,14 @@ Println!(@as(4294967295, u32) > @as(1, u32));
 # i32 division guards: ÷0 and INT_MIN ÷ -1 fail with the same ef error in
 # both backends (the wasm side goes through ef_fail, not a native trap).
 Println!(@as(-2147483648, i32) / @as(1, i32));
+
+# i64/u64 exactness beyond 2^53 (typed-widths step 4): literals keep full
+# precision via BigInt; the wasm boundary unboxes to BigInt, so no f64
+# rounding creeps in anywhere. Wraps at 2^63/2^64 are the semantics.
+Println!(9007199254740993 + 0);
+Println!(9007199254740993 == 9007199254740992);
+Println!(@as(9223372036854775807, i64) + @as(1, i64));
+Println!(@as(18446744073709551615, u64) + @as(1, u64));
+Println!(@as(9223372036854775808, i64) < @as(0, i64));
+Println!(@as(9223372036854775808, u64) > @as(0, u64));
+Println!(@as(9223372036854775808, u64) - @as(9223372036854775808, u64));

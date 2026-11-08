@@ -50,8 +50,11 @@ export function evalE(id: ExprID, nodes: Expr[], env: Env, k: Cont): Outcome {
 function normWidth(v: Value, nk: string): Value {
   if (typeof v !== "number" && typeof v !== "bigint") return v;
   switch (nk) {
-    case "i32": return (typeof v === "bigint" ? Number(v) : v) | 0;
-    case "u32": return (typeof v === "bigint" ? Number(v) : v) >>> 0;
+    // BigInt values wrap through their exact bits (asIntN/asUintN) — a
+    // Number detour would round beyond 2^53 before the mod-2^32 wrap and
+    // diverge from the wasm backend's i32.wrap_i64.
+    case "i32": return typeof v === "bigint" ? Number(BigInt.asIntN(32, v)) : v | 0;
+    case "u32": return typeof v === "bigint" ? Number(BigInt.asUintN(32, v)) : v >>> 0;
     case "f32": return Math.fround(Number(v));
     case "f64": return Number(v);
     case "i64": return BigInt.asIntN(64, toBig(v));

@@ -104,7 +104,8 @@ describe("bridge", () => {
       buf += s;
     });
     expect(buf).toBe("raw3\n");
-    expect(r.value).toBe(7);
+    // i64 values cross the wasm boundary as BigInt (typed-widths step 4).
+    expect(r.value).toBe(7n);
     expect(showT(r.type)).toBe("i64");
     expect(r.ops).toEqual(["Out", "Println"]);
   });
@@ -117,7 +118,7 @@ describe("bridge", () => {
       "Println!(fib(27));",
       "0",
     ].join("\n"), () => {});
-    expect(r.value).toBe(0);
+    expect(r.value).toBe(0n);
   });
 
   test("wasm run: Exit! unwinds with an ExitSignal", () => {

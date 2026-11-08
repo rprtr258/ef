@@ -615,9 +615,9 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
 // Numeric widths (typed-widths plan): the interpreter is width-exact —
 // i32/u32/f32/f64 values are JS numbers, i64/u64 values are BigInt (exact
 // beyond 2^53) — and integer division/remainder trap on ÷0 and INT_MIN÷-1
-// like wasm's div/rem ops. The f32 and i32/u32 slices have graduated to
-// full two-backend parity (wasm.test.ts); the i64/u64 cases here stay
-// interp-only until step 4 gives the wasm backend typed 64-bit ops.
+// like wasm's div/rem ops. All six widths have graduated to full
+// two-backend parity (wasm.test.ts); the i64/u64 cases here pin the
+// interpreter-side semantics that parity builds on.
 describe("numeric widths", () => {
   test("i32 sign-wraps", () => {
     expect(show(run(`let x: i32 = 2147483647; x + 1`))).toBe("-2147483648");
