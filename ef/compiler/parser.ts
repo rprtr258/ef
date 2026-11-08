@@ -4,6 +4,7 @@ import {
   tArr, tTup, tFun,
 } from "./types.ts";
 import {KEYWORDS, lex, type Pos, type Tok} from "./lexer.ts";
+import {assertNever} from "./assert.ts";
 
 // Type variables allocated by the parser: alias type parameters, and
 // arguments omitted from a parametric alias use. They live in a negative id
@@ -544,4 +545,28 @@ export class Parser {
 
 function isBlocky(e: Expr): boolean {
   return ["block", "if", "while", "handle", "lambda"].includes(e.t);
+}
+
+// Child ExprIDs of a node, in source order — the one AST shape every walker
+// agrees on: a node is visited before its children, a handler's case bodies
+// after its body. Walkers recurse through this instead of re-listing every
+// variant; the assertNever here is the choke point a new Expr variant must
+// pass (walkers with per-variant logic keep their own exhaustive switches).
+export function exprChildren(e: Expr): ExprID[] {
+  switch (e.t) {
+    case "lambda": return [e.body];
+    case "let": case "assign": case "dlet": return [e.val];
+    case "block": return e.stmts;
+    case "if": return [e.c, e.a, e.b];
+    case "while": return [e.c, e.body];
+    case "app": return [e.fn, ...e.args];
+    case "arr": return e.elems;
+    case "field": return [e.obj];
+    case "as": return [e.e];
+    case "handle": return [e.body, ...e.cases.map(cse => cse.body)];
+    case "perform": return e.args;
+    case "num": case "str": case "bool": case "unit": case "sym": return [];
+    default:
+      return assertNever(e);
+  }
 }

@@ -4,7 +4,7 @@
 // (wasm.ts). The §-numbered design doc for the whole backend lives at the
 // top of wasm.ts.
 import binaryen from "binaryen";
-import {type Program, type ExprID} from "./parser.ts";
+import {exprChildren, type Program, type ExprID} from "./parser.ts";
 import {checkProgram} from "./types.ts";
 import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, performsAnyOp} from "./analysis.ts";
 import {_T, Scope, StaticDesc, ValueRef, WasmError} from "./wasm_types.ts";
@@ -228,7 +228,7 @@ export function discover(prog: Program): Discovery {
         for (const p of e.params) s.map.set(p.name, frame.slots++);
         d.scopes.set(id, s);
         rec(e.body, s);
-        break;
+        return;
       }
       // Blocks share the enclosing wasm frame: their lets just take further
       // slots (the interpreter's block env is a child of the current env).
@@ -236,28 +236,18 @@ export function discover(prog: Program): Discovery {
         const s: Scope = {frame: sc.frame, parent: sc, map: new Map()};
         d.scopes.set(id, s);
         for (const stmt of e.stmts) rec(stmt, s);
-        break;
+        return;
       }
       case "let":
         sc.map.set(e.name, sc.frame.slots++);
-        rec(e.val, sc);
         break;
       case "dlet":
         for (const fd of e.fields) sc.map.set(fd.name, sc.frame.slots++);
-        rec(e.val, sc);
         break;
       case "assign":
-        rec(e.val, sc);
-        break;
       case "if":
-        rec(e.c, sc);
-        rec(e.a, sc);
-        rec(e.b, sc);
-        break;
       case "while":
-        rec(e.c, sc);
-        rec(e.body, sc);
-        break;
+        break; // children only — see exprChildren
       case "app": {
         // Mark non-builtin calls as split sites (§3 emitCall); the same
         // predicate the app case/emitCallClosure use for the land convention.
@@ -273,23 +263,16 @@ export function discover(prog: Program): Discovery {
         if (name === null || !isBuiltin || MAP_LIKE.has(name)) {
           d.landCalls.add(id);
         }
-        rec(e.fn, sc);
-        for (const a of e.args) rec(a, sc);
         break;
       }
       case "arr":
-        for (const el of e.elems) rec(el, sc);
-        break;
+      case "as":
+      case "perform":
+        break; // children only — see exprChildren
       case "field":
         rec(e.obj, sc);
         d.strLits.set(e.name, -1); // for the out-of-bounds message
-        break;
-      case "as":
-        rec(e.e, sc);
-        break;
-      case "perform":
-        for (const a of e.args) rec(a, sc);
-        break;
+        return;
       case "handle": {
         // Size the shared hframe: op params at slots 0..npMax-1 (per matched
         // case, unit-padded), each case's resume binder at slot nparams,
@@ -329,7 +312,7 @@ export function discover(prog: Program): Discovery {
         // there); case bodies bind into the hframe.
         rec(e.body, sc);
         for (const c of e.cases) rec(c.body, hs);
-        break;
+        return;
       }
       case "sym":
       case "bool":
@@ -338,6 +321,7 @@ export function discover(prog: Program): Discovery {
       default:
         assertNever(e);
     }
+    for (const k of exprChildren(e)) rec(k, sc);
   };
   for (const it of prog.items) {
     if ("e" in it) rec(it.e, d.globalScope);
@@ -396,58 +380,11 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
   // 2c. Function index assignment (deterministic AST order).
   const assignLambdas = (id: ExprID): void => {
     const e = prog.nodes[id];
-    switch (e.t) {
-      case "lambda":
-        ix.lambdaIdx.set(id, ix.fLambda0 + ix.lambdaIdx.size);
-        ix.funcRefTypes.set(ix.lambdaIdx.get(id)!, w.T_KABI); // sigs resolve before emission
-        assignLambdas(e.body);
-        break;
-      case "let":
-      case "assign":
-      case "dlet":
-        assignLambdas(e.val);
-        break;
-      case "block":
-        for (const stmt of e.stmts) assignLambdas(stmt);
-        break;
-      case "if":
-        assignLambdas(e.c);
-        assignLambdas(e.a);
-        assignLambdas(e.b);
-        break;
-      case "while":
-        assignLambdas(e.c);
-        assignLambdas(e.body);
-        break;
-      case "app":
-        assignLambdas(e.fn);
-        for (const a of e.args) assignLambdas(a);
-        break;
-      case "arr":
-        for (const el of e.elems) assignLambdas(el);
-        break;
-      case "field":
-        assignLambdas(e.obj);
-        break;
-      case "as":
-        assignLambdas(e.e);
-        break;
-      case "handle":
-        assignLambdas(e.body);
-        for (const c of e.cases) assignLambdas(c.body);
-        break;
-      case "perform":
-        for (const a of e.args) assignLambdas(a);
-        break;
-      case "num":
-      case "str":
-      case "bool":
-      case "unit":
-      case "sym":
-        break;
-      default:
-        assertNever(e);
+    if (e.t === "lambda") {
+      ix.lambdaIdx.set(id, ix.fLambda0 + ix.lambdaIdx.size);
+      ix.funcRefTypes.set(ix.lambdaIdx.get(id)!, w.T_KABI); // sigs resolve before emission
     }
+    for (const k of exprChildren(e)) assignLambdas(k);
   };
   for (const it of prog.items) {
     if ("e" in it) assignLambdas(it.e);
@@ -466,15 +403,7 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
       switch (e.t) {
         case "lambda":
           walk(e.body, d.scopes.get(id)!.frame);
-          break;
-        case "block":
-          for (const stmt of e.stmts) walk(stmt, frame);
-          break;
-        case "let":
-        case "assign":
-        case "dlet":
-          walk(e.val, frame);
-          break;
+          return;
         case "if":
           if (splits(prog, d, e.c) || splits(prog, d, e.a) || splits(prog, d, e.b)) {
             // A split-mode if (splitting arms): the condition reloads in
@@ -488,13 +417,6 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
             addOperandSpill(e.a, frame);
             addOperandSpill(e.b, frame);
           }
-          walk(e.c, frame);
-          walk(e.a, frame);
-          walk(e.b, frame);
-          break;
-        case "while":
-          walk(e.c, frame);
-          walk(e.body, frame);
           break;
         case "app": {
           const kids = [e.fn, ...e.args];
@@ -502,42 +424,21 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
           // inline body: every sibling's value must survive in a spill
           // slot so the fragment reloads it instead of re-running it.
           // Pure children spill too — see the if case (multi-shot freeze).
-          if (kids.some(k2 => splits(prog, d, k2))) {
-            for (const k2 of kids) {
-              addOperandSpill(k2, frame);
-            }
-          }
-          for (const k2 of kids) walk(k2, frame);
+          if (kids.some(k2 => splits(prog, d, k2)))
+            for (const k2 of kids) addOperandSpill(k2, frame);
           break;
         }
-        case "arr": {
-          const elems = e.elems;
-          if (elems.some(el => splits(prog, d, el))) {
-            for (const el of elems) {
-              addOperandSpill(el, frame);
-            }
-          }
-          for (const el of elems) walk(el, frame);
-          break;
-        }
-        case "field":
-          walk(e.obj, frame);
-          break;
-        case "as":
-          walk(e.e, frame);
+        case "arr":
+          if (e.elems.some(el => splits(prog, d, el)))
+            for (const el of e.elems) addOperandSpill(el, frame);
           break;
         case "perform": {
           ix.spillOf.set(id, frame.slots + (ix.spillTotals.get(frame) ?? 0));
           ix.spillTotals.set(frame, (ix.spillTotals.get(frame) ?? 0) + 1);
           ix.valSpill.set(id, frame.slots + (ix.spillTotals.get(frame) ?? 0));
           ix.spillTotals.set(frame, (ix.spillTotals.get(frame) ?? 0) + 1);
-          const flags = e.args.map(a => splits(prog, d, a));
-          if (flags.some(Boolean)) {
-            for (const a of e.args) {
-              addOperandSpill(a, frame);
-            }
-          }
-          for (const a of e.args) walk(a, frame);
+          if (e.args.some(a => splits(prog, d, a)))
+            for (const a of e.args) addOperandSpill(a, frame);
           break;
         }
         case "handle": {
@@ -549,17 +450,17 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
           const info = d.hdlCases.get(id)!;
           for (const c of info.cases) walk(c.body, info.scope.frame);
           if (info.retCase !== null) walk(info.retCase.body, info.scope.frame);
-          break;
+          return;
         }
-        case "num":
-        case "str":
-        case "bool":
-        case "unit":
-        case "sym":
+        case "block": case "let": case "assign": case "dlet": case "while":
+        case "field": case "as":
+          break; // children only — see exprChildren
+        case "num": case "str": case "bool": case "unit": case "sym":
           break; // no children
         default:
           assertNever(e);
       }
+      for (const k of exprChildren(e)) walk(k, frame);
     };
     for (const it of prog.items) {
       if ("e" in it) walk(it.e, d.globalScope.frame);
@@ -692,39 +593,10 @@ export function layoutStatics(d: Discovery, ix: Indices, o: Opt): Layout {
 // spill walk and the emitters' cut machinery.
 export function splits(prog: Program, d: Discovery, id: ExprID): boolean {
   const e = prog.nodes[id];
-  switch (e.t) {
-    case "perform":
-    case "handle":
-      return true;
-    case "lambda":
-      return false;
-    case "block":
-      return e.stmts.some(st2 => splits(prog, d, st2));
-    case "let":
-    case "assign":
-    case "dlet":
-      return splits(prog, d, e.val);
-    case "if":
-      return splits(prog, d, e.c) || splits(prog, d, e.a) || splits(prog, d, e.b);
-    case "while":
-      return splits(prog, d, e.c) || splits(prog, d, e.body);
-    case "app":
-      return d.landCalls.has(id) || splits(prog, d, e.fn) || e.args.some(a => splits(prog, d, a));
-    case "arr":
-      return e.elems.some(el => splits(prog, d, el));
-    case "field":
-      return splits(prog, d, e.obj);
-    case "as":
-      return splits(prog, d, e.e);
-    case "sym":
-    case "num":
-    case "str":
-    case "bool":
-    case "unit":
-      return false;
-    default:
-      return assertNever(e);
-  }
+  if (e.t === "lambda") return false; // lambdas bound their own frames
+  if (e.t === "perform" || e.t === "handle") return true;
+  return (e.t === "app" && d.landCalls.has(id)) ||
+    exprChildren(e).some(k => splits(prog, d, k));
 }
 
 // Frame size of a scope's frame: named slots + perform spill slots (§4.2).

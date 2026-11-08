@@ -3,7 +3,7 @@
 // §4.2, handle §4.4, split-mode if/while §6), plus the helper/case/lambda
 // function bodies. The §-numbered design doc for the whole backend lives
 // at the top of wasm.ts.
-import {type Expr, type ExprID, type Program} from "./parser.ts";
+import {exprChildren, type Expr, type ExprID, type Program} from "./parser.ts";
 import {BUILTINS} from "./analysis.ts";
 import {Ctx, INLINE, Scope, ValueRef, WasmError, _T} from "./wasm_types.ts";
 import {DBGEMIT, OPERATOR_OPS, mapLikeFrameWords} from "./wasm_tables.ts";
@@ -113,64 +113,16 @@ export type Emit = {
 };
 export function emitLambdas(em: Emit, id: ExprID): void {
   const e = em.nodes[id];
-  switch (e.t) {
-    case "lambda": {
-      const f = new Fn(2, em);
-      f.idx = em.ix.lambdaIdx.get(id)!; // funcref index (assignLambdas order)
-      em.ix.funcRefTypes.set(f.idx, w.T_KABI);
-      // bodyCatch emits the body and its completion dispatch (dead when
-      // the body ended in a tail call or split).
-      bodyCatch(em, e.body, f, em.d.scopes.get(id)!, true, INLINE);
-      em.funcs.push(f);
-      emitLambdas(em, e.body);
-      break;
-    }
-    case "let":
-    case "assign":
-    case "dlet":
-      emitLambdas(em, e.val);
-      break;
-    case "block":
-      for (const stmt of e.stmts) emitLambdas(em, stmt);
-      break;
-    case "if":
-      emitLambdas(em, e.c);
-      emitLambdas(em, e.a);
-      emitLambdas(em, e.b);
-      break;
-    case "while":
-      emitLambdas(em, e.c);
-      emitLambdas(em, e.body);
-      break;
-    case "app":
-      emitLambdas(em, e.fn);
-      for (const a of e.args) emitLambdas(em, a);
-      break;
-    case "arr":
-      for (const el of e.elems) emitLambdas(em, el);
-      break;
-    case "field":
-      emitLambdas(em, e.obj);
-      break;
-    case "as":
-      emitLambdas(em, e.e);
-      break;
-    case "handle":
-      emitLambdas(em, e.body);
-      for (const c of e.cases) emitLambdas(em, c.body);
-      break;
-    case "perform":
-      for (const a of e.args) emitLambdas(em, a);
-      break;
-    case "num":
-    case "str":
-    case "bool":
-    case "unit":
-    case "sym":
-      break;
-    default:
-      assertNever(e);
+  if (e.t === "lambda") {
+    const f = new Fn(2, em);
+    f.idx = em.ix.lambdaIdx.get(id)!; // funcref index (assignLambdas order)
+    em.ix.funcRefTypes.set(f.idx, w.T_KABI);
+    // bodyCatch emits the body and its completion dispatch (dead when
+    // the body ended in a tail call or split).
+    bodyCatch(em, e.body, f, em.d.scopes.get(id)!, true, INLINE);
+    em.funcs.push(f);
   }
+  for (const k of exprChildren(e)) emitLambdas(em, k);
 }
 
 // 4b. Handler case function bodies (§4.4). Each case body runs over the

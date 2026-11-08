@@ -23,7 +23,7 @@
 //   check rejects on, so it shows exactly what the runner must interpret
 //   (or the run fails on).
 
-import type {ExprID, Program} from "./parser.ts";
+import {exprChildren, type ExprID, type Program} from "./parser.ts";
 import {assertNever} from "./assert.ts";
 
 // Operators of the surface language. Shared with the wasm backend: the
@@ -92,40 +92,8 @@ export const BUILTINS: {name: string, params: number}[] = [
 export function performsAnyOp(prog: Program): boolean {
   const walk = (id: ExprID): boolean => {
     const e = prog.nodes[id];
-    switch (e.t) {
-      case "perform":
-        return true;
-      case "lambda":
-        return walk(e.body);
-      case "block":
-        return e.stmts.some(walk);
-      case "let":
-      case "dlet":
-      case "assign":
-        return walk(e.val);
-      case "if":
-        return walk(e.c) || walk(e.a) || walk(e.b);
-      case "while":
-        return walk(e.c) || walk(e.body);
-      case "app":
-        return walk(e.fn) || e.args.some(walk);
-      case "arr":
-        return e.elems.some(walk);
-      case "field":
-        return walk(e.obj);
-      case "as":
-        return walk(e.e);
-      case "handle":
-        return walk(e.body) || e.cases.some(cse => walk(cse.body));
-      case "sym":
-      case "num":
-      case "str":
-      case "bool":
-      case "unit":
-        return false;
-      default:
-        return assertNever(e);
-    }
+    if (e.t === "perform") return true;
+    return exprChildren(e).some(k => walk(k));
   };
   return prog.items.some(it => "e" in it && walk(it.e));
 }
@@ -145,56 +113,19 @@ export function collectEffectOps(prog: Program): string[] {
   const walk = (id: ExprID): void => {
     const e = prog.nodes[id];
     switch (e.t) {
-      case "lambda":
-        walk(e.body);
-        break;
-      case "block":
-        for (const stmt of e.stmts)
-          walk(stmt);
-        break;
-      case "let":
-      case "dlet":
-      case "assign":
-        walk(e.val);
-        break;
-      case "if":
-        walk(e.c);
-        walk(e.a);
-        walk(e.b);
-        break;
-      case "while":
-        walk(e.c);
-        walk(e.body);
-        break;
-      case "app":
-        walk(e.fn);
-        for (const a of e.args)
-          walk(a);
-        break;
-      case "arr":
-        for (const el of e.elems)
-          walk(el);
-        break;
-      case "field":
-        walk(e.obj);
-        break;
-      case "as":
-        walk(e.e);
-        break;
       case "perform":
         if (!ops.includes(e.op))
           ops.push(e.op);
-        for (const a of e.args)
-          walk(a);
         break;
       case "handle":
+        // Case ops intern before the body walk below (op-table order).
         for (const cse of e.cases)
           if (cse.op !== "Return" && !ops.includes(cse.op))
             ops.push(cse.op);
-        walk(e.body);
-        for (const cse of e.cases)
-          walk(cse.body);
         break;
+      case "lambda": case "block": case "let": case "dlet": case "assign":
+      case "if": case "while": case "app": case "arr": case "field": case "as":
+        break; // children only — see exprChildren
       case "sym":
       case "num":
       case "str":
@@ -204,6 +135,7 @@ export function collectEffectOps(prog: Program): string[] {
       default:
         assertNever(e);
     }
+    for (const k of exprChildren(e)) walk(k);
   };
   for (const it of prog.items)
     if ("e" in it)
@@ -255,37 +187,26 @@ function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<str
       case "lambda": {
         const s: Sc = {names: new Set(e.params.map(p => p.name)), parent: sc};
         walk(e.body, s);
-        break;
+        return;
       }
       case "block": {
         const s: Sc = {names: new Set(), parent: sc};
         for (const stmt of e.stmts)
           walk(stmt, s);
-        break;
+        return;
       }
       case "let":
         // The binding is already in sc before the value, mirroring emission:
         // `let len = len` reads the slot, not the builtin.
         sc.names.add(e.name);
-        walk(e.val, sc);
         break;
       case "dlet":
         for (const fd of e.fields)
           sc.names.add(fd.name);
-        walk(e.val, sc);
         break;
-      case "assign":
-        walk(e.val, sc);
-        break;
-      case "if":
-        walk(e.c, sc);
-        walk(e.a, sc);
-        walk(e.b, sc);
-        break;
-      case "while":
-        walk(e.c, sc);
-        walk(e.body, sc);
-        break;
+      case "assign": case "if": case "while": case "arr": case "field":
+      case "as": case "perform":
+        break; // children only — see exprChildren
       case "app": {
         // A builtin sym in callee position is a direct call, not a value
         // use; any other callee shape (lambda, app, ...) walks normally.
@@ -303,22 +224,8 @@ function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<str
         }
         for (const a of e.args)
           walk(a, sc);
-        break;
+        return;
       }
-      case "arr":
-        for (const el of e.elems)
-          walk(el, sc);
-        break;
-      case "field":
-        walk(e.obj, sc);
-        break;
-      case "as":
-        walk(e.e, sc);
-        break;
-      case "perform":
-        for (const a of e.args)
-          walk(a, sc);
-        break;
       case "handle": {
         walk(e.body, sc);
         // Case bodies run over the handler's hframe scope: case params and
@@ -335,7 +242,7 @@ function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<str
         }
         for (const cse of e.cases)
           walk(cse.body, hs);
-        break;
+        return;
       }
       case "num":
       case "str":
@@ -345,6 +252,7 @@ function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<str
       default:
         assertNever(e);
     }
+    for (const k of exprChildren(e)) walk(k, sc);
   };
   const root: Sc = {names: new Set(), parent: null};
   for (const it of prog.items)
