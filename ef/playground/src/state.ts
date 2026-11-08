@@ -1,6 +1,6 @@
 // state.ts — the app's shared core: mutable state, the DOM registry (els),
 // and persisted preferences (project in localStorage, light/dark theme).
-import {type Project, DEFAULT_PROJECT} from "./project.ts";
+import {type Project, DEFAULT_PROJECT, File} from "./project.ts";
 
 export const LS_KEY = "ef.playground.project.v1";
 export const THEME_KEY = "ef.playground.theme";
@@ -94,12 +94,12 @@ export function saveProject(): void {
   localStorage.setItem(LS_KEY, JSON.stringify(state.project));
 }
 
-export const activeFile = (): {name: string, code: string} => {
-  const f = state.project.files.find((f) => f.name === state.active);
+export function activeFile(): File {
+  const f = state.project.files.find(f => f.name === state.active);
   return f ?? state.project.files[0];
-};
+}
 
-export const mq = window.matchMedia("(prefers-color-scheme: dark)");
+const mq = window.matchMedia("(prefers-color-scheme: dark)");
 function themePref(): Theme {
   const t = localStorage.getItem(THEME_KEY);
   return t === "light" || t === "dark" ? t : (mq.matches ? "dark" : "light");

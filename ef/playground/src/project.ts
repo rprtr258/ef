@@ -1,7 +1,15 @@
 // project.ts — the Project type and the default welcome project (leaf
 // module: pure data, nothing else may sit below it).
 
-export type Project = {name: string, files: {name: string, code: string}[]};
+export type File = {
+  name: string,
+  code: string,
+};
+
+export type Project = {
+  name: string,
+  files: File[],
+};
 
 export const DEFAULT_PROJECT: Project = {
   name: "welcome",
