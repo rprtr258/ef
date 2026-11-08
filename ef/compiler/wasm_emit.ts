@@ -7,7 +7,7 @@ import {type Expr, type ExprID, type Program} from "./parser.ts";
 import {BUILTINS} from "./analysis.ts";
 import {Ctx, INLINE, Scope, ValueRef, WasmError, _T} from "./wasm_types.ts";
 import {DBGEMIT, OPERATOR_OPS, mapLikeFrameWords} from "./wasm_tables.ts";
-import {Fn} from "./wasm_body.ts";
+import {Buf, Fn} from "./wasm_body.ts";
 import {frameSizeOf, resolve, splits, type Discovery, type Indices, type Layout, type Opt} from "./wasm_pipeline.ts";
 import * as w from "./wasm_consts.ts";
 import {assertNever} from "./assert.ts";
@@ -327,14 +327,45 @@ function emitStmtSeq(em: Emit, stmts: ExprID[], f: Fn, sc: Scope, tail: boolean,
   }
 }
 
+// --- shared emission idioms ---------------------------------------------------
+
+// A lambda/case/while body is either a block (its statement list) or a
+// single expression statement; both normalize to a statement list for
+// body-root emission and fragment re-emission.
+function blockStmts(em: Emit, bodyId: ExprID): ExprID[] {
+  const bodyE = em.nodes[bodyId];
+  return bodyE.t === "block" ? bodyE.stmts : [bodyId];
+}
+
+// i31 payload read: anyref → i32 (i31 payload). Shared by the dispatch
+// walk (emitDispatch) and the handler walk (emitPerform).
+const i31of = (b: Buf): void => { b.refCast(w.I31REF, false); b.i31Get(); };
+
+// Freeze the ambient continuation as a K_SPILL cell (see snapWrap): the
+// cell's next is `kLocal`'s current value, and a fragment's re-emission
+// may later reload the cell's frozen frame image through it.
+function snapK(f: Fn, b: Buf, kLocal: number): number {
+  return f.snapWrap(() => b.localGet(kLocal));
+}
+
+// The root a land-site fill runs against and its cut-stack baseline: inside
+// an in-progress re-emission the fill roots at the published restRoot (whose
+// cutBase was captured when that fill began); otherwise the enclosing body
+// root (whose savedCut is its catcher's baseline).
+function fillRoot(em: Emit): {root: {stmts: ExprID[], sc: Scope, tail: boolean}, base: ExprID[]} {
+  const active = em.sp.restRoot;
+  if (active !== null) return {root: active, base: [...active.cutBase]};
+  const bodyRoot = em.sp.bodyRoots[em.sp.bodyRoots.length - 1];
+  return {root: bodyRoot, base: [...bodyRoot.savedCut]};
+}
+
 // Emit a lambda/case body, catching the Split of a perform/handle site
 // inside it and filling that site's rest-of-site fragment (see fillRest).
 // Lambda and case bodies are split boundaries: the chain never crosses a
 // lambda call, so each body's catcher owns its sites' fragments.
 function bodyCatch(em: Emit, bodyId: ExprID, f: Fn, sc: Scope, tail: boolean, ctx: Ctx): void {
   const savedCut = em.sp.cutStack;
-  const bodyE = em.nodes[bodyId];
-  const stmts = bodyE.t === "block" ? bodyE.stmts : [bodyId];
+  const stmts = blockStmts(em, bodyId);
   const bsc = em.d.scopes.get(bodyId) ?? sc;
   em.sp.bodyRoots.push({stmts, sc: bsc, tail, savedCut: [...savedCut]});
   try {
@@ -873,6 +904,21 @@ export function emitHelpers(em: Emit): Fn[] {
     b.arrayGet(1);
     b.refCast(5, true);
   }
+  // One arm of the adaptive unbox ladders ($num64/$f32of/$narrowOf/
+  // $wideOf below): if the operand (local 0) is a `ht` box, leave its
+  // payload converted by `ops` on the stack; else fall through to the
+  // next arm. `ret` is the arm's block result valtype byte.
+  const unboxArm = (b: Buf, ret: number, ht: number, ops: number[]): void => {
+    b.localGet(0);
+    b.refTest(ht, false);
+    b.u8(w.IF);
+    b.u8(ret);
+    b.localGet(0);
+    b.refCast(ht, false);
+    b.structGet(ht, 0);
+    for (const op of ops) b.u8(op);
+    b.u8(w.ELSE);
+  };
   // $num64(v: anyref) -> f64: adaptive numeric unbox for the f64 plane —
   // $F64 payload as-is; an $F32 box promotes (exact). Typed-widths step 2:
   // float-wildcard values can flow into f64-plane positions (builtin params,
@@ -885,23 +931,12 @@ export function emitHelpers(em: Emit): Fn[] {
     // common case for well-typed f64 sites pays one refTest), then $F32
     // promotes, the int boxes convert (each box's own signedness); a
     // non-number still traps at the final cast.
-    const arm = (ht: number, ops: number[]): void => {
-      b.localGet(0);
-      b.refTest(ht, false);
-      b.u8(w.IF);
-      b.u8(0x7c);
-      b.localGet(0);
-      b.refCast(ht, false);
-      b.structGet(ht, 0);
-      for (const op of ops) b.u8(op);
-      b.u8(w.ELSE);
-    };
-    arm(0, []);                 // $F64 payload (the hot case)
-    arm(11, [w.F64_PROMOTE]);   // $F32 -> promote
-    arm(7, [w.CONV_I32]);       // $I32 -> f64
-    arm(8, [w.CONV_I32_U]);     // $U32 -> f64
-    arm(9, [w.CONV_F64_I64]);   // $I64 -> f64
-    arm(10, [w.CONV_F64_U64]);  // $U64 -> f64
+    unboxArm(b, 0x7c, 0, []);                 // $F64 payload (the hot case)
+    unboxArm(b, 0x7c, 11, [w.F64_PROMOTE]);   // $F32 -> promote
+    unboxArm(b, 0x7c, 7, [w.CONV_I32]);       // $I32 -> f64
+    unboxArm(b, 0x7c, 8, [w.CONV_I32_U]);     // $U32 -> f64
+    unboxArm(b, 0x7c, 9, [w.CONV_F64_I64]);   // $I64 -> f64
+    unboxArm(b, 0x7c, 10, [w.CONV_F64_U64]);  // $U64 -> f64
     b.localGet(0);              // default: trap (non-number)
     b.refCast(0, false);
     b.structGet(0, 0);
@@ -923,22 +958,11 @@ export function emitHelpers(em: Emit): Fn[] {
   f32of.typeIdx = w.T_F32; // (anyref) -> f32 (sig pre-registered in assignIndices)
   {
     const b = f32of.body;
-    const arm = (ht: number, ops: number[]): void => {
-      b.localGet(0);
-      b.refTest(ht, false);
-      b.u8(w.IF);
-      b.u8(0x7d);
-      b.localGet(0);
-      b.refCast(ht, false);
-      b.structGet(ht, 0);
-      for (const op of ops) b.u8(op);
-      b.u8(w.ELSE);
-    };
-    arm(11, []);                          // $F32 payload
-    arm(7, [w.CONV_F32_I32]);             // $I32 -> f32
-    arm(8, [w.CONV_F32_U32]);             // $U32 -> f32
-    arm(9, [w.CONV_F32_I64]);             // $I64 -> f32
-    arm(10, [w.CONV_F32_U64]);            // $U64 -> f32
+    unboxArm(b, 0x7d, 11, []);                // $F32 payload
+    unboxArm(b, 0x7d, 7, [w.CONV_F32_I32]);   // $I32 -> f32
+    unboxArm(b, 0x7d, 8, [w.CONV_F32_U32]);   // $U32 -> f32
+    unboxArm(b, 0x7d, 9, [w.CONV_F32_I64]);   // $I64 -> f32
+    unboxArm(b, 0x7d, 10, [w.CONV_F32_U64]);  // $U64 -> f32
     b.localGet(0);                        // default: $F64 demote
     b.refCast(0, false);
     b.structGet(0, 0);
@@ -949,21 +973,10 @@ export function emitHelpers(em: Emit): Fn[] {
     const fn = new Fn(1, em);
     fn.typeIdx = w.T_GETI32; // (anyref) -> i32
     const b = fn.body;
-    const arm = (ht: number, ops: number[]): void => {
-      b.localGet(0);
-      b.refTest(ht, false);
-      b.u8(w.IF);
-      b.u8(0x7f);
-      b.localGet(0);
-      b.refCast(ht, false);
-      b.structGet(ht, 0);
-      for (const op of ops) b.u8(op);
-      b.u8(w.ELSE);
-    };
-    arm(u ? 8 : 7, []);                   // own-width payload
-    arm(u ? 7 : 8, []);                   // the sibling narrow width
-    arm(9, [w.I32_WRAP_I64]);             // $I64 low-32 wrap
-    arm(10, [w.I32_WRAP_I64]);            // $U64 low-32 wrap
+    unboxArm(b, 0x7f, u ? 8 : 7, []);         // own-width payload
+    unboxArm(b, 0x7f, u ? 7 : 8, []);         // the sibling narrow width
+    unboxArm(b, 0x7f, 9, [w.I32_WRAP_I64]);   // $I64 low-32 wrap
+    unboxArm(b, 0x7f, 10, [w.I32_WRAP_I64]);  // $U64 low-32 wrap
     b.localGet(0);                        // default: $F64 truncate + wrap
     b.refCast(0, false);
     b.structGet(0, 0);
@@ -978,21 +991,10 @@ export function emitHelpers(em: Emit): Fn[] {
     const fn = new Fn(1, em);
     fn.typeIdx = w.T_GETI64; // (anyref) -> i64
     const b = fn.body;
-    const arm = (ht: number, ops: number[]): void => {
-      b.localGet(0);
-      b.refTest(ht, false);
-      b.u8(w.IF);
-      b.u8(0x7e);
-      b.localGet(0);
-      b.refCast(ht, false);
-      b.structGet(ht, 0);
-      for (const op of ops) b.u8(op);
-      b.u8(w.ELSE);
-    };
-    arm(u ? 10 : 9, []);                  // own-width payload
-    arm(u ? 9 : 10, []);                  // the sibling wide width
-    arm(7, [w.I64_EXTEND_I32_S]);         // $I32 sign-extends (both wide widths)
-    arm(8, [w.I64_EXTEND_I32_U]);         // $U32 zero-extends
+    unboxArm(b, 0x7e, u ? 10 : 9, []);            // own-width payload
+    unboxArm(b, 0x7e, u ? 9 : 10, []);            // the sibling wide width
+    unboxArm(b, 0x7e, 7, [w.I64_EXTEND_I32_S]);   // $I32 sign-extends (both wide widths)
+    unboxArm(b, 0x7e, 8, [w.I64_EXTEND_I32_U]);   // $U32 zero-extends
     b.localGet(0);                        // default: $F64 truncate
     b.refCast(0, false);
     b.structGet(0, 0);
@@ -1032,7 +1034,17 @@ function emitSym(em: Emit, f: Fn, sc: Scope, name: string): ValueRef {
 // fsize, funcref index known) and emit a direct call instead of reading
 // the code index and dispatching through the table. The frame/k
 // convention is identical in both modes.
-export function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, tail = false, land = false, kL = 1, noSplit = false, landA?: number, direct?: {idx: number, fsize: number}): void {
+export type CallOpts = {
+  tail?: boolean,      // statement-tail position: pass the ambient k through
+  land?: boolean,      // lambda call site: land through a RET cell
+  kL?: number,         // the ambient continuation local (default 1)
+  noSplit?: boolean,   // never a split site (map-like builtin iterations)
+  landA?: number,      // explicit per-iteration land cell (map/each/flatmap)
+  direct?: {idx: number, fsize: number}, // direct builtin: static funcref + fsize
+};
+
+export function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, opts: CallOpts = {}): void {
+  const {tail = false, land = false, kL = 1, noSplit = false, landA, direct} = opts;
   const b = f.body;
   const clob = f.anyref(), idx = f.i32(), cf = f.anyref(), fs = f.i32(),
     maxL = f.i32(), slots = f.anyref(), ffp = f.anyref();
@@ -1120,7 +1132,7 @@ export function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEm
         rest = makeRestThunk(em, "handle:after-handle");
         em.sp.restByChain.set(key, rest);
       }
-      const ksp = f.snapWrap(() => b.localGet(kL));
+      const ksp = snapK(f, b, kL);
       b.localGet(f.retCell(rest.idx, () => b.localGet(ksp))); // next = K_SPILL{frozen frame, ambient k}
       b.refCast(5, true);
       if (DBGEMIT) console.error("THROW handle-split cutStack=", em.sp.cutStack.length);
@@ -1144,17 +1156,11 @@ export function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEm
     // set) that root is the in-progress fill's — the bodyRoots top is wrong
     // for synthetic arm re-emissions, whose chain does not start at a
     // body-root statement.
-    const active = em.sp.restRoot;
+    const {root, base} = fillRoot(em);
     const savedCut = em.sp.cutStack;
     try {
-      if (active !== null) {
-        em.sp.cutStack = [...active.cutBase];
-        fillRest(em, splitAt, active.stmts, active.sc, active.tail);
-      } else {
-        const root = em.sp.bodyRoots[em.sp.bodyRoots.length - 1];
-        em.sp.cutStack = [...root.savedCut];
-        fillRest(em, splitAt, root.stmts, root.sc, root.tail);
-      }
+      em.sp.cutStack = base;
+      fillRest(em, splitAt, root.stmts, root.sc, root.tail);
     } finally {
       em.sp.cutStack = savedCut;
     }
@@ -1177,7 +1183,6 @@ export function makeRestThunk(em: Emit, role?: string): Fn {
 export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
   const b = f.body;
   const kind = () => { b.localGet(k); b.refCast(5, true); b.structGet(5, 0); b.i31Get(); };
-  const i31of = () => { b.refCast(w.I31REF, false); b.i31Get(); }; // anyref → i32 (i31 payload)
   b.u8(w.BLOCK);
   b.u8(w.ANYREF); // block (result anyref)
   b.u8(w.LOOP);
@@ -1195,7 +1200,7 @@ export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
   b.localGet(k); b.refCast(5, true); b.structGet(5, 2); b.refCast(4, true);
   b.localGet(v);
   b.localGet(k); b.refCast(5, true); b.structGet(5, 3);
-  b.localGet(k); b.refCast(5, true); b.structGet(5, 1); i31of();
+  b.localGet(k); b.refCast(5, true); b.structGet(5, 1); i31of(b);
   b.u8(w.RETURN_CALL_INDIRECT);
   b.lebU(w.T_III_I);
   b.lebU(0);
@@ -1224,13 +1229,13 @@ export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
     b.u8(0x40);
     b.localGet(iL); b.localGet(nL); b.u8(w.GEU); b.u8(w.BR_IF); b.lebU(1);
     b.localGet(iL); b.i32Const(4); b.u8(w.MUL); b.localSet(ent);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.arrayGet(1); i31of();
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.arrayGet(1); i31of(b);
     b.i32Const(-1); b.u8(w.EQ);
     b.u8(w.IF);
     b.u8(0x40);
     b.i32Const(1); b.localSet(found);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(1); b.u8(w.ADD); b.arrayGet(1); i31of(); b.localSet(fnIdx);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(3); b.u8(w.ADD); b.arrayGet(1); i31of(); b.localSet(nparams);
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(1); b.u8(w.ADD); b.arrayGet(1); i31of(b); b.localSet(fnIdx);
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(3); b.u8(w.ADD); b.arrayGet(1); i31of(b); b.localSet(nparams);
     b.u8(w.BR); b.lebU(2); // exit the scan block
     b.u8(w.END);
     b.localGet(iL); b.i32Const(1); b.u8(w.ADD); b.localSet(iL);
@@ -1338,7 +1343,7 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
   const isF32 = wk === "f32", isI32 = wk === "i32", isU32 = wk === "u32";
   const isI64 = wk === "i64", isU64 = wk === "u64";
   const isNarrow = isI32 || isU32, isWide = isI64 || isU64;
-  const boxShape = isF32 ? 11 : isI32 ? 7 : isU32 ? 8 : isI64 ? 9 : isU64 ? 10 : 0;
+  const boxShape = boxShapeOf(wk);
   // Operand cut modes, mirroring the `/` path: the arg holding the cut
   // site continues the fragment ("cut"), an earlier sibling reloads its
   // spill ("pre"), a later sibling re-emits fresh ("post").
@@ -1960,8 +1965,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
         // the original flow, or the fresh §4.6 chain (whose copied HDLs
         // keep every enclosing handler live around the resumed segment)
         // when the fragment runs from a resume closure.
-        const bodyE = em.nodes[e.body];
-        const stmts = bodyE.t === "block" ? bodyE.stmts : [e.body];
+        const stmts = blockStmts(em, e.body);
         const bsc = em.d.scopes.get(e.body) ?? s;
         const ci = stmts.indexOf(cut[0]);
         if (ci < 0) throw new WasmError("internal: split chain root mismatch");
@@ -2127,22 +2131,24 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
       } else if (bname !== null && em.ix.builtinFnIdx.has(bname)) {
         // Direct builtin call: static funcref index + fsize, env = null.
         const bi = BUILTINS.find(bb => bb.name === bname)!;
-        emitCallClosure(em, f, 0, e.args.length, pushArg, cut === undefined && tail,
-        em.d.landCalls.has(id),
-        ctx.kL,
-        undefined,
-        undefined,
-        {idx: em.ix.builtinFnIdx.get(bname)!, fsize: bi.params + mapLikeFrameWords(bname)});
+        emitCallClosure(em, f, 0, e.args.length, pushArg, {
+          tail: cut === undefined && tail,
+          land: em.d.landCalls.has(id),
+          kL: ctx.kL,
+          direct: {idx: em.ix.builtinFnIdx.get(bname)!, fsize: bi.params + mapLikeFrameWords(bname)},
+        });
       } else {
         const fc = f.anyref();
         f.pushRef(cutChildRef(em, e.fn, f, s, ctx, ci === 0 ? "cut" : ci < 0 ? "post" : "pre"));
         b.localSet(fc);
-        emitCallClosure(em, f, fc, e.args.length, pushArg, cut === undefined && tail,
         // Builtins never perform or capture, so they keep the k=0
         // trampoline convention; every other (lambda) call site lands
         // through a RET cell and is a split site (§3 emitCall).
-        em.d.landCalls.has(id),
-        ctx.kL);
+        emitCallClosure(em, f, fc, e.args.length, pushArg, {
+          tail: cut === undefined && tail,
+          land: em.d.landCalls.has(id),
+          kL: ctx.kL,
+        });
       }
       // emitCallClosure leaves the landed result on the stack (or
       // tail-returns, making this capture unreachable); the inline paths
@@ -2214,7 +2220,6 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   const kL = f.anyref(), hdl = f.anyref(), found = f.i32();
   const tbl = f.anyref(), nL = f.i32(), ent = f.i32();
   const fnIdx = f.i32(), fsz = f.i32(), nparams = f.i32(), amb = f.anyref();
-  const i31of = () => { b.refCast(w.I31REF, false); b.i31Get(); }; // anyref → i32 (i31 payload)
   b.localGet(ctx.kL); // the ambient continuation
   b.localSet(kL);
   b.localGet(ctx.kL);
@@ -2243,7 +2248,7 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   }, i => {
     b.localGet(i); b.i32Const(4); b.u8(w.MUL);
     b.localSet(ent);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.arrayGet(1); i31of();
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.arrayGet(1); i31of(b);
     b.i32Const(opid);
     b.u8(w.EQ);
     b.u8(w.IF);
@@ -2252,11 +2257,11 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
     b.localSet(found);
     b.localGet(kL);
     b.localSet(hdl);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(1); b.u8(w.ADD); b.arrayGet(1); i31of();
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(1); b.u8(w.ADD); b.arrayGet(1); i31of(b);
     b.localSet(fnIdx);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(2); b.u8(w.ADD); b.arrayGet(1); i31of();
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(2); b.u8(w.ADD); b.arrayGet(1); i31of(b);
     b.localSet(fsz);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(3); b.u8(w.ADD); b.arrayGet(1); i31of();
+    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(3); b.u8(w.ADD); b.arrayGet(1); i31of(b);
     b.localSet(nparams);
     b.u8(w.BR);
     b.lebU(2); // exit the table scan
@@ -2277,9 +2282,7 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   // reloads read the frozen values, so a multi-shot resume re-runs the
   // rest against the pre-perform state (the interpreter's CPS accs),
   // not the frame as mutated by earlier resumes / loop iterations.
-  const ksp = f.snapWrap(() => {
-    b.localGet(amb);
-  });
+  const ksp = snapK(f, b, amb);
   b.localGet(found);
   b.u8(w.IF);
   b.u8(0x7f); // handler found: invoke the matched case body
@@ -2445,9 +2448,7 @@ function emitHandle(em: Emit, id: ExprID, e: Expr & {t: "handle"}, f: Fn, s: Sco
   // rest's pre-cut operand reloads (chain levels above the handle, e.g.
   // sibling operands of `s + handle {...}`) must see the values as of
   // the install, not as mutated by the handler body / resumes.
-  const ksp = f.snapWrap(() => {
-    b.localGet(ctx.kL);
-  });
+  const ksp = snapK(f, b, ctx.kL);
   // RET cell over the handle-site frame; next = the continuation outside
   // the handler (the two-k rule: the case body's ambient continuation is
   // the one captured OUTSIDE the handler).
@@ -2470,8 +2471,7 @@ function emitHandle(em: Emit, id: ExprID, e: Expr & {t: "handle"}, f: Fn, s: Sco
   }
   // Body with the handler cell as the ambient continuation: no tail calls
   // through the k param here — every value flows through the handler.
-  const bodyE = em.nodes[e.body];
-  const stmts = bodyE.t === "block" ? bodyE.stmts : [e.body];
+  const stmts = blockStmts(em, e.body);
   emitStmtSeq(em, stmts, f, em.d.scopes.get(e.body) ?? s, false, {kL: hdl});
   // The completion dispatch tail-calls the Return case (every table
   // carries one); control never returns here. The after-handle rest is
@@ -2499,9 +2499,7 @@ function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Sco
   const restAfterIf = makeRestThunk(em, "if:after");
   // K_SPILL cell freezing the pre-if frame image for the after-if rest's
   // pre-cut operand reloads (see snapWrap).
-  const ksp = f.snapWrap(() => {
-    b.localGet(ctx.kL); // the ambient continuation
-  });
+  const ksp = snapK(f, b, ctx.kL);
   const ifk = f.retCell(restAfterIf.idx, () => {
     b.localGet(ksp); // next = K_SPILL{frozen frame image, ambient k}
   });
@@ -2530,12 +2528,9 @@ function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Sco
     // that fill's root and cutStack base — the bodyRoots top and its
     // savedCut describe the outer fresh emission, not this re-emission.
     em.sp.cutStack.pop(); // fragments must not see the if's own frame
-    const activeC = em.sp.restRoot;
-    const rootC = activeC !== null
-      ? {stmts: activeC.stmts, sc: activeC.sc, tail: activeC.tail, savedCut: activeC.cutBase}
-      : em.sp.bodyRoots[em.sp.bodyRoots.length - 1];
+    const {root: rootC, base: baseC} = fillRoot(em);
     const savedCutC = em.sp.cutStack;
-    em.sp.cutStack = [...rootC.savedCut];
+    em.sp.cutStack = baseC;
     try {
       fillRest(em, new Split(restAfterIf, chainToIf), rootC.stmts, rootC.sc, rootC.tail);
     } finally {
@@ -2602,7 +2597,6 @@ function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Sco
   const spB = arm(e.b, ci === 2);
   b.u8(w.END);
   b.u8(w.UNREACHABLE); // unreachable: each arm returned or trapped
-  const root = em.sp.bodyRoots[em.sp.bodyRoots.length - 1];
   // This if's own expr frame is still on the cut stack; the arm fragment
   // re-emissions must not see it (they push a fresh if frame along the
   // re-emitted chain).
@@ -2611,11 +2605,7 @@ function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Sco
   // against that fill's root and cutStack base — a stale ambient path (this
   // re-emission's frames above the baseline) would leak into the chains the
   // fills record, corrupting later fragments filled from them.
-  const activeT = em.sp.restRoot;
-  const rootT = activeT !== null
-    ? {stmts: activeT.stmts, sc: activeT.sc, tail: activeT.tail, savedCut: activeT.cutBase}
-    : root;
-  const baseT = [...rootT.savedCut];
+  const {root: rootT, base: baseT} = fillRoot(em);
   if (spA !== null) { em.sp.cutStack = baseT; fillRest(em, spA, rootT.stmts, rootT.sc, rootT.tail); }
   if (spB !== null) { em.sp.cutStack = baseT; fillRest(em, spB, rootT.stmts, rootT.sc, rootT.tail); }
   em.sp.cutStack.push(id);
@@ -2662,9 +2652,7 @@ function emitWhileCPS(em: Emit, id: ExprID, e: Expr & {t: "while"}, f: Fn, s: Sc
     }
     // K_SPILL cell freezing the pre-loop frame image for the after-while
     // rest's pre-cut operand reloads (see snapWrap).
-    const ksp = f.snapWrap(() => {
-      b.localGet(ctx.kL); // the ambient continuation
-    });
+    const ksp = snapK(f, b, ctx.kL);
     const ifk = f.retCell(restAfter.idx, () => {
       b.localGet(ksp); // next = K_SPILL{frozen frame image, ambient k}
     });
@@ -2765,8 +2753,7 @@ function emitLoopPass(em: Emit, f: Fn, e: Expr & {t: "while"}, s: Scope, kNext: 
     const lb = f.retCell(entryIdx, () => {
       b.localGet(kNext);
     });
-    const bodyE = em.nodes[e.body];
-    const stmts = bodyE.t === "block" ? bodyE.stmts : [e.body];
+    const stmts = blockStmts(em, e.body);
     const bsc = em.d.scopes.get(e.body) ?? s;
     emitStmtSeq(em, stmts, f, bsc, false, {kL: lb});
     // The body's completion dispatch left the dispatch walk's block

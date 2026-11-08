@@ -1171,7 +1171,7 @@ export function emitMapLike(em: Emit, f: Fn, name: string): void {
         tb.lebU(em.ix.fBox);
       }
       tb.arraySet();
-    }, false, true, 2, true, iterLand.idx);
+    }, {land: true, kL: 2, noSplit: true, landA: iterLand.idx});
     tb.u8(w.UNREACHABLE); // the callback always tails into iterLand
     tb.u8(w.END);
     tb.u8(w.UNREACHABLE); // both if arms diverge; keep the implicit end typed
