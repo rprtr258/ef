@@ -1,0 +1,10 @@
+factorial :: fn(n: i32): i32 {
+  if n <= 1 {
+    return 1;
+  }
+  return n * factorial(n - 1);
+};
+
+main :: fn(): i32 {
+  return factorial(5);
+};

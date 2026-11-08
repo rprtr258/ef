@@ -30,6 +30,15 @@ export function apply(f: Value, args: Value[], k: Cont): Outcome {
 
 // Evaluator (CPS). `id` indexes into the program's flat node slice `nodes`.
 export function evalE(id: ExprID, nodes: Expr[], env: Env, k: Cont): Outcome {
+  const e = nodes[id] as Expr & { f32?: true };
+  // An f32-stamped node's value is rounded to f32 precision (the checker
+  // stamps every node whose type is f32; wasm emits the same round-trip).
+  if (e.f32 === true)
+    return evalEInner(id, nodes, env, (v) => k(typeof v === "number" ? Math.fround(v) : v));
+  return evalEInner(id, nodes, env, k);
+}
+
+function evalEInner(id: ExprID, nodes: Expr[], env: Env, k: Cont): Outcome {
   const e = nodes[id];
   switch (e.t) {
     case "num":
@@ -74,6 +83,14 @@ export function evalE(id: ExprID, nodes: Expr[], env: Env, k: Cont): Outcome {
       return evalArgs(e.args, nodes, env, [], (args) => ({tag: "eff", op: e.op, args, k}));
     case "handle":
       return handle(e.body, nodes, e.cases, env, k);
+    case "as":
+      // @as conversion: float -> int truncates toward zero, bool -> numeric
+      // gives 0/1; an f32 target rounds via evalE's generic f32 stamp.
+      return evalE(e.e, nodes, env, (v) => {
+        if (e.asKind === "trunc") return k(Math.trunc(num(v)));
+        if (e.asKind === "boolnum") return k(v === true ? 1 : 0);
+        return k(v);
+      });
     case "arr":
       return evalArgs(e.elems, nodes, env, [], (vals) => k(vals));
     case "field":

@@ -1,0 +1,17 @@
+# Test GC struct type alias, pointer ops, reference equality, and slices
+Point :: [x: i32, y: i32];
+
+main :: fn(): i32 {
+  p: Point = [x: 10, y: 20];
+  ptr: @Ptr(Point) = p.&;
+  p2: Point = ptr.*;
+  same: bool = p == p2;
+  if (!same) {
+    return -1;
+  }
+  slice: @slice(i32) = @slice.make(i32);
+  slice = @slice.append(slice, 42);
+  slice = @slice.append(slice, 7);
+  i: i32 = 1;
+  return slice.(0) + slice.(i) + p.x + p2.y;
+};

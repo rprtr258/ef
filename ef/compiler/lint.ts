@@ -102,6 +102,7 @@ function freeUses(id: ExprID, nodes: Expr[], watch: Set<string>): Set<string> {
     case "app": go(e.fn, w); for (const a of e.args) go(a, w); return;
     case "arr": for (const el of e.elems) go(el, w); return;
     case "field": go(e.obj, w); return;
+    case "as": go(e.e, w); return;
     case "handle":
       go(e.body, w);
       for (const c of e.cases) {

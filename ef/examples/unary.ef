@@ -1,0 +1,4 @@
+# Unary operators: ! negates a bool, - negates a number; @as converts the
+# bool to an int (false -> 0).
+
+@as(!true, i32) + -5

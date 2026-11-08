@@ -1,0 +1,8 @@
+# Tuple equality is identity: two separately constructed tuples with
+# equal fields are different objects, so p == p2 is false.
+
+let p: [x: i64, y: i64] = [10, 20];
+let p2: [x: i64, y: i64] = [10, 20];
+let same = p == p2;  # false: different objects
+
+if (same) { -1 } else { 0 }

@@ -1,0 +1,10 @@
+# Closures: make_adder(x) returns a closure that keeps reading its
+# captured x after make_adder has returned.
+
+let make_adder = fn(x: i64): (i64) -> i64 {
+  fn(y: i64): i64 {
+    x + y
+  }
+};
+
+make_adder(3)(4)

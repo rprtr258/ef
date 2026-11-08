@@ -1,0 +1,24 @@
+Point :: [x: i32, y: i32];
+
+main :: fn(): i32 {
+  # Test struct allocation
+  p: Point = [x: 10, y: 20];
+
+  # Test pointer operations
+  ptr: @Ptr(Point) = p.&;
+  p2: Point = ptr.*;
+
+  # Test equality (same object -> true)
+  same: bool = p == p2;
+
+  # Test slice basics
+  slice: @slice(i32) = @slice.make(i32);
+  slice = @slice.append(slice, 42);
+  len: i32 = slice.len;
+
+  # Test expression-based access
+  i: i32 = 0;
+  elem: i32 = slice.(i);
+
+  return elem;
+};

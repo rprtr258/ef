@@ -1,0 +1,29 @@
+# Collatz trajectories: collatz(n) halves evens and maps odds to 3n + 1,
+# printing every value it passes through; fib is naive doubly-recursive
+# Fibonacci. Both print from inside while/if bodies with Println!.
+
+let fib = fn(n: i64): i64 {
+  if (n <= 1) {
+    n
+  } else {
+    fib(n - 1) + fib(n - 2)
+  }
+};
+
+let collatz = fn(n: i64): unit {
+  Println!(n);
+  while (n > 1) {
+    if (n % 2 == 1) {
+      n = 3 * n + 1;
+      Println!(n);
+    };
+    while (n % 2 == 0) {
+      n = n / 2;
+      Println!(n);
+    }
+  }
+};
+
+collatz(7);
+Println!(fib(10));
+1

@@ -11,13 +11,13 @@
 #   bun scripts/rt-to-png.ts /tmp/rt.txt /tmp/raytracer.png
 
 # ---- Math on [x, y, z] vectors ----
-type V3 = [float, float, float];
+type V3 = [f64, f64, f64];
 
 let vAdd = fn(a: V3, b: V3): V3 { [a.0 + b.0, a.1 + b.1, a.2 + b.2] };
 let vSub = fn(a: V3, b: V3): V3 { [a.0 - b.0, a.1 - b.1, a.2 - b.2] };
-let vScale = fn(a: V3, s: float): V3 { [a.0 * s, a.1 * s, a.2 * s] };
-let vDot = fn(a: V3, b: V3): float { (a.0 * b.0) + ((a.1 * b.1) + (a.2 * b.2)) };
-let vAll = fn(s: float): V3 { [s, s, s] };
+let vScale = fn(a: V3, s: f64): V3 { [a.0 * s, a.1 * s, a.2 * s] };
+let vDot = fn(a: V3, b: V3): f64 { (a.0 * b.0) + ((a.1 * b.1) + (a.2 * b.2)) };
+let vAll = fn(s: f64): V3 { [s, s, s] };
 
 # ---- Scene ----
 let size = 200;
@@ -29,7 +29,7 @@ let ambient = 0.15;
 let lightIntensity = 0.85;
 let light: V3 = [2.4, 1.0, -3.0];    # point light
 
-type Sphere = [V3, float, V3];    # center, radius, color
+type Sphere = [V3, f64, V3];    # center, radius, color
 let s1: Sphere = [[0.0, 0.0, -5.0], 1.5, [1.0, 0.4, 0.3]];    # warm orange
 let s2: Sphere = [[2.0, 0.5, -4.5], 1.0, [0.3, 0.5, 1.0]];    # cool blue
 
@@ -39,7 +39,7 @@ let checkSize = 2.0;              # checkerboard cell size
 # ---- Ray-sphere intersection ----
 # Smaller root t of |t*d - c|^2 = r^2 (camera at the origin), or -1.0
 # when the ray misses.
-let sphereT = fn(d: V3, c: V3, r: float): float {
+let sphereT = fn(d: V3, c: V3, r: f64): f64 {
   let a = vDot(d, d);
   let b = -2.0 * vDot(d, c);
   let q = vDot(c, c) - r * r;
@@ -48,14 +48,14 @@ let sphereT = fn(d: V3, c: V3, r: float): float {
 };
 
 # ---- Diffuse lighting (unnormalized, distance-attenuated) ----
-let diffuse = fn(n: V3, l: V3): float {
+let diffuse = fn(n: V3, l: V3): f64 {
   let ndl = vDot(n, l);
   if (ndl > 0.0) { ndl / vDot(l, l) } else { 0.0 }
 };
 
 # Shading of a sphere hit: normal = (hit - center)/radius, light
 # direction = light - hit, color scaled by ambient + intensity*diffuse.
-let sphereShade = fn(s: Sphere, d: V3, t: float): V3 {
+let sphereShade = fn(s: Sphere, d: V3, t: f64): V3 {
   let [c, r, col] = s;
   let hit = vScale(d, t);
   let n = vScale(vSub(hit, c), 1.0 / r);
@@ -64,14 +64,14 @@ let sphereShade = fn(s: Sphere, d: V3, t: float): V3 {
 };
 
 # ---- Checkerboard cell parity (symmetric about the origin) ----
-let cellParity = fn(coord: float, cell: float): float {
+let cellParity = fn(coord: f64, cell: f64): f64 {
   if (coord < 0.0) { cellParity(-coord, cell) }
   else if (coord < cell) { 0.0 }
   else if (coord < 2.0 * cell) { 1.0 }
   else { cellParity(coord - 2.0 * cell, cell) }
 };
 
-let checkerVal = fn(x: float, y: float, cell: float): float {
+let checkerVal = fn(x: f64, y: f64, cell: f64): f64 {
   if (cellParity(x, cell) < 0.5) {
     if (cellParity(y, cell) < 0.5) { 0.7 } else { 0.2 }
   } else {
@@ -80,7 +80,7 @@ let checkerVal = fn(x: float, y: float, cell: float): float {
 };
 
 # ---- Color of one ray through direction camDir + [dx, dy, 0] ----
-let sample = fn(dx: float, dy: float): V3 {
+let sample = fn(dx: f64, dy: f64): V3 {
   let d: V3 = [camDir.0 + dx, camDir.1 + dy, camDir.2];
   let t1 = sphereT(d, s1.0, s1.1);
   if (t1 > 0.0) {
@@ -102,9 +102,9 @@ let sample = fn(dx: float, dy: float): V3 {
 };
 
 # ---- 2x2 supersampling: average the four corner samples ----
-let pixel = fn(px: int, py: int): V3 {
-  let x = (px * step) - 2.0;
-  let y = (py * step) - 2.0;
+let pixel = fn(px: i64, py: i64): V3 {
+  let x = (@as(px, f64) * step) - 2.0;
+  let y = (@as(py, f64) * step) - 2.0;
   vScale(vAdd(
     vAdd(sample(x - substep, y - substep), sample(x + substep, y - substep)),
     vAdd(sample(x - substep, y + substep), sample(x + substep, y + substep))),

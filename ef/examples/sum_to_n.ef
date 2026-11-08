@@ -1,0 +1,12 @@
+# sum_to_n(n) = n + (n-1) + ... + 0 by recursion; the base case is the
+# if's then-branch, the recursive step its else-branch.
+
+let sum_to_n = fn(n: i64): i64 {
+  if (n <= 0) {
+    0
+  } else {
+    n + sum_to_n(n - 1)
+  }
+};
+
+sum_to_n(10)

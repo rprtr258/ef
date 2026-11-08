@@ -10,12 +10,12 @@ bun check       # host typecheck (stays clean)
 
 ## In one paragraph
 
-`ef` is a small expression language. You write `let`, `fn`, `if`, and blocks like in C/Go. Functions can **perform** abstract *effects* instead of throwing or returning, and `handle` blocks install *handlers* that catch those effects and receive the suspended computation as a resumable continuation `k` — which can be called zero, one, or many times. A static type checker rejects ill-typed programs before evaluation and infers the effect set of every function (shown as `(int) -> int ! { Emit }`).
+`ef` is a small expression language. You write `let`, `fn`, `if`, and blocks like in C/Go. Functions can **perform** abstract *effects* instead of throwing or returning, and `handle` blocks install *handlers* that catch those effects and receive the suspended computation as a resumable continuation `k` — which can be called zero, one, or many times. A static type checker rejects ill-typed programs before evaluation and infers the effect set of every function (shown as `(i64) -> i64 ! { Emit }`).
 
 A taste:
 
 ```js
-effect Choose(opts: [int]): int;            # Choose yields an int
+effect Choose(opts: [i64]): i64;            # Choose yields an i64
 handle {
   let x = Choose!([1, 2, 3]);        # pause, ask the handler
   let y = Choose!([10, 20]);
@@ -34,8 +34,8 @@ The handler calls `k` once per option, so the computation branches into all path
 - **Multi-shot resume** — the continuation `k` is a plain callable, so it can run zero, one, or many times (nondeterminism, backtracking, etc.).
 - **Effect propagation** through nested handlers: an unhandled effect walks outward to the nearest matching handler.
 - **Static typing** with type inference, union-find unification, and an absorbing `any` escape hatch.
-- **Tuples** — named `[x: float, y: float]` and unnamed `[int, string]`, with `.x`/`.0` field access and `let [a, b] = p` destructuring. Bracket literals are arrays when homogeneous, tuples when not.
-- **Parametric type aliases** — `type Pair(a, b) = [a, b];`, instantiated as `Pair[int, string]`.
+- **Tuples** — named `[x: f64, y: f64]` and unnamed `[i64, string]`, with `.x`/`.0` field access and `let [a, b] = p` destructuring. Bracket literals are arrays when homogeneous, tuples when not.
+- **Parametric type aliases** — `type Pair(a, b) = [a, b];`, instantiated as `Pair[i64, string]`.
 - **Function effect signatures** `let f = fn(p: T): R ! { Effs } { ... }` the checker verifies against the body.
 - **Polymorphic builtins** (`map : (A)->B, [A] -> [B]`, etc.).
 
@@ -89,12 +89,14 @@ bun run build                    # rebuild dist/ only
 - **String literals** are `"..."` with `\` escapes: `\n \t \r \" \\ \xHH` (byte),
   `\uHHHH` (code point). Unknown `\c` yields `c`.
 - **Number literals** are non-negative integer/decimal digit runs (e.g. `42`,
-  `3.14`). A literal containing a `.` is typed `float`; otherwise `int`.
-  Unary minus is parsed as the unary `-` operator in `parseUnary`.
+  `3.14`). A literal containing a `.` is an untyped float; otherwise an
+  untyped int. Untyped literals take on whatever numeric context demands and
+  default to `f64` / `i64` (see §3.1). Unary minus is parsed as the unary
+  `-` operator in `parseUnary`.
 - **Identifiers** start with a letter or `_`, continue with letters/digits/`_`.
 - **Keywords:** `let fn if else while handle case true false unit effect`.
 - **Two-char tokens:** `== != <= >= && || =>`.
-- **One-char tokens:** `( ) [ ] { } , ; < > + - * / ! = : %`.
+- **One-char tokens:** `( ) [ ] { } , ; < > + - * / ! = : % @`.
 - `->` is lexed as two tokens `-` `>` and reassembled by the type parser.
 
 ## 2. Syntax
@@ -142,7 +144,8 @@ binary   ::= unary (binop unary)*        -- Pratt, see precedence below
 unary    ::= ("-" | "!") unary | postfix
 postfix  ::= primary ("(" args ")")* ("." name)*   -- call, then field access
 primary  ::= num | str | "true" | "false" | "unit"
-           | name | "(" expr ")" | array | lambda | if | handle
+           | name | "(" expr ")" | array | lambda | if | handle | as-expr
+as-expr  ::= "@as" "(" expr "," type ")"    # numeric cast, see §3.1
 array    ::= "[" (expr ("," expr)*)? "]"
 lambda   ::= "fn" params block
 if       ::= "if" "(" expr ")" block ("else" (if | block))?
@@ -154,7 +157,7 @@ args     ::= "(" (expr ("," expr)*)? ")"
 
 - **Bracket literals** `[a, b, c]` are **arrays if all element types unify**
   (homogeneous → `[T]`), otherwise **tuples** (`[T1, ..., Tn]`). A tuple
-  **type annotation** on the binding (`let p: [float, float] = [1.0, 2.0]`)
+  **type annotation** on the binding (`let p: [f64, f64] = [1.0, 2.0]`)
   forces a tuple even when the elements would unify. The same expectation
   flows from a tuple **return type** into a `[...]` body literal, and from a
   tuple **parameter type** into an `[...]` argument literal (including
@@ -224,17 +227,33 @@ type   ::= "[" type "]"                      -- array
          | "[" tup-field ("," tup-field)* "]"  -- tuple
          | "(" type ("," type)* ")" "->" type ("!" "{" name ("," name)* "}")?
          | name ("[" type ("," type)* "]")?    -- alias instantiation
-         | "int" | "float" | "string" | "bool" | "unit" | "any"
-tup-field ::= (name ":")? type               -- named (`x: float`) or unnamed
+         | "i32" | "i64" | "u32" | "u64" | "f32" | "f64"
+         | "string" | "bool" | "unit" | "any"
+tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
 ```
 
-- `int`, `float`, `string`, `bool`, `unit` — primitives. `int` and `float`
-  are distinct but **numeric-widen** together: an `int` may be used where a
-  `float` is expected and vice versa, and any numeric op on two ints yields
-  `int`, while a mix of `int`/`float` (or two `float`s) yields `float`.
+- `i32 i64 u32 u64 f32 f64` — the six **numeric widths**. `string`, `bool`,
+  `unit` are the other primitives.
+  - **Arithmetic is strict per width**: both operands of a numeric op must
+    have the same width; `i32 + i64` is a type error. Comparisons and
+    equality likewise require equal widths.
+  - **Untyped literals flex**: a num literal (`1`, `1.5`) carries an
+    internal untyped-int / untyped-float type that accepts any numeric (resp.
+    float) context; unconstrained it defaults to `i64` / `f64`. So
+    `let x: i32 = 1` works, `sqrt(100)` works, but `let x: i32 = 1.5` is
+    rejected (a float literal never narrows to an int width).
+  - **@as(expr, T)** is the one explicit conversion between widths (and from
+    `bool`): float → int truncates toward zero, bool → numeric gives `0/1`,
+    every other conversion preserves the value. `@as` targets must be one of
+    the six widths.
+  - **Runtime semantics**: `f32` values round to f32 precision after every
+    producing step (`0.1f32 + 0.2f32 == 0.30000001192092896`); `u32`/`u64`
+    hold unsigned ranges (operands must stay non-negative); `i64`/`u64` are
+    exact up to 2^53 (values are JS numbers under the hood; there is no
+    wraparound).
 - `[T]` — array of `T` (homogeneous).
 - `[T1, ..., Tn]` — **tuple**: fixed arity, positional field types. Fields
-  may be named (`[x: float, y: float]`) or unnamed (`[int, string]`); names
+  may be named (`[x: f64, y: f64]`) or unnamed (`[i64, string]`); names
   are for access only and ignored by unification, which compares arity and
   positional types. `[T]` (one element, no comma) is an array, not a 1-tuple.
 - `type Name(p1, ..., pn) = T;` declares a **parametric type alias**. Use it
@@ -248,7 +267,7 @@ tup-field ::= (name ":")? type               -- named (`x: float`) or unnamed
   is an escape hatch, the checker **warns** when a `let` binding's
   *inferred* type contains `any` (e.g. `let f = list` infers `(any) -> [any]`);
   writing an explicit annotation (`let f: (any) -> [any] = list`) silences the
-  warning. Array literals like `[1,2,3]` are special-cased to `[int]` and do
+  warning. Array literals like `[1,2,3]` are special-cased to `[i64]` and do
   not trigger it.
 
 ### 3.2 Type variables and unification
@@ -267,7 +286,7 @@ tup-field ::= (name ":")? type               -- named (`x: float`) or unnamed
 
 ### 3.3 Inference rules
 
-- `num : int`/`float` (by whether the literal has a `.`), `str : string`, `bool : bool`, `unit : unit`.
+- `num` : untyped int / untyped float (by whether the literal has a `.`); each accepts any numeric (resp. float) context and defaults to `i64`/`f64`. `str : string`, `bool : bool`, `unit : unit`.
 - `name : Γ(name)` (or a fresh instantiation if `Γ(name)` is a polymorphic scheme).
 - `[a, b, c]` : `[T]` where all element types unify with a single fresh `T`
   (homogeneous → array). If they do **not** unify, the literal is a tuple
@@ -294,7 +313,7 @@ tup-field ::= (name ":")? type               -- named (`x: float`) or unnamed
   agree). `if` with no `else` has an implicit `unit` else branch.
 - `f(a1, ..., an)` — `f : (T1,...,Tn) -> R ! {E}`, each `ai : Ti`, the call has type `R` and adds `E` to the caller's effects. Mismatched arity or argument types are errors.
 - **Effect rows are unified, not just propagated.** A function's `! { ... }` is a row: a concrete set of effect names, or an unbound *effect variable*. Two function types unify their effect rows by union-find: variable+variable unions, variable+set binds, set+set requires equality. The empty set `∅` is the polymorphic bottom — a function typed `... ! ∅` may be used wherever any effect set is expected (it is refined to the other set) — so unannotated higher-order parameters stay flexible without let-generalization.
-- **Higher-order builtins are effect-polymorphic.** `map : ((a) -> b ! e, [a]) -> [b] ! e`, `each : ((a, int) -> b ! e, [a]) -> unit ! e`, `flatmap : ((a, int) -> [b] ! e, [a]) -> [b] ! e` — each with a fresh effect variable `e` per instantiation, shared between the callback's effect row and the call's performed effects. So `map(pureF, xs)` performs `∅` while `map(fn(x){ Out!(x); x }, xs)` performs exactly `{ Out }` — neither over- nor under-approximated.
+- **Higher-order builtins are effect-polymorphic.** `map : ((a) -> b ! e, [a]) -> [b] ! e`, `each : ((a, i64) -> b ! e, [a]) -> unit ! e`, `flatmap : ((a, i64) -> [b] ! e, [a]) -> [b] ! e` — each with a fresh effect variable `e` per instantiation, shared between the callback's effect row and the call's performed effects. So `map(pureF, xs)` performs `∅` while `map(fn(x){ Out!(x); x }, xs)` performs exactly `{ Out }` — neither over- nor under-approximated.
 - `Op!(a1, ..., an)` — requires a declared `effect Op(p1,...): ret`; each `ai : pi`; the expression has type `ret` and adds `Op` to the effects.
 - `handle { body } case Return(v) => k { rb } case Op(pi) => k { ob } ...`
   - The body is inferred with its own effect set `B`.
@@ -330,32 +349,32 @@ tup-field ::= (name ":")? type               -- named (`x: float`) or unnamed
 
 | Operator    | Type                              |
 |-------------|-----------------------------------|
-| `- * / %`   | `(int, int) -> int` / `(float, _) -> float` | numeric widening. |
-| `+`         | `(int, int) -> int` / `(float, _) -> float` / `(string, string) -> string` | overloaded: numeric widening, or string concatenation. Mixed `"a" + 1` is a type error. |
-| `< > <= >=` | `(_num, _num) -> bool`        | numeric widening on operands. |
-| `== !=`     | `(T, T) -> bool`              | Both operands must share a type `T` (numeric widening still lets `int ~ float`); cross-type comparisons like `"a" == 1` are rejected. Not first-class — cannot be passed as a function value. |
+| `- * / %`   | `(T, T) -> T` for each width `T`  | strict same-width; `@as` converts. |
+| `+`         | `(T, T) -> T` / `(string, string) -> string` | overloaded: numeric (strict same-width, untyped literals flex), or string concatenation. Mixed `"a" + 1` is a type error. |
+| `< > <= >=` | `(T, T) -> bool` per numeric width `T` | strict same-width operands. |
+| `== !=`     | `(T, T) -> bool`              | Both operands must share a type `T` (untyped literals flex, concrete widths are strict — `i32 == i64` is an error); cross-type comparisons like `"a" == 1` are rejected. Not first-class — cannot be passed as a function value. |
 
-Unary `-` (neg) : numeric, shares the widening rule (`int` in → `int` out, `float` in → `float` out). Unary `!` (not) : `(bool) -> bool`.
+Unary `-` (neg) : numeric, width-preserving (`i32` in → `i32` out). Unary `!` (not) : `(bool) -> bool`.
 
-`/` is **type-preserving and truncates toward zero** for `int / int` (`7 / 2 == 3`, `-7 / 2 == -3`); `float / float` is exact (`7.0 / 2.0 == 3.5`).
-The type checker stamps each `/` node as int or float division at check time (the runtime sees untyped JS numbers and cannot tell `7` from `7.0`).
+`/` is **type-preserving and truncates toward zero** for integer widths (`7 / 2 == 3`, `-7 / 2 == -3`); float division is exact (`7.0 / 2.0 == 3.5`).
+The type checker stamps each `/` node as integer or float division at check time (the runtime sees untyped JS numbers and cannot tell `7` from `7.0`).
 
 ### 4.2 Functions
 
 | Name      | Type (schematic)                | Notes |
 |-----------|---------------------------------|-------|
-| `list`    | `(any) -> [any]`                | Variadic array constructor. Explicit `list(1,2,3)` is `[int]`; bracket literals `[1,2,3]` are typed directly (array if homogeneous, else tuple). |
+| `list`    | `(any) -> [any]`                | Variadic array constructor. Explicit `list(1,2,3)` is `[i64]`; bracket literals `[1,2,3]` are typed directly (array if homogeneous, else tuple). |
 | `head`    | `([A]) -> A`                    | First element. |
 | `tail`    | `([A]) -> [A]`                  | All but first. |
 | `concat`  | `([A], [A]) -> [A]`             | Append; both arrays share element type `A`. |
 | `flat`    | `([[A]]) -> [A]`                | Flatten one level. |
-| `len`     | `([A]) -> int`                  | Array length. |
-| `strlen` | `(string) -> int`               | String length. |
+| `len`     | `([A]) -> i64`                  | Array length (untyped-int result: defaults to i64). |
+| `strlen` | `(string) -> i64`               | String length. |
 | `map`     | `((A) -> B, [A]) -> [B]`        | Apply; fresh `A`/`B` per use. |
-| `get`     | `([A], int) -> A`               | Array index. |
-| `set`     | `([A], int, A) -> unit`         | Array index assignment (mutates). |
-| `each`    | `((A, int) -> B, [A]) -> unit`  | Iterate with index; result discarded. |
-| `flatmap` | `((A, int) -> [B], [A]) -> [B]` | Map-then-concat. |
+| `get`     | `([A], i64) -> A`               | Array index; indices are `i64` (untyped int literals flex). |
+| `set`     | `([A], i64, A) -> unit`         | Array index assignment (mutates). |
+| `each`    | `((A, i64) -> B, [A]) -> unit`  | Iterate with index; result discarded. |
+| `flatmap` | `((A, i64) -> [B], [A]) -> [B]` | Map-then-concat. |
 
 ### 4.3 Math, I/O
 
@@ -364,15 +383,15 @@ process control is via the `Exit`/`Wait` effects (§4.4), not functions.
 
 | Name      | Type (schematic)                | Notes |
 |-----------|---------------------------------|-------|
-| `PI`      | `float`                         | `Math.PI`. |
-| `cos`     | `(float) -> float`              | Cosine (radians). |
-| `sin`     | `(float) -> float`              | Sine (radians). |
-| `abs`     | `(float) -> float`              | Absolute value. |
-| `round`   | `(float) -> int`                | Round to nearest int. |
-| `sqrt`   | `(float) -> float`              | Square root. |
-| `range`   | `(int, int, int) -> [int]`      | `range(start, end, step)`: half-open; `step` may be negative. |
-| `char`    | `(int) -> string`               | Code point → single-char string. |
-| `number`  | `(string) -> float`             | Parse a string to a number. |
+| `PI`      | `f64`                         | `Math.PI`. |
+| `cos`     | `(f64) -> f64`              | Cosine (radians). |
+| `sin`     | `(f64) -> f64`              | Sine (radians). |
+| `abs`     | `(f64) -> f64`              | Absolute value. |
+| `round`   | `(f64) -> i64`                | Round to nearest int. |
+| `sqrt`   | `(f64) -> f64`              | Square root. |
+| `range`   | `(i64, i64, i64) -> [i64]`      | `range(start, end, step)`: half-open; `step` may be negative. |
+| `char`    | `(i64) -> string`               | Code point → single-char string. |
+| `number`  | `(string) -> f64`             | Parse a string to a number. |
 | `args`    | `() -> [string]`                | CLI args after the source file. |
 
 `each`/`flatmap`/`map` take the function **first**, matching `map`.
@@ -388,9 +407,9 @@ These are pre-declared like user effects and invoked with the `!` postfix. With 
 | `Write`   | `(path: string, content: string): unit` | `writeFileSync` the path. |
 | `Println` | `(v: any): unit`           | `console.log(show(v))` — print a value + newline. |
 | `Out`     | `(s: string): unit`        | `process.stdout.write(s)` — raw string, no newline. |
-| `Exit`    | `(code: int): unit`        | `process.exit(code)` — terminates without resuming. |
-| `Wait`    | `(secs: int): unit`        | Busy-wait `secs` seconds then resume with unit (synchronous evaluator). |
-| `Random`  | `(): float`                | Resume with a random number in [0, 1) (`Math.random()`; a seeded PRNG when the `EF_RANDOM_SEED` env var is set to an integer). |
+| `Exit`    | `(code: i64): unit`        | `process.exit(code)` — terminates without resuming. |
+| `Wait`    | `(secs: i64): unit`        | Busy-wait `secs` seconds then resume with unit (synchronous evaluator). |
+| `Random`  | `(): f64`                | Resume with a random number in [0, 1) (`Math.random()`; a seeded PRNG when the `EF_RANDOM_SEED` env var is set to an integer). |
 
 ```js
 # Println is an ordinary effect: a handler can capture it instead of printing.
@@ -417,18 +436,18 @@ handle {
 ```ts
 function run(src: string): Value;      // typecheck then evaluate; throws on type error
 function show(v: Value): string;       // pretty-print a value; closures print as `[fn: <type>]`
-function typeOf(src: string): string;  // inferred type of the last expression, e.g. "(int) -> int ! { Emit }"
+function typeOf(src: string): string;  // inferred type of the last expression, e.g. "(i64) -> i64 ! { Emit }"
 function repl(): void;                 // interactive REPL with persistent bindings
 ```
 
-A type error is a thrown `Error` whose message contains the mismatch (e.g.  `at line 1, col 1: Type mismatch:\ngot : int\nexpected : string`, `arity 1 ≠ 2`, `Unknown effect Nope`, `effect Emit not declared in signature`).
+A type error is a thrown `Error` whose message contains the mismatch (e.g.  `at line 1, col 1: Type mismatch:\ngot : i64\nexpected : string`, `arity 1 ≠ 2`, `Unknown effect Nope`, `effect Emit not declared in signature`).
 
 ## 7. Examples
 
 ### Nondeterminism (multi-shot resume)
 
 ```js
-effect Choose(opts: [int]): int;
+effect Choose(opts: [i64]): i64;
 handle {
   let x = Choose!([1, 2, 3]);
   let y = Choose!([10, 20]);
@@ -442,20 +461,20 @@ handle {
 
 ```js
 type Point(a) = [x: a, y: a];
-let p: Point[float] = [1.0, 2.0];
+let p: Point[f64] = [1.0, 2.0];
 let [x, y] = p;
 [x, p.x + p.y]
 # [1, 3]
 ```
 
-`type Point(a) = [x: a, y: a];` declares a parametric alias; `Point[float]`
-substitutes `a = float`. The literal `[1.0, 2.0]` is typed against the
-annotated tuple `[x: float, y: float]`, so `p.x` and `p.y` are `float`.
+`type Point(a) = [x: a, y: a];` declares a parametric alias; `Point[f64]`
+substitutes `a = f64`. The literal `[1.0, 2.0]` is typed against the
+annotated tuple `[x: f64, y: f64]`, so `p.x` and `p.y` are `f64`.
 
 ### Exceptions (non-resuming handler)
 
 ```js
-effect Div(a: int, b: int): int;
+effect Div(a: i64, b: i64): i64;
 handle {
   let r = Div!(10, 0);
   [r]
@@ -468,8 +487,8 @@ handle {
 ### Threading a log across resumes
 
 ```js
-effect Log(msg: int): unit;
-effect Result(v: int): unit;
+effect Log(msg: i64): unit;
+effect Result(v: i64): unit;
 handle {
   Log!(1);
   Log!(2);
@@ -493,7 +512,7 @@ handle {
 ### Recursion with a typed signature
 
 ```js
-let fact = fn(n: int): int {
+let fact = fn(n: i64): i64 {
   if (n == 0) { 1 } else { n * fact(n - 1) }
 };
 fact(5)
@@ -503,10 +522,10 @@ fact(5)
 ### Short-circuit and an effectful signature
 
 ```js
-effect Emit(m: int): int;
-let ask = fn(n: int): int ! { Emit } { Emit!(n) };
+effect Emit(m: i64): i64;
+let ask = fn(n: i64): i64 ! { Emit } { Emit!(n) };
 ask
-# typeOf → "(int) -> int ! { Emit }"
+# typeOf → "(i64) -> i64 ! { Emit }"
 ```
 
 ### Builtin effects (default handler does real I/O)
@@ -552,7 +571,7 @@ ABI: every value is a WasmGC `anyref` (unit = null ref, bool = i31, number/strin
 
 - `unused-arg` — a function parameter never referenced in the body. Scope-aware: a name shadowed by an inner lambda parameter or a `let` binding (or a handler-case parameter / `resume`) does not count as a use of the outer argument. Named functions (`let` of a `fn`) are reported as `function \`name\``; bare lambdas as `anonymous function`.
 
-The REPL parses each line as a complete program; `let`/`effect` bindings accumulate across lines (both the runtime env and the type env persist). A bare expression prints both value and inferred type, e.g. `1 + 2` → `3 : int`.
+The REPL parses each line as a complete program; `let`/`effect` bindings accumulate across lines (both the runtime env and the type env persist). A bare expression prints both value and inferred type, e.g. `1 + 2` → `3 : i64`.
 Type `:q` to quit.
 
 ## 9. Examples on disk

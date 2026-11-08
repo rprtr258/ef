@@ -173,6 +173,9 @@ export function emitLambdas(em: Emit, id: ExprID): void {
     case "field":
       emitLambdas(em, e.obj);
       break;
+    case "as":
+      emitLambdas(em, e.e);
+      break;
     case "handle":
       emitLambdas(em, e.body);
       for (const c of e.cases) emitLambdas(em, c.body);
@@ -1198,6 +1201,29 @@ function fragV(em: Emit, id: ExprID, f: Fn): ValueRef {
 }
 
 export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = INLINE): ValueRef {
+  const r = exprInner(em, id, f, sc, tail, ctx);
+  // f32 precision: the checker stamps every node whose type is f32; round
+  // its value through f32 (f64 -> f32 -> f64) exactly like the interpreter's
+  // Math.fround, so f32 arithmetic never observes a wider intermediate.
+  // Statics stay shared with f64 uses of the same literal — the rounded copy
+  // lands in a fresh local.
+  const en = em.nodes[id] as Expr & { f32?: true };
+  if (en.f32 === true && (r.k === "g" || r.k === "local" || r.k === "snapSlot" || r.k === "slot")) {
+    const v = f.anyref();
+    f.pushRef(r);
+    f.body.refCast(0, false);
+    f.body.structGet(0, 0);
+    f.body.u8(w.F32_DEMOTE);
+    f.body.u8(w.F64_PROMOTE);
+    f.body.u8(w.CALL);
+    f.body.lebU(em.ix.fBox);
+    f.body.localSet(v);
+    return {k: "local", l: v};
+  }
+  return r;
+}
+
+function exprInner(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = INLINE): ValueRef {
   const e = em.nodes[id];
   // Lambda/block nodes carry their own scope; other nodes inherit sc.
   const s = em.d.scopes.get(id) ?? sc;
@@ -1397,6 +1423,29 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
       b.refCast(1, true);
       b.structNew(3); // $ARR wrapper
       const v = f.anyref();
+      b.localSet(v);
+      return {k: "local", l: v};
+    }
+    case "as": {
+      // @as conversion. Value-preserving widths forward the child ref;
+      // float -> int truncates toward zero; bool -> numeric converts the
+      // i31 bool; an f32 target rounds via this node's f32 stamp in the
+      // expr() wrapper.
+      const v = f.anyref();
+      const childRef = expr(em, e.e, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
+      if (e.asKind === undefined) return childRef;
+      f.pushRef(childRef);
+      if (e.asKind === "trunc") {
+        b.refCast(0, false);
+        b.structGet(0, 0);
+        b.u8(w.FTRUNC);
+      } else {
+        b.refCast(w.I31REF, false); // boolnum: i31 bool payload -> f64 0/1
+        b.i31Get();
+        b.u8(w.CONV_I32);
+      }
+      b.u8(w.CALL);
+      b.lebU(em.ix.fBox);
       b.localSet(v);
       return {k: "local", l: v};
     }

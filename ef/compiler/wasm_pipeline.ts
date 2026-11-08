@@ -265,6 +265,9 @@ export function discover(prog: Program): Discovery {
         rec(e.obj, sc);
         d.strLits.set(e.name, -1); // for the out-of-bounds message
         break;
+      case "as":
+        rec(e.e, sc);
+        break;
       case "perform":
         for (const a of e.args) rec(a, sc);
         break;
@@ -391,6 +394,9 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
       case "field":
         assignLambdas(e.obj);
         break;
+      case "as":
+        assignLambdas(e.e);
+        break;
       case "handle":
         assignLambdas(e.body);
         for (const c of e.cases) assignLambdas(c.body);
@@ -473,6 +479,9 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
         }
         case "field":
           walk(e.obj, frame);
+          break;
+        case "as":
+          walk(e.e, frame);
           break;
         case "perform": {
           ix.spillOf.set(id, frame.slots + (ix.spillTotals.get(frame) ?? 0));
@@ -653,6 +662,8 @@ export function splits(prog: Program, d: Discovery, id: ExprID): boolean {
       return e.elems.some(el => splits(prog, d, el));
     case "field":
       return splits(prog, d, e.obj);
+    case "as":
+      return splits(prog, d, e.e);
     default:
       return false; // num/str/bool/unit/sym
   }

@@ -1,0 +1,4 @@
+main :: fn(): i32 {
+  p: [x: i32, y: i32] = [x: 3, y: 4];
+  return p.x * p.x + p.y * p.y;
+};

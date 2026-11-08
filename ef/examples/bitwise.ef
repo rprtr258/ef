@@ -1,0 +1,27 @@
+# Numeric widths: ef has six — i32, i64, u32, u64, f32, f64. Arithmetic
+# between distinct widths is a type error; @as(expr, T) converts (float ->
+# int truncates toward zero, bool -> numeric gives 0/1, the rest preserve
+# the value). Untyped literals (`1`, `1.5`) flex to whatever numeric
+# context demands and default to i64 / f64.
+
+let check_bool = fn(): bool {
+  let a = true && false;  # false
+  let b = true || false;  # true
+  let c = true != false;  # bool xor: true
+  !a && b && c            # !false && true && true -> true
+};
+
+let check_i32 = fn(): i32 {
+  let d = 4 * 2;  # left shift by 1: 8
+  let e = 8 / 2;  # right shift by 1: 4
+  d + e
+};
+
+let check_i64 = fn(): i64 {
+  let d = 4 * 2;  # 8
+  let e = 8 / 2;  # 4
+  d + e
+};
+
+# the widths must agree: the i64 checks convert with @as before summing
+(if (check_bool()) { 1 } else { 0 }) + check_i32() + @as(check_i64(), i32)

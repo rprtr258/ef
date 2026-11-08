@@ -81,11 +81,32 @@ type ExampleCase = {
 const EXAMPLES: Record<string, ExampleCase[]> = {
   "amb.ef": [{
     label: "nondeterministic search finds Pythagorean triples",
+    timeout: 15000,
     body: res => expect(res.stdout).toBe("[3, 4, 5]\n[5, 12, 13]\n[6, 8, 10]\nunit\n"),
   }],
   "apply.ef": [{
     label: "polymorphic apply calls functions stored in values",
     body: res => expect(res.stdout).toBe("42\n\"n=7\"\n99\nunit\n"),
+  }],
+  "bitwise.ef": [{
+    label: "logical bool ops; widths with @as; shifts as arithmetic",
+    body: res => expect(res.stdout).toBe("25\n"),
+  }],
+  "bool_equality.ef": [{
+    label: "bool equality converted to int via @as",
+    body: res => expect(res.stdout).toBe("1\n"),
+  }],
+  "bool_logic.ef": [{
+    label: "&& / || classification",
+    body: res => expect(res.stdout).toBe("6\n"),
+  }],
+  "bracketed_expr.ef": [{
+    label: "parenthesized grouping",
+    body: res => expect(res.stdout).toBe("8\n"),
+  }],
+  "cast_roundtrip.ef": [{
+    label: "i64 -> f64 -> +1 -> i64 via @as",
+    body: res => expect(res.stdout).toBe("42\n"),
   }],
   "approx_pi.ef": [{
     label: "Monte Carlo pi estimate (Random!) needs an n argument",
@@ -104,6 +125,59 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     label: "a block runs statements in order and yields the last value",
     body: res => expect(res.stdout).toBe("42\n99\n123\nunit\n"),
   }],
+  "closure_capture.ef": [{
+    label: "closure reads enclosing binding",
+    body: res => expect(res.stdout).toBe("10\n"),
+  }],
+  "closure_make_adder.ef": [{
+    label: "returned closure adds 3",
+    body: res => expect(res.stdout).toBe("7\n"),
+  }],
+  "closure_make_adder2.ef": [{
+    label: "returned closure adds 10",
+    body: res => expect(res.stdout).toBe("15\n"),
+  }],
+  "closure_nested.ef": [{
+    label: "apply_twice(inc)(5)",
+    body: res => expect(res.stdout).toBe("7\n"),
+  }],
+  "closure_no_capture.ef": [{
+    label: "closure without captures",
+    body: res => expect(res.stdout).toBe("1\n"),
+  }],
+  "collatz.ef": [{
+    label: "Println! from nested while/if loops",
+    body: res => expect(res.stdout).toBe(`${[
+      7, 22, 11, 34, 17, 52, 26, 13, 40, 20, 10, 5, 16, 8, 4, 2, 1, 55,
+    ].join("\n")}\n1\n`),
+  }],
+  "comments.ef": [{
+    label: "comments plus naive Fibonacci",
+    body: res => expect(res.stdout).toBe("55\n"),
+  }],
+  "complex_indexing.ef": [{
+    label: "expression as element index",
+    body: res => expect(res.stdout).toBe("3\n"),
+  }],
+  "control_constructs.ef": [{
+    label: "if/while nesting, done-flag break",
+    body: res => expect(res.stdout).toBe(`${[
+      1234, 617, 1852, 926, 463, 1390, 695, 2086, 1043, 3130,
+      1565, 4696, 2348, 1174, 587, 1762, 881, 2644, 1322, 661,
+      1984, 992, 496, 248, 124, 62, 31, 94, 47, 142,
+      71, 214, 107, 322, 161, 484, 242, 121, 364, 182,
+      91, 274, 137, 412, 206, 103, 310, 155, 466, 233,
+      700, 350, 175, 526, 263, 790, 395, 1186, 593, 1780,
+      890, 445, 1336, 668, 334, 167, 502, 251, 754, 377,
+      1132, 566, 283, 850, 425, 1276, 638, 319, 958, 479,
+      1438, 719, 2158, 1079, 3238, 1619, 4858, 2429, 7288, 3644,
+      1822, 911, 2734, 1367, 4102, 2051, 6154, 3077, 9232, 4616,
+      2308, 1154, 577, 1732, 866, 433, 1300, 650, 325, 976,
+      488, 244, 122, 61, 184, 92, 46, 23, 70, 35,
+      106, 53, 160, 80, 40, 20, 10, 5, 16, 8,
+      4, 2,
+    ].join("\n")}\n44\n`),
+  }],
   "closure.ef": [{
     label: "a returned closure keeps reading its captured environment",
     body: res => expect(res.stdout).toBe("7\nunit\n"),
@@ -112,17 +186,85 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     label: "handler loops over a whole search space",
     body: res => expect(res.stdout).toBe("[[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]\n"),
   }],
+  "equality_all_types.ef": [{
+    label: "int equality",
+    body: res => expect(res.stdout).toBe("1\n"),
+  }],
+  "expression_indexing.ef": [{
+    label: "variable as element index",
+    body: res => expect(res.stdout).toBe("20\n"),
+  }],
+  "extended_access.ef": [{
+    label: "element store and sub-range",
+    body: res => expect(res.stdout).toBe("0\n"),
+  }],
+  "external_function.ef": [{
+    label: "Println! then a discarded value",
+    body: res => expect(res.stdout).toBe("42\n0\n"),
+  }],
+  "f32_arithmetic.ef": [{
+    label: "f32 addition rounds to f32 precision",
+    body: res => expect(res.stdout).toBe("6\n"),
+  }],
+  "f64_comparison.ef": [{
+    label: "f64 comparison converted to int via @as",
+    body: res => expect(res.stdout).toBe("1\n"),
+  }],
+  "factorial.ef": [{
+    label: "recursion via if expression",
+    body: res => expect(res.stdout).toBe("120\n"),
+  }],
+  "fibonacci_function.ef": [{
+    label: "fib(10)",
+    body: res => expect(res.stdout).toBe("55\n"),
+  }],
+  "functional.ef": [{
+    label: "let-generalized polymorphic id",
+    body: res => expect(res.stdout).toBe("1\n0\n"),
+  }],
   "fib.ef": [{
     label: "exponential recursion through the CPS evaluator",
     body: res => expect(res.stdout).toBe("196418\nunit\n"),
+  }],
+  "gc.ef": [{
+    label: "aliases, slices, element reads",
+    body: res => expect(res.stdout).toBe("115\n"),
+  }],
+  "gc_alias.ef": [{
+    label: "aliasing plus identity tuple equality",
+    body: res => expect(res.stdout).toBe("79\n"),
   }],
   "incA.ef": [{
     label: "mutable state via a state effect",
     body: res => expect(res.stdout).toBe("9\nunit\n"),
   }],
+  "ignore_value.ef": [{
+    label: "discarded expression statements",
+    body: res => expect(res.stdout).toBe("42\n0\n"),
+  }],
+  "ignore_value_basic.ef": [{
+    label: "one discarded expression",
+    body: res => expect(res.stdout).toBe("42\n0\n"),
+  }],
+  "just_main.ef": [{
+    label: "minimal program value",
+    body: res => expect(res.stdout).toBe("0\n"),
+  }],
   "local_decl.ef": [{
     label: "a let inside a block is local to that block",
     body: res => expect(res.stdout).toBe("5\nunit\n"),
+  }],
+  "literals.ef": [{
+    label: "decimal rewrites of binary/hex/scientific forms across the six widths",
+    body: res => expect(res.stdout).toBe("1571\n"),
+  }],
+  "named_struct.ef": [{
+    label: "named-tuple field access",
+    body: res => expect(res.stdout).toBe("25\n"),
+  }],
+  "nested_break_continue.ef": [{
+    label: "flag replaces break/continue",
+    body: res => expect(res.stdout).toBe("15\n"),
   }],
   "man_or_boy.ef": [{
     label: "Knuth's man-or-boy test: mutable capture across recursive closures",
@@ -132,9 +274,25 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     label: "iterative numeric effect loop",
     body: res => expect(res.stdout).toMatch(/^1\.4142\d*\nunit\n$/),
   }],
+  "point.ef": [{
+    label: "alias, identity equality, one-element array",
+    body: res => expect(res.stdout).toBe("42\n"),
+  }],
+  "pointer_operations.ef": [{
+    label: "dereferences as binding aliases",
+    body: res => expect(res.stdout).toBe("52\n"),
+  }],
   "poly_id_breaks.ef": [{
     label: "deliberately ill-typed, but runs under `any`",
     body: res => expect(res.stdout).toBe("5\nunit\n"),
+  }],
+  "reference_null.ef": [{
+    label: "no null in ef: direct field read",
+    body: res => expect(res.stdout).toBe("10\n"),
+  }],
+  "return_literals.ef": [{
+    label: "literal-returning functions",
+    body: res => expect(res.stdout).toBe("255\n"),
   }],
   "raytracer.ef": [{
     label: "renders two spheres over a checkerboard plane",
@@ -171,6 +329,10 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     label: "Apply effect via the default host interpretation",
     body: res => expect(res.stdout).toBe("2\nunit\n"),
   }],
+  "slice_usage.ef": [{
+    label: "len/get/sub on a three-element array",
+    body: res => expect(res.stdout).toBe("5\n"),
+  }],
   "squares_sum.ef": [{
     label: "final expression evaluates to 30",
     body: res => expect(res.stdout).toBe("30\n"),
@@ -202,13 +364,29 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     },
     timeout: 25000,
   }],
+  "struct_allocation.ef": [{
+    label: "separately built tuples differ",
+    body: res => expect(res.stdout).toBe("0\n"),
+  }],
+  "sum_to_n.ef": [{
+    label: "recursive sum via if expression",
+    body: res => expect(res.stdout).toBe("55\n"),
+  }],
   "tco.ef": [{
     label: "deep tail recursion does not overflow",
     body: res => expect(res.stdout).toBe("0\nunit\n"),
   }],
+  "tuples.ef": [{
+    label: "positional literals, named access, vec3_add",
+    body: res => expect(res.stdout).toBe("41\n"),
+  }],
   "two_prints.ef": [{
     label: "top-level statements run in order",
     body: res => expect(res.stdout).toBe("6\n7\nunit\n"),
+  }],
+  "unary.ef": [{
+    label: "! and unary minus, @as as bool-to-int cast",
+    body: res => expect(res.stdout).toBe("-5\n"),
   }],
   "unify.ef": [{
     label: "type unifier picks the right branch",

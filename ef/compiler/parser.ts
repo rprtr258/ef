@@ -1,6 +1,6 @@
 import {
   type FunT, type Type, type EffectSig, type Var, type TupField,
-  TINT, TFLOAT, TSTR, TBOOL, TNULL, TANY,
+  TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TNULL, TANY,
   tArr, tTup, tFun,
 } from "./types.ts";
 import {KEYWORDS, lex, type Pos, type Tok} from "./lexer.ts";
@@ -75,6 +75,7 @@ export type Expr =
   | { t: "perform", op: string, args: ExprID[], pos?: Pos }
   | { t: "handle", body: ExprID, cases: HandlerCase[], pos?: Pos }
   | { t: "app", fn: ExprID, args: ExprID[], div?: "int" | "float", pos?: Pos }
+  | { t: "as", e: ExprID, typ: Type, asKind?: "trunc" | "boolnum", f32?: true, pos?: Pos } // `@as(expr, T)` numeric cast; asKind stamped by the checker.
   | { t: "arr", elems: ExprID[], pos?: Pos } // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous.
   | { t: "field", obj: ExprID, name: string, idx?: number, pos?: Pos } // `obj.x` / `obj.0` field access; `idx` is resolved by the checker.
   | { t: "dlet", fields: { name: string, typ: Type | null }[], val: ExprID, pos?: Pos }; // `let [a, b] = val;` tuple/array destructuring bind.
@@ -356,8 +357,12 @@ export class Parser {
       return instantiateAlias(al, args);
     }
     switch (name) {
-      case "int": return TINT;
-      case "float": return TFLOAT;
+      case "i32": return TI32;
+      case "i64": return TI64;
+      case "u32": return TU32;
+      case "u64": return TU64;
+      case "f32": return TF32;
+      case "f64": return TF64;
       case "string": return TSTR;
       case "bool": return TBOOL;
       case "unit": return TNULL;
@@ -434,6 +439,18 @@ export class Parser {
     const t = this.peek();
     if (t === undefined) throw new Error("Unexpected EOF");
     const p = this.pos();
+    if (t === "@") {
+      // `@as(expr, T)` — the one explicit numeric cast.
+      this.next();
+      const name = this.next();
+      if (name !== "as") throw new Error(`Unknown @-form: @${name}`);
+      this.eat("(");
+      const e = this.parseExpr();
+      this.eat(",");
+      const typ = this.parseType();
+      this.eat(")");
+      return this.add({t: "as", e, typ, pos: p});
+    }
     if (/^-?\d/.test(t)) {
       this.next();
       return this.add({t: "num", v: Number(t), isFloat: t.includes("."), pos: p});

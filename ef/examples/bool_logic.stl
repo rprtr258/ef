@@ -1,0 +1,13 @@
+classify :: fn(a: i32, b: i32): i32 {
+  if a > 0 & b > 0 {
+    return 1;
+  }
+  if a > 0 | b > 0 {
+    return 2;
+  }
+  return 3;
+};
+
+main :: fn(): i32 {
+  return classify(1, 1) + classify(1, 0) + classify(0, 0);
+};

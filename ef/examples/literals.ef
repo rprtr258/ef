@@ -1,0 +1,25 @@
+# Numeric literals: ef literals are decimal only — no 0b/0x prefixes, no
+# type suffixes, no scientific notation. Each binding holds the decimal
+# value of a familiar binary/hex/scientific form, with that form in the
+# comment. Untyped literals default to i64 / f64; annotations pin the
+# other widths, and @as folds everything into one i32 sum.
+
+let bin_i32_untyped = 10;      # 0b1010 — untyped, used as i32 below
+let bin_i32: i32 = 10;         # 0b1010i32
+let bin_i64: i64 = 10;         # 0b1010i64
+let bin_u32: u32 = 10;         # 0b1010u32
+let bin_u64: u64 = 10;         # 0b1010u64
+
+let hex_i32_untyped = 255;     # 0xFF — untyped
+let hex_i32: i32 = 255;        # 0xFFi32
+let hex_i64: i64 = 255;        # 0xFFi64
+let hex_u32: u32 = 255;        # 0xFFu32
+let hex_u64: u64 = 255;        # 0xFFu64
+
+let sci_f32: f32 = 123.0;      # 1.23e2f32
+let sci_f64: f64 = 123.0;      # 1.23e2f64
+
+bin_i32_untyped + bin_i32 + @as(bin_i64, i32) + @as(bin_u32, i32) +
+@as(bin_u64, i32) + hex_i32_untyped + hex_i32 + @as(hex_i64, i32) +
+@as(hex_u32, i32) + @as(hex_u64, i32) +
+@as(round(sci_f32), i32) + @as(round(sci_f64), i32)

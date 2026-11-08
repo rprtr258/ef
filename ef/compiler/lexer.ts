@@ -3,7 +3,7 @@ export const KEYWORDS = new Set([
   "true", "false", "unit", "effect", "type",
 ]);
 const TWO = ["==", "!=", "<=", ">=", "&&", "||", "=>"];
-const ONE = "()[]{},;<>+-*/!=:%.";
+const ONE = "()[]{},;<>+-*/!=:%.@";
 
 // A source position: 1-indexed line and column.
 export type Pos = { line: number, col: number };

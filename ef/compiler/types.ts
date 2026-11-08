@@ -1,9 +1,16 @@
 import type {Expr, ExprID, Program} from "./parser";
 import {builtins} from "./builtins.ts";
-import {TANY, TBOOL, TFLOAT, TINT, TNULL, TSTR} from "./prims.ts";
+import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TNULL, TSTR} from "./prims.ts";
 
 export type Type = Prim | ArrT | TupT | FunT | Var | AnyT;
-export type Prim = { tag: "prim", name: "int" | "float" | "string" | "bool" | "unit" };
+export type NumName = "i32" | "i64" | "u32" | "u64" | "f32" | "f64" | "int" | "float";
+export type Prim = { tag: "prim", name: NumName | "string" | "bool" | "unit" };
+// "int" / "float" are the untyped numeric-literal types (produced only by
+// num literals): `1` accepts any numeric context and defaults to i64, `1.5`
+// any float context and defaults to f64. They are not writable in source.
+export const INT_NAMES = new Set<NumName>(["i32", "i64", "u32", "u64"]);
+export const FLOAT_NAMES = new Set<NumName>(["f32", "f64"]);
+const NUMERIC_NAMES = new Set<NumName>([...INT_NAMES, ...FLOAT_NAMES, "int", "float"]);
 export type ArrT = { tag: "arr", elem: Type };
 // Tuples: a fixed-arity record. `name` is null for unnamed fields (`[int, float]`)
 // or a label for named fields (`[x: float, y: float]`). Names are structural only
@@ -21,7 +28,7 @@ export type FunT = { tag: "fun", params: Type[], ret: Type, effs: Effs };
 export type Var = { tag: "var", id: number };
 export type AnyT = { tag: "any" };
 
-export {TINT, TFLOAT, TSTR, TBOOL, TNULL, TANY};
+export {TI32, TI64, TU32, TU64, TF32, TF64, TINT, TFLOAT, TSTR, TBOOL, TNULL, TANY};
 
 export function tArr(elem: Type): ArrT { return {tag: "arr", elem}; }
 export function tTup(fields: TupField[]): TupT { return {tag: "tup", fields}; }
@@ -217,12 +224,17 @@ export class Unifier {
     if (ra.tag === "var") { this.bindVar(ra.id, rb); return; }
     if (rb.tag === "var") { this.bindVar(rb.id, ra); return; }
     if (ra.tag === "prim" && rb.tag === "prim") {
-      // int and float are compatible: numeric widening lets an int flow where
-      // a float is expected and vice versa (value kept at runtime either way).
-      const nums = new Set(["int", "float"]);
-      if (ra.name !== rb.name && !(nums.has(ra.name) && nums.has(rb.name)))
-        throw this.typeMismatch(ra, rb);
-      return;
+      // Numeric compatibility: untyped literals are wildcards — `1` accepts
+      // any numeric context, `1.5` only float contexts (f32/f64, or the
+      // untyped-int side of mixed literal arithmetic). Concrete widths are
+      // strict: i32 ~ i64 is a type error, use @as to convert.
+      const an = ra.name as NumName, bn = rb.name as NumName;
+      if (an === bn) return;                               // exact: i32 ~ i32, string ~ string, ...
+      if (an === "int" && NUMERIC_NAMES.has(bn)) return;   // `1` -> any numeric
+      if (bn === "int" && NUMERIC_NAMES.has(an)) return;
+      if (an === "float" && (bn === "float" || FLOAT_NAMES.has(bn))) return;  // `1.5` -> f32/f64
+      if (bn === "float" && (an === "float" || FLOAT_NAMES.has(an))) return;
+      throw this.typeMismatch(ra, rb);
     }
     if (ra.tag === "arr" && rb.tag === "arr") { this.unify(ra.elem, rb.elem); return; }
     if (ra.tag === "tup" && rb.tag === "tup") {
@@ -323,7 +335,7 @@ export function showT(t: Type): string {
   const names = new Map<number, string>();
   const go = (t: Type): string => {
     switch (t.tag) {
-      case "prim": return t.name;
+      case "prim": return t.name === "int" ? "i64" : t.name === "float" ? "f64" : t.name;
       case "arr": return "[" + go(t.elem) + "]";
       case "tup":
         return "[" + t.fields.map(f =>
@@ -467,45 +479,63 @@ function fieldIndex(name: string): number | null {
   return /^[0-9]+$/.test(name) ? Number(name) : null;
 }
 
-// Operators handled by special-casing in `infer` (numeric widening / same-type
+// Operators handled by special-casing in `infer` (strict numeric ops /
+// same-type
 // equality), not via the generic function-application path. `+` is NOT here —
 // it is overloaded with string concatenation (see `plusType`).
 const NUMOPS = new Set(["-", "*", "/", "%"]);
 const CMPOPS = new Set(["<", ">", "<=", ">="]);
 
-// Equality ops require both operands to share a type (numeric widening still
-// lets `int ~ float`); cross-type comparisons like `"a" == 1` are rejected.
+// Equality ops require both operands to share a type (untyped literals
+// flex, concrete widths are strict); cross-type comparisons like `"a" == 1` are rejected.
 const EQOPS = new Set(["==", "!="]);
 function isNum(t: Type): t is Prim {
-  return t.tag === "prim" && (t.name === "int" || t.name === "float");
+  return t.tag === "prim" && NUMERIC_NAMES.has(t.name as NumName);
 }
 // `==` / `!=` are special-cased in `infer` (see EQOPS): they are NOT installed
 // as ordinary `(any, any) -> bool` function bindings, so they can't be used as
 // first-class values and can't silently compare unrelated types.
+
+// Numeric op result under strict same-type arithmetic: untyped literals
+// (`int`/`float` names) are wildcards that take the other side's concrete
+// width (float literal wins between two wildcards); two distinct concrete
+// widths are a type error — @as converts explicitly.
+function numericResult(u: Unifier, ra: Type, rb: Type, op: string): Type {
+  if (isNum(ra) && rb.tag === "var") { u.unify(rb, ra); return ra; }
+  if (isNum(rb) && ra.tag === "var") { u.unify(ra, rb); return rb; }
+  if (ra.tag === "var" && rb.tag === "var") { u.unify(ra, rb); return u.res(ra); }
+  if (ra.tag === "var") { u.unify(ra, TINT); return TINT; }
+  if (rb.tag === "var") { u.unify(rb, TINT); return TINT; }
+  if (ra.tag === "prim" && rb.tag === "prim") {
+    const na = ra.name as NumName, nb = rb.name as NumName;
+    if (na === "int" || na === "float") {
+      if (nb === "int" || nb === "float")
+        return na === "float" || nb === "float" ? TFLOAT : TINT;
+      return rb;                                  // concrete width wins
+    }
+    if (nb === "int" || nb === "float") return ra;
+    if (na === nb) return ra;                     // strict same-width
+    throw new TypeError_(`${op}: ${showT(ra)} and ${showT(rb)} are different numeric widths (use @as to convert)`);
+  }
+  throw new TypeError_(`${op}: ${showT(ra)} and ${showT(rb)} are not numeric`);
+}
 
 // Unify two operand types under a numeric op and return the widened result
 // (float if either side is float, else int; `any` if either is `any`).
 function numeric(u: Unifier, a: Type, b: Type, op: string): Type {
   const ra = u.res(a), rb = u.res(b);
   if (ra.tag === "any" || rb.tag === "any") return TANY;
-  if (isNum(ra) && isNum(rb))
-    return ra.name === "float" || rb.name === "float" ? TFLOAT : TINT;
-  if (isNum(ra) && rb.tag === "var") { u.unify(rb, ra); return ra; }
-  if (isNum(rb) && ra.tag === "var") { u.unify(ra, rb); return rb; }
-  if (ra.tag === "var" && rb.tag === "var") { u.unify(ra, rb); return u.res(ra); }
-  if (ra.tag === "var") { u.unify(ra, TINT); return TINT; }
-  if (rb.tag === "var") { u.unify(rb, TINT); return TINT; }
-  throw new TypeError_(`${op}: ${showT(ra)} and ${showT(rb)} are not numeric`);
+  return numericResult(u, ra, rb, op);
 }
 
-// `+` is overloaded: num+num (numeric widening) or string+string -> string.
-// Mixed (`"a" + 1`) is a type error. `any` on either side stays `any`.
+// `+` is overloaded: num+num (strict same-width, untyped literals flex) or
+// string+string -> string. Mixed (`"a" + 1`) is a type error. `any` on either
+// side stays `any`.
 function plusType(u: Unifier, a: Type, b: Type): Type {
   const ra = u.res(a), rb = u.res(b);
   if (ra.tag === "any" || rb.tag === "any") return TANY;
   const sa = isNum(ra), sb = isNum(rb);
-  if (sa && sb)
-    return ra.name === "float" || rb.name === "float" ? TFLOAT : TINT;
+  if (sa && sb) return numericResult(u, ra, rb, "+");
   const stra = ra.tag === "prim" && ra.name === "string";
   const strb = rb.tag === "prim" && rb.name === "string";
   if (stra && strb) return TSTR;
@@ -518,8 +548,23 @@ function plusType(u: Unifier, a: Type, b: Type): Type {
 }
 
 // infer: returns the type, side-effecting `effs` with performed effects.
-// `id` indexes into the program's flat node slice `nodes`.
+// `id` indexes into the program's flat node slice `nodes`. Every node whose
+// type resolves to f32 is stamped `f32` — the evaluator and the wasm backend
+// round such nodes' values to f32 precision, so f32 arithmetic never observes
+// a wider intermediate.
 function infer(
+  id: ExprID,
+  nodes: Expr[],
+  env: Env,
+  effs: Set<string>,
+  effects: Map<string, EffectSig>,
+): Type {
+  const t = inferNode(id, nodes, env, effs, effects);
+  if (t.tag === "prim" && t.name === "f32") (nodes[id] as Expr & {f32?: true}).f32 = true;
+  return t;
+}
+
+function inferNode(
   id: ExprID,
   nodes: Expr[],
   env: Env,
@@ -596,6 +641,25 @@ function infer(
     }
     case "arr":
       return inferArr(id, nodes, null, env, effs, effects);
+    // `@as(expr, T)`: the one explicit numeric cast. Numeric widths only;
+    // float -> int truncates toward zero, bool -> numeric gives 0/1, and
+    // everything else is value-preserving (an f32 target rounds via the
+    // node's generic f32 stamp; i32 -> i64 and f32 -> f64 are no-ops).
+    case "as": {
+      const at = env.uni.res(infer(e.e, nodes, env, effs, effects));
+      const target = e.typ;
+      if (target.tag !== "prim" || target.name === "int" || target.name === "float" || !NUMERIC_NAMES.has(target.name as NumName))
+        throw new TypeError_(`@as: target must be a numeric width (i32 i64 u32 u64 f32 f64), got ${showT(target)}`);
+      const srcOk = at.tag === "any" || (at.tag === "prim" && (NUMERIC_NAMES.has(at.name as NumName) || at.name === "bool"));
+      if (!srcOk)
+        throw new TypeError_(`@as: cannot cast ${showT(at)} to ${showT(target)}`);
+      const tn = target.name as NumName;
+      if (INT_NAMES.has(tn) && at.tag === "prim" && (FLOAT_NAMES.has(at.name as NumName) || at.name === "float"))
+        e.asKind = "trunc";
+      else if (at.tag === "prim" && at.name === "bool")
+        e.asKind = "boolnum";
+      return target;
+    }
     // `obj.x` / `obj.0`: resolve the field index from the (tuple or array)
     // element type and stamp it on the node for the evaluator.
     case "field": {
@@ -729,7 +793,7 @@ function infer(
         for (const a of e.args) env.uni.unify(elem, infer(a, nodes, env, effs, effects));
         return tArr(env.uni.res(elem));
       }
-      // `+` is overloaded: numeric widening or string concatenation.
+      // `+` is overloaded: strict numeric arithmetic or string concatenation.
       if (fn.t === "sym" && fn.v === "+") {
         const at = infer(e.args[0], nodes, env, effs, effects);
         const bt = infer(e.args[1], nodes, env, effs, effects);
@@ -746,15 +810,22 @@ function infer(
         // float/float -> float, and any-operand -> float (don't truncate
         // unknowns). The checker stamps which division this is on the node so
         // the evaluator (which sees untyped JS numbers) knows whether to truncate.
-        if (fn.v === "/") { e.div = widened === TINT ? "int" : "float"; return widened; }
+        if (fn.v === "/") {
+          // Division mode from the (strict) operand type: an untyped-literal
+          // or int-width result divides as integers, everything else as float.
+          const rw = env.uni.res(widened);
+          e.div = rw.tag === "prim" && (INT_NAMES.has(rw.name as NumName) || rw.name === "int") ? "int" : "float";
+          return widened;
+        }
         return widened;
       }
       if (fn.t === "sym" && fn.v === "neg") {
         const at = infer(e.args[0], nodes, env, effs, effects);
         return numeric(env.uni, at, at, "neg");
       }
-      // Equality: both operands must share a type (numeric widening lets
-      // `int ~ float`). Cross-type (`"a" == 1`) is a type error.
+      // Equality: both operands must share a type (untyped literals flex,
+      // concrete widths are strict — `i32 == i64` is an error). Cross-type
+      // (`"a" == 1`) is a type error.
       if (fn.t === "sym" && EQOPS.has(fn.v)) {
         const at = infer(e.args[0], nodes, env, effs, effects);
         const bt = infer(e.args[1], nodes, env, effs, effects);

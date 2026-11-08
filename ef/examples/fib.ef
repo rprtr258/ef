@@ -1,7 +1,7 @@
 # Naive doubly-recursive Fibonacci (the classic benchmark probe):
 # fib(n) = n for n < 2, else fib(n-1) + fib(n-2); prints fib(27).
 
-let fib = fn(n: int): int {
+let fib = fn(n: i64): i64 {
   if (n < 2) { n } else { fib(n - 1) + fib(n - 2) }
 };
 

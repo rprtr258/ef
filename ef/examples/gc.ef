@@ -1,0 +1,28 @@
+# Heap data: named tuples, arrays, and identity equality. ef has no
+# explicit pointers — a binding alias shares the object, and == on tuples
+# compares identity, so an aliased tuple equals its alias but a separately
+# built one does not. Arrays grow with concat and report their length
+# with len.
+
+let test_parser = fn(): i64 {
+  let x = 42;
+  let y = x;  # plain binding: ints are copied, not aliased
+  let slice: [i64] = [];
+  slice = concat(slice, [42]);  # append 42
+  let len_ = len(slice);
+  y
+};
+
+let test_basic = fn(): i64 {
+  let point: [x: i64, y: i64] = [10, 20];
+  let x_val = point.x;
+  let y_val = point.y;
+  let slice: [i64] = [];
+  let slice_len = len(slice);
+  let slice2 = concat(slice, [42]);  # append 42
+  let new_len = len(slice2);
+  let elem = get(slice2, 0);
+  x_val + y_val + slice_len + new_len + elem
+};
+
+test_parser() + test_basic()

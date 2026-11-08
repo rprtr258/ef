@@ -1,0 +1,28 @@
+index.log :: fn(msg: i32): void;
+
+fib :: fn(n: i32): i32 {
+  if n <= 1 {
+    return n;
+  }
+  return fib(n - 1) + fib(n - 2);
+}
+
+collatz :: fn(n: i32): void {
+  index.log(n);
+  while n > 1 {
+    if n % 2 == 1 {
+      n = 3 * n + 1;
+      index.log(n);
+    }
+    while n % 2 == 0 {
+      n = n / 2;
+      index.log(n);
+    }
+  }
+}
+
+main :: fn(): i32 {
+  collatz(7);
+  index.log(fib(10));
+  return 1;
+}

@@ -9,7 +9,7 @@ import {
   tArr, tFun,
   type EffectSig, type Type,
 } from "./types.ts";
-import {TANY, TBOOL, TFLOAT, TINT, TNULL, TSTR} from "./prims.ts";
+import {TI64, TANY, TBOOL, TFLOAT, TINT, TNULL, TSTR} from "./prims.ts";
 
 export type Builtin =
   // A plain builtin: lifted to a runtime native as `k(fn(...args))`. `t` is its
@@ -110,20 +110,20 @@ export const builtins: Builtin[] = [
     {kind: "fn", name: "char", t: tFun([TINT], TSTR, new Set()), fn: a => String.fromCodePoint(num(a) | 0)},
     {kind: "fn", name: "number", t: tFun([TSTR], TFLOAT, new Set()), fn: a => parseFloat(a as string)},
     {kind: "fn", name: "args", t: tFun([], tArr(TSTR), new Set()), fn: () => process.argv.slice(2)},
-    {kind: "fn", name: "get", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TINT], a, new Set()); }, fn: (xs, i) => {
+    {kind: "fn", name: "get", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64], a, new Set()); }, fn: (xs, i) => {
       const a = xs as Value[];
       const idx = num(i);
       if (idx < 0 || idx >= a.length || !Number.isInteger(idx))
         throw new Error(`get: index ${idx} out of bounds [0, ${a.length})`);
       return a[idx]!;
     }},
-    {kind: "fn", name: "set", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TINT, a], TNULL, new Set()); }, fn: (xs, i, v) => {
+    {kind: "fn", name: "set", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64, a], TNULL, new Set()); }, fn: (xs, i, v) => {
       (xs as Value[])[num(i)] = v;
       return null;
     }},
     {kind: "native", name: "each", t: (u: Unifier) => {
       const a = u.fresh(), b = u.fresh(), e = u.freshEff();
-      return tFun([tFun([a, TINT], b, e), tArr(a)], TNULL, e);
+      return tFun([tFun([a, TI64], b, e), tArr(a)], TNULL, e);
     }, fn: (args, k) => {
       const f = args[0]!, xs = args[1] as Value[];
       function go(i: number): Outcome {
@@ -135,7 +135,7 @@ export const builtins: Builtin[] = [
     }},
     {kind: "native", name: "flatmap", t: (u: Unifier) => {
       const a = u.fresh(), b = u.fresh(), e = u.freshEff();
-      return tFun([tFun([a, TINT], tArr(b), e), tArr(a)], tArr(b), e);
+      return tFun([tFun([a, TI64], tArr(b), e), tArr(a)], tArr(b), e);
     }, fn: (args, k) => {
       const f = args[0]!, xs = args[1] as Value[];
       const acc: Value[] = [];

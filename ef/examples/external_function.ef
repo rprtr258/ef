@@ -1,0 +1,5 @@
+# The simplest effectful program: Println! writes to the console, then a
+# discarded literal is the program value.
+
+Println!(42);
+0

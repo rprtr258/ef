@@ -1,0 +1,13 @@
+# Discarded expressions: a bare expression statement's value is computed
+# and ignored; only the block's last statement becomes the block's value.
+
+Println!(42);
+
+let pair = fn(): [i64, i64] {
+  [1, 2]
+};
+
+pair();
+[10, 20];
+1 + 2;
+0

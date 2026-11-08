@@ -1,2 +1,2 @@
-let inc4 = fn(a: int): int {a + 4};
+let inc4 = fn(a: i64): i64 {a + 4};
 Println!(inc4(5));

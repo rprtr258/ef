@@ -1,4 +1,4 @@
-effect Choose(opts: [int]): int;            # Choose yields an int
+effect Choose(opts: [i64]): i64;            # Choose yields an i64
 handle {
   let x = Choose!([1, 2, 3]);        # pause, ask the handler
   let y = Choose!([10, 20]);

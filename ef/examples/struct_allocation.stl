@@ -1,0 +1,6 @@
+main :: fn(): i32 {
+  p: [x: i32, y: i32] = [x: 10, y: 20];
+  p2: [x: i32, y: i32] = [x: 10, y: 20];
+  same: bool = p == p2;  # false (different objects)
+  return 0;
+};

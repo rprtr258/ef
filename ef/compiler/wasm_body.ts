@@ -427,6 +427,8 @@ export class Buf {
       case w.FSQRT: un((v) => MOD.f64.sqrt(v)); return;
       case w.TRUNC_F64: un((v) => MOD.i32.trunc_s.f64(v)); return;
       case w.CONV_I32: un((v) => MOD.f64.convert_s.i32(v)); return;
+      case w.F32_DEMOTE: un((v) => MOD.f32.demote(v)); return;
+      case w.F64_PROMOTE: un((v) => MOD.f64.promote(v)); return;
       default: throw new WasmError(`internal: unknown opcode 0x${op.toString(16)}`);
     }
   }

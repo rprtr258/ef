@@ -1,0 +1,10 @@
+sum_to_n :: fn(n: i32): i32 {
+  if n <= 0 {
+    return 0;
+  }
+  return n + sum_to_n(n - 1);
+};
+
+main :: fn(): i32 {
+  return sum_to_n(10);
+};

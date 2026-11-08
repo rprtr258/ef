@@ -1,0 +1,10 @@
+# ef has no pointers: what a dereference would read, a binding alias
+# holds — y carries x's value, p3 is p's object.
+
+let x = 42;
+let y = x;
+
+let p: [x: i64, y: i64] = [10, 20];
+let p3: [x: i64, y: i64] = p;  # alias: same object as p
+
+y + p3.x

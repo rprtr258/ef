@@ -1,0 +1,14 @@
+# Comments: `#` starts a comment running to the end of the line, anywhere
+# whitespace is allowed. The body is naive doubly-recursive Fibonacci.
+
+# This is a comment
+let fib = fn(n: i64): i64 {
+  # Another comment
+  if (n <= 1) {
+    n
+  } else {
+    fib(n - 1) + fib(n - 2)
+  }
+};
+
+fib(10)

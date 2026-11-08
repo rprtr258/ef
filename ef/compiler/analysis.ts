@@ -105,6 +105,8 @@ export function performsAnyOp(prog: Program): boolean {
         return e.elems.some(walk);
       case "field":
         return walk(e.obj);
+      case "as":
+        return walk(e.e);
       case "handle":
         return walk(e.body) || e.cases.some(cse => walk(cse.body));
       default:
@@ -161,6 +163,9 @@ export function collectEffectOps(prog: Program): string[] {
         break;
       case "field":
         walk(e.obj);
+        break;
+      case "as":
+        walk(e.e);
         break;
       case "perform":
         if (!ops.includes(e.op))
@@ -277,6 +282,9 @@ function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<str
         break;
       case "field":
         walk(e.obj, sc);
+        break;
+      case "as":
+        walk(e.e, sc);
         break;
       case "perform":
         for (const a of e.args)

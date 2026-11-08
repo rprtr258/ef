@@ -1,0 +1,10 @@
+return_i32 :: fn(): i32 { return 42; };
+return_i64 :: fn(): i64 { return 123i64; };
+return_u32 :: fn(): u32 { return 42u32; };
+return_u64 :: fn(): u64 { return 42u64; };
+return_f32 :: fn(): f32 { return 3.14f32; };
+return_f64 :: fn(): f64 { return 2.71f64; };
+
+main :: fn(): i32 {
+  return return_i32() + @as(return_i64(), i32) + @as(return_u32(), i32) + @as(return_u64(), i32) + @as(return_f32(), i32) + @as(return_f64(), i32);
+};

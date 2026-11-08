@@ -1,0 +1,6 @@
+# Discarded expressions: `1 + 2;` is a bare expression statement — its
+# value is computed and ignored; only the last statement's value matters.
+
+Println!(42);
+1 + 2;
+0

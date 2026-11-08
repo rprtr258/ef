@@ -67,7 +67,7 @@ function importsOf(src: string): string[] {
 describe("wasm backend", () => {
   test("emits a valid module", () => {
     assertModule(compile("1 + 2"));
-    assertModule(compile("let f = fn(x: int): int { x }; f(1)"));
+    assertModule(compile("let f = fn(x: i64): i64 { x }; f(1)"));
   });
 
   test("every example compiles to a valid module with no empty function bodies", () => {
@@ -85,8 +85,8 @@ describe("wasm backend", () => {
       assertModule(bin);
   }, 30000);
 
-  test("arithmetic: int / float division, neg, mod", () => {
-    expect(parity("7 / 2")).toBe("3"); // int division truncates
+  test("arithmetic: i64 / f64 division, neg, mod", () => {
+    expect(parity("7 / 2")).toBe("3"); // i64 division truncates
     expect(parity("7.0 / 2")).toBe("3.5");
     expect(parity("-5 + 3")).toBe("-2");
     expect(parity("17 % 5")).toBe("2");
@@ -115,16 +115,16 @@ describe("wasm backend", () => {
     // the `let y` binding was never stored and later reads saw unit. The
     // inlined operators share the fixed shape: the tail value returns to
     // the enclosing wrapper, which dispatches it through the continuation.
-    expect(parity(`let f = fn(x: int): int { x / 2 };
+    expect(parity(`let f = fn(x: i64): i64 { x / 2 };
       let y = f(10);
       y + 1`)).toBe("6");
-    expect(parity(`let f = fn(x: int): int { x + 1 };
+    expect(parity(`let f = fn(x: i64): i64 { x + 1 };
       let y = f(10);
       y * 2`)).toBe("22");
     // Tail operator with a performing operand: the resumed value must
     // dispatch through the real handler chain, not just a RET cell.
-    expect(parity(`effect Op(): int;
-      handle { let f = fn(x: int): int { x / 2 }; f(Op!()) + 1 }
+    expect(parity(`effect Op(): i64;
+      handle { let f = fn(x: i64): i64 { x / 2 }; f(Op!()) + 1 }
       case Op() => k { k(10) }`)).toBe("6");
   });
 
@@ -164,7 +164,7 @@ describe("wasm backend", () => {
   test("math builtins", () => {
     expect(parity("round(sqrt(2) * 100) + abs(0 - 3)")).toBe("144");
     expect(parity("round(cos(0) * 10) + round(sin(0) * 10)")).toBe("10");
-    // PI is a float value per the checker; the interpreter's runtime binds a
+    // PI is a f64 value per the checker; the interpreter's runtime binds a
     // fn for it (interpreter quirk), so no parity here — pinned value instead.
     expect(show(runWasm("round(PI * 100)"))).toBe("314");
   });
@@ -172,12 +172,12 @@ describe("wasm backend", () => {
   test("builtin shadowing: a user binding keeps the builtin unreferenced", () => {
     // A `let` shadowing a builtin name must resolve to the user binding,
     // not reach the builtin's closure.
-    expect(parity("let len = fn(xs: [int]): int { 42 }; len([1, 2, 3])")).toBe("42");
+    expect(parity("let len = fn(xs: [i64]): i64 { 42 }; len([1, 2, 3])")).toBe("42");
     // Parameter shadowing a builtin name.
-    expect(parity("let f = fn(len: int): int { len * 2 }; f(21)")).toBe("42");
+    expect(parity("let f = fn(len: i64): i64 { len * 2 }; f(21)")).toBe("42");
     // Inner shadow, outer builtin use: only the outer reference is reachable.
     expect(parity(`let g = fn() {
-  let len = fn(xs: [int]): int { 0 };
+  let len = fn(xs: [i64]): i64 { 0 };
   len([1])
 };
 g() + len([9, 9])`)).toBe("2");
@@ -224,31 +224,31 @@ a + b`)).toBe("6");
 
   test("user effects compile and escape to the host", () => {
     // Same unhandled-effect error message as the interpreter.
-    parity("effect Foo(n: int): int; Foo!(1) + 2");
+    parity("effect Foo(n: i64): i64; Foo!(1) + 2");
     // One-shot interp injection overrides the default interpretation.
-    expect(show(runWasm("effect Foo(n: int): int; Foo!(21) * 2", {Foo: args => (args[0] as number) + 1}))).toBe("44");
+    expect(show(runWasm("effect Foo(n: i64): i64; Foo!(21) * 2", {Foo: args => (args[0] as number) + 1}))).toBe("44");
   });
 
   test("handlers: user ops, resume, deep nesting, multi-shot", () => {
     // Single op, constant result.
-    expect(parity("effect Op(): int; handle { 1 + Op!() } case Op() => k { 7 }")).toBe("7");
+    expect(parity("effect Op(): i64; handle { 1 + Op!() } case Op() => k { 7 }")).toBe("7");
     // Resume with different values.
-    expect(parity("effect Op(): int; handle { Op!() + Op!() } case Op() => k { k(3) }")).toBe("6");
+    expect(parity("effect Op(): i64; handle { Op!() + Op!() } case Op() => k { k(3) }")).toBe("6");
     // Perform inside a lambda called twice; non-resuming case discards the rest.
-    expect(parity("effect Op(): int; handle { let f = fn() { Op!() }; f() + f() } case Op() => k { 1 }")).toBe("1");
+    expect(parity("effect Op(): i64; handle { let f = fn() { Op!() }; f() + f() } case Op() => k { 1 }")).toBe("1");
     // Return case.
-    expect(parity("effect Op(): int; handle { 5 } case Op() => k { 0 }")).toBe("5");
+    expect(parity("effect Op(): i64; handle { 5 } case Op() => k { 0 }")).toBe("5");
     // Unhandled effect propagates past a non-matching inner handler.
-    expect(parity("effect A(): int; effect B(): int; handle { handle { A!() } case B() => k { 99 } } case A() => k { 5 }")).toBe("5");
+    expect(parity("effect A(): i64; effect B(): i64; handle { handle { A!() } case B() => k { 99 } } case A() => k { 5 }")).toBe("5");
     // Matching inner handler fires first.
-    expect(parity("effect A(): int; handle { handle { A!() } case A() => k { 10 } } case A() => k { 20 }")).toBe("10");
+    expect(parity("effect A(): i64; handle { handle { A!() } case A() => k { 10 } } case A() => k { 20 }")).toBe("10");
     // Multi-shot resume via map: cross-product of two choices (the plan target).
-    expect(parity(`effect Choose(opts: [int]): int;
+    expect(parity(`effect Choose(opts: [i64]): i64;
       handle { let x = Choose!([1,2,3]); let y = Choose!([10,20]); [x, y] }
       case Return(v) => k { [v] }
       case Choose(opts) => k { flat(map(k, opts)) }`)).toBe("[[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]");
     // Non-resuming case aborts the rest of the body.
-    expect(parity(`effect Div(a: int, b: int): int;
+    expect(parity(`effect Div(a: i64, b: i64): i64;
       handle { let r = Div!(10, 0); [r] }
       case Div(a, b) => k { if (b == 0) { ["div by zero"] } else { k(a / b) } }`)).toBe("[\"div by zero\"]");
     // Deep handlers: a log threaded through nested resumes (resume in a
@@ -265,17 +265,17 @@ a + b`)).toBe("6");
       case Emit(m) => k { [m] }`)).toBe("[\"hi\"]");
     // Inner handler with a Return case stays live around the resumed segment:
     // outer case resumes 3, segment yields 4, inner Return case wraps it.
-    expect(parity(`effect A(): int;
+    expect(parity(`effect A(): i64;
       handle { handle { A!() + 1 } case Return(v) => k { [v] } } case A() => k { k(3) }`)).toBe("[4]");
     // Builtin effect intercepted by a user handler.
-    expect(parity("effect Read(): int; handle { Read!() + 1 } case Read() => k { 41 }")).toBe("41");
+    expect(parity("effect Read(): i64; handle { Read!() + 1 } case Read() => k { 41 }")).toBe("41");
     // Exit! intercepted without resuming: the code after it never runs.
     expect(parity(`handle { Out!("pre"); Exit!(42); Out!("post") }
       case Exit(c) => k { c }
       case Out(s) => k { Println!(s); k(unit) }`)).toBe("42");
     // Perform inside call arguments: two invocations get independent frames.
-    expect(parity(`effect Op(): int;
-      handle { let f = fn(a: int, b: int): int { a + b }; f(Op!(), Op!()) }
+    expect(parity(`effect Op(): i64;
+      handle { let f = fn(a: i64, b: i64): i64 { a + b }; f(Op!(), Op!()) }
       case Op() => k { k(3) }`)).toBe("6");
   });
 
@@ -292,40 +292,40 @@ a + b`)).toBe("6");
 describe("wasm effect codegen regressions", () => {
   test("multi-param op: two-shot resume of a 2-param continuation", () => {
     // Return slots for a multi-param op must not alias across resumes.
-    expect(parity("effect T(a: int, b: int): int; handle { T!(1, 2) } case T(a, b) => k { let x = k(a); let y = k(b); x + y }")).toBe("3");
+    expect(parity("effect T(a: i64, b: i64): i64; handle { T!(1, 2) } case T(a, b) => k { let x = k(a); let y = k(b); x + y }")).toBe("3");
   });
 
   test("single-param op: two-shot resume, no call_indirect trap", () => {
-    expect(parity("effect T(n: int): int; handle { T!(5) } case T(n) => k { let x = k(n); let y = k(n); x + y }")).toBe("10");
+    expect(parity("effect T(n: i64): i64; handle { T!(5) } case T(n) => k { let x = k(n); let y = k(n); x + y }")).toBe("10");
   });
 
   test("flat: scalar passthrough under a resuming handler", () => {
     // k resumes to a plain scalar; flat must pass scalars through instead of
     // treating them as single-element arrays (broke every flatmap before).
-    expect(parity("effect T(): int; handle { T!() } case T() => k { flat(map(k, [7, 8])) }")).toBe("[7, 8]");
+    expect(parity("effect T(): i64; handle { T!() } case T() => k { flat(map(k, [7, 8])) }")).toBe("[7, 8]");
   });
 
   test("flatmap over ints under no handler", () => {
-    expect(parity("flat(map(fn(x: int): [int] { [x, x * 10] }, [1, 2, 3]))")).toBe("[1, 10, 2, 20, 3, 30]");
+    expect(parity("flat(map(fn(x: i64): [i64] { [x, x * 10] }, [1, 2, 3]))")).toBe("[1, 10, 2, 20, 3, 30]");
   });
 
   test("array literal elements survive suspension", () => {
     // Elements emitted before/after a perform inside the same array literal.
-    expect(parity("effect Op(): int; handle { [Op!(), Op!()] } case Op() => k { k(7) }")).toBe("[7, 7]");
-    expect(parity("effect Op(): int; handle { [1, 2, Op!(), Op!()] } case Op() => k { k(7) }")).toBe("[1, 2, 7, 7]");
-    expect(parity("effect Op(): int; handle { [[Op!(), 1], [2, [Op!()]]] } case Op() => k { k(7) }")).toBe("[[7, 1], [2, [7]]]");
+    expect(parity("effect Op(): i64; handle { [Op!(), Op!()] } case Op() => k { k(7) }")).toBe("[7, 7]");
+    expect(parity("effect Op(): i64; handle { [1, 2, Op!(), Op!()] } case Op() => k { k(7) }")).toBe("[1, 2, 7, 7]");
+    expect(parity("effect Op(): i64; handle { [[Op!(), 1], [2, [Op!()]]] } case Op() => k { k(7) }")).toBe("[[7, 1], [2, [7]]]");
   });
 
   test("handle as an operator operand compiles to a valid module", () => {
-    const src = "effect Op(): int; 1 + handle { Op!() } case Op() => k { 7 }";
+    const src = "effect Op(): i64; 1 + handle { Op!() } case Op() => k { 7 }";
     assertModule(compile(src));
     expect(parity(src)).toBe("8");
   });
 
   test("div cut modes: performs in both div operand positions", () => {
     // The divisor's cut mode was mis-emitted, silently yielding wrong values.
-    expect(parity("effect P(): float; effect Q(): float; handle { (7.0 / P!()) / Q!() } case P() => k { k(2.0) } case Q() => k { k(7.0) }")).toBe("0.5");
-    expect(parity("effect P(): int; effect Q(): int; handle { (7 + P!()) / Q!() } case P() => k { k(2) } case Q() => k { k(7) }")).toBe("1");
+    expect(parity("effect P(): f64; effect Q(): f64; handle { (7.0 / P!()) / Q!() } case P() => k { k(2.0) } case Q() => k { k(7.0) }")).toBe("0.5");
+    expect(parity("effect P(): i64; effect Q(): i64; handle { (7 + P!()) / Q!() } case P() => k { k(2) } case Q() => k { k(7) }")).toBe("1");
   });
 
   test("perform inside a while condition", () => {
@@ -333,23 +333,23 @@ describe("wasm effect codegen regressions", () => {
     // re-runs one pass with the resumed value).
     // A resuming handler drives the loop: the case body returns the live i,
     // so the cond sees 0,1,2 then 3 and the loop exits.
-    expect(parity("effect Op(): int; let i = 0; handle { while (Op!() < 3) { i = i + 1 }; i } case Op() => k { k(i) }")).toBe("3");
+    expect(parity("effect Op(): i64; let i = 0; handle { while (Op!() < 3) { i = i + 1 }; i } case Op() => k { k(i) }")).toBe("3");
     // A non-resuming case body abandons the loop: its value is the handle
     // block's value (the continuation is discarded).
-    expect(parity("effect Op(): int; let i = 0; handle { while (Op!() < 3) { i = i + 1 }; i } case Op() => k { i }")).toBe("0");
+    expect(parity("effect Op(): i64; let i = 0; handle { while (Op!() < 3) { i = i + 1 }; i } case Op() => k { i }")).toBe("0");
     // Perform in the cond AND a body perform whose case body abandons the
     // continuation (finite: the cond resumes with the live i via the Op arm).
-    expect(parity("effect Op(): int; effect Twice(): int; let i = 0; handle { let s = 0; while (Op!() < 3) { s = s + Twice!(); i = i + 1 }; s } case Op() => k { k(i) } case Twice() => k { 7 }")).toBe("7");
-    expect(parity("effect Op(): int; handle { let s = 0; let i = 0; while (i < 2) { s = s + Op!(); i = i + 1 }; s } case Op() => k { k(2) }")).toBe("4");
+    expect(parity("effect Op(): i64; effect Twice(): i64; let i = 0; handle { let s = 0; while (Op!() < 3) { s = s + Twice!(); i = i + 1 }; s } case Op() => k { k(i) } case Twice() => k { 7 }")).toBe("7");
+    expect(parity("effect Op(): i64; handle { let s = 0; let i = 0; while (i < 2) { s = s + Op!(); i = i + 1 }; s } case Op() => k { k(2) }")).toBe("4");
   });
 
   test("handle as a statement inside a while body", () => {
-    expect(parity("effect Op(): int; handle { let s = 0; let i = 0; while (i < 2) { s = s + handle { Op!() } case Op() => k2 { k2(10) }; i = i + 1 }; s } case Op() => k { k(3) }")).toBe("20");
+    expect(parity("effect Op(): i64; handle { let s = 0; let i = 0; while (i < 2) { s = s + handle { Op!() } case Op() => k2 { k2(10) }; i = i + 1 }; s } case Op() => k { k(3) }")).toBe("20");
   });
 
   test("dlet destructuring whose bound expressions perform", () => {
     // Two performs inside dlet bindings, one resumed non-trivially (k(k(4))).
-    expect(parity("effect Op(): int; handle { let [x, y, z] = [1, Op!(), 3]; let [w] = [x + z + Op!()]; w + y } case Op() => k { k(k(4)) }")).toBe("52");
+    expect(parity("effect Op(): i64; handle { let [x, y, z] = [1, Op!(), 3]; let [w] = [x + z + Op!()]; w + y } case Op() => k { k(k(4)) }")).toBe("52");
   });
 });
 
@@ -378,7 +378,7 @@ describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () =>
 
   test("an effect use keeps ef_perform imported (any op, even under a handler)", () => {
     expect(importsOf("Println!(1)")).toContain("ef_perform");
-    expect(importsOf("effect Op(): int; handle { Op!() } case Op() => k { 7 }"))
+    expect(importsOf("effect Op(): i64; handle { Op!() } case Op() => k { 7 }"))
       .toContain("ef_perform");
   });
 
@@ -392,7 +392,7 @@ describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () =>
   });
 
   test("a user binding shadowing a served builtin keeps its import dead", () => {
-    const src = "let char = fn(x: int): int { x }; char(97)";
+    const src = "let char = fn(x: i64): i64 { x }; char(97)";
     expect(importsOf(src)).not.toContain("ef_char");
     expect(parity(src)).toBe("97");
   });
@@ -407,7 +407,7 @@ describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () =>
 describe("wasm binaryen shrink pass (optimizeBinary)", () => {
   test("keeps host ABI exports/imports and semantics after the shrink pass", () => {
     // effectful program: ef_perform must survive the optimizer via the table
-    const src = "Println!(\"hi\"); let f = fn(x: int): int ! { Println } { Println!(x); x * 2 }; f(21)";
+    const src = "Println!(\"hi\"); let f = fn(x: i64): i64 ! { Println } { Println!(x); x * 2 }; f(21)";
     const bytes = compile(src);
     assertModule(bytes);
     const mod = new WebAssembly.Module(bytes);
@@ -462,8 +462,8 @@ Println!("tail")`);
     // fillRest and the call site's synchronous fill, growing until the
     // stack overflowed inside binaryen. Rest fragments are now memoized by
     // their split chain: same site, same fragment fn.
-    const src = `let g = fn(x: int): int { x + 1 };
-let f = fn(a: int): int {
+    const src = `let g = fn(x: i64): i64 { x + 1 };
+let f = fn(a: i64): i64 {
   if (a == 0) {
     if (g(a) == 1) { 1 } else { 2 }
   } else {
@@ -485,8 +485,8 @@ Println!(f(0))`;
     // by the enclosing fragment AFTER the outer freeze (the `-2.0` literal
     // here) are missing from that stale image — the nested fragment's
     // preCut reload read null and the `$NUM` ref.cast trapped.
-    const src = `let vDot = fn(a: [float], b: [float]): float { (a.0 * b.0) + ((a.1 * b.1) + (a.2 * b.2)) };
-let sphereT2 = fn(d: [float], c: [float], r: float): float {
+    const src = `let vDot = fn(a: [f64], b: [f64]): f64 { (a.0 * b.0) + ((a.1 * b.1) + (a.2 * b.2)) };
+let sphereT2 = fn(d: [f64], c: [f64], r: f64): f64 {
   let a = vDot(d, d);
   let b = -2.0 * vDot(d, c);
   a + b
@@ -515,9 +515,9 @@ Println!(sphereT2([0.1, 0.0, -2.5], [0.0, 0.0, -5.0], 1.5))`;
     // miscompiled before the split-chain memo (restByChain): the wrong arm's
     // function could run. The interpreter and the compiled module must agree
     // on both picks, and the printed output must be the picked results.
-    const src = `let f1 = fn(a: float): float { a * 2.0 };
-let f2 = fn(a: float): float { a + 1.0 };
-let pick = fn(c: bool): (float) -> float {
+    const src = `let f1 = fn(a: f64): f64 { a * 2.0 };
+let f2 = fn(a: f64): f64 { a + 1.0 };
+let pick = fn(c: bool): (f64) -> f64 {
   if (c) { f1 } else { f2 }
 };
 Println!(pick(true)(1.5));

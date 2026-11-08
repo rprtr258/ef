@@ -1,0 +1,10 @@
+# Polymorphic identity: a let whose RHS is a lambda is let-generalized,
+# so the same id applies at i64, bool, and any other type.
+
+let id = fn(x) {
+  x
+};
+
+Println!(id(1));
+id(false);  # bool application, value discarded
+0

@@ -1,0 +1,62 @@
+# Control flow: if/else, block-local lets, and while loops. The last
+# function traces a 3n + 1-style loop; ef has no break/continue, so it
+# uses a `done` flag instead — the odd step skips the halving, and
+# halving down to 1 stops the loop.
+
+let check_if = fn(): i64 {
+  let x = 0;
+  if (x < 10) {
+    x = x + 1;
+  } else {
+    x = x - 1;
+  };
+  x
+};
+
+let check_var_inside_if = fn(): i64 {
+  let x = 0;
+  if (x < 10) {
+    let y = 42;
+  };
+  x
+};
+
+let check_while = fn(): i64 {
+  let x = 0;
+  while (x < 10) {
+    x = x + 1;
+  };
+  x
+};
+
+let check_nested_while = fn(): i64 {
+  let x = 0;
+  while (x < 10) {
+    x = x + 1;
+    while (x < 20) {
+      x = x * 2;
+    }
+  };
+  x
+};
+
+let check_break_continue = fn(): i64 {
+  let x = 1234;
+  let done = false;
+  while (!done) {
+    Println!(x);
+    if (x % 2 == 1) {
+      # continue: jump straight to the next iteration
+      x = x * 3 + 1;
+    } else {
+      x = x / 2;
+      if (x == 1) {
+        done = true;  # break
+      }
+    }
+  };
+  x
+};
+
+check_if() + check_var_inside_if() + check_while() +
+check_nested_while() + check_break_continue()

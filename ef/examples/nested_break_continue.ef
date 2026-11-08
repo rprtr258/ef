@@ -1,0 +1,24 @@
+# Nested loops: ef has no break/continue, so the inner loop carries an
+# `inner` flag — j == 3 skips the increment (continue), j == 5 clears the
+# flag (break).
+
+let sum = 0;
+let i = 0;
+while (i < 5) {
+  i = i + 1;
+  let j = 0;
+  let inner = true;
+  while (inner && j < 5) {
+    j = j + 1;
+    if (j != 3) {
+      if (j == 5) {
+        inner = false;  # break
+      } else {
+        sum = sum + 1;
+      }
+    }
+    # j == 3: continue — nothing else happens this iteration
+  }
+};
+
+sum

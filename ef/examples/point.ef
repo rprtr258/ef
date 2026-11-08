@@ -1,0 +1,12 @@
+# Aliasing a named tuple: p2 is the same object as p, so p == p2 is true;
+# arrays grow with concat and are read with len/get.
+
+let p: [x: i64, y: i64] = [10, 20];
+let p2: [x: i64, y: i64] = p;  # alias: same object as p
+let same = p == p2;            # true
+
+let slice: [i64] = [];
+slice = concat(slice, [42]);  # append 42
+let len_ = len(slice);
+let i = 0;
+get(slice, i)

@@ -1,5 +1,5 @@
 # Polymorphic `id` used at two types in one expression — bool (the
-# condition) and int (the taken branch's value). Each use instantiates
+# condition) and i64 (the taken branch's value). Each use instantiates
 # fresh type variables. Prints 2.
 
 let id = fn (x) { x };

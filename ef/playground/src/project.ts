@@ -18,12 +18,12 @@ export const DEFAULT_PROJECT: Project = {
       name: "effects.ef",
       code: `# Algebraic effects in ef: declare with \`effect\`, perform with Op!(...),
 # interpret with handle ... case Op(...) => k { ... }.
-effect Choose(lo: int, hi: int): int;
-effect Emit(t: [int]): unit;
+effect Choose(lo: i64, hi: i64): i64;
+effect Emit(t: [i64]): unit;
 
 # Nondeterministic search: the Choose handler resumes the continuation once
 # per option, so pyth branches into every path (examples/amb.ef has the tour).
-let pyth = fn(n: int): unit ! { Choose, Emit } {
+let pyth = fn(n: i64): unit ! { Choose, Emit } {
   let a = Choose!(1, n);
   let b = Choose!(a + 1, n);
   let c = Choose!(b + 1, n);
@@ -35,7 +35,7 @@ let pyth = fn(n: int): unit ! { Choose, Emit } {
 };
 
 # Interprets nondeterminism only; emitted solutions propagate outward.
-let solutions = fn(n: int): unit ! { Emit } {
+let solutions = fn(n: i64): unit ! { Emit } {
   handle {
     pyth(n)
   } case Choose(lo, hi) => k {
@@ -44,7 +44,7 @@ let solutions = fn(n: int): unit ! { Emit } {
 };
 
 # Gathers every value emitted across all branches.
-let triples = fn(n: int): [[int]] {
+let triples = fn(n: i64): [[i64]] {
   handle {
     solutions(n)
   } case Emit(t) => k {
@@ -56,16 +56,16 @@ let triples = fn(n: int): [[int]] {
 
 # Run it: Choose! branches, Emit! collects — the handlers live in
 # solutions/triples above.
-each(fn(t: [int], _) { Println!(t) }, triples(14));`,
+each(fn(t: [i64], _) { Println!(t) }, triples(14));`,
     },
     {
       name: "state.ef",
       code: `# Builtin effects interpreted by handlers instead of the host:
 # Tick! performs, the handler owns the count in a cell and resumes with
 # the next value. Resume k is multi-shot, so map over Tick! just works.
-effect Tick(): int;
+effect Tick(): i64;
 
-let counter = fn(steps: int): [int] {
+let counter = fn(steps: i64): [i64] {
   let cell = list();
   set(cell, 0, 0);
   handle {
@@ -77,7 +77,7 @@ let counter = fn(steps: int): [int] {
 };
 
 # Random! interpreted deterministically: every draw resumes with 0.42.
-let deterministic = fn(n: int): [float] {
+let deterministic = fn(n: i64): [f64] {
   handle {
     map(fn(_) { Random!() }, range(0, n, 1))
   } case Random() => r {
@@ -95,10 +95,10 @@ Println!(deterministic(8));`,
 # open file, and ef has no imports yet — files share nothing. effects.ef and
 # state.ef are standalone demos of effects and state; this one keeps to
 # builtins.
-let squares = fn(n: int): [int] {
-  map(fn(i: int): int { i * i }, range(0, n, 1))
+let squares = fn(n: i64): [i64] {
+  map(fn(i: i64): i64 { i * i }, range(0, n, 1))
 };
-each(fn(s: int, _) { Println!(s) }, squares(6));
+each(fn(s: i64, _) { Println!(s) }, squares(6));
 Out!("welcome to ef\\n");`,
     },
   ],

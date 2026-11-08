@@ -1,0 +1,9 @@
+main :: fn(): i32 {
+  slice: @slice(i32) = @slice.make(i32);
+  slice = @slice.append(slice, 10);
+  slice = @slice.append(slice, 20);
+  slice = @slice.append(slice, 30);
+  idx: i32 = 1;
+  value: i32 = slice.(idx);
+  return value;
+};

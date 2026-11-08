@@ -9,7 +9,7 @@ import {show, type Value} from "./env.ts";
 import {Parser} from "./parser.ts";
 
 // typeOf: return the inferred type of the last expression, as a string.
-// Surfaces effect sets in function signatures, e.g. `(int) -> int ! { Emit }`.
+// Surfaces effect sets in function signatures, e.g. `(i64) -> i64 ! { Emit }`.
 export function typeOf(src: string): string {
   const prog = new Parser(src).parseProgram();
   return showT(checkProgram(prog).lastType);
@@ -19,13 +19,13 @@ const tmpPath = (n: string) => join(tmpdir(), `ef-test-${process.pid}-${n}.txt`)
 
 test("exec drives a REPL session: bindings persist, lastType resolved", () => {
   const ctx = newCtx();
-  const l1 = exec(new Parser("let add = fn(a: int, b: int): int { a + b };").parseProgram(), ctx);
+  const l1 = exec(new Parser("let add = fn(a: i64, b: i64): i64 { a + b };").parseProgram(), ctx);
   const l2 = exec(new Parser("add(1, 2)").parseProgram(), ctx);
   expect(l1.value).toBe(null);
   expect(l1.lastIsExpr).toBe(false);
   expect(l2.value).toBe(3);
   expect(l2.lastIsExpr).toBe(true);
-  expect(showT(l2.lastType)).toBe("int");
+  expect(showT(l2.lastType)).toBe("i64");
 });
 
 test("run accepts a custom effect interpreter (fakes Read, no fs touched)", () => {
@@ -35,7 +35,7 @@ test("run accepts a custom effect interpreter (fakes Read, no fs touched)", () =
 
 test("Nondeterminism — multi-shot resume, declared effect + return type", () => {
 expect(show(run(`
-effect Choose(opts: [int]): int;
+effect Choose(opts: [i64]): i64;
 handle {
   let x = Choose!([1, 2, 3]);
   let y = Choose!([10, 20]);
@@ -47,7 +47,7 @@ handle {
 
 test("Exception — non-resuming handler aborts", () => {
 expect(show(run(`
-effect Div(a: int, b: int): int;
+effect Div(a: i64, b: i64): i64;
 handle {
   let r = Div!(10, 0);
   [r]
@@ -82,7 +82,7 @@ handle {
 
 test("Typed recursive function with annotation", () => {
 expect(show(run(`
-let fact = fn(n: int): int {
+let fact = fn(n: i64): i64 {
   if (n == 0) { 1 } else { n * fact(n - 1) }
 };
 fact(5)
@@ -91,7 +91,7 @@ fact(5)
 
 test("Short-circuit && / || and infix arithmetic", () => {
 expect(show(run(`
-let guard = fn(x: int): string {
+let guard = fn(x: i64): string {
   if (x > 0 && x < 10) { "in" } else { "out" }
 };
 [guard(5), guard(50)]
@@ -100,14 +100,14 @@ let guard = fn(x: int): string {
 
 test("Type annotations on let", () => {
 expect(show(run(`
-let x: int = 5;
-let y: int = x + 3;
+let x: i64 = 5;
+let y: i64 = x + 3;
 y
 `))).toBe("8");
 });
 
 describe("Equality, Exit/Wait effects, inferred-any warning", () => {
-  test("== / != require same type (numeric widening lets int ~ float)", () => {
+  test("== / != require same type (literals flex, widths are strict)", () => {
     expect(show(run(`1 == 2`))).toBe("false");
     expect(show(run(`1 != 2.5`))).toBe("true");
     expect(show(run(`"a" == "b"`))).toBe("false");
@@ -138,7 +138,7 @@ handle {
     try {
       typeOf("let f = list; f");            // inferred (any) -> [any]  -> warn
       typeOf("let f: (any) -> [any] = list; f"); // explicit annotation -> silent
-      typeOf("let xs = [1, 2, 3]; xs");     // array literal -> [int]   -> silent
+      typeOf("let xs = [1, 2, 3]; xs");     // array literal -> [i64]   -> silent
     } finally {
       console.warn = orig;
     }
@@ -149,34 +149,34 @@ handle {
 
 describe("Tuples, aliases, and field access", () => {
   test("homogeneous literal is still an array", () => {
-    expect(typeOf(`[1, 2, 3]`)).toBe("[int]");
+    expect(typeOf(`[1, 2, 3]`)).toBe("[i64]");
   });
   test("heterogeneous literal is a tuple", () => {
-    expect(typeOf(`[1, "a", true]`)).toBe("[int, string, bool]");
+    expect(typeOf(`[1, "a", true]`)).toBe("[i64, string, bool]");
   });
   test("named tuple via annotation", () => {
-    expect(typeOf(`let p: [x: float, y: float] = [1.0, 2.0]; p`)).toBe("[x: float, y: float]");
+    expect(typeOf(`let p: [x: f64, y: f64] = [1.0, 2.0]; p`)).toBe("[x: f64, y: f64]");
   });
   test("dot access on a tuple by name", () => {
-    expect(show(run(`let p: [x: float, y: float] = [1.0, 2.0]; p.x`))).toBe("1");
+    expect(show(run(`let p: [x: f64, y: f64] = [1.0, 2.0]; p.x`))).toBe("1");
   });
   test("dot access on a tuple by index", () => {
-    expect(show(run(`let p: [int, string] = [1, "a"]; p.1`))).toBe("\"a\"");
+    expect(show(run(`let p: [i64, string] = [1, "a"]; p.1`))).toBe("\"a\"");
   });
   test("dot access on an array by index", () => {
     expect(show(run(`let xs = [10, 20, 30]; xs.0`))).toBe("10");
   });
   test("destructuring let binds tuple fields", () => {
-    expect(show(run(`let p: [int, string] = [1, "a"]; let [n, s] = p; s`))).toBe("\"a\"");
+    expect(show(run(`let p: [i64, string] = [1, "a"]; let [n, s] = p; s`))).toBe("\"a\"");
   });
   test("destructuring let on an array", () => {
     expect(show(run(`let xs = [10, 20]; let [a, b] = xs; a + b`))).toBe("30");
   });
   test("parametric type alias instantiates", () => {
-    expect(typeOf(`type Pair(a, b) = [a, b]; let p: Pair[int, string] = [1, "a"]; p`)).toBe("[int, string]");
+    expect(typeOf(`type Pair(a, b) = [a, b]; let p: Pair[i64, string] = [1, "a"]; p`)).toBe("[i64, string]");
   });
   test("alias used in a function signature", () => {
-    expect(typeOf(`type Pair(a, b) = [a, b]; let fst = fn(p: Pair[int, string]): int { p.0 }; fst`)).toBe("([int, string]) -> int");
+    expect(typeOf(`type Pair(a, b) = [a, b]; let fst = fn(p: Pair[i64, string]): i64 { p.0 }; fst`)).toBe("([i64, string]) -> i64");
   });
 });
 
@@ -185,24 +185,24 @@ describe("Negative tests (static type checker rejects)", () => {
     expect(() => run(src)).toThrow(needle);
   }
 
-  test("Adding a string to an int", () => {
-    assertTypeError(`let s: string = "hi"; s + 1`, "int");
+  test("Adding a string to an i64", () => {
+    assertTypeError(`let s: string = "hi"; s + 1`, "i64");
   });
 
   test("Calling a function with the wrong argument type", () => {
-    assertTypeError(`let f = fn(n: int): int { n + 1 }; f("x")`, "int");
+    assertTypeError(`let f = fn(n: i64): i64 { n + 1 }; f("x")`, "i64");
   });
 
   test("Heterogeneous array literal is now a tuple", () => {
-    expect(typeOf(`[1, "a", true]`)).toBe("[int, string, bool]");
+    expect(typeOf(`[1, "a", true]`)).toBe("[i64, string, bool]");
   });
 
   test("Tuple arity mismatch is rejected", () => {
-    assertTypeError(`let p: [int, string] = [1, "a", true];`, "arity");
+    assertTypeError(`let p: [i64, string] = [1, "a", true];`, "arity");
   });
 
   test("If branches with mismatched types", () => {
-    assertTypeError(`if (1 < 2) { 1 } else { "x" }`, "int");
+    assertTypeError(`if (1 < 2) { 1 } else { "x" }`, "i64");
   });
 
   test("Using an undeclared effect", () => {
@@ -224,18 +224,18 @@ test("Effectful function signature carries its effect set", () => {
   // ask echoes its arg via the Emit effect and returns it; the signature
   // declares `! { Emit }`, which the checker verifies against the body.
   expect(typeOf(`
-effect Emit(m: int): int;
-let ask = fn(n: int): int ! { Emit } { Emit!(n) };
+effect Emit(m: i64): i64;
+let ask = fn(n: i64): i64 ! { Emit } { Emit!(n) };
 ask
-`)).toBe("(int) -> int ! { Emit }");
+`)).toBe("(i64) -> i64 ! { Emit }");
 });
 
 test("Declaring an effect set rejects effects not listed", () => {
   // Body performs Emit but the signature only declares Log.
   expect(() => run(`
-effect Emit(m: int): int;
-effect Log(m: int): int;
-let f = fn(n: int): int ! { Log } { Emit!(n) };
+effect Emit(m: i64): i64;
+effect Log(m: i64): i64;
+let f = fn(n: i64): i64 ! { Log } { Emit!(n) };
 f(1)
 `)).toThrow("not declared");
 });
@@ -271,21 +271,61 @@ firstRead
 `)).toBe("(string) -> string ! { Read }");
 });
 
-test("Float literals and numeric widening", () => {
-  expect(typeOf(`2.5`)).toBe("float");
-  expect(typeOf(`2`)).toBe("int");
-  expect(typeOf(`1 + 2`)).toBe("int");
-  expect(typeOf(`1 + 2.5`)).toBe("float");
-  expect(typeOf(`1.5 * 2`)).toBe("float");
+test("Untyped literals flex and default to i64 / f64", () => {
+  expect(typeOf(`2.5`)).toBe("f64");
+  expect(typeOf(`2`)).toBe("i64");
+  expect(typeOf(`1 + 2`)).toBe("i64");
+  expect(typeOf(`1 + 2.5`)).toBe("f64");
+  expect(typeOf(`1.5 * 2`)).toBe("f64");
   expect(typeOf(`2 < 3`)).toBe("bool");
   expect(typeOf(`2.0 < 3`)).toBe("bool");
-  expect(typeOf(`2.0`)).toBe("float");
+  expect(typeOf(`2.0`)).toBe("f64");
 });
 
-test("int flows into a float-typed parameter", () => {
-  // step(1) passes an int literal where a float param is expected.
+test("Numeric widths: six primitives, strict same-width arithmetic", () => {
+  // Untyped literals flex to any numeric context and default to i64 / f64.
+  expect(typeOf(`1`)).toBe("i64");
+  expect(typeOf(`1.5`)).toBe("f64");
+  expect(typeOf(`let x: i32 = 1; x`)).toBe("i32");
+  expect(typeOf(`let x: u64 = 1; x + 1`)).toBe("u64");
+  expect(typeOf(`let x: f32 = 1.5; x`)).toBe("f32");
+  expect(typeOf(`let x: i32 = 1; x + 2`)).toBe("i32");       // literal flexes down
+  expect(typeOf(`sqrt(100)`)).toBe("f64");                    // literal flexes up
+  expect(() => typeOf(`let x: i32 = 1; let y: i64 = 2; x + y`)).toThrow(/different numeric widths/);
+  expect(typeOf(`let x: f32 = 1; x + 1.5`)).toBe("f32");      // float literal flexes to f32
+  expect(() => typeOf(`let x: i32 = 1.5`)).toThrow();         // float literal never narrows
+  expect(() => typeOf(`get([10, 20], 1.5)`)).toThrow();       // indices are i64, not f64
+});
+
+test("@as: the explicit numeric cast", () => {
+  expect(typeOf(`@as(1, i32)`)).toBe("i32");
+  expect(show(run(`@as(3.7, i32)`))).toBe("3");               // truncates toward zero
+  expect(show(run(`@as(-3.7, i32)`))).toBe("-3");
+  expect(show(run(`@as(true, i32)`))).toBe("1");
+  expect(show(run(`@as(false, i32)`))).toBe("0");
+  expect(show(run(`let x: i64 = 5; @as(x, f32) + @as(x, f32)`))).toBe("10");
+  expect(() => typeOf(`@as(1, [i64])`)).toThrow(/numeric width/);
+  expect(typeOf(`@as(true, i32) + 1`)).toBe("i32");
+});
+
+test("f32 arithmetic rounds to f32 precision (interp and wasm agree)", () => {
+  expect(show(run(`let a: f32 = 0.1; let b: f32 = 0.2; a + b`))).toBe("0.30000001192092896");
+  expect(show(run(`let a: f32 = 0.1; a * 10.0`))).toBe("1");
+  expect(show(run(`let a: f64 = 0.1; let b: f64 = 0.2; a + b`))).toBe("0.30000000000000004");
+  expect(show(run(`let a: f32 = 0.1; a / 3.0`))).toBe("0.03333333507180214");
+});
+
+test("u32/u64 hold unsigned ranges; i64 goes past i32", () => {
+  expect(show(run(`let x: u32 = 4294967295; x`))).toBe("4294967295");
+  expect(show(run(`let x: u64 = 9007199254740992; x`))).toBe("9007199254740992");
+  expect(show(run(`let x: i64 = 9999999999; x * 2`))).toBe("19999999998");
+  expect(show(run(`let x: u32 = 3; let y: u32 = 5; x < y`))).toBe("true");
+});
+
+test("an untyped int literal flows into a f64-typed parameter", () => {
+  // f(1) passes an untyped literal where a f64 param is expected — it flexes.
   expect(show(run(`
-let f = fn(x: float): float { x + 0.5 };
+let f = fn(x: f64): f64 { x + 0.5 };
 f(1)
 `))).toBe("1.5");
 });
@@ -300,10 +340,10 @@ acc
 `))).toBe("15");
 });
 
-test("+ is overloaded: numeric widening or string concatenation", () => {
+test("+ is overloaded: numeric arithmetic or string concatenation", () => {
   // numeric still works.
-  expect(typeOf(`1 + 2`)).toBe("int");
-  expect(typeOf(`1 + 2.5`)).toBe("float");
+  expect(typeOf(`1 + 2`)).toBe("i64");
+  expect(typeOf(`1 + 2.5`)).toBe("f64");
   expect(show(run(`1 + 2`))).toBe("3");
   // string + string.
   expect(typeOf(`"a" + "b"`)).toBe("string");
@@ -346,28 +386,28 @@ test("math + string builtins: cos/sin/PI/round/abs/char", () => {
   expect(show(run(`char(65)`))).toBe("\"A\"");
   // char uses code points, not UTF-16 code units: 0x1F600 is a supplementary char.
   expect(show(run(`char(128512)`))).toBe("\"\ud83d\ude00\"");
-  // PI is a value builtin: bound as its float, not a fn — so bare use and
-  // arithmetic/call arguments work at runtime, matching the checker's `float`.
-  expect(typeOf(`PI`)).toBe("float");
+  // PI is a value builtin: bound as its f64, not a fn — so bare use and
+  // arithmetic/call arguments work at runtime, matching the checker's `f64`.
+  expect(typeOf(`PI`)).toBe("f64");
   expect(show(run(`PI`))).toBe("3.141592653589793");
-  expect(typeOf(`PI * 100`)).toBe("float");
+  expect(typeOf(`PI * 100`)).toBe("f64");
   expect(show(run(`PI * 100`))).toBe("314.1592653589793");
   expect(show(run(`cos(PI)`))).toBe("-1");
 });
 
-test("division is type-preserving: int/int -> int, float/float -> float", () => {
-  // int/int is truncated; the checker stamps the node so the runtime knows.
-  expect(typeOf(`7 / 2`)).toBe("int");
+test("division is type-preserving: i64/i64 -> i64, f64/f64 -> f64", () => {
+  // i64/i64 is truncated; the checker stamps the node so the runtime knows.
+  expect(typeOf(`7 / 2`)).toBe("i64");
   expect(show(run(`7 / 2`))).toBe("3");
-  expect(typeOf(`4 / 2`)).toBe("int");
+  expect(typeOf(`4 / 2`)).toBe("i64");
   expect(show(run(`4 / 2`))).toBe("2");
-  // float/float stays exact.
-  expect(typeOf(`10.0 / 4.0`)).toBe("float");
+  // f64/f64 stays exact.
+  expect(typeOf(`10.0 / 4.0`)).toBe("f64");
   expect(show(run(`10.0 / 4.0`))).toBe("2.5");
-  // mixed int/float widens to float (no truncation).
-  expect(typeOf(`7 / 2.0`)).toBe("float");
+  // mixed i64/f64 widens to f64 (no truncation).
+  expect(typeOf(`7 / 2.0`)).toBe("f64");
   expect(show(run(`7 / 2.0`))).toBe("3.5");
-  // negative int division truncates toward zero (Math.trunc).
+  // negative i64 division truncates toward zero (Math.trunc).
   expect(show(run(`-7 / 2`))).toBe("-3");
 });
 
@@ -410,7 +450,7 @@ handle {
 
 test("effect annotations are optional and derived if missing", () => {
   // Pure body, no annotation: fine.
-  expect(show(run(`let f = fn(): int { 1 + 2 };\nf`))).toBe("[fn: () -> int]");
+  expect(show(run(`let f = fn(): i64 { 1 + 2 };\nf`))).toBe("[fn: () -> i64]");
   // Effectful body, annotation present and covering: fine.
   expect(show(run(`let g = fn(): unit ! { Out } { Out!("x") };\ng`))).toBe("[fn: () -> unit ! { Out }]");
   // Effectful body, no annotation: derived from body, accepted.
@@ -425,62 +465,62 @@ test("effect annotations are optional and derived if missing", () => {
 
 test("higher-order builtins are effect-polymorphic", () => {
   // Pure callback: the map call performs no effects.
-  expect(typeOf(`let usePure = fn(): [int] { map(fn(x: int): int { x + 1 }, [1, 2, 3]) };
-usePure`)).toBe("() -> [int]");
+  expect(typeOf(`let usePure = fn(): [i64] { map(fn(x: i64): i64 { x + 1 }, [1, 2, 3]) };
+usePure`)).toBe("() -> [i64]");
   // Effectful callback: exactly { Out } propagates, not over-approximated.
-  expect(typeOf(`let useEffectful = fn(): [int] { map(fn(x: int): int { Out!("x"); x }, [1, 2, 3]) };
-useEffectful`)).toBe("() -> [int] ! { Out }");
+  expect(typeOf(`let useEffectful = fn(): [i64] { map(fn(x: i64): i64 { Out!("x"); x }, [1, 2, 3]) };
+useEffectful`)).toBe("() -> [i64] ! { Out }");
   // each with an effectful body callback propagates too.
-  expect(typeOf(`let eachOut = fn(): unit { each(fn(x: int, _: int) { Out!("x") }, [1, 2, 3]) };
+  expect(typeOf(`let eachOut = fn(): unit { each(fn(x: i64, _: i64) { Out!("x") }, [1, 2, 3]) };
 eachOut`)).toBe("() -> unit ! { Out }");
   // Pure each stays pure.
-  expect(typeOf(`let eachPure = fn(): unit { each(fn(x: int, _: int) { unit }, [1, 2, 3]) };
+  expect(typeOf(`let eachPure = fn(): unit { each(fn(x: i64, _: i64) { unit }, [1, 2, 3]) };
 eachPure`)).toBe("() -> unit");
 });
 
 test("user-defined polymorphic functions via let-generalization", () => {
   // `apply` is a lambda RHS, so it's generalized: one definition instantiates
-  // fresh type vars per call and works at int and string in the same program.
+  // fresh type vars per call and works at i64 and string in the same program.
   expect(typeOf(`let apply = fn (f, x) { f(x) };
-apply(fn (n: int) { n + 1 }, 41)`)).toBe("int");
+apply(fn (n: i64) { n + 1 }, 41)`)).toBe("i64");
   expect(typeOf(`let apply = fn (f, x) { f(x) };
-apply(fn (n: int) { "n=" + char(48 + n) }, 7)`)).toBe("string");
+apply(fn (n: i64) { "n=" + char(48 + n) }, 7)`)).toBe("string");
   // Both instantiations coexist in one program.
   expect(show(run(`let apply = fn (f, x) { f(x) };
-let a = apply(fn (n: int) { n + 1 }, 41);
-let b = apply(fn (n: int) { "n=" + char(48 + n) }, 7);
+let a = apply(fn (n: i64) { n + 1 }, 41);
+let b = apply(fn (n: i64) { "n=" + char(48 + n) }, 7);
 a`))).toBe("42");
   expect(show(run(`let apply = fn (f, x) { f(x) };
-let b = apply(fn (n: int) { "n=" + char(48 + n) }, 7);
+let b = apply(fn (n: i64) { "n=" + char(48 + n) }, 7);
 b`))).toBe("\"n=7\"");
   // Value restriction: a non-lambda RHS is NOT generalized, so a returned
   // function used at two types is a type error (stays monomorphic).
   // (Sanity: a lambda-typed `let` with an explicit annotation is monomorphic.)
-  expect(() => run(`let id: (int) -> int = fn (x) { x };
+  expect(() => run(`let id: (i64) -> i64 = fn (x) { x };
 let s = id("hi")`)).toThrow();
 });
 
 test("show prints function arity and type, natives stay [fn]", () => {
-  expect(show(run(`let add = fn(a: int, b: int): int { a + b };\nadd`))).toBe("[fn: (int, int) -> int]");
-  expect(show(run(`let id = fn(x: int): int { x };\nid`))).toBe("[fn: (int) -> int]");
+  expect(show(run(`let add = fn(a: i64, b: i64): i64 { a + b };\nadd`))).toBe("[fn: (i64, i64) -> i64]");
+  expect(show(run(`let id = fn(x: i64): i64 { x };\nid`))).toBe("[fn: (i64) -> i64]");
   // Builtins (natives) carry no inferred type here: stay [fn].
   expect(show(run(`head`))).toBe("[fn]");
 });
 
 test("nested tuple field access chains (m.0.0)", () => {
-  // The lexer reads `0.0` as one float token; the parser splits it so
+  // The lexer reads `0.0` as one f64 token; the parser splits it so
   // `m.0.0` is two field accesses, not one.
-  expect(run(`let m: [[int,int,int],[int,int,int],[int,int,int]] = [[1,2,3],[4,5,6],[7,8,9]]; m.0.0`)).toBe(1);
-  expect(run(`let m: [[int,int,int],[int,int,int],[int,int,int]] = [[1,2,3],[4,5,6],[7,8,9]]; m.2.1`)).toBe(8);
+  expect(run(`let m: [[i64,i64,i64],[i64,i64,i64],[i64,i64,i64]] = [[1,2,3],[4,5,6],[7,8,9]]; m.0.0`)).toBe(1);
+  expect(run(`let m: [[i64,i64,i64],[i64,i64,i64],[i64,i64,i64]] = [[1,2,3],[4,5,6],[7,8,9]]; m.2.1`)).toBe(8);
 });
 
 test("array literal infers as tuple against a tuple-typed context", () => {
-  // Return type: a `[x, y, z]` body literal conforms to `[int,int,int]`.
-  expect(run(`let f = fn(): [int,int,int] { [1, 2, 3] }; f().1`)).toBe(2);
+  // Return type: a `[x, y, z]` body literal conforms to `[i64,i64,i64]`.
+  expect(run(`let f = fn(): [i64,i64,i64] { [1, 2, 3] }; f().1`)).toBe(2);
   // Argument: an `[...]` literal passed to a tuple parameter becomes a tuple.
-  expect(run(`let f = fn(p: [int,int,int]): int { p.2 }; f([1,2,3])`)).toBe(3);
+  expect(run(`let f = fn(p: [i64,i64,i64]): i64 { p.2 }; f([1,2,3])`)).toBe(3);
   // Nested: `[[...],[...]]` argument against a tuple-of-tuples parameter.
-  expect(run(`let f = fn(m: [[int,int,int],[int,int,int]]): int { m.1.0 }; f([[1,2,3],[4,5,6]])`)).toBe(4);
+  expect(run(`let f = fn(m: [[i64,i64,i64],[i64,i64,i64]]): i64 { m.1.0 }; f([[1,2,3],[4,5,6]])`)).toBe(4);
 });
 
 test("REPL: bindings persist across lines", () => {
@@ -488,7 +528,7 @@ test("REPL: bindings persist across lines", () => {
     "bun run cli.ts repl",
     {input: "let a = 6\nlet b = 7\na * b\n:q\n", encoding: "utf8", timeout: 20000, cwd: import.meta.dir},
   );
-  expect(out).toContain("42 : int");
+  expect(out).toContain("42 : i64");
 });
 
 describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
@@ -497,7 +537,7 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
     const orig = console.log;
     console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
     try {
-      expect(() => run(`effect T(x: int): int; Println!("boom"); T!(1)`))
+      expect(() => run(`effect T(x: i64): i64; Println!("boom"); T!(1)`))
         .toThrow("Unhandled effect: T");
     } finally {
       console.log = orig;
@@ -507,26 +547,26 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
 
   test("an interp override covers a program op (the same path runTop uses)", () => {
     const seen: Value[][] = [];
-    expect(run(`effect T(x: int): int; 1 + T!(2)`, {
+    expect(run(`effect T(x: i64): i64; 1 + T!(2)`, {
       T: (args, k) => { seen.push(args); return k((args[0] as number) * 10); },
     })).toBe(21);
     expect(seen).toEqual([[2]]);
   });
 
   test("handled ops pass; performs inside lambdas are handled at the call site", () => {
-    expect(run(`effect T(x: int): int; handle { T!(2) } case T(n) => k { n * 3 }`)).toBe(6);
-    expect(run(`effect T(x: int): int; let f = fn(y: int): int ! { T } { T!(y) }; handle { f(5) } case T(n) => k { n + 1 }`)).toBe(6);
+    expect(run(`effect T(x: i64): i64; handle { T!(2) } case T(n) => k { n * 3 }`)).toBe(6);
+    expect(run(`effect T(x: i64): i64; let f = fn(y: i64): i64 ! { T } { T!(y) }; handle { f(5) } case T(n) => k { n + 1 }`)).toBe(6);
   });
 
   test("an unhandled op through a call is caught statically, not just a bare perform", () => {
-    expect(() => run(`effect T(x: int): int; let f = fn(y: int): int ! { T } { T!(y) }; f(1)`))
+    expect(() => run(`effect T(x: i64): i64; let f = fn(y: i64): i64 ! { T } { T!(y) }; f(1)`))
       .toThrow("Unhandled effect: T");
   });
 
   test("case bodies run outside their handler: ops they perform must be handled too", () => {
-    expect(() => run(`effect T(x: int): int; effect U(x: int): int; handle { T!(1) } case T(n) => k { U!(2) }`))
+    expect(() => run(`effect T(x: i64): i64; effect U(x: i64): i64; handle { T!(1) } case T(n) => k { U!(2) }`))
       .toThrow("Unhandled effect: U");
-    expect(run(`effect T(x: int): int; effect U(x: int): int; handle { T!(1) } case T(n) => k { U!(2) }`,
+    expect(run(`effect T(x: i64): i64; effect U(x: i64): i64; handle { T!(1) } case T(n) => k { U!(2) }`,
       {U: (_args, k) => k(7)})).toBe(7);
   });
 
@@ -552,7 +592,7 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
 
   test("ef types prints symbols, then the program result type and effect row", () => {
     const f = join(tmpdir(), "ef-types-test.ef");
-    writeFileSync(f, `effect T(x: int): int; Println!("a"); handle { T!(1) } case T(n) => k { n }`);
+    writeFileSync(f, `effect T(x: i64): i64; Println!("a"); handle { T!(1) } case T(n) => k { n }`);
     try {
       const out = execSync(`bun run cli.ts types ${f}`, {
         encoding: "utf8",
@@ -565,7 +605,7 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
       }).trim();
       // No lets -> only the result line. Println escapes to the runner; T is
       // handled internally, so the row lists only Println.
-      expect(out.split("\n")).toEqual(["_ : int ! { Println }"]);
+      expect(out.split("\n")).toEqual(["_ : i64 ! { Println }"]);
     } finally {
       unlinkSync(f);
     }

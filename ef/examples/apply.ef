@@ -10,9 +10,9 @@ let apply = fn (f, x) { f(x) };
 let inc = fn (n) { n + 1 };
 let quote = fn (n) { "n=" + char(48 + n) }; # '0'+n as a 1-char string
 
-let a = apply(inc, 41);                            # (int  )->int    applied to int   => int
-let b = apply(quote, 7);                           # (int  )->string applied to int   => string
-let c = apply(fn (xs: [int]) { head(xs) }, [99]);  # ([int])->int    applied to [int] => int
+let a = apply(inc, 41);                            # (i64  )->i64    applied to i64   => i64
+let b = apply(quote, 7);                           # (i64  )->string applied to i64   => string
+let c = apply(fn (xs: [i64]) { head(xs) }, [99]);  # ([i64])->i64    applied to [i64] => i64
 
 Println!(a);                       # 42
 Println!(b);                       # n=7

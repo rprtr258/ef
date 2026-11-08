@@ -176,7 +176,7 @@ function effRow(effs: Effs): string | null {
   return "{ " + [...effs].join(", ") + " }";
 }
 
-// Effect signature for display: "(int, string) -> int". checkProgram has
+// Effect signature for display: "(i64, string) -> i64". checkProgram has
 // replaced unannotated params with fresh vars, so showT prints a letter.
 function sigT(sig: EffectSig): string {
   return "(" + sig.params.map((t) => showT(t!)).join(", ") + ") -> " + showT(sig.ret);

@@ -42,9 +42,9 @@ describe("bridge", () => {
   test("parse and type errors surface as problems", () => {
     expect(problems("let x = ;")[0]?.stage).toBe("parse");
     expect(problems("1 + true")[0]?.stage).toBe("check");
-    expect(problems("let f = fn(x: int): int { x }; f(2)")).toEqual([]);
+    expect(problems("let f = fn(x: i64): i64 { x }; f(2)")).toEqual([]);
     // lint: unused argument, with a line number
-    const p = problems("let f = fn(unused: int): int { 1 };\nf(2)");
+    const p = problems("let f = fn(unused: i64): i64 { 1 };\nf(2)");
     expect(p[0]?.stage).toBe("lint");
     expect(p[0]?.line).toBe(1);
   });
@@ -56,7 +56,7 @@ describe("bridge", () => {
   });
 
   test("topLevelEffs: the residual row `ef types` prints on its _ line", () => {
-    expect(topLevelEffs("let fib = fn(n: int): int { n };\nPrintln!(fib(27))")).toEqual(["Println"]);
+    expect(topLevelEffs("let fib = fn(n: i64): i64 { n };\nPrintln!(fib(27))")).toEqual(["Println"]);
     // lambdas defer their performs, and internally-handled ops don't escape
     expect(topLevelEffs("effect E(): unit;\nlet f = fn() { E!() };\n1")).toEqual([]);
     expect(topLevelEffs("effect E(): unit;\nhandle { E!() } case E() => k { k(unit) }")).toEqual([]);
@@ -65,9 +65,9 @@ describe("bridge", () => {
 
   test("outline, entry detection and project concat", () => {
     const src = [
-      "effect Tick(v: int): int;",
-      "type Pair = [int, int];",
-      "let f = fn(x: int): int ! { Tick } { Tick!(x) };",
+      "effect Tick(v: i64): i64;",
+      "type Pair = [i64, i64];",
+      "let f = fn(x: i64): i64 ! { Tick } { Tick!(x) };",
       "f(1)",
     ].join("\n");
     const ol = outline(src);
@@ -79,9 +79,9 @@ describe("bridge", () => {
     expect(ol[2]?.line).toBe(3);
     expect(ol[2]?.effs).toBe("{ Tick }");
     // types: checker-resolved for bindings, written sig for effects, alias body
-    expect(ol[0]?.typ).toBe("(int) -> int");
-    expect(ol[1]?.typ).toBe("[int, int]");
-    expect(ol[2]?.typ).toBe("(int) -> int ! { Tick }");
+    expect(ol[0]?.typ).toBe("(i64) -> i64");
+    expect(ol[1]?.typ).toBe("[i64, i64]");
+    expect(ol[2]?.typ).toBe("(i64) -> i64 ! { Tick }");
     // a type error elsewhere leaves typs null — the outline still lists names
     expect(outline("let x = 1;\nx(2)").map((o) => o.typ)).toEqual([null]);
     expect(isEntryFile(src)).toBe(true);
@@ -105,13 +105,13 @@ describe("bridge", () => {
     });
     expect(buf).toBe("raw3\n");
     expect(r.value).toBe(7);
-    expect(showT(r.type)).toBe("int");
+    expect(showT(r.type)).toBe("i64");
     expect(r.ops).toEqual(["Out", "Println"]);
   });
 
   test("wasm run handles deep recursion (the CPS interpreter overflows V8)", () => {
     const r = runWasmProgram([
-      "let fib = fn(n: int): int {",
+      "let fib = fn(n: i64): i64 {",
       "  if (n < 2) { n } else { fib(n - 1) + fib(n - 2) }",
       "};",
       "Println!(fib(27));",

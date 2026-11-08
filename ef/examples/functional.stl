@@ -1,0 +1,11 @@
+index :: [log: fn(msg: i32): void];
+
+id :: fn(T: @Type, x: T): T {
+  return x;
+}
+
+main :: fn(): i32 {
+  index.log(id(1));
+  id(false);
+  return 0;
+};
