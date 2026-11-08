@@ -478,6 +478,19 @@ describe("wasm effect codegen regressions", () => {
     // Two performs inside dlet bindings, one resumed non-trivially (k(k(4))).
     expect(parity("effect Op(): i64; handle { let [x, y, z] = [1, Op!(), 3]; let [w] = [x + z + Op!()]; w + y } case Op() => k { k(k(4)) }")).toBe("52");
   });
+
+  test("pre-cut operands reload from the frozen frame across resumes", () => {
+    // A pre-cut operand of a split-mode app must reload from the K_SPILL
+    // cell's frozen frame image, never the live frame: a later loop pass
+    // re-stores the spill slot while an older continuation of the same
+    // site is still pending. The fragment chain here runs while -> body
+    // statement (emitStmtsFrom) -> app, so every chain node must thread
+    // the snap (frozen image) ctx down to the reload.
+    expect(parity("effect Op(): i64; handle { let s = 0; let i = 0; while (i < 2) { s = s + i + Op!(); i = i + 1 }; s } case Op() => k { k(k(7)) }")).toBe("23");
+    // Same reload behind an @as on the chain (single-child nodes cut
+    // through too).
+    expect(parity("effect Op(): i64; handle { let s = 0; let i = 0; while (i < 2) { s = s + @as(i + Op!(), i64); i = i + 1 }; s } case Op() => k { k(k(7)) }")).toBe("23");
+  });
 });
 
 describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () => {

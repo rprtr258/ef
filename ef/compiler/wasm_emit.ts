@@ -483,12 +483,12 @@ export function fillRest(em: Emit, sp: Split, root: ExprID[], sc: Scope, tail: b
 // value being the fragment's v param, statements after it re-emit inline.
 // Returns the last statement's ref; pushRef it where the caller needs the
 // legacy stack operand (handle/while-cut do, block-cut returns it).
-function emitStmtsFrom(em: Emit, stmts: ExprID[], f: Fn, s: Scope, ctx: Ctx, ci: number, cut: ExprID[], tail: boolean): ValueRef {
+function emitStmtsFrom(em: Emit, stmts: ExprID[], f: Fn, s: Scope, ctx: Ctx, ci: number, tail: boolean): ValueRef {
   let r: ValueRef = em.lay.unitRef;
   for (let k = ci; k < stmts.length; k++) {
     r = (k === ci)
-      ? expr(em, stmts[k], f, s, tail && k === stmts.length - 1, {kL: ctx.kL, cut: cut.slice(1)})
-      : expr(em, stmts[k], f, s, tail && k === stmts.length - 1, {kL: ctx.kL});
+      ? expr(em, stmts[k], f, s, tail && k === stmts.length - 1, chainCtx(ctx))
+      : expr(em, stmts[k], f, s, tail && k === stmts.length - 1, {kL: ctx.kL, snap: ctx.snap});
   }
   return r;
 }
@@ -1470,6 +1470,16 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
 // inline (preCut). "post": a sibling evaluated AFTER the cut child (or no
 // cut at all) — re-emit inline, with the caller's tail flag. Persists any
 // mapped operand spill slot.
+// The ctx for re-emitting the chain's next child (cut[0]): consumes one
+// chain step and threads the snap ctx through. Fresh emission (no cut)
+// passes through unchanged. Every chain-descent site must build its child
+// ctx through this — dropping snap makes pre-cut operand reloads read the
+// live frame, breaking multi-shot resume once the frame is mutated (see
+// Ctx.snap, fillRest prologue).
+function chainCtx(ctx: Ctx): Ctx {
+  return ctx.cut === undefined ? ctx : {kL: ctx.kL, cut: ctx.cut.slice(1), snap: ctx.snap};
+}
+
 function cutChildRef(em: Emit, child: ExprID, f: Fn, s: Scope, ctx: Ctx, mode: "cut" | "pre" | "post", tail = false): ValueRef {
   if (mode === "cut") return keepRef(em, child, f, expr(em, child, f, s, false, {kL: ctx.kL, cut: ctx.cut!.slice(1), snap: ctx.snap}));
   if (mode === "pre") return keepRef(em, child, f, preCut(em, child, f, s, ctx));
@@ -1543,7 +1553,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
       // exists before the value is computed, so `let x = x` sees null —
       // a null slot read normalizes to unit inside the module).
       const slot = s.map.get(e.name)!;
-      const vr = expr(em, e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
+      const vr = expr(em, e.val, f, s, false, chainCtx(ctx));
       b.localGet(0); b.structGet(4, 1);
       b.i32Const(slot);
       f.pushRef(vr);
@@ -1552,7 +1562,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
     }
     case "dlet": {
       const blk = f.anyref();
-      const vr = expr(em, e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
+      const vr = expr(em, e.val, f, s, false, chainCtx(ctx));
       f.pushRef(vr);
       b.refCast(3, true);
       b.structGet(3, 0);
@@ -1573,7 +1583,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
     case "assign": {
       const r = resolve(s, e.name);
       if (r === null) throw new WasmError(`Assignment to unbound symbol: ${e.name}`);
-      const vr = expr(em, e.val, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1), snap: ctx.snap});
+      const vr = expr(em, e.val, f, s, false, chainCtx(ctx));
       b.localGet(0);
       for (let k = 0; k < r.d; k++) b.structGet(4, 0);
       b.structGet(4, 1);
@@ -1666,7 +1676,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
       // its value from the fragment's v param, the rest re-emits inline.
       const ci = e.stmts.indexOf(cut[0]);
       if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-      return emitStmtsFrom(em, e.stmts, f, s, ctx, ci, cut, tail);
+      return emitStmtsFrom(em, e.stmts, f, s, ctx, ci, tail);
     }
     case "arr": {
       const blk = f.anyref();
@@ -1712,7 +1722,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
       const targetW = e.typ.tag === "prim" ? e.typ.name : "";
       const childW = (em.nodes[e.e] as Expr & {numKind?: string}).numKind ?? "";
       const v = f.anyref();
-      const childRef = expr(em, e.e, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)});
+      const childRef = expr(em, e.e, f, s, false, chainCtx(ctx));
       // Adaptive source read to a width-typed stack value.
       const readF32 = (): void => {
         f.pushRef(childRef);
@@ -1870,7 +1880,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
     }
     case "field": {
       const blk = f.anyref();
-      f.pushRef(expr(em, e.obj, f, s, false, cut === undefined ? ctx : {kL: ctx.kL, cut: cut.slice(1)}));
+      f.pushRef(expr(em, e.obj, f, s, false, chainCtx(ctx)));
       b.refCast(3, true);
       b.structGet(3, 0);
       b.localSet(blk);
@@ -1922,7 +1932,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
         const bsc = em.d.scopes.get(e.body) ?? s;
         const ci = stmts.indexOf(cut[0]);
         if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-        f.pushRef(emitStmtsFrom(em, stmts, f, bsc, ctx, ci, cut, false));
+        f.pushRef(emitStmtsFrom(em, stmts, f, bsc, ctx, ci, false));
         const v = f.anyref();
         b.localSet(v);
         emitDispatch(em, f, v, ctx.kL);
@@ -2615,7 +2625,7 @@ function emitWhileCPS(em: Emit, id: ExprID, e: Expr & {t: "while"}, f: Fn, s: Sc
     // Mid-iteration re-entry with a non-block body: it continues the
     // fragment with the cut site's value.
     const bsc = em.d.scopes.get(e.body) ?? s;
-    f.pushRef(expr(em, e.body, f, bsc, false, {kL: ctx.kL, cut: cut.slice(1)}));
+    f.pushRef(expr(em, e.body, f, bsc, false, chainCtx(ctx)));
   } else {
     // Mid-iteration re-entry: skip the condition (already run). Like
     // handler bodies, a block body is bypassed by emitStmtSeq, so the
@@ -2628,7 +2638,7 @@ function emitWhileCPS(em: Emit, id: ExprID, e: Expr & {t: "while"}, f: Fn, s: Sc
     const bsc = em.d.scopes.get(e.body) ?? s;
     const ci = stmts.indexOf(cut[0]);
     if (ci < 0) throw new WasmError("internal: split chain root mismatch");
-    f.pushRef(emitStmtsFrom(em, stmts, f, bsc, ctx, ci, cut, false));
+    f.pushRef(emitStmtsFrom(em, stmts, f, bsc, ctx, ci, false));
   }
   const v = f.anyref();
   b.localSet(v);
