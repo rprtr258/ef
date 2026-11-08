@@ -24,6 +24,7 @@
 //   (or the run fails on).
 
 import type {ExprID, Program} from "./parser.ts";
+import {assertNever} from "./assert.ts";
 
 // Builtin effect op names in op-table order (= builtins.ts table order).
 // The wasm op table seeds these at opids 0..n-1; performed/handled program
@@ -109,8 +110,14 @@ export function performsAnyOp(prog: Program): boolean {
         return walk(e.e);
       case "handle":
         return walk(e.body) || e.cases.some(cse => walk(cse.body));
+      case "sym":
+      case "num":
+      case "str":
+      case "bool":
+      case "unit":
+        return false;
       default:
-        return false; // sym/num/str/bool/unit
+        return assertNever(e);
     }
   };
   return prog.items.some(it => "e" in it && walk(it.e));
@@ -181,8 +188,14 @@ export function collectEffectOps(prog: Program): string[] {
         for (const cse of e.cases)
           walk(cse.body);
         break;
+      case "sym":
+      case "num":
+      case "str":
+      case "bool":
+      case "unit":
+        break;
       default:
-        break; // sym/num/str/bool/unit
+        assertNever(e);
     }
   };
   for (const it of prog.items)
@@ -313,6 +326,8 @@ function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<str
       case "bool":
       case "unit":
         break;
+      default:
+        assertNever(e);
     }
   };
   const root: Sc = {names: new Set(), parent: null};

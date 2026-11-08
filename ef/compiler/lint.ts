@@ -2,6 +2,7 @@
 
 import type {Pos} from "./lexer.ts";
 import {Parser, type Expr, type ExprID, type Item} from "./parser.ts";
+import {assertNever} from "./assert.ts";
 
 // Each pass is an (items, nodes) => LintIssue[]; add more passes to LINT_PASSES.
 export type LintIssue =
@@ -67,9 +68,20 @@ function* visitLambdas(
   case "field":
     yield* visitLambdas(e.obj, nodes, null);
     return;
+  case "as":
+    yield* visitLambdas(e.e, nodes, null);
+    return;
   case "dlet":
     yield* visitLambdas(e.val, nodes, null);
     return;
+  case "num":
+  case "str":
+  case "bool":
+  case "unit":
+  case "sym":
+    return;
+  default:
+    return assertNever(e);
   }
 }
 
@@ -120,6 +132,8 @@ function freeUses(id: ExprID, nodes: Expr[], watch: Set<string>): Set<string> {
       }
       return;
     }
+    default:
+      return assertNever(e);
     }
   };
   go(id, watch);

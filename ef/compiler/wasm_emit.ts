@@ -10,6 +10,7 @@ import {DBGEMIT, OPERATOR_OPS, mapLikeFrameWords} from "./wasm_tables.ts";
 import {Fn} from "./wasm_body.ts";
 import {frameSizeOf, resolve, splits, type Discovery, type Indices, type Layout, type Opt} from "./wasm_pipeline.ts";
 import * as w from "./wasm_consts.ts";
+import {assertNever} from "./assert.ts";
 
 // Value-explicit rewrite (stage 1): every expression emitter RETURNS a
 // ValueRef instead of leaving a cell pointer on the wasm operand stack.
@@ -183,6 +184,14 @@ export function emitLambdas(em: Emit, id: ExprID): void {
     case "perform":
       for (const a of e.args) emitLambdas(em, a);
       break;
+    case "num":
+    case "str":
+    case "bool":
+    case "unit":
+    case "sym":
+      break;
+    default:
+      assertNever(e);
   }
 }
 
@@ -1613,10 +1622,13 @@ function exprInner(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: C
       b.localSet(v);
       return {k: "local", l: v};
     }
-    default:
-      // Unreachable: the switch covers every Expr variant, but a try/finally
-      // wrapper defeats TS's exhaustiveness-based end-of-function check.
+    default: {
+      // Exhaustive per Expr: a new variant must add a case above (the
+      // try/finally wrapper defeats TS's end-of-function reachability
+      // check, so the never-assertion is the exhaustiveness guard here).
+      assertNever(e);
       throw new WasmError(`internal: no emitter for node ${id}`);
+    }
   }
   } finally {
     if (pushed) em.sp.cutStack.pop();

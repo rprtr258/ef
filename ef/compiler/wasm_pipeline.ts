@@ -11,6 +11,7 @@ import {_T, Scope, StaticDesc, ValueRef, WasmError} from "./wasm_types.ts";
 import {BUILTIN_IMPORTS, DBGEMIT, HOST_IMPORTS, MAP_LIKE, OPERATOR_OPS, SIGS, mapLikeFrameWords, vt} from "./wasm_tables.ts";
 import {Fn} from "./wasm_body.ts";
 import * as w from "./wasm_consts.ts";
+import {assertNever} from "./assert.ts";
 
 // --- compile phases ----------------------------------------------------------
 // The backend pipeline is a composition of free functions over plain artifact
@@ -316,6 +317,8 @@ export function discover(prog: Program): Discovery {
       case "bool":
       case "unit":
         break;
+      default:
+        assertNever(e);
     }
   };
   for (const it of prog.items) {
@@ -404,6 +407,14 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
       case "perform":
         for (const a of e.args) assignLambdas(a);
         break;
+      case "num":
+      case "str":
+      case "bool":
+      case "unit":
+      case "sym":
+        break;
+      default:
+        assertNever(e);
     }
   };
   for (const it of prog.items) {
@@ -508,8 +519,14 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
           if (info.retCase !== null) walk(info.retCase.body, info.scope.frame);
           break;
         }
+        case "num":
+        case "str":
+        case "bool":
+        case "unit":
+        case "sym":
+          break; // no children
         default:
-          break; // num/str/bool/unit/sym: no children
+          assertNever(e);
       }
     };
     for (const it of prog.items) {
@@ -664,8 +681,14 @@ export function splits(prog: Program, d: Discovery, id: ExprID): boolean {
       return splits(prog, d, e.obj);
     case "as":
       return splits(prog, d, e.e);
+    case "sym":
+    case "num":
+    case "str":
+    case "bool":
+    case "unit":
+      return false;
     default:
-      return false; // num/str/bool/unit/sym
+      return assertNever(e);
   }
 }
 

@@ -1,6 +1,7 @@
 import type {Expr, ExprID, Program} from "./parser";
 import {builtins} from "./builtins.ts";
 import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TNULL, TSTR} from "./prims.ts";
+import {assertNever} from "./assert.ts";
 
 export type Type = Prim | ArrT | TupT | FunT | Var | AnyT;
 export type NumName = "i32" | "i64" | "u32" | "u64" | "f32" | "f64" | "int" | "float";
@@ -866,6 +867,8 @@ function inferNode(
       }
       return env.uni.res(ret);
     }
+    default:
+      return assertNever(e);
   }
   } catch (err) {
     // Annotate the innermost type mismatch with the position of the

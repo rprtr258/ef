@@ -7,6 +7,7 @@ import {checkProgram, type Checked, type Type} from "./types.ts";
 import {Env, show, type Cont, type Native, type Outcome, type Value, num, globalEnv, seedBuiltins, type Closure} from "./env.ts";
 import {builtinRefs} from "./analysis.ts";
 import {Parser, type Expr, type ExprID, type HandlerCase, type Program} from "./parser.ts";
+import {assertNever} from "./assert.ts";
 import {builtinInterps} from "./builtins.ts";
 
 function isNative(v: Value): v is Native {
@@ -122,6 +123,8 @@ function evalEInner(id: ExprID, nodes: Expr[], env: Env, k: Cont): Outcome {
         evalArgs(e.args, nodes, env, [], (args) => apply(f, args, k)),
       );
     }
+    default:
+      return assertNever(e);
   }
 }
 

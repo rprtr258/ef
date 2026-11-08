@@ -14,7 +14,10 @@ Hindley-Milner-flavoured type system with effect tracking.
   shrink pass; split into `wasm_types.ts`/`wasm_tables.ts`/`wasm_body.ts`/
   `wasm_pipeline.ts`/`wasm_emit.ts`/`wasm_module.ts` — see item 8),
   `wasm_host.ts` (wasm host runtime: instantiation, GC↔JS boxing,
-  effect interpretation), `lint.ts`, `prims.ts`, frontends `cli.ts`/`repl.ts`.
+  effect interpretation), `lint.ts`, `prims.ts`, `assert.ts` (the
+  `assertNever` exhaustive-switch guard — every switch over `Expr` ends in
+  it, so a new node variant fails typecheck in each walker that forgets it),
+  frontends `cli.ts`/`repl.ts`.
 - Tests (under `compiler/`): `index.test.ts` + `lint.test.ts` + `wasm.test.ts` +
   `analysis.test.ts` + `examples.test.ts` (`bun:test`).
 - Run a file: `bun compiler/cli.ts run <file>` (subcommands: `run`, `buildwasm`,
@@ -123,6 +126,18 @@ typing rules.
 
 ## Key design decisions (don't accidentally undo)
 
+- **Six numeric widths, strict arithmetic.** `i32 i64 u32 u64 f32 f64`
+  replace int/float. Operands of a numeric op must share a width (`i32 +
+  i64` is a type error); `@as(expr, T)` is the one conversion (float→int
+  truncates, bool→numeric gives 0/1). Untyped literals (`1`, `1.5`) are
+  internal wildcard types that flex to any numeric (resp. float) context
+  and default to i64/f64 — never let them widen to concrete types at parse
+  time. f32 values round to f32 precision at every producing node (checker
+  stamps `f32`; interp frounds, wasm emits a demote/promote round-trip);
+  i64/u64 are exact to 2^53, no wraparound.
+- **Every `Expr` switch is exhaustive.** Walkers end in `default:` +
+  `assertNever` (assert.ts); adding a node type must update all of them —
+  `bun check` fails otherwise.
 - **CPS evaluator, not generators.** Generators are single-use; CPS gives
   genuine multi-shot resume via callable JS closures.
 - **`any` is absorbing.** Unifies with everything and stays `any`. Escape
