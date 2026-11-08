@@ -2,19 +2,20 @@
 //
 // The ef compiler's TypeScript frontend runs natively in the bundle
 // (parse → check → lint are live; wasm emit lazily loads the binaryen chunk).
-// A "project" of several .ef files is one compilation unit: files are
-// concatenated in order, so top-level bindings are mutually visible. ef has no
-// `fun main()` — the program value is the last top-level expression, so the
-// entry file is the last one whose last item is a bare expression.
+// Each .ef file is its own compilation unit and entrypoint (like `ef run
+// <file>`): Run/Build compile only the open file — ef has no import mechanism
+// yet, so files cannot see each other's bindings. ef has no `fun main()`
+// either — the program value is the file's last top-level expression, and a
+// file without top-level expressions isn't an entry (Run/Build disabled).
 //
-// Run compiles the project through the wasm backend and executes it in the
+// Run compiles the open file through the wasm backend and executes it in the
 // browser's WebAssembly (streaming Out!/Println! into the output pane) —
 // O(1) stack via wasm tail calls, unlike the CPS interpreter which leans on
 // JSC tail calls and overflows V8. Build emits the same WasmGC main.wasm
 // (downloadable). The Pipeline card's ops row shows the active file's
 // residual effect row — the ops that reach the top level, the `_` line of
-// `ef types` — while build reports the whole project's performed ops (a
-// typecheck byproduct, not a wasm artifact).
+// `ef types` — while build reports the open file's performed ops (a typecheck
+// byproduct, not a wasm artifact).
 //
 // Shell: "Instrument" — explorer tree | editor + tabbed output | insight rail
 // (BUILD / OUTLINE cards), Ctrl+K command palette, light/dark themes
@@ -22,7 +23,7 @@
 
 import * as monaco from "monaco-editor/esm/vs/editor/editor.main.js";
 import {
-  buildWasm, concatProject, entryFile, ExitSignal, outline, problems,
+  buildWasm, ExitSignal, isEntryFile, outline, problems,
   runWasmProgram, tokenize, topLevelEffs, type OutlineItem, type Problem,
 } from "./bridge.ts";
 import {show} from "../../compiler/env.ts";
@@ -76,7 +77,11 @@ let triples = fn(n: int): [[int]] {
   } case Return(v) => k {
     []
   }
-};`,
+};
+
+# Run it: Choose! branches, Emit! collects — the handlers live in
+# solutions/triples above.
+each(fn(t: [int], _) { Println!(t) }, triples(14));`,
     },
     {
       name: "state.ef",
@@ -103,15 +108,22 @@ let deterministic = fn(n: int): [float] {
   } case Random() => r {
     r(0.42)
   }
-};`,
+};
+
+# Run it: Tick! is resumed with 1..5; every Random! draw resumes with 0.42.
+Println!(counter(5));
+Println!(deterministic(8));`,
     },
     {
       name: "main.ef",
-      code: `# The entry file: ef runs top-level items in order and the program's value
-# is the last top-level expression — this file sits last, so it wins.
-each(fn(t: [int], _) { Println!(t) }, triples(14));
-Println!(counter(5));
-Println!(deterministic(8));
+      code: `# Each file in this project is its own runnable program: Run acts on the
+# open file, and ef has no imports yet — files share nothing. effects.ef and
+# state.ef are standalone demos of effects and state; this one keeps to
+# builtins.
+let squares = fn(n: int): [int] {
+  map(fn(i: int): int { i * i }, range(0, n, 1))
+};
+each(fn(s: int, _) { Println!(s) }, squares(6));
 Out!("welcome to ef\\n");`,
     },
   ],
@@ -137,8 +149,8 @@ const els = {
   topbar: $("#topbar"),
   brand: $("#brand"),
   paletteBtn: $("#palette-btn"),
-  runBtn: $("#run-btn"),
-  buildBtn: $("#build-btn"),
+  runBtn: $("#run-btn") as HTMLButtonElement,
+  buildBtn: $("#build-btn") as HTMLButtonElement,
   themeBtn: $("#theme-btn"),
   main: $("#main"),
   tree: $("#tree"),
@@ -207,23 +219,10 @@ function saveProject(): void {
   localStorage.setItem(LS_KEY, JSON.stringify(state.project));
 }
 
-const codes = (): string[] => state.project.files.map((f) => f.code);
 const activeFile = (): {name: string, code: string} => {
   const f = state.project.files.find((f) => f.name === state.active);
   return f ?? state.project.files[0];
 };
-
-function concatLines(codes: string[]): {file: number, line: number}[] {
-  // Map a line number in the concatenation back to (file, line) — 1-indexed.
-  const map: {file: number, line: number}[] = [];
-  for (let fi = 0; fi < codes.length; fi++) {
-    const n = codes[fi].split("\n").length;
-    for (let l = 1; l <= n; l++) map.push({file: fi, line: l});
-    // blank separator line between files
-    if (fi < codes.length - 1) map.push({file: fi, line: n + 1});
-  }
-  return map;
-}
 
 // --- theme ------------------------------------------------------------------
 
@@ -434,8 +433,6 @@ function fmtMs(ms: number): string {
 // --- tree -------------------------------------------------------------------
 
 function renderTree(): void {
-  const codesL = codes();
-  const entryIdx = entryFile(codesL);
   const tree = els.tree;
   tree.replaceChildren();
 
@@ -447,7 +444,7 @@ function renderTree(): void {
   };
 
   group("src");
-  for (const [i, f] of state.project.files.entries()) {
+  for (const f of state.project.files) {
     const row = document.createElement("div");
     row.className = "tree-file" + (f.name === state.active ? " on" : "");
     const dot = document.createElement("span");
@@ -457,17 +454,13 @@ function renderTree(): void {
     name.className = "tree-name";
     name.textContent = f.name;
     row.append(dot, name);
-    if (i === entryIdx) {
+    if (isEntryFile(f.code)) {
       const badge = document.createElement("span");
       badge.className = "entry-badge";
       badge.textContent = "entry";
-      badge.title = "entry — last top-level expression lives here";
+      badge.title = "entry — running this file evaluates to its last top-level expression";
       row.appendChild(badge);
     }
-    const n = document.createElement("span");
-    n.className = "tree-lines";
-    n.textContent = `${f.code.split("\n").length}L`;
-    row.appendChild(n);
     row.addEventListener("click", () => openFile(f.name));
     tree.appendChild(row);
   }
@@ -577,7 +570,6 @@ function renderProblems(ps: Problem[]): void {
     box.appendChild(d);
     return;
   }
-  const lineMap = concatLines(codes());
   for (const p of ps) {
     const r = document.createElement("div");
     r.className = "prob-row " + p.stage;
@@ -588,15 +580,13 @@ function renderProblems(ps: Problem[]): void {
     msg.className = "prob-msg";
     msg.textContent = p.msg;
     r.append(loc, msg);
-    if (p.line !== null && p.line <= lineMap.length) {
-      const at = lineMap[p.line - 1];
-      const fname = state.project.files[at.file].name;
-      r.title = `${fname}:${at.line} — click to jump`;
+    if (p.line !== null) {
+      const line = p.line;
+      r.title = `L${line} — click to jump`;
       r.addEventListener("click", () => {
-        if (state.active !== fname) openFile(fname);
         setTimeout(() => {
-          editor?.revealLineInCenter(at.line);
-          editor?.setPosition({lineNumber: at.line, column: 1});
+          editor?.revealLineInCenter(line);
+          editor?.setPosition({lineNumber: line, column: 1});
           editor?.focus();
         }, 0);
       });
@@ -606,7 +596,7 @@ function renderProblems(ps: Problem[]): void {
 }
 
 function liveProblems(): void {
-  const ps = problems(concatProject(codes()));
+  const ps = problems(activeFile().code);
   renderProblems(ps);
   setTab(state.tab);
 }
@@ -621,6 +611,18 @@ function recompute(): void {
   renderOutlineCard();
   renderOpsStat();
   liveProblems();
+  refreshActions();
+}
+
+// Run/Build act on the open file as the entry; a file without top-level
+// expressions (definitions only) is not an entry — disable the actions.
+function refreshActions(): void {
+  const entry = isEntryFile(activeFile().code);
+  els.runBtn.disabled = !entry;
+  els.buildBtn.disabled = !entry;
+  const why = entry ? "" : " — file has no top-level expressions";
+  els.runBtn.title = `Ctrl+↩${why}`;
+  els.buildBtn.title = `Ctrl+B${why}`;
 }
 
 function openFile(name: string): void {
@@ -629,8 +631,7 @@ function openFile(name: string): void {
   state.active = name;
   editor?.setValue(f.code);
   els.crumbFile.textContent = name;
-  const es = entryFile(codes());
-  const isEntry = state.project.files[es]?.name === name;
+  const isEntry = isEntryFile(f.code);
   els.crumbEntry.textContent = isEntry ? "entry" : "";
   els.crumbEntry.classList.toggle("entry-badge", isEntry);
   recompute();
@@ -646,11 +647,12 @@ function onEdit(): void {
 }
 
 function run(): void {
+  if (!isEntryFile(activeFile().code)) return; // no top-level expressions to run
   onEditNow();
   clearOutput();
   setTab("output");
   stagesBusy();
-  const src = concatProject(codes());
+  const src = activeFile().code;
   const t0 = performance.now();
   try {
     const r = runWasmProgram(src, (s) => {
@@ -688,11 +690,12 @@ function onEditNow(): void {
 }
 
 async function build(): Promise<void> {
+  if (!isEntryFile(activeFile().code)) return; // no top-level expressions to run
   onEditNow();
   clearOutput();
   setTab("output");
   stagesBusy();
-  const src = concatProject(codes());
+  const src = activeFile().code;
   const t0 = performance.now();
   try {
     const {bytes, ops} = await buildWasm(src);
@@ -762,8 +765,8 @@ type Cmd = {label: string, hint: string, run: () => void};
 function commands(): Cmd[] {
   const f = activeFile();
   return [
-    {label: "Run", hint: "Ctrl+↩ — compile to wasm and run, streaming Out!/Println!", run: () => void run()},
-    {label: "Build wasm", hint: "Ctrl+B — emit WasmGC main.wasm (binaryen shrink)", run: () => void build()},
+    {label: "Run", hint: isEntryFile(f.code) ? "Ctrl+↩ — compile to wasm and run, streaming Out!/Println!" : "no top-level expressions — the open file isn't an entry", run: () => void run()},
+    {label: "Build wasm", hint: isEntryFile(f.code) ? "Ctrl+B — emit WasmGC main.wasm (binaryen shrink)" : "no top-level expressions — the open file isn't an entry", run: () => void build()},
     {label: "New file…", hint: "add a .ef file to src/", run: () =>
       openModal({title: "New file", value: "untitled.ef", ok: "Create", onOk: (v) => {
         const name = v.trim();

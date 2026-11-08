@@ -79,6 +79,8 @@ body {
   padding: 4px 10px; cursor: pointer;
 }
 .tb-btn:hover { background: var(--sel); }
+.tb-btn:disabled { opacity: .4; cursor: not-allowed; }
+.tb-btn:disabled:hover { background: transparent; }
 .tb-btn.primary {
   background: var(--accent); color: var(--accent-ink);
   border-color: var(--accent); font-weight: 600;

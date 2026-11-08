@@ -2,8 +2,8 @@ import {describe, expect, test} from "bun:test";
 import {showT} from "../../compiler/types.ts";
 
 import {
-  buildWasm, browserInterp, concatProject, entryFile, interpret, isEntryFile,
-  outline, problems, runWasmProgram, tokenize, topLevelEffs, ExitSignal,
+  buildWasm, browserInterp, interpret, isEntryFile, outline, problems,
+  runWasmProgram, tokenize, topLevelEffs, ExitSignal,
 } from "./bridge.ts";
 
 describe("bridge", () => {
@@ -86,8 +86,6 @@ describe("bridge", () => {
     expect(outline("let x = 1;\nx(2)").map((o) => o.typ)).toEqual([null]);
     expect(isEntryFile(src)).toBe(true);
     expect(isEntryFile("let x = 1;")).toBe(false);
-    expect(entryFile(["let a = 1;", "2 + 2"])).toBe(1);
-    expect(concatProject(["a", " b "])).toBe("a\nb");
   });
 
   test("browser interp works standalone", () => {

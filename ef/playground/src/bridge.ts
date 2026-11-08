@@ -263,9 +263,9 @@ export function outline(src: string): OutlineItem[] {
 }
 
 // A file is an "entry" file when its last top-level item is a bare expression
-// (ef's program value is the last top-level item of the concatenation, so this
-// marks where the program's result comes from). A file with a
-// parse error simply isn't an entry — never throws.
+// (ef's program value is the last top-level expression — this marks files
+// that produce a value when run). A file with a parse error simply isn't an
+// entry — never throws.
 export function isEntryFile(src: string): boolean {
   let prog: Program;
   try {
@@ -276,20 +276,6 @@ export function isEntryFile(src: string): boolean {
   const last = prog.items[prog.items.length - 1];
   if (prog.items.length === 0 || !("e" in last)) return false;
   return prog.nodes[last.e].t !== "let";
-}
-
-export function entryFile(codes: string[]): number {
-  try {
-    for (let i = codes.length - 1; i >= 0; i--)
-      if (isEntryFile(codes[i])) return i;
-  } catch {
-    return -1;
-  }
-  return -1;
-}
-
-export function concatProject(codes: string[]): string {
-  return codes.map((c) => c.trim()).join("\n");
 }
 
 // --- tokens (Monaco highlighting) -----------------------------------------
