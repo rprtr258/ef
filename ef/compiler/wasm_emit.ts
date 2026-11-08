@@ -508,9 +508,7 @@ function emitStmtsFrom(em: Emit, stmts: ExprID[], f: Fn, s: Scope, ctx: Ctx, ci:
 // while body-cut). An empty sequence dispatches unit.
 function emitStmtsDispatch(em: Emit, stmts: ExprID[], f: Fn, s: Scope, ctx: Ctx, ci: number, tail: boolean): void {
   f.pushRef(emitStmtsFrom(em, stmts, f, s, ctx, ci, tail));
-  const v = f.anyref();
-  f.body.localSet(v);
-  emitDispatch(em, f, v, ctx.kL);
+  emitDispatch(em, f, boxLocal(f).l, ctx.kL);
 }
 
 export function emitHelpers(em: Emit): Fn[] {
@@ -1213,10 +1211,12 @@ export function emitFail(em: Emit, f: Fn, code: number, nameG: number | null, pu
 }
 
 // true/false i31 selected by the i32 condition emitted by emitCond.
-export function selectBool(em: Emit, f: Fn, emitCond: () => void): void {
+// `emitCond` pushes the i32 condition; omit it when the condition is
+// already on the stack.
+export function selectBool(em: Emit, f: Fn, emitCond?: () => void): void {
   const b = f.body;
   const t = f.i32();
-  emitCond();
+  emitCond?.();
   b.localSet(t);
   f.pushRef(em.lay.trueRef);
   f.pushRef(em.lay.falseRef);
@@ -1298,6 +1298,15 @@ const unboxStamped = (em: Emit, b: Buf, a: Expr, wk: string): void => {
   }
 };
 
+// `<`-family comparison opcodes per operator, keyed by compute width
+// (widthOf's planes: f32 typed ops, i32/u32 native, i64/u64 64-bit, f64 float).
+const CMP_OPS: Record<string, Record<string, number>> = {
+  "<":  {f32: w.F32_LT, i32: w.LTS, u32: w.LTU, i64: w.I64_LTS, u64: w.I64_LTU, f64: w.FLT},
+  ">":  {f32: w.F32_GT, i32: w.GTS, u32: w.GTU, i64: w.I64_GTS, u64: w.I64_GTU, f64: w.FGT},
+  "<=": {f32: w.F32_LE, i32: w.LES, u32: w.LEU, i64: w.I64_LES, u64: w.I64_LEU, f64: w.FLE},
+  ">=": {f32: w.F32_GE, i32: w.GES, u32: w.GEU, i64: w.I64_GES, u64: w.I64_GEU, f64: w.FGE},
+};
+
 function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"}, s: Scope, ctx: Ctx, ci: number): void {
   const b = f.body;
   // Typed widths: the site's numKind stamp picks the compute plane — f32
@@ -1311,13 +1320,8 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
   const isI64 = wk === "i64", isU64 = wk === "u64";
   const isNarrow = isI32 || isU32, isWide = isI64 || isU64;
   const boxShape = boxShapeOf(wk);
-  // Operand cut modes, mirroring the `/` path: the arg holding the cut
-  // site continues the fragment ("cut"), an earlier sibling reloads its
-  // spill ("pre"), a later sibling re-emits fresh ("post").
-  const argMode = (i: number): "cut" | "pre" | "post" =>
-    ci === i + 1 ? "cut" : i === 0 && ci > 1 ? "pre" : "post";
   const pushArg = (i: number): void => {
-    f.pushRef(cutChildRef(em, e.args[i], f, s, ctx, argMode(i)));
+    f.pushRef(cutChildRef(em, e.args[i], f, s, ctx, cutMode(i + 1, ci)));
   };
   // Unbox operand i into a fresh width-typed local: push its ref, adapt
   // through the width's helper, store.
@@ -1406,21 +1410,10 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
     }
     case "<": case ">": case "<=": case ">=": {
       const x = unbox(0), y = unbox(1);
-      const cmp = isF32
-        ? (name === "<" ? w.F32_LT : name === ">" ? w.F32_GT : name === "<=" ? w.F32_LE : w.F32_GE)
-        : isNarrow
-        ? (isI32
-          ? (name === "<" ? w.LTS : name === ">" ? w.GTS : name === "<=" ? w.LES : w.GES)
-          : (name === "<" ? w.LTU : name === ">" ? w.GTU : name === "<=" ? w.LEU : w.GEU))
-        : isWide
-        ? (isI64
-          ? (name === "<" ? w.I64_LTS : name === ">" ? w.I64_GTS : name === "<=" ? w.I64_LES : w.I64_GES)
-          : (name === "<" ? w.I64_LTU : name === ">" ? w.I64_GTU : name === "<=" ? w.I64_LEU : w.I64_GEU))
-        : (name === "<" ? w.FLT : name === ">" ? w.FGT : name === "<=" ? w.FLE : w.FGE);
       selectBool(em, f, () => {
         b.localGet(x);
         b.localGet(y);
-        b.u8(cmp);
+        b.u8(CMP_OPS[name][wk]);
       });
       break;
     }
@@ -1434,7 +1427,7 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
           b.refCast(w.I31REF, false);
           b.i31Get();
           b.u8(w.EQZ);
-          selectBool(em, f, () => {});
+          selectBool(em, f);
         }
         break;
       }
@@ -1444,7 +1437,7 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
         b.refCast(w.I31REF, false); // eq result's i31 bool payload
         b.i31Get();
         b.u8(w.EQZ); // 1 when $eq said false
-        selectBool(em, f, () => {});
+        selectBool(em, f);
       }
       break;
     }
@@ -1452,7 +1445,7 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
       pushArg(0);
       b.u8(w.CALL); b.lebU(em.ix.fTruthy);
       b.u8(w.EQZ);
-      selectBool(em, f, () => {});
+      selectBool(em, f);
       break;
     }
     default:
@@ -1476,6 +1469,25 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
 // Ctx.snap, fillRest prologue).
 function chainCtx(ctx: Ctx): Ctx {
   return ctx.cut === undefined ? ctx : {kL: ctx.kL, cut: ctx.cut.slice(1), snap: ctx.snap};
+}
+
+// Cut mode for the child at index i against the cut site's index ci
+// (undefined/negative = fresh emission): the child holding the cut site
+// continues the fragment ("cut"), an earlier sibling reloads its spill
+// ("pre"), a later sibling re-emits fresh ("post") — the modes
+// cutChildRef dispatches on.
+function cutMode(i: number, ci: number | undefined): "cut" | "pre" | "post" {
+  if (ci === undefined || ci < 0) return "post";
+  return i === ci ? "cut" : i < ci ? "pre" : "post";
+}
+
+// Freeze the boxed value on the wasm stack into a fresh (or preallocated)
+// anyref local and hand it back as a local ValueRef — the standard way a
+// freshly boxed result leaves an emitter.
+function boxLocal(f: Fn, v?: number): {k: "local", l: number} {
+  const loc = v ?? f.anyref();
+  f.body.localSet(loc);
+  return {k: "local", l: loc};
 }
 
 function cutChildRef(em: Emit, child: ExprID, f: Fn, s: Scope, ctx: Ctx, mode: "cut" | "pre" | "post", tail = false): ValueRef {
@@ -1616,18 +1628,16 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
       // are value-explicit; each arm's ref is pushed as the IF block's
       // result value. Fragment re-emission never tail-calls the arms.
       const at = ci === undefined && tail;
-      f.pushRef(cutChildRef(em, e.c, f, s, ctx, ci === undefined ? "post" : ci === 0 ? "cut" : "pre"));
+      f.pushRef(cutChildRef(em, e.c, f, s, ctx, cutMode(0, ci)));
       b.u8(w.CALL);
       b.lebU(em.ix.fTruthy);
       b.u8(w.IF);
       b.u8(0x6e); // result anyref
-      f.pushRef(cutChildRef(em, e.a, f, s, ctx, ci === undefined ? "post" : ci === 1 ? "cut" : ci === 2 ? "pre" : "post", at));
+      f.pushRef(cutChildRef(em, e.a, f, s, ctx, cutMode(1, ci), at));
       b.u8(w.ELSE);
-      f.pushRef(cutChildRef(em, e.b, f, s, ctx, ci === undefined ? "post" : ci === 2 ? "cut" : "post", at));
+      f.pushRef(cutChildRef(em, e.b, f, s, ctx, cutMode(2, ci), at));
       b.u8(w.END);
-      const v = f.anyref();
-      b.localSet(v);
-      return keepRef(em, id, f, {k: "local", l: v});
+      return keepRef(em, id, f, boxLocal(f));
     }
     case "while": {
       if (cut !== undefined && cut.length === 0) {
@@ -1686,8 +1696,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
         // case's args).
         // Elements after the cut child have NOT run yet: they re-emit
         // inline ("post"), never reload a never-written spill slot ("pre").
-        const r = cutChildRef(em, e.elems[k], f, s, ctx,
-          cut === undefined ? "post" : k === ci ? "cut" : k < ci ? "pre" : "post");
+        const r = cutChildRef(em, e.elems[k], f, s, ctx, cutMode(k, ci));
         b.localGet(blk);
         b.refCast(1, true);
         b.i32Const(k);
@@ -1697,9 +1706,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
       b.localGet(blk);
       b.refCast(1, true);
       b.structNew(3); // $ARR wrapper
-      const v = f.anyref();
-      b.localSet(v);
-      return {k: "local", l: v};
+      return boxLocal(f);
     }
     case "as": {
       // @as conversion matrix (typed-widths steps 2-3; i64/u64 targets and
@@ -1766,8 +1773,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
           b.u8(w.CALL);
           b.lebU(em.ix.fBox);
         }
-        b.localSet(v);
-        return {k: "local", l: v};
+        return boxLocal(f, v);
       }
       if (targetW === "f32") {
         if (childW === "f32") return childRef; // f32 -> f32: forward
@@ -1778,8 +1784,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
           readF32(); // $F64 sources demote inside $f32of (the rounding)
         }
         b.structNew(11);
-        b.localSet(v);
-        return {k: "local", l: v};
+        return boxLocal(f, v);
       }
       const targetNarrow = targetW === "i32" || targetW === "u32";
       const targetWide = targetW === "i64" || targetW === "u64";
@@ -1809,8 +1814,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
           b.u8(w.I32_WRAP_I64);
         }
         b.structNew(targetW === "i32" ? 7 : 8);
-        b.localSet(v);
-        return {k: "local", l: v};
+        return boxLocal(f, v);
       }
       if (targetWide) {
         if (childW === "f32") {
@@ -1830,23 +1834,17 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
           f.pushRef(childRef);
           b.refCast(childW === "i64" ? 9 : 10, false);
           b.structGet(childW === "i64" ? 9 : 10, 0);
-        } else if (e.asKind === "trunc") {
-          // f64-plane float source: truncate toward zero.
-          f.pushRef(childRef);
-          b.refCast(0, false);
-          b.structGet(0, 0);
-          b.u8(w.I64_TRUNC_F64);
         } else {
-          // f64-plane source, value-preserving (int -> int): truncate the
-          // exact whole-number payload.
+          // f64-plane source: truncate toward zero — a float payload
+          // truncates; a value-preserving int -> int conversion truncates
+          // the exact whole-number payload the same way.
           f.pushRef(childRef);
           b.refCast(0, false);
           b.structGet(0, 0);
           b.u8(w.I64_TRUNC_F64);
         }
         b.structNew(targetW === "i64" ? 9 : 10);
-        b.localSet(v);
-        return {k: "local", l: v};
+        return boxLocal(f, v);
       }
       // f64 target. Narrow and wide sources change representation:
       // readF64 unboxes and converts, so the result must be reboxed.
@@ -1857,16 +1855,14 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
         readF64();
         b.u8(w.CALL);
         b.lebU(em.ix.fBox);
-        b.localSet(v);
-        return {k: "local", l: v};
+        return boxLocal(f, v);
       }
       if (e.asKind === "trunc") {
         readF64(); // f64/i64/u64 sources: plain payload read
         b.u8(w.FTRUNC);
         b.u8(w.CALL);
         b.lebU(em.ix.fBox);
-        b.localSet(v);
-        return {k: "local", l: v};
+        return boxLocal(f, v);
       }
       // Value-preserving f64-plane -> f64-plane: forward the child ref
       // (already an $F64 box or non-numeric).
@@ -1896,9 +1892,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
       b.refCast(1, true);
       b.i32Const(e.idx!);
       b.arrayGet(1);
-      const v = f.anyref();
-      b.localSet(v);
-      return {k: "local", l: v};
+      return boxLocal(f);
     }
     case "perform":
       if (cut !== undefined && cut.length === 0) {
@@ -1954,8 +1948,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
         // spilled) BEFORE the destination address is pushed, so a split
         // inside the child aborts on a clean operand stack (blocker (b)
         // by construction).
-        const r = cutChildRef(em, e.args[k], f, s, ctx,
-          k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
+        const r = cutChildRef(em, e.args[k], f, s, ctx, cutMode(k + 1, ci));
         b.localGet(ffp); b.refCast(4, true); b.structGet(4, 1);
         b.i32Const(k);
         f.pushRef(r);
@@ -2002,9 +1995,9 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
         };
         if (ci === 0) throw new WasmError("internal: split chain root mismatch");
         if (isInt || isF32) {
-          f.pushRef(cutChildRef(em, e.args[0], f, s, ctx, ci === 1 ? "cut" : ci < 0 ? "post" : "pre"));
+          f.pushRef(cutChildRef(em, e.args[0], f, s, ctx, cutMode(1, ci)));
           const dividend = unboxDiv(0);
-          f.pushRef(cutChildRef(em, e.args[1], f, s, ctx, ci === 2 ? "cut" : "post"));
+          f.pushRef(cutChildRef(em, e.args[1], f, s, ctx, cutMode(2, ci)));
           const divisor = unboxDiv(1);
           // Guarded integer division: ÷0 (all int widths) and, for the
           // signed widths, INT_MIN ÷ -1 (the div_s overflow case) fail
@@ -2051,9 +2044,9 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
           // other numeric stamp (an int-stamped subexpression feeding a
           // float division, e.g. 4.0 / (size - 1)) reads through the
           // adaptive $num64 (the interpreter's Number() coercion).
-          f.pushRef(cutChildRef(em, e.args[0], f, s, ctx, ci === 1 ? "cut" : ci < 0 ? "post" : "pre"));
+          f.pushRef(cutChildRef(em, e.args[0], f, s, ctx, cutMode(1, ci)));
           unboxStamped(em, b, em.nodes[e.args[0]], wk);
-          f.pushRef(cutChildRef(em, e.args[1], f, s, ctx, ci === 2 ? "cut" : "post"));
+          f.pushRef(cutChildRef(em, e.args[1], f, s, ctx, cutMode(2, ci)));
           unboxStamped(em, b, em.nodes[e.args[1]], wk);
           b.u8(w.FDIV);
           if (e.div === "i64" || e.div === "u64") b.u8(w.FTRUNC);
@@ -2075,7 +2068,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
         });
       } else {
         const fc = f.anyref();
-        f.pushRef(cutChildRef(em, e.fn, f, s, ctx, ci === 0 ? "cut" : ci < 0 ? "post" : "pre"));
+        f.pushRef(cutChildRef(em, e.fn, f, s, ctx, cutMode(0, ci)));
         b.localSet(fc);
         // Builtins never perform or capture, so they keep the k=0
         // trampoline convention; every other (lambda) call site lands
@@ -2091,9 +2084,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
       // leave the computed value on the stack — at a tail position the
       // enclosing wrapper (emitStmtsDispatch / fillRest) dispatches it through
       // the ambient continuation, exactly like any non-call tail value.
-      const v = f.anyref();
-      b.localSet(v);
-      return {k: "local", l: v};
+      return boxLocal(f);
     }
     default: {
       // Exhaustive per Expr: a new variant must add a case above (the
@@ -2410,8 +2401,7 @@ function emitIfDispatch(em: Emit, id: ExprID, e: Expr & {t: "if"}, f: Fn, s: Sco
   const ctxArm: Ctx = {...ctx, kL: ifk};
   let condSplit: Split | null = null;
   try {
-    if (ci === undefined) f.pushRef(cutChildRef(em, e.c, f, s, ctx, "post"));
-    else f.pushRef(cutChildRef(em, e.c, f, s, ctx, ci === 0 ? "cut" : "pre"));
+    f.pushRef(cutChildRef(em, e.c, f, s, ctx, cutMode(0, ci)));
   } catch (spC) {
     if (!(spC instanceof Split)) throw spC;
     condSplit = spC;

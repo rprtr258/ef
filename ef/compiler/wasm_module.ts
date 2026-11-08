@@ -198,7 +198,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           }
           if (name === "<" || name === ">" || name === "<=" || name === ">=") {
             // i32 bool on the stack → i31 bool anyref
-            selectBool(em, f, () => {});
+            selectBool(em, f);
           } else {
             b.structNew(11);
           }
@@ -236,7 +236,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
             b.u8(name === "-" ? w.SUB : name === "*" ? w.MUL : name === "<" ? w.LTS : name === ">" ? w.GTS : name === "<=" ? w.LES : w.GES);
           }
           if (name === "<" || name === ">" || name === "<=" || name === ">=") {
-            selectBool(em, f, () => {});
+            selectBool(em, f);
           } else {
             b.structNew(7);
           }
@@ -274,7 +274,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
             b.u8(name === "-" ? w.SUB : name === "*" ? w.MUL : name === "<" ? w.LTU : name === ">" ? w.GTU : name === "<=" ? w.LEU : w.GEU);
           }
           if (name === "<" || name === ">" || name === "<=" || name === ">=") {
-            selectBool(em, f, () => {});
+            selectBool(em, f);
           } else {
             b.structNew(8);
           }
@@ -316,7 +316,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
                 : (name === "-" ? w.I64_SUB : name === "*" ? w.I64_MUL : name === "<" ? w.I64_LTU : name === ">" ? w.I64_GTU : name === "<=" ? w.I64_LEU : w.I64_GEU));
             }
             if (name === "<" || name === ">" || name === "<=" || name === ">=") {
-              selectBool(em, f, () => {});
+              selectBool(em, f);
             } else {
               b.structNew(wide);
             }
@@ -440,7 +440,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.refCast(w.I31REF, false); // eq result's i31 bool payload
         b.i31Get();
         b.u8(w.EQZ); // 1 when $eq said false
-        selectBool(em, f, () => {});
+        selectBool(em, f);
         break;
       }
       case "not": {
@@ -448,7 +448,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.u8(w.CALL);
         b.lebU(em.ix.fTruthy);
         b.u8(w.EQZ);
-        selectBool(em, f, () => {});
+        selectBool(em, f);
         break;
       }
       case "list": {
