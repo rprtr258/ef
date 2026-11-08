@@ -1,16 +1,15 @@
 {
   "name": "ef",
-  "module": "cli.ts",
   "type": "module",
   "private": true,
+  "workspaces": [
+    "compiler"
+  ],
   "scripts": {
     "lint": "eslint '**/*.{ts,json}'",
     "typecheck": "bun check",
-    "check:deps": "bun scripts/check-runtime-deps.ts",
+    "check:deps": "bun compiler/scripts/check-runtime-deps.ts",
     "ci": "bun run typecheck && bun run lint && bun run check:deps && bun test --parallel"
-  },
-  "dependencies": {
-    "binaryen": "^132.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

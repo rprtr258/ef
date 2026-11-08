@@ -6,7 +6,7 @@ A TypeScript implementation of a small statically-typed language
 with **algebraic effects and effect handlers**, C/Go-flavored syntax, and a
 Hindley-Milner-flavoured type system with effect tracking.
 
-- Modules: `lexer.ts`, `parser.ts`, `types.ts` (checker), `env.ts` (runtime
+- Modules (all under `compiler/`, a bun workspace package): `lexer.ts`, `parser.ts`, `types.ts` (checker), `env.ts` (runtime
   values), `builtins.ts` (the one builtin table), `analysis.ts` (frontend
   passes: builtin surface, op discovery, builtin-ref tree-shaking — shared
   by the wasm backend, parser-types-only leaf module), `eval.ts` (evaluator
@@ -15,9 +15,9 @@ Hindley-Milner-flavoured type system with effect tracking.
   `wasm_pipeline.ts`/`wasm_emit.ts`/`wasm_module.ts` — see item 8),
   `wasm_host.ts` (wasm host runtime: instantiation, GC↔JS boxing,
   effect interpretation), `lint.ts`, `prims.ts`, frontends `cli.ts`/`repl.ts`.
-- Tests: `index.test.ts` + `lint.test.ts` + `wasm.test.ts` +
-  `analysis.test.ts` (`bun:test`).
-- Run a file: `bun run cli.ts run <file>` (subcommands: `run`, `buildwasm`,
+- Tests (under `compiler/`): `index.test.ts` + `lint.test.ts` + `wasm.test.ts` +
+  `analysis.test.ts` + `examples.test.ts` (`bun:test`).
+- Run a file: `bun compiler/cli.ts run <file>` (subcommands: `run`, `buildwasm`,
   `runwasm`, `types`, `lint`, `repl`).
 - Gates: `bun run ci` = typecheck + eslint + runtime-deps check + tests; all must stay clean.
 
@@ -101,7 +101,7 @@ Hindley-Milner-flavoured type system with effect tracking.
 ## Working rules
 
 - **`bun run ci` must pass** — host typecheck (`bun check`), eslint, the
-  runtime-deps check (`scripts/check-runtime-deps.ts`: every bare package import
+  runtime-deps check (`compiler/scripts/check-runtime-deps.ts`: every bare package import
   reachable from the runtime entries must be a `dependency`, not a
   `devDependency`), and the test suite all clean.
 - **Tests are the spec's executable form.** When you change the language,
@@ -156,8 +156,8 @@ typing rules.
 ```
 bun run ci                # typecheck + lint + deps check + tests
 bun test                  # test suite only
-bun run cli.ts run examples/star.ef
-bun run cli.ts repl       # interactive REPL
-bun run cli.ts buildwasm examples/squares_sum.ef  # emit examples/squares_sum.wasm
+bun compiler/cli.ts run examples/star.ef
+bun compiler/cli.ts repl       # interactive REPL
+bun compiler/cli.ts buildwasm examples/squares_sum.ef  # emit examples/squares_sum.wasm
 wasm-tools print|validate <file.wasm>  # inspect wasm output (WasmGC) — wabt's wasm2wat can't parse it at any version
 ```

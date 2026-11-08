@@ -1,0 +1,9 @@
+{
+  "name": "compiler",
+  "module": "cli.ts",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "binaryen": "^132.0.0"
+  }
+}

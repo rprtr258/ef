@@ -486,7 +486,7 @@ test("array literal infers as tuple against a tuple-typed context", () => {
 test("REPL: bindings persist across lines", () => {
   const out = execSync(
     "bun run cli.ts repl",
-    {input: "let a = 6\nlet b = 7\na * b\n:q\n", encoding: "utf8", timeout: 20000},
+    {input: "let a = 6\nlet b = 7\na * b\n:q\n", encoding: "utf8", timeout: 20000, cwd: import.meta.dir},
   );
   expect(out).toContain("42 : int");
 });
@@ -557,6 +557,7 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
       const out = execSync(`bun run cli.ts types ${f}`, {
         encoding: "utf8",
         timeout: 20000,
+        cwd: import.meta.dir,
         // styleText grays the `_` label; FORCE_COLOR=0 overrides any
         // inherited FORCE_COLOR so piped output stays unstyled (NO_COLOR
         // loses to an inherited FORCE_COLOR in bun).

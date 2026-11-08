@@ -76,7 +76,7 @@ describe("wasm backend", () => {
     // it runs over every .ef file in examples/. Compiling all examples
     // takes ~11s (star.ef alone ~3s), well over the 5s default timeout.
     // (Non-.ef files, e.g. the old-syntax .ml sources, are not examples.)
-    const dir = join(workspaceDir, "examples");
+    const dir = join(workspaceDir, "..", "examples");
     for (const bin of readdirSync(dir)
       .filter(file => file.endsWith(".ef"))
       .map(file => join(dir, file))

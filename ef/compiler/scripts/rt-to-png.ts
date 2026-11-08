@@ -5,7 +5,7 @@
 // This script parses that stream (dimensions are derived from the row
 // separators), clamps values to [0, 1], and writes a truecolor PNG.
 //
-//   bun run cli.ts runwasm examples/raytracer.ef > /tmp/rt.txt
+//   bun compiler/cli.ts runwasm examples/raytracer.ef > /tmp/rt.txt
 //   bun scripts/rt-to-png.ts /tmp/rt.txt /tmp/raytracer.png
 import {readFileSync, writeFileSync} from "node:fs";
 import {deflateSync} from "node:zlib";

@@ -56,7 +56,7 @@ async function walk(abs: string, from: string): Promise<void> {
 }
 
 for (const entry of ENTRIES)
-  await walk(resolve(entry), process.cwd());
+  await walk(resolve(import.meta.dir, "..", entry), process.cwd()); // ENTRIES are relative to the package root (script lives in scripts/)
 
 const problems = [...bare.entries()].filter(([name]) => !deps.has(name));
 if (problems.length > 0) {

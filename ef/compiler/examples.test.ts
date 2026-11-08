@@ -5,7 +5,7 @@
 // file without a table entry (and the real test body the entry carries)
 // fails the run, and a stale entry for a deleted file fails too.
 //
-// Tests run the real CLI (`bun run cli.ts run <file>`) so args handling and
+// Tests run the real CLI (`bun run cli.ts run <file>`, cwd: compiler/) so args handling and
 // top-level printing are covered end to end. Each test also runs the wasm
 // backend (`bun run cli.ts runwasm <file>`) and asserts the wasm result
 // coincides with the interpreter's (runExample). runCli pins EF_RANDOM_SEED
@@ -21,7 +21,7 @@ import {execFileSync} from "node:child_process";
 import {readdirSync} from "node:fs";
 import {join} from "node:path";
 
-const workspaceDir = import.meta.dir;
+const compilerDir = import.meta.dir; // every path below is relative to this source file's directory
 
 type RunResult = {stdout: string, code: number};
 
@@ -29,10 +29,10 @@ type RunResult = {stdout: string, code: number};
 // EF_RANDOM_SEED is pinned so every run (both backends) draws the same
 // Random! sequence — parity stays exact even for stochastic examples.
 function runCli(sub: string, example: string, args: string[]): RunResult {
-  const file = join(workspaceDir, "examples", example);
+  const file = join(compilerDir, "..", "examples", example);
   const env = {...process.env, EF_RANDOM_SEED: "42"};
   try {
-    const stdout = execFileSync("bun", ["run", "cli.ts", sub, file, ...args], {encoding: "utf8", timeout: 60_000, env});
+    const stdout = execFileSync("bun", ["run", "cli.ts", sub, file, ...args], {encoding: "utf8", timeout: 60_000, env, cwd: compilerDir});
     return {stdout, code: 0};
   } catch (e) {
     const err = e as {stdout?: string | Buffer, status?: number | null};
@@ -186,8 +186,8 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     body: async file => {
       const runBounded = async (mode: string): Promise<string> => {
         const p = Bun.spawn(
-          ["sh", "-c", `timeout 8 bun run cli.ts ${mode} examples/${file} 6 2 2>/dev/null | head -c 3000`],
-          {cwd: workspaceDir, stdout: "pipe", stderr: "ignore"},
+          ["sh", "-c", `timeout 8 bun run cli.ts ${mode} ../examples/${file} 6 2 2>/dev/null | head -c 3000`],
+          {cwd: compilerDir, stdout: "pipe", stderr: "ignore"},
         );
         const out = await new Response(p.stdout).text();
         await p.exited;
@@ -235,6 +235,6 @@ for (const [file, cases] of Object.entries(EXAMPLES)) {
 // so does a stale entry after a file is deleted. (Non-.ef files, e.g. .wasm
 // artifacts dropped next to the sources by `buildwasm`, are not examples.)
 test("every file in examples/ is exercised by a test", () => {
-  const files = readdirSync(join(workspaceDir, "examples")).filter(f => f.endsWith(".ef"));
+  const files = readdirSync(join(compilerDir, "..", "examples")).filter(f => f.endsWith(".ef"));
   expect(files.sort()).toEqual(Object.keys(EXAMPLES).sort());
 });

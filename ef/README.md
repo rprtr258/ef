@@ -3,9 +3,9 @@
 A tiny statically-typed language with **algebraic effects and effect handlers**, C/Go-flavored syntax, and a Hindley-Milner-flavoured type system that tracks effects. Implemented in a single TypeScript file (~900 lines).
 
 ```bash
-bun test         # test suite
-bun run index.ts # (no self-check block; demos live in the test suite)
-bun check        # host typecheck (stays clean)
+bun test        # test suite (demos live in it, no self-check block)
+bun compiler/cli.ts run examples/star.ef # run a program
+bun check       # host typecheck (stays clean)
 ```
 
 ## In one paragraph
@@ -41,12 +41,15 @@ The handler calls `k` once per option, so the computation branches into all path
 
 ## Layout
 
-| File            | Contents                                       |
-|-----------------|------------------------------------------------|
-| `index.ts`      | The whole language: lexer, parser, type checker, CPS evaluator, builtins, `run`/`show`/`typeOf`. |
-| `cli.ts`        | Frontend: `ef run <file> \| ef buildwasm <file> [out] \| ef runwasm <file> \| ef types <file> \| ef lint <file> \| ef repl`. |
-| `index.test.ts` | The executable spec — positive and negative tests via `bun:test`. |
-| `AGENTS.md`     | Notes for AI agents working on this repo.      |
+Bun workspace: the compiler is the `compiler/` package; examples, configs and
+the README stay at the workspace root.
+
+| Path                | Contents                                       |
+|---------------------|------------------------------------------------|
+| `compiler/`         | The whole language: lexer, parser, type checker, CPS evaluator, builtins, wasm backend, `run`/`show`/`typeOf`. `compiler/*.test.ts` is the executable spec (`bun:test`); `compiler/scripts/` holds dev scripts (runtime-deps CI gate, raytracer output renderers). |
+| `compiler/cli.ts`   | Frontend: `ef run <file> \| ef buildwasm <file> [out] \| ef runwasm <file> \| ef types <file> \| ef lint <file> \| ef repl`. |
+| `examples/`         | Example `.ef` programs, exercised by the test suite. |
+| `AGENTS.md`         | Notes for AI agents working on this repo.      |
 
 ---
 
@@ -505,7 +508,7 @@ handle {
 
 ## 8. CLI
 
-`cli.ts` is a thin runner:
+`compiler/cli.ts` is a thin runner:
 
 ```
 ef run <file> [args...]   # typecheck then evaluate; extra args reach `args()`
