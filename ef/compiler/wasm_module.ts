@@ -7,7 +7,7 @@ import {BUILTINS} from "./analysis.ts";
 import {WasmError} from "./wasm_types.ts";
 import {Buf, Fn} from "./wasm_body.ts";
 import {frameSizeOf} from "./wasm_pipeline.ts";
-import {type Emit, Split, emitCallClosure, emitDispatch, emitFail, expr, fillRest, makeRestThunk, selectBool} from "./wasm_emit.ts";
+import {type Emit, Split, emitCallClosure, emitDispatch, emitFail, expr, fillRest, makeRestThunk, selectBool, unboxArm} from "./wasm_emit.ts";
 import * as w from "./wasm_consts.ts";
 
 export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
@@ -82,8 +82,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.localGet(bv);
         b.refTest(0, false);
         b.u8(w.AND);
-        b.u8(w.IF);
-        b.u8(0x6e); // result anyref
+        b.if(0x6e); // result anyref
         b.localGet(a);
         b.refCast(0, false);
         b.structGet(0, 0);
@@ -98,8 +97,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.localGet(bv);
         b.refTest(2, false);
         b.u8(w.AND);
-        b.u8(w.IF);
-        b.u8(0x6e);
+        b.if(0x6e);
         f.emitStrCat(a, bv);
         b.u8(w.ELSE);
         b.localGet(a);
@@ -107,8 +105,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.localGet(bv);
         b.refTest(9, false);
         b.u8(w.AND);
-        b.u8(w.IF);
-        b.u8(0x6e);
+        b.if(0x6e);
         b.localGet(a);
         b.refCast(9, false);
         b.structGet(9, 0);
@@ -123,8 +120,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.localGet(bv);
         b.refTest(10, false);
         b.u8(w.AND);
-        b.u8(w.IF);
-        b.u8(0x6e);
+        b.if(0x6e);
         b.localGet(a);
         b.refCast(10, false);
         b.structGet(10, 0);
@@ -167,8 +163,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.localGet(bv);
           b.refTest(11, false);
           b.u8(w.AND);
-          b.u8(w.IF);
-          b.u8(0x6e);
+          b.if(0x6e);
           const fx = f.f32(), fy = f.f32();
           b.localGet(a);
           b.refCast(11, false);
@@ -208,8 +203,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.localGet(bv);
           b.refTest(7, false);
           b.u8(w.AND);
-          b.u8(w.IF);
-          b.u8(0x6e);
+          b.if(0x6e);
           const ix32 = f.i32(), iy32 = f.i32();
           b.localGet(a);
           b.refCast(7, false);
@@ -246,8 +240,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.localGet(bv);
           b.refTest(8, false);
           b.u8(w.AND);
-          b.u8(w.IF);
-          b.u8(0x6e);
+          b.if(0x6e);
           const ux32 = f.i32(), uy32 = f.i32();
           b.localGet(a);
           b.refCast(8, false);
@@ -286,8 +279,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
             b.localGet(bv);
             b.refTest(wide, false);
             b.u8(w.AND);
-            b.u8(w.IF);
-            b.u8(0x6e);
+            b.if(0x6e);
             const wx = f.i64(), wy = f.i64();
             b.localGet(a);
             b.refCast(wide, false);
@@ -325,11 +317,9 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         }
         if (name === "<" || name === ">" || name === "<=" || name === ">=") {
           const r = f.i32();
-          b.u8(w.BLOCK);
-          b.u8(0x40);
+          b.block();
           eitherWide(b);
-          b.u8(w.IF);
-          b.u8(0x40);
+          b.if();
           // eitherBig: one BigInt side makes the whole compare BigInt
           // (the Number side truncs) — signed i64 order.
           {
@@ -359,11 +349,9 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
             b.localGet(r);
           });
         } else {
-          b.u8(w.BLOCK);
-          b.u8(0x40);
+          b.block();
           eitherWide(b);
-          b.u8(w.IF);
-          b.u8(0x40);
+          b.if();
           // eitherBig: i64 math (each box's own signedness read), $I64 box.
           {
             const x = f.i64(), y = f.i64();
@@ -480,8 +468,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.refCast(1, true);
         b.arrayLen();
         b.u8(w.EQZ);
-        b.u8(w.IF);
-        b.u8(0x40);
+        b.if();
         emitFail(em, f, 0, null, f.constF64(0), f.constF64(0));
         b.u8(w.END);
         b.localGet(blk);
@@ -502,8 +489,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.localSet(len);
         b.localGet(len);
         b.u8(w.EQZ);
-        b.u8(w.IF);
-        b.u8(0x7f);
+        b.if(0x7f);
         b.i32Const(0);
         b.u8(w.ELSE);
         b.localGet(len);
@@ -582,8 +568,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.localSet(cell);
           b.localGet(cell);
           b.refTest(3, false); // is $ARR?
-          b.u8(w.IF);
-          b.u8(0x40);
+          b.if();
           b.localGet(cell);
           b.refCast(3, true);
           b.structGet(3, 0);
@@ -612,8 +597,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.localSet(cell);
           b.localGet(cell);
           b.refTest(3, false);
-          b.u8(w.IF);
-          b.u8(0x40);
+          b.if();
           b.localGet(cell);
           b.refCast(3, true);
           b.structGet(3, 0);
@@ -733,8 +717,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.u8(w.I64_LTS);
           b.localSet(neg);
           b.localGet(neg);
-          b.u8(w.IF);
-          b.u8(0x7e);
+          b.if(0x7e);
           b.i64Const(-1n); // neg: the XOR mask -1 (the two's-complement negate)
           b.u8(w.ELSE);
           b.i64Const(0n);
@@ -744,8 +727,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.localGet(loc);
           b.u8(w.I64_XOR);
           b.localGet(neg);
-          b.u8(w.IF);
-          b.u8(0x7e);
+          b.if(0x7e);
           b.i64Const(1n);
           b.u8(w.ELSE);
           b.i64Const(0n);
@@ -781,8 +763,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.u8(w.AND);
         b.localSet(dirOK);
         b.localGet(dirOK);
-        b.u8(w.IF);
-        b.u8(0x7f);
+        b.if(0x7f);
         b.localGet(span);
         b.localGet(mag);
         b.u8(w.I64_ADD);
@@ -864,8 +845,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.localGet(len);
         b.u8(w.GEU); // idx >= len
         b.u8(w.OR);
-        b.u8(w.IF);
-        b.u8(0x40);
+        b.if();
         emitFail(em, f, 1, null, () => {
           b.localGet(idx64);
           b.u8(w.CONV_F64_I64); // f64.convert_i64_s — the index as an f64
@@ -903,8 +883,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.localGet(idx);
         b.localGet(len);
         b.u8(w.LTU); // idx < len → in-place
-        b.u8(w.IF);
-        b.u8(0x40);
+        b.if();
         f.elemAddr(blk, idx);
         b.localGet(v);
         b.arraySet();
@@ -929,8 +908,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.localGet(k);
           b.localGet(len);
           b.u8(w.LTU); // k < old len → copy
-          b.u8(w.IF);
-          b.u8(0x6e); // result anyref
+          b.if(0x6e); // result anyref
           f.elemAddr(blk, k);
           b.arrayGet(1);
           b.u8(w.ELSE);
@@ -1282,15 +1260,13 @@ export function emitInits(em: Emit): void {
   acc(1, 14, (b) => {
     b.localGet(0);
     b.u8(0xd1);
-    b.u8(w.IF);
-    b.u8(0x7f);
+    b.if(0x7f);
     b.i32Const(0);
     b.u8(w.ELSE);
     const tag = (ht: number, t: number) => {
       b.localGet(0);
       b.refTest(ht, false);
-      b.u8(w.IF);
-      b.u8(0x7f);
+      b.if(0x7f);
       b.i32Const(t);
       b.u8(w.ELSE);
     };
@@ -1300,15 +1276,13 @@ export function emitInits(em: Emit): void {
     tag(3, 4); // $ARR
     b.localGet(0);
     b.refTest(6, false); // $CLO
-    b.u8(w.IF);
-    b.u8(0x7f);
+    b.if(0x7f);
     b.i32Const(5);
     b.u8(w.ELSE);
     const tagNum = (ht: number, t: number) => {
       b.localGet(0);
       b.refTest(ht, false);
-      b.u8(w.IF);
-      b.u8(0x7f);
+      b.if(0x7f);
       b.i32Const(t);
       b.u8(w.ELSE);
     };
@@ -1334,22 +1308,11 @@ export function emitInits(em: Emit): void {
   // width's box as a Number — $F32 promotes, the int boxes convert, $F64 is
   // the payload; a non-number still traps at the final cast).
   acc(1, 19, (b) => {
-    const arm = (ht: number, op?: number): void => {
-      b.localGet(0);
-      b.refTest(ht, false);
-      b.u8(w.IF);
-      b.u8(0x7c);
-      b.localGet(0);
-      b.refCast(ht, false);
-      b.structGet(ht, 0);
-      if (op !== undefined) b.u8(op);
-      b.u8(w.ELSE);
-    };
-    arm(11, w.F64_PROMOTE);
-    arm(7, w.CONV_I32);
-    arm(8, w.CONV_I32_U);
-    arm(9, w.CONV_F64_I64);
-    arm(10, w.CONV_F64_U64);
+    unboxArm(b, 0x7c, 11, [w.F64_PROMOTE]);
+    unboxArm(b, 0x7c, 7, [w.CONV_I32]);
+    unboxArm(b, 0x7c, 8, [w.CONV_I32_U]);
+    unboxArm(b, 0x7c, 9, [w.CONV_F64_I64]);
+    unboxArm(b, 0x7c, 10, [w.CONV_F64_U64]);
     b.localGet(0);
     b.refCast(0, false);
     b.structGet(0, 0);

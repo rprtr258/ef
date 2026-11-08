@@ -10,10 +10,6 @@ import * as w from "./wasm_consts.ts";
 // The slice of the emission context (Emit, wasm_emit.ts) that body emission
 // reaches through: direct-call signature resolution. Defined structurally so
 // this module stays decoupled from the higher layers — Emit satisfies it.
-// The slice of the emission context (Emit, wasm_emit.ts) that body emission
-// The slice of the emission context (Emit, wasm_emit.ts) that body emission
-// reaches through: direct-call signature resolution. Defined structurally so
-// this module stays decoupled from the higher layers — Emit satisfies it.
 export type FnOwner = {
   o: {liveImports: string[]},
   ix: {funcRefTypes: Map<number, number>},
@@ -490,6 +486,11 @@ export class Buf {
   localGet(i: number): void { this.push(MOD.local.get(i, this.localType(i))); }
   localSet(i: number): void { this.stmt(MOD.local.set(i, this.pop())); }
   globalGet(gi: number): void { this.push(MOD.global.get(`g${gi}`, binaryen.anyref)); }
+  // Control-scope openers: opcode + blocktype immediate in one call
+  // (0x40 void, 0x7f i32, 0x7e i64, 0x6e anyref).
+  block(bt = 0x40): void { this.u8(w.BLOCK); this.u8(bt); }
+  loop(bt = 0x40): void { this.u8(w.LOOP); this.u8(bt); }
+  if(bt = 0x40): void { this.u8(w.IF); this.u8(bt); }
   structNew(t: number): void {
     const sig = STRUCT_FIELDS[t];
     if (typeof sig === "undefined")
@@ -707,10 +708,8 @@ export class Fn {
     const i = this.i32();
     b.i32Const(0);
     b.localSet(i); // reset: a loop nested in another loop's body reuses this local across outer iterations
-    b.u8(w.BLOCK);
-    b.u8(0x40);
-    b.u8(w.LOOP);
-    b.u8(0x40);
+    b.block();
+    b.loop();
     b.localGet(i);
     pushN();
     b.u8(w.GEU);
@@ -732,10 +731,8 @@ export class Fn {
   // counting-loop analogue is loop().
   walkLoop(cond: () => void, body: () => void): void {
     const b = this.body;
-    b.u8(w.BLOCK);
-    b.u8(0x40);
-    b.u8(w.LOOP);
-    b.u8(0x40);
+    b.block();
+    b.loop();
     cond();
     b.u8(w.BR_IF);
     b.lebU(1);
