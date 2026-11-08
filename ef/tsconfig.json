@@ -35,5 +35,6 @@
     "useDefineForClassFields": true,
     "allowSyntheticDefaultImports": true,
     "isolatedModules": true
-  }
+  },
+  "exclude": ["playground"]
 }

@@ -16,7 +16,7 @@ export default defineConfig([
     languageOptions: {
       parserOptions: {
         parser: tseslint.parser,
-        project: ["./tsconfig.json"],
+        project: ["./tsconfig.json", "./playground/tsconfig.json"],
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -38,6 +38,9 @@ export default defineConfig([
       "no-restricted-syntax": ["error", {
         selector: "CallExpression[callee.property.name='forEach']",
         message: "forEach is prohibited. Use for..of or functional methods with value return.",
+      }, {
+        selector: "TSInterfaceDeclaration",
+        message: "interface is prohibited; use a type alias.",
       }],
       "@stylistic/semi": ["error", "always"],
       "@stylistic/member-delimiter-style": ["error", {

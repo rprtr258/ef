@@ -48,8 +48,27 @@ the README stay at the workspace root.
 |---------------------|------------------------------------------------|
 | `compiler/`         | The whole language: lexer, parser, type checker, CPS evaluator, builtins, wasm backend, `run`/`show`/`typeOf`. `compiler/*.test.ts` is the executable spec (`bun:test`); `compiler/scripts/` holds dev scripts (runtime-deps CI gate, raytracer output renderers). |
 | `compiler/cli.ts`   | Frontend: `ef run <file> \| ef buildwasm <file> [out] \| ef runwasm <file> \| ef types <file> \| ef lint <file> \| ef repl`. |
+| `playground/`       | In-browser studio (see below).                 |
 | `examples/`         | Example `.ef` programs, exercised by the test suite. |
 | `AGENTS.md`         | Notes for AI agents working on this repo.      |
+
+---
+
+## Playground
+
+`playground/` is a browser studio for ef: a multi-file ef IDE
+served as a static bundle. The compiler's TypeScript frontend runs natively in
+the browser — parse/check/lint are live as you type, **Run** (⌘↩) interprets
+the project with the CPS evaluator and streams `Out!`/`Println!` into the
+output pane, and **Build** (⌘B) emits a WasmGC `main.wasm` through the real
+wasm backend (binaryen shrink pass, lazily loaded) for download. Files are one
+compilation unit (concatenated in order); the entry file — the one holding the
+last top-level expression — is marked in the tree.
+
+```sh
+cd playground && bun run dev     # build + serve on http://localhost:8917
+bun run build                    # rebuild dist/ only
+```
 
 ---
 

@@ -1,0 +1,13 @@
+{
+  "name": "playground",
+  "module": "src/main.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun run dev.ts",
+    "build": "bun run scripts/build.ts"
+  },
+  "dependencies": {
+    "monaco-editor": "^0.52.2"
+  }
+}

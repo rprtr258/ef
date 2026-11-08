@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ef playground</title>
+  <link rel="stylesheet" href="studio.css">
+  <link rel="stylesheet" href="main.css">
+  <script>
+    // Runs before the module bundle: compiler modules read node-flavored
+    // globals at module-init time (builtins.ts's process.env seed lookup),
+    // and shared chunks can evaluate before src/shim.ts.
+    globalThis.process ||= { env: {}, argv: ["ef", "playground"], stdout: { write: function() {} }, exit: function() {} };
+  </script>
+</head>
+<body>
+  <div id="app">
+
+    <header id="topbar">
+      <div id="brand"><b>ef</b><span>playground</span></div>
+      <div class="spacer"></div>
+      <button id="palette-btn" class="tb-btn" title="Ctrl+K">Ctrl+K commands</button>
+      <button id="build-btn" class="tb-btn" title="Ctrl+B">Build wasm</button>
+      <button id="run-btn" class="tb-btn primary" title="Ctrl+↩">Run</button>
+      <button id="theme-btn" class="tb-btn icon" title="toggle theme">◐</button>
+    </header>
+
+    <main id="main">
+
+      <aside id="tree" class="pane"></aside>
+
+      <section id="center">
+        <div id="editor-head">
+          <span id="crumb-file">main.ef</span>
+          <span id="crumb-entry"></span>
+          <span class="spacer"></span>
+          <span id="crumb-pos" class="dim">Ln 1, Col 1</span>
+          <span id="chip" class="chip">Ctrl+↩ run · Ctrl+B build</span>
+        </div>
+        <div id="edhost"></div>
+
+        <div id="panel">
+          <div id="panel-head">
+            <button id="tab-output" class="tab on">Output</button>
+            <button id="tab-problems" class="tab">Problems <span id="tab-problems-count"></span></button>
+            <span class="spacer"></span>
+            <span id="build-status" class="dim"></span>
+            <button id="clear-btn" class="tab" title="clear output">clear</button>
+          </div>
+          <div id="out"></div>
+          <div id="problems" class="hidden"></div>
+        </div>
+      </section>
+
+      <aside id="rail" class="pane">
+        <div id="build-card" class="card">
+          <div class="card-title">Build <span id="run-count"></span></div>
+          <div class="rail-row"><span>time</span><span class="mono" id="stat-time">—</span></div>
+          <div class="rail-row"><span>wasm size</span><span class="mono" id="stat-size">—</span></div>
+          <div class="rail-row"><span>ops</span><span class="mono" id="stat-ops">—</span></div>
+          <div class="card-sub">Pipeline</div>
+          <div id="stages"></div>
+        </div>
+        <div id="outline-card" class="card">
+          <div class="card-title">Outline</div>
+          <div id="outline-rows"></div>
+        </div>
+      </aside>
+
+    </main>
+
+    <footer id="statusbar">
+      <span id="status-left"></span>
+      <span class="spacer"></span>
+      <span id="status-right"></span>
+      <span class="dim">·</span>
+      <span>ef · algebraic effects in the browser</span>
+    </footer>
+
+  </div>
+
+  <div id="palette" class="overlay hidden">
+    <div id="palette-box">
+      <input id="palette-input" type="text" placeholder="type a command…" spellcheck="false" autocomplete="off">
+      <div id="palette-list"></div>
+    </div>
+  </div>
+
+  <div id="modal" class="overlay hidden">
+    <div id="modal-box">
+      <div id="modal-title"></div>
+      <input id="modal-input" type="text" spellcheck="false" autocomplete="off">
+      <div id="modal-actions">
+        <button id="modal-cancel" class="tb-btn">Cancel</button>
+        <button id="modal-ok" class="tb-btn primary">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>

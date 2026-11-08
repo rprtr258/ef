@@ -3,12 +3,14 @@
   "type": "module",
   "private": true,
   "workspaces": [
-    "compiler"
+    "compiler",
+    "playground"
   ],
   "scripts": {
     "lint": "eslint '**/*.{ts,json}'",
-    "typecheck": "bun check",
+    "typecheck": "bun check && bun check --cwd playground",
     "check:deps": "bun compiler/scripts/check-runtime-deps.ts",
+    "playground": "bun run --filter=playground dev",
     "ci": "bun run typecheck && bun run lint && bun run check:deps && bun test --parallel"
   },
   "devDependencies": {
