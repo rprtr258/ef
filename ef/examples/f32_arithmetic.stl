@@ -1,2 +1,0 @@
-add :: fn(a: f32, b: f32): f32 { return a + b; };
-main :: fn(): i32 { return @as(add(3.34f32, 2.71f32), i32); };

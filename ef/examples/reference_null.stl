@@ -1,7 +1,0 @@
-main :: fn(): i32 {
-  maybe: @Ptr([x: i32, y: i32]) = @null([x: i32, y: i32]);
-  if (maybe != @null([x: i32, y: i32])) {
-    val: [x: i32, y: i32] = maybe.*;
-  }
-  return 0;
-};

@@ -1,6 +1,0 @@
-main :: fn(): i32 {
-  a: i32 = 42;
-  b: i32 = 42;
-  eq1: bool = a == b;
-  return 1;
-};

@@ -1,9 +1,0 @@
-cast :: fn(x: i32): i32 {
-  f: f32 = @as(x, f32);
-  f = f + 1.0f32;
-  return @as(f, i32);
-};
-
-main :: fn(): i32 {
-  return cast(41);
-};

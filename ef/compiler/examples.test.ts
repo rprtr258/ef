@@ -110,6 +110,7 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
   }],
   "widths.ef": [{
     label: "f32 precision, @as conversions, division and wraparound parity",
+    timeout: 15000, // ~4s alone; tips over the 5s default under full-suite load
     body: res => {
       const lines = res.stdout.split("\n");
       // f32 rounding: 0.1f32 + 0.2f32 != 0.1f64 + 0.2f64.

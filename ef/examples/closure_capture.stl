@@ -1,7 +1,0 @@
-main :: fn(): i32 {
-  a: i32 = 10;
-  f: fn(): i32 = fn(): i32 {
-    return a;
-  };
-  return f();
-};

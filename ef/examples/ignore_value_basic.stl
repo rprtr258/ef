@@ -1,6 +1,0 @@
-index :: [log: fn(msg: i32): void];
-main :: fn(): i32 {
-  index.log(42);
-  _ = 1i32 + 2i32;
-  return 0;
-};

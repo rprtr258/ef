@@ -640,6 +640,16 @@ export class Fn {
     this.body.arrayGet(1);
   }
 
+  // Store pushVal() into frame slot i of this fn's frame (local 0) — the
+  // write half of slot().
+  storeSlot(i: number, pushVal: () => void): void {
+    this.body.localGet(0);
+    this.body.structGet(4, 1);
+    this.body.i32Const(i);
+    pushVal();
+    this.body.arraySet();
+  }
+
   // f64 payload of slot i's number; ref.cast traps on non-numbers (the
   // frozen §7.7 deviation — unreachable in well-typed programs).
   slotF64(i: number): number {

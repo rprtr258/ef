@@ -1,8 +1,0 @@
-main :: fn(): i32 {
-  slice: @slice(i32) = @slice.make(i32);
-  slice = @slice.append(slice, 42);
-  i: i32 = 0;
-  slice.(i) = slice.(0) + 1;
-  sub: @slice(i32) = @slice.sub(slice, 1, 2);
-  return 0;
-};
