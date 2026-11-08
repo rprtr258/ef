@@ -668,8 +668,25 @@ function inferNode(
           e.numTouched = ctx.touched;
         }
       }
-      if (e.retTyp !== null)
+      if (e.retTyp !== null) {
         env.uni.unify(e.retTyp, ret);
+        // Pin the body's tail root when the declared return width is concrete
+        // and the body's type is a numeric wildcard: the tail boxes at its own
+        // stamp (num statics / operator boxW), so the stamp must carry the
+        // declared width for the caller's typed reads to match
+        // (fn(): i32 { 8 / 2 } boxes $I32, not the wildcard-default $I64).
+        const dt = env.uni.res(e.retTyp);
+        const dw = dt.tag === "prim" ? widthOf(dt) : null;
+        const rt2 = env.uni.res(ret);
+        if (dw !== null && dw.concrete && rt2.tag === "prim" &&
+          (rt2.name === "int" || rt2.name === "float")) {
+          const bodyE = nodes[e.body];
+          const tail = bodyE.t === "block" ? bodyE.stmts[bodyE.stmts.length - 1] : e.body;
+          const tailT = env.uni.res(env.uni.nodeTypes.get(tail) ?? TNULL);
+          if (tailT.tag === "prim" && tailT.name === rt2.name && selfBoxedWidth(nodes, tail))
+            env.uni.nodeTypes.set(tail, dt);
+        }
+      }
       // Effect annotation is optional: if `! { ... }` is omitted, the
       // function's effect set is derived from the body's performed effects.
       // If present, it must be a superset of the body's effects.
@@ -1055,9 +1072,30 @@ const WIDTH_PRIMS: Record<string, Prim> = {
   i32: TI32, u32: TU32, i64: TI64, u64: TU64, f32: TF32, f64: TF64,
 };
 
+// Nodes whose runtime box is produced BY their own stamp — pinnable: untyped
+// literals (fresh wildcards; statics key on the stamp), @as (boxes at its
+// target), and operator/neg sites (boxW reads the site's stamp). A call/sym/
+// field node's box comes from its own production — relabeling it would desync
+// the stamp from the box (e.g. a builtin's TFLOAT return read through a call).
+function selfBoxedWidth(nodes: Expr[], id: ExprID): boolean {
+  const n = nodes[id];
+  if (n.t === "num" || n.t === "as") return true;
+  if (n.t === "app") {
+    const fn = nodes[n.fn];
+    return fn.t === "sym" && (NUMOPS.has(fn.v) || fn.v === "neg" || fn.v === "+");
+  }
+  return false;
+}
+
+const PIN_NODES: {current: Expr[]} = {current: []};
+
 function pinWildcard(u: Unifier, argId: ExprID, at: Type, widened: Type): void {
   const rt = u.res(at);
   if (rt.tag !== "prim" || (rt.name !== "int" && rt.name !== "float")) return;
+  // Fresh wildcard instances (untyped literals) always box at their stamp.
+  // A shared wildcard (e.g. a builtin signature's TFLOAT, or an operator's
+  // TINT result) is pinnable only when the node boxes at its own stamp.
+  if (!u.wilds.has(rt) && !selfBoxedWidth(PIN_NODES.current, argId)) return;
   const w = widthOf(u.res(widened));
   if (w !== null) u.nodeTypes.set(argId, u.res(widened));
 }
@@ -1106,6 +1144,7 @@ export function checkProgram(
 ): Checked {
   const uni = acc?.uni ?? new Unifier();
   uni.nodeTypes = new Map();
+  PIN_NODES.current = prog.nodes;
   let env: Env;
   let effects: Map<string, EffectSig>;
   if (acc !== undefined) {

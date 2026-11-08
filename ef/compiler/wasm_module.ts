@@ -12,6 +12,53 @@ import * as w from "./wasm_consts.ts";
 
 export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
   const out: Fn[] = [];
+  // Wide-priority dispatch for the trampolines' fallback plane (typed-widths
+  // step 5): the interpreter's eitherBig coerces the Number side to BigInt
+  // (trunc) whenever either operand is a BigInt (an $I64/$U64 box), so the
+  // fallback computes in i64 then, reading each box with its own signedness
+  // ($I64/$I32 signed, $U64/$U32 unsigned, floats truncate — asBig's
+  // BigInt(Math.trunc(v))), and in f64 otherwise.
+  // Emits the either-wide condition (an i32 on the operand stack, for an IF).
+  const eitherWide = (bb: Buf): void => {
+    bb.localGet(0);
+    bb.refTest(9, false);
+    bb.localGet(0);
+    bb.refTest(10, false);
+    bb.u8(w.OR);
+    bb.localGet(1);
+    bb.refTest(9, false);
+    bb.localGet(1);
+    bb.refTest(10, false);
+    bb.u8(w.OR);
+    bb.u8(w.OR);
+  };
+  // Per-box-signedness i64 read of frame slot i (eitherBig's asBig).
+  const readI64Signed = (bb: Buf, i: number): void => {
+    bb.localGet(i);
+    bb.refTest(10, false);
+    bb.localGet(i);
+    bb.refTest(8, false);
+    bb.u8(w.OR);
+    bb.u8(w.IF);
+    bb.u8(0x7e);
+    bb.localGet(i);
+    bb.u8(w.CALL);
+    bb.lebU(em.ix.fU64of);
+    bb.u8(w.ELSE);
+    bb.localGet(i);
+    bb.u8(w.CALL);
+    bb.lebU(em.ix.fI64of);
+    bb.u8(w.END);
+  };
+  // Adaptive f64 read of frame slot i ($num64 — any numeric box converts).
+  const readNum64 = (fn: Fn, bb: Buf, i: number): number => {
+    const l = fn.f64();
+    fn.slot(i);
+    bb.u8(w.CALL);
+    bb.lebU(em.ix.fNum64);
+    bb.localSet(l);
+    return l;
+  };
   for (const {name} of BUILTINS) {
     if (!em.o.usedBuiltins.has(name)) continue;
     const f = new Fn(2, em); // (frame, k): builtins are T_KABI trampolines
@@ -278,19 +325,74 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         }
         if (name === "<" || name === ">" || name === "<=" || name === ">=") {
           const r = f.i32();
+          b.u8(w.BLOCK);
+          b.u8(0x40);
+          eitherWide(b);
+          b.u8(w.IF);
+          b.u8(0x40);
+          // eitherBig: one BigInt side makes the whole compare BigInt
+          // (the Number side truncs) — signed i64 order.
           {
-            const x = f.slotF64(0), y = f.slotF64(1);
+            const x = f.i64(), y = f.i64();
+            readI64Signed(b, 0);
+            b.localSet(x);
+            readI64Signed(b, 1);
+            b.localSet(y);
+            b.localGet(x);
+            b.localGet(y);
+            b.u8(name === "<" ? w.I64_LTS : name === ">" ? w.I64_GTS : name === "<=" ? w.I64_LES : w.I64_GES);
+            b.localSet(r);
+          }
+          b.u8(w.BR);
+          b.lebU(1);
+          b.u8(w.END);
+          {
+            const x = readNum64(f, b, 0), y = readNum64(f, b, 1);
             const cmp = name === "<" ? w.FLT : name === ">" ? w.FGT : name === "<=" ? w.FLE : w.FGE;
             b.localGet(x);
             b.localGet(y);
             b.u8(cmp);
             b.localSet(r);
           }
+          b.u8(w.END);
           selectBool(em, f, () => {
             b.localGet(r);
           });
         } else {
-          const x = f.slotF64(0), y = name === "neg" ? 0 : f.slotF64(1);
+          b.u8(w.BLOCK);
+          b.u8(0x40);
+          eitherWide(b);
+          b.u8(w.IF);
+          b.u8(0x40);
+          // eitherBig: i64 math (each box's own signedness read), $I64 box.
+          {
+            const x = f.i64(), y = f.i64();
+            if (name === "neg") {
+              b.i64Const(0n);
+              readI64Signed(b, 0);
+              b.u8(w.I64_SUB);
+              b.localSet(x);
+            } else {
+              readI64Signed(b, 0);
+              b.localSet(x);
+              readI64Signed(b, 1);
+              b.localSet(y);
+              if (name === "%") {
+                b.localGet(x);
+                b.localGet(y);
+                b.u8(w.I64_REMS);
+              } else {
+                b.localGet(x);
+                b.localGet(y);
+                b.u8(name === "-" ? w.I64_SUB : w.I64_MUL);
+              }
+            }
+            b.structNew(9);
+          }
+          b.u8(w.BR);
+          b.lebU(1);
+          b.u8(w.END);
+          const x = readNum64(f, b, 0), y = name === "neg" ? 0 : readNum64(f, b, 1);
           if (name === "%") {
             // JS fmod: a - b * trunc(a/b)
             const t = f.f64();
@@ -313,6 +415,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
               b.u8(name === "-" ? w.FSUB : w.FMUL);
             }
           }
+          b.u8(w.END);
           box();
         }
         if (f32op) {

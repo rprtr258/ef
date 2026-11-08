@@ -595,3 +595,9 @@ Type `:q` to quit.
 - `examples/tco.ef` — recursion probe. The CPS evaluator is fully tail-call-structured, so Bun/JSC's TCO keeps the stack O(1) for both tail and non-tail calls; non-tail recursion costs heap allocation (linear time), not stack overflow. The wasm target also runs it: calls in tail position compile to `return_call_indirect` (O(1) wasm stack); each call still allocates a frame block, but the host GC reclaims them (the old linear-memory backend exhausted the heap at ~100M depth).
 - `examples/star.ef` — rotating 3D star polygon (port of `ink/samples/star.ink`).
   Run: `ef run examples/star.ef <vertices> <step>` where `0 < step < vertices/2`.
+- `examples/widths.ef` — the numeric-widths end-to-end probe: f32 precision at
+  every producing step, per-width `@as` conversions, truncating `/`, i32/u32
+  and i64/u64 wraparound (exact beyond 2^53 via BigInt), signed vs unsigned
+  ordering, and the division guards. Every line prints identically under
+  `ef run` and `ef runwasm` — the parity harness in `compiler/examples.test.ts`
+  pins it line for line.

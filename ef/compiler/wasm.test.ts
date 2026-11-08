@@ -111,6 +111,26 @@ describe("wasm backend", () => {
     expect(parity("1 != 2")).toBe("true");
   });
 
+  test("any-typed equality is value-based across all six widths (step 5)", () => {
+    // The $eq helper matches the interpreter's JS === on values exactly:
+    // same-representation numbers compare by value (f32 promotes, i32/u32
+    // convert), BigInt is never === a Number, and mixed i64/u64 compares
+    // the BigInt values (not the bits).
+    const eq = "let eq = fn(a: any, b: any) { a == b }; ";
+    expect(parity(eq + "eq(1.5, 1.5)")).toBe("true");
+    expect(parity(eq + "eq(@as(1.5, f32), @as(1.5, f32))")).toBe("true");
+    expect(parity(eq + "eq(@as(5, i32), @as(5, u32))")).toBe("true");
+    expect(parity(eq + "eq(@as(5, i32), @as(5, i32))")).toBe("true");
+    expect(parity(eq + "eq(@as(5, i64), @as(5, u64))")).toBe("true");
+    // Same bits, different BigInt values.
+    expect(parity(eq + "eq(@as(-1, i64), @as(18446744073709551615, u64))")).toBe("false");
+    expect(parity(eq + "eq(@as(5, i64), 5.0)")).toBe("false"); // BigInt vs Number
+    expect(parity(eq + "eq(@as(5, i32), @as(5, i64))")).toBe("false");
+    expect(parity(eq + "eq(true, true)")).toBe("true");
+    expect(parity(eq + "eq(\"x\", \"x\")")).toBe("true");
+    expect(parity(eq + "eq(1, 2)")).toBe("false");
+  });
+
   test("tail operator after a land call dispatches through the RET cell", () => {
     // Regression: a lambda whose tail was `/` used to return the boxed
     // value raw (return_call $box), bypassing the land site's RET cell —

@@ -566,79 +566,142 @@ export function emitHelpers(em: Emit): Fn[] {
     b.u8(w.OR); // i32.or
     b.localSet(decided);
     b.u8(w.END);
-    // i64/u64 == i64/u64: the payloads compare bit-for-bit (i64.eq); both
-    // widths share the pattern, and same-width comparisons are the only
-    // statically-typed ones (any-typed operands still land here).
+    // Numeric equality matches the interpreter's JS === on values exactly
+    // (any-typed sites land here; same-width sites are decided statically):
+    //   wide ($I64/$U64) vs wide — same shape: bitwise i64.eq (equal bits
+    //     ⟺ equal values within one width); mixed shapes: bits equal AND
+    //     the signed side non-negative (JS compares the BigInt values —
+    //     -1n is not 18446744073709551615n even though the bits match);
+    //   wide vs f64-family ($F64/$F32/$I32/$U32): never equal (BigInt is
+    //     never === a Number);
+    //   f64-family vs f64-family: adaptive read to f64, f64.eq (the JS
+    //     Number ===: +0 == -0, NaN != NaN; i32/u32/f32 payloads promote
+    //     exactly).
     {
+      const isW = (v: number, bit: number): void => {
+        b.localGet(v);
+        b.refTest(9, true);
+        b.localGet(v);
+        b.refTest(10, true);
+        b.u8(w.OR);
+        b.localSet(bit);
+      };
+      const isNum = (v: number, bit: number, wbit: number): void => {
+        b.localGet(v);
+        b.refTest(0, true);
+        b.localGet(v);
+        b.refTest(7, true);
+        b.u8(w.OR);
+        b.localGet(v);
+        b.refTest(8, true);
+        b.u8(w.OR);
+        b.localGet(v);
+        b.refTest(11, true);
+        b.u8(w.OR);
+        b.localGet(wbit);
+        b.u8(w.OR);
+        b.localSet(bit);
+      };
+      const aW = eq.i32(), bW = eq.i32(), aN = eq.i32(), bN = eq.i32();
+      isW(0, aW);
+      isW(1, bW);
+      isNum(0, aN, aW);
+      isNum(1, bN, bW);
+      // Both numeric? the numeric ladder answers (decided = 1).
+      b.localGet(aN);
+      b.localGet(bN);
+      b.u8(w.AND);
+      b.u8(w.IF);
+      b.u8(0x40);
+      b.i32Const(1);
+      b.localGet(decided);
+      b.u8(w.OR);
+      b.localSet(decided);
+      b.localGet(aW);
+      b.localGet(bW);
+      b.u8(w.AND);
+      b.u8(w.IF);
+      b.u8(0x40);
+      // wide vs wide: payloads (the raw bits), then the mixed-shape rule.
+      const pa = eq.i64(), pb = eq.i64();
       b.localGet(0);
       b.refTest(9, true);
-      b.localGet(1);
-      b.refTest(10, true);
-      b.u8(w.AND);
+      b.u8(w.IF);
+      b.u8(0x7e);
       b.localGet(0);
-      b.refTest(10, true);
+      b.refCast(9, false);
+      b.structGet(9, 0);
+      b.u8(w.ELSE);
+      b.localGet(0);
+      b.refCast(10, false);
+      b.structGet(10, 0);
+      b.u8(w.END);
+      b.localSet(pa);
       b.localGet(1);
       b.refTest(9, true);
+      b.u8(w.IF);
+      b.u8(0x7e);
+      b.localGet(1);
+      b.refCast(9, false);
+      b.structGet(9, 0);
+      b.u8(w.ELSE);
+      b.localGet(1);
+      b.refCast(10, false);
+      b.structGet(10, 0);
+      b.u8(w.END);
+      b.localSet(pb);
+      // res = bits equal AND the signed side (if any) is non-negative.
+      b.localGet(pa);
+      b.localGet(pb);
+      b.u8(w.I64_EQ);
+      // signedNeg: whichever operand sits in an $I64 box reads as a signed
+      // BigInt — a negative one is never === the unsigned reinterpretation.
+      b.localGet(0);
+      b.refTest(9, true);
+      b.u8(w.IF);
+      b.u8(0x7f);
+      b.localGet(pa);
+      b.i64Const(0n);
+      b.u8(w.I64_LTS);
+      b.u8(w.ELSE);
+      b.localGet(1);
+      b.refTest(9, true);
+      b.u8(w.IF);
+      b.u8(0x7f);
+      b.localGet(pb);
+      b.i64Const(0n);
+      b.u8(w.I64_LTS);
+      b.u8(w.ELSE);
+      b.i32Const(0);
+      b.u8(w.END);
+      b.u8(w.END);
+      b.u8(w.EQZ);
       b.u8(w.AND);
+      b.localSet(res);
+      b.u8(w.ELSE);
+      // not both wide: exactly one wide → BigInt is never === a Number;
+      // both f64-family → adaptive reads + f64 compare (Number ===).
+      b.localGet(aW);
+      b.localGet(bW);
       b.u8(w.OR);
       b.u8(w.IF);
       b.u8(0x40);
-      const p = eq.i64();
-      b.localGet(0);
-      b.u8(w.CALL);
-      b.lebU(em.ix.fI64of);
-      b.localSet(p);
-      b.localGet(p);
-      b.localGet(1);
-      b.u8(w.CALL);
-      b.lebU(em.ix.fI64of);
-      b.u8(w.I64_EQ);
+      b.i32Const(0);
       b.localSet(res);
-      // decided: the i64 path answered.
+      b.u8(w.ELSE);
+      // f64-family vs f64-family: adaptive reads + f64 compare.
       b.localGet(0);
-      b.refTest(9, true);
-      b.localGet(0);
-      b.refTest(10, true);
-      b.u8(w.OR);
+      b.u8(w.CALL);
+      b.lebU(em.ix.fNum64);
       b.localGet(1);
-      b.refTest(9, true);
-      b.localGet(1);
-      b.refTest(10, true);
-      b.u8(w.OR);
-      b.u8(w.AND);
-      b.localGet(decided);
-      b.u8(w.OR); // i32.or
-      b.localSet(decided);
+      b.u8(w.CALL);
+      b.lebU(em.ix.fNum64);
+      b.u8(w.FEQ);
+      b.localSet(res);
+      b.u8(w.END);
+      b.u8(w.END);
       b.u8(w.END);
     }
-    // num == num: adaptive unbox ($F64 payload or promoted $F32 payload —
-    // the promote is exact, so f64 comparison of promoted f32s matches f32
-    // equality) then f64 compare.
-    b.localGet(0);
-    b.refTest(0, true);
-    b.localGet(1);
-    b.refTest(0, true);
-    b.u8(w.OR);
-    b.u8(w.IF);
-    b.u8(0x40);
-    b.localGet(0);
-    b.u8(w.CALL);
-    b.lebU(em.ix.fNum64);
-    b.localGet(1);
-    b.u8(w.CALL);
-    b.lebU(em.ix.fNum64);
-    b.u8(w.FEQ);
-    b.localSet(res);
-    // decided: the num path answered.
-    b.localGet(0);
-    b.refTest(0, true);
-    b.localGet(1);
-    b.refTest(0, true);
-    b.u8(w.OR);
-    b.localGet(decided);
-    b.u8(w.OR); // i32.or
-    b.localSet(decided);
-    b.u8(w.END);
     // str == str: i16 content.
     b.localGet(0);
     b.refTest(2, true);
@@ -840,8 +903,10 @@ export function emitHelpers(em: Emit): Fn[] {
   num64.typeIdx = 19; // __num's shape: (anyref) -> f64 (sig pre-registered in assignIndices)
   {
     const b = num64.body;
-    // Full numeric-box ladder (typed-widths steps 2-4): $F32 promotes, the
-    // int boxes convert (each box's own signedness), $F64 is the payload.
+    // Full numeric-box ladder (typed-widths steps 2-5): $F64 first (the
+    // common case for well-typed f64 sites pays one refTest), then $F32
+    // promotes, the int boxes convert (each box's own signedness); a
+    // non-number still traps at the final cast.
     const arm = (ht: number, ops: number[]): void => {
       b.localGet(0);
       b.refTest(ht, false);
@@ -853,15 +918,16 @@ export function emitHelpers(em: Emit): Fn[] {
       for (const op of ops) b.u8(op);
       b.u8(w.ELSE);
     };
+    arm(0, []);                 // $F64 payload (the hot case)
     arm(11, [w.F64_PROMOTE]);   // $F32 -> promote
     arm(7, [w.CONV_I32]);       // $I32 -> f64
     arm(8, [w.CONV_I32_U]);     // $U32 -> f64
     arm(9, [w.CONV_F64_I64]);   // $I64 -> f64
     arm(10, [w.CONV_F64_U64]);  // $U64 -> f64
-    b.localGet(0);              // default: $F64 payload
+    b.localGet(0);              // default: trap (non-number)
     b.refCast(0, false);
     b.structGet(0, 0);
-    for (let i = 0; i < 5; i++) b.u8(w.END);
+    for (let i = 0; i < 6; i++) b.u8(w.END);
   }
   // Adaptive unbox helpers (typed-widths steps 2-4). Each reads ANY of the
   // numeric box shapes into its width, applying the conversion the
@@ -1305,12 +1371,25 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
   };
   // Unbox operand i into a fresh width-typed local: push its ref, adapt
   // through the width's helper, store.
+  // Direct unbox of an operand whose stamp IS its box shape: num literals
+  // (statics key on the stamp) and app results (operators box at their site
+  // stamp, calls at their return width — the pinWildcard restriction keeps
+  // the two in sync). A SYM's stamp comes from its binding, which can be a
+  // refinement of a wildcard-typed producer (let x: i32 = neg(2147483648)
+  // boxes $I64) — those go through the adaptive helper, which also serves
+  // any future wildcard-flexed edge.
   const unbox = (i: number): number => {
     const loc = isF32 ? f.f32() : isNarrow ? f.i32() : isWide ? f.i64() : f.f64();
+    const a = em.nodes[e.args[i]];
     pushArg(i);
-    b.u8(w.CALL);
-    b.lebU(isF32 ? em.ix.fF32of : isI32 ? em.ix.fI32of : isU32 ? em.ix.fU32of
-      : isI64 ? em.ix.fI64of : isU64 ? em.ix.fU64of : em.ix.fNum64);
+    if ((a.t === "num" || a.t === "app") && (a as Expr & {numKind?: string}).numKind === wk) {
+      b.refCast(boxShape, false);
+      b.structGet(boxShape, 0);
+    } else {
+      b.u8(w.CALL);
+      b.lebU(isF32 ? em.ix.fF32of : isI32 ? em.ix.fI32of : isU32 ? em.ix.fU32of
+        : isI64 ? em.ix.fI64of : isU64 ? em.ix.fU64of : em.ix.fNum64);
+    }
     b.localSet(loc);
     return loc;
   };
@@ -1968,20 +2047,29 @@ function exprInner(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: C
         const isF32 = wk === "f32", isI32 = wk === "i32", isU32 = wk === "u32";
         const isI64 = wk === "i64", isU64 = wk === "u64";
         const isInt = isI32 || isU32 || isI64 || isU64;
-        const unboxDiv = (): number => {
+        // Same direct-unbox rule as emitOperatorInline's unbox: a stamped
+        // operand's box is the site's shape.
+        const unboxDiv = (i: number): number => {
           const loc = isF32 ? f.f32() : isI64 || isU64 ? f.i64() : f.i32();
-          b.u8(w.CALL);
-          b.lebU(isF32 ? em.ix.fF32of : isI32 ? em.ix.fI32of : isU32 ? em.ix.fU32of
-            : isI64 ? em.ix.fI64of : em.ix.fU64of);
+          const a = em.nodes[e.args[i]];
+          const shape = isF32 ? 11 : isI32 ? 7 : isU32 ? 8 : isI64 ? 9 : 10;
+          if ((a.t === "num" || a.t === "app") && (a as Expr & {numKind?: string}).numKind === wk) {
+            b.refCast(shape, false);
+            b.structGet(shape, 0);
+          } else {
+            b.u8(w.CALL);
+            b.lebU(isF32 ? em.ix.fF32of : isI32 ? em.ix.fI32of : isU32 ? em.ix.fU32of
+              : isI64 ? em.ix.fI64of : em.ix.fU64of);
+          }
           b.localSet(loc);
           return loc;
         };
         if (ci === 0) throw new WasmError("internal: split chain root mismatch");
         if (isInt || isF32) {
           f.pushRef(cutChildRef(em, e.args[0], f, s, ctx, ci === 1 ? "cut" : ci < 0 ? "post" : "pre"));
-          const dividend = unboxDiv();
+          const dividend = unboxDiv(0);
           f.pushRef(cutChildRef(em, e.args[1], f, s, ctx, ci === 2 ? "cut" : "post"));
-          const divisor = unboxDiv();
+          const divisor = unboxDiv(1);
           // Guarded integer division: ÷0 (all int widths) and, for the
           // signed widths, INT_MIN ÷ -1 (the div_s overflow case) fail
           // through ef_fail — the same channel `get` uses — instead of
@@ -2023,12 +2111,22 @@ function exprInner(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: C
           // dispatch must see the value).
           b.structNew(boxShapeOf(wk));
         } else {
-          f.pushRef(cutChildRef(em, e.args[0], f, s, ctx, ci === 1 ? "cut" : ci < 0 ? "post" : "pre"));
-          b.refCast(0, false);
-          b.structGet(0, 0);
-          f.pushRef(cutChildRef(em, e.args[1], f, s, ctx, ci === 2 ? "cut" : "post"));
-          b.refCast(0, false);
-          b.structGet(0, 0);
+          // f64 plane: an operand whose stamp is f64 unboxes directly; any
+          // other numeric stamp (an int-stamped subexpression feeding a
+          // float division, e.g. 4.0 / (size - 1)) reads through the
+          // adaptive $num64 (the interpreter's Number() coercion).
+          const unboxF64 = (i: number, mode: "cut" | "pre" | "post"): void => {
+            f.pushRef(cutChildRef(em, e.args[i], f, s, ctx, mode));
+            if ((em.nodes[e.args[i]] as Expr & {numKind?: string}).numKind === "f64") {
+              b.refCast(0, false);
+              b.structGet(0, 0);
+            } else {
+              b.u8(w.CALL);
+              b.lebU(em.ix.fNum64);
+            }
+          };
+          unboxF64(0, ci === 1 ? "cut" : ci < 0 ? "post" : "pre");
+          unboxF64(1, ci === 2 ? "cut" : "post");
           b.u8(w.FDIV);
           if (e.div === "i64" || e.div === "u64") b.u8(w.FTRUNC);
           b.u8(w.CALL);
