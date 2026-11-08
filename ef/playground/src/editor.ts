@@ -46,15 +46,6 @@ export function setupMonaco(): void {
   editor.onDidChangeCursorPosition((e) => {
     els.crumbPos.textContent = `Ln ${e.position.lineNumber}, Col ${e.position.column}`;
   });
-}
-
-export let tokenLines: {start: number, len: number, scope: string}[][] = [];
-
-export function refreshTokens(): void {
-  tokenLines = tokenize(editor === null ? activeFile().code : editor.getValue());
-}
-
-export function installTokens(): void {
   monaco.languages.setTokensProvider("ef", {
     getInitialState: () => new EfState(0),
     tokenize(_line: string, st: monaco.languages.IState): monaco.languages.ILineTokens {
@@ -66,4 +57,10 @@ export function installTokens(): void {
       };
     },
   });
+}
+
+export let tokenLines: {start: number, len: number, scope: string}[][] = [];
+
+export function refreshTokens(): void {
+  tokenLines = tokenize(editor === null ? activeFile().code : editor.getValue());
 }

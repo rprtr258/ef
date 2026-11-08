@@ -42,7 +42,7 @@
 
 import * as monaco from "monaco-editor/esm/vs/editor/editor.main.js";
 import {build, onEdit, openFile, run} from "./actions.ts";
-import {editor, installTokens, refreshTokens, setupMonaco} from "./editor.ts";
+import {editor, refreshTokens, setupMonaco} from "./editor.ts";
 import {closeModal, setupModal} from "./modal.ts";
 import {clearOutput, outLine, setTab} from "./output.ts";
 import {closePalette, openPalette, setupPalette} from "./palette.ts";
@@ -55,7 +55,6 @@ import {applyTheme, toggleTheme} from "./theme.ts";
 function boot(): void {
   applyTheme();
   setupMonaco();
-  installTokens();
   refreshTokens();
 
   editor?.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => run());
