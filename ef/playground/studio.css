@@ -90,15 +90,39 @@ body {
 #main {
   flex: 1; min-height: 0;
   display: grid;
-  grid-template-columns: 228px 1fr 288px;
+  grid-template-columns: var(--tree-w, 228px) 6px minmax(0, 1fr) 6px var(--rail-w, 288px);
 }
 
 .pane { overflow: auto; background: var(--pane); }
 
+/* --- draggable splits ------------------------------------------------------ */
+/* Hairline drag handles between the panes; main.ts sets --tree-w/--rail-w on
+   #main and --panel-h on #center while dragging. */
+
+.split {
+  position: relative;
+  z-index: 2;
+  touch-action: none;
+  user-select: none;
+}
+.split:focus { outline: none; }
+.split::after {
+  content: "";
+  position: absolute;
+  background: var(--hair);
+}
+.split.v { cursor: col-resize; }
+.split.v::after { top: 0; bottom: 0; left: calc(50% - .5px); width: 1px; }
+.split.h { cursor: row-resize; }
+.split.h::after { left: 0; right: 0; top: calc(50% - .5px); height: 1px; }
+.split:hover::after,
+.split.dragging::after,
+.split:focus-visible::after { background: var(--accent); }
+body.splitting { user-select: none; }
+
 /* --- explorer tree -------------------------------------------------------- */
 
 #tree {
-  border-right: 1px solid var(--hair);
   padding: 8px 0 24px;
 }
 
@@ -150,12 +174,12 @@ body {
 #crumb-file { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; }
 .chip { color: var(--faint); border: 1px solid var(--hair); border-radius: 99px; padding: 1px 8px; }
 
-#edhost { flex: 1.7; min-height: 0; }
+#edhost { flex: 1; min-height: 0; }
 
 #panel {
-  flex: 1; min-height: 120px;
+  flex: none;
+  height: var(--panel-h, 240px);
   display: flex; flex-direction: column;
-  border-top: 1px solid var(--hair);
   background: var(--pane);
 }
 
@@ -199,7 +223,6 @@ body {
 /* --- rail ------------------------------------------------------------------ */
 
 #rail {
-  border-left: 1px solid var(--hair);
   display: flex; flex-direction: column;
 }
 
