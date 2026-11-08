@@ -3,7 +3,7 @@ import {showT} from "../../compiler/types.ts";
 
 import {
   buildWasm, browserInterp, concatProject, entryFile, interpret, isEntryFile,
-  outline, problems, runWasmProgram, tokenize, ExitSignal,
+  outline, problems, runWasmProgram, tokenize, topLevelEffs, ExitSignal,
 } from "./bridge.ts";
 
 describe("bridge", () => {
@@ -53,6 +53,14 @@ describe("bridge", () => {
     const {bytes, ops} = await buildWasm("Println!(1 + 2)");
     expect(bytes.length).toBeGreaterThan(0);
     expect(ops).toEqual(["Println"]);
+  });
+
+  test("topLevelEffs: the residual row `ef types` prints on its _ line", () => {
+    expect(topLevelEffs("let fib = fn(n: int): int { n };\nPrintln!(fib(27))")).toEqual(["Println"]);
+    // lambdas defer their performs, and internally-handled ops don't escape
+    expect(topLevelEffs("effect E(): unit;\nlet f = fn() { E!() };\n1")).toEqual([]);
+    expect(topLevelEffs("effect E(): unit;\nhandle { E!() } case E() => k { k(unit) }")).toEqual([]);
+    expect(topLevelEffs("effect E(): unit;\nE!()")).toEqual(["E"]);
   });
 
   test("outline, entry detection and project concat", () => {

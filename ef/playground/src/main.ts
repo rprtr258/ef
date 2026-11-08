@@ -11,8 +11,10 @@
 // browser's WebAssembly (streaming Out!/Println! into the output pane) —
 // O(1) stack via wasm tail calls, unlike the CPS interpreter which leans on
 // JSC tail calls and overflows V8. Build emits the same WasmGC main.wasm
-// (downloadable). Performed ops — a typecheck byproduct, not a wasm artifact
-// — are reported by both run and build.
+// (downloadable). The Pipeline card's ops row shows the active file's
+// residual effect row — the ops that reach the top level, the `_` line of
+// `ef types` — while build reports the whole project's performed ops (a
+// typecheck byproduct, not a wasm artifact).
 //
 // Shell: "Instrument" — explorer tree | editor + tabbed output | insight rail
 // (BUILD / OUTLINE cards), Ctrl+K command palette, light/dark themes
@@ -21,7 +23,7 @@
 import * as monaco from "monaco-editor/esm/vs/editor/editor.main.js";
 import {
   buildWasm, concatProject, entryFile, ExitSignal, outline, problems,
-  runWasmProgram, tokenize, type OutlineItem, type Problem,
+  runWasmProgram, tokenize, topLevelEffs, type OutlineItem, type Problem,
 } from "./bridge.ts";
 import {show} from "../../compiler/env.ts";
 import {showT} from "../../compiler/types.ts";
@@ -128,7 +130,6 @@ type State = {
   wasm: {bytes: Uint8Array} | null,
   buildMs: number | null, // last successful build's time (BUILD stats)
   runMs: number | null, // last successful run's time (RUN stats)
-  runOps: string[] | null, // performed/handled ops of the last successful run
   lastKind: "run" | "build" | null, // last successful action, drives the statusbar
 };
 
@@ -181,7 +182,6 @@ const state: State = {
   wasm: null,
   buildMs: null,
   runMs: null,
-  runOps: null,
   lastKind: null,
 };
 
@@ -497,7 +497,20 @@ function renderBuildCard(): void {
   els.statBuildTime.textContent = state.buildMs === null ? "—" : fmtMs(state.buildMs);
   els.statSize.textContent = state.wasm === null ? "—" : fmtBytes(state.wasm.bytes.length);
   els.statRunTime.textContent = state.runMs === null ? "—" : fmtMs(state.runMs);
-  els.statOps.textContent = state.runOps === null || state.runOps.length === 0 ? "—" : state.runOps.join(", ");
+}
+
+// ops stat: the active file's residual top-level effect row — the same set
+// `ef types` prints on its `_` line (ops reaching the top level; internally
+// handled ops excluded). "—" when the file alone doesn't parse/check (e.g.
+// it references other files' bindings — those errors live in Problems).
+function renderOpsStat(): void {
+  let effs: string[] | null = null;
+  try {
+    effs = topLevelEffs(activeFile().code);
+  } catch {
+    effs = null;
+  }
+  els.statOps.textContent = effs === null || effs.length === 0 ? "—" : `{ ${effs.join(", ")} }`;
 }
 
 function renderOutlineCard(): void {
@@ -601,6 +614,7 @@ function recompute(): void {
   saveProject();
   renderTree();
   renderOutlineCard();
+  renderOpsStat();
   liveProblems();
 }
 
@@ -644,7 +658,6 @@ function run(): void {
     stagesDone(ms);
     els.buildStatus.textContent = `ran in ${fmtMs(ms)} · ${showT(r.type)}`;
     state.runMs = ms;
-    state.runOps = r.ops;
     state.lastKind = "run";
     renderBuildCard();
     renderStatusbar();
@@ -778,7 +791,6 @@ function commands(): Cmd[] {
         state.wasm = null;
         state.buildMs = null;
         state.runMs = null;
-        state.runOps = null;
         state.lastKind = null;
         openFile("main.ef");
       }})},

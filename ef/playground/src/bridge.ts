@@ -116,6 +116,15 @@ export function problems(src: string): Problem[] {
   }));
 }
 
+// Residual top-level effect row of `src` — the ops that reach the runner
+// (unhandled builtin effects included, internally-handled ops excluded). The
+// row `ef types` prints on its `_` result line. Throws on parse/check errors;
+// callers wanting a best-effort row should catch (cross-file references make
+// a single file uncheckable on its own).
+export function topLevelEffs(src: string): string[] {
+  return [...checkProgram(parse(src)).unhandled];
+}
+
 export type RunResult = {value: Value, type: Type, ops: string[]};
 
 // Check + evaluate the whole program with the browser interp. Throws on parse
