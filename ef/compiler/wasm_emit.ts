@@ -33,28 +33,6 @@ import {assertNever} from "./assert.ts";
 //    (handle, while, the dispatch-shape if) the difference is structural —
 //    the split changes the site itself, not just its children; forcing one
 //    shape there would move complexity, not remove it (stage-3/4 ruling).
-
-// Value-explicit rewrite (stage 1): every expression emitter RETURNS a
-// ValueRef instead of leaving a cell pointer on the wasm operand stack.
-// 1. ValueRef = one of: const (immediate cell), local (wasm local index,
-//    single-use), slot (frame slot: $fp + offset — suspension-stable).
-//    Emitters never leave implicit operands on the stack across emitter
-//    calls. Short-lived stack use is allowed ONLY inside a helper that
-//    fully balances before returning (pushRef materializes a ref onto the
-//    stack at its consume point).
-// 2. Suspension rule: a ref consumed AFTER a potential suspension point
-//    (non-tail call, perform, handle, land) must be a slot or const —
-//    materialize locals to frame slots at the split (keepRef; the operand
-//    spill map computeSpills fills is the materializer).
-// 3. ONE emission shape per node — fresh emission and fragment re-emission
-//    (the cut path) share a single body, differing only in the child mode
-//    handed to cutChildRef ("post" = evaluate the child now, "cut" = the
-//    child continues the fragment, "pre" = reload a pre-cut sibling's
-//    spilled value) and in the tail flag (fragment re-emission never
-//    tail-calls children). Where fresh and cut shapes remain separate
-//    (handle, while, the dispatch-shape if) the difference is structural —
-//    the split changes the site itself, not just its children; forcing one
-//    shape there would move complexity, not remove it (stage-3/4 ruling).
 // Signature of a direct-call target by funcref index: imports carry their
 // type by name; defined functions registered at index assignment.
 
@@ -1013,7 +991,7 @@ export function emitHelpers(em: Emit): Fn[] {
     };
     arm(u ? 10 : 9, []);                  // own-width payload
     arm(u ? 9 : 10, []);                  // the sibling wide width
-    arm(u ? 7 : 7, [u ? w.I64_EXTEND_I32_S : w.I64_EXTEND_I32_S]); // $I32 sign-extends
+    arm(7, [w.I64_EXTEND_I32_S]);         // $I32 sign-extends (both wide widths)
     arm(8, [w.I64_EXTEND_I32_U]);         // $U32 zero-extends
     b.localGet(0);                        // default: $F64 truncate
     b.refCast(0, false);
@@ -1550,10 +1528,6 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
   // round-trip that used to live here: f32-stamped nodes now produce real
   // $F32 boxes (typed ops, $F32 statics, explicit @as conversions) and
   // operand-width adaptation happens in $f32of/$num64 at unbox sites.
-  return exprInner(em, id, f, sc, tail, ctx);
-}
-
-function exprInner(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: Ctx = INLINE): ValueRef {
   const e = em.nodes[id];
   // Lambda/block nodes carry their own scope; other nodes inherit sc.
   const s = em.d.scopes.get(id) ?? sc;
@@ -2015,6 +1989,20 @@ function exprInner(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: C
       const kids = [e.fn, ...e.args];
       const ci = cut === undefined ? -1 : kids.indexOf(cut[0]);
       if (cut !== undefined && ci < 0) throw new WasmError("internal: split chain root mismatch");
+      // Arg storer shared by both call paths below (direct builtin and
+      // closure).
+      const pushArg = (k: number, ffp: number): void => {
+        // Value-explicit arg order: the child's ref is computed (and
+        // spilled) BEFORE the destination address is pushed, so a split
+        // inside the child aborts on a clean operand stack (blocker (b)
+        // by construction).
+        const r = cutChildRef(em, e.args[k], f, s, ctx,
+          k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
+        b.localGet(ffp); b.refCast(4, true); b.structGet(4, 1);
+        b.i32Const(k);
+        f.pushRef(r);
+        b.arraySet();
+      };
       // Direct builtin reference: the callee sym resolves to no user
       // binding and names a builtin with a trampoline. Operators compile
       // inline (no call at all, like `/` below); other builtins call their
@@ -2139,14 +2127,7 @@ function exprInner(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: C
       } else if (bname !== null && em.ix.builtinFnIdx.has(bname)) {
         // Direct builtin call: static funcref index + fsize, env = null.
         const bi = BUILTINS.find(bb => bb.name === bname)!;
-        emitCallClosure(em, f, 0, e.args.length, (k, ffp) => {
-          const r = cutChildRef(em, e.args[k], f, s, ctx,
-            k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
-          b.localGet(ffp); b.refCast(4, true); b.structGet(4, 1);
-          b.i32Const(k);
-          f.pushRef(r);
-          b.arraySet();
-        }, cut === undefined && tail,
+        emitCallClosure(em, f, 0, e.args.length, pushArg, cut === undefined && tail,
         em.d.landCalls.has(id),
         ctx.kL,
         undefined,
@@ -2156,18 +2137,7 @@ function exprInner(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx: C
         const fc = f.anyref();
         f.pushRef(cutChildRef(em, e.fn, f, s, ctx, ci === 0 ? "cut" : ci < 0 ? "post" : "pre"));
         b.localSet(fc);
-        emitCallClosure(em, f, fc, e.args.length, (k, ffp) => {
-          // Value-explicit arg order: the child's ref is computed (and
-          // spilled) BEFORE the destination address is pushed, so a split
-          // inside the child aborts on a clean operand stack (blocker (b)
-          // by construction).
-          const r = cutChildRef(em, e.args[k], f, s, ctx,
-            k + 1 === ci ? "cut" : k + 1 < ci ? "pre" : "post");
-          b.localGet(ffp); b.refCast(4, true); b.structGet(4, 1);
-          b.i32Const(k);
-          f.pushRef(r);
-          b.arraySet();
-        }, cut === undefined && tail,
+        emitCallClosure(em, f, fc, e.args.length, pushArg, cut === undefined && tail,
         // Builtins never perform or capture, so they keep the k=0
         // trampoline convention; every other (lambda) call site lands
         // through a RET cell and is a split site (§3 emitCall).
