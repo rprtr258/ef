@@ -717,6 +717,25 @@ export class Fn {
     b.u8(w.END);
   }
 
+  // Pointer-walk loop: BLOCK { LOOP { cond; br_if out; body; br; } } —
+  // cond pushes an i32 (nonzero exits); body is one walk step. The
+  // counting-loop analogue is loop().
+  walkLoop(cond: () => void, body: () => void): void {
+    const b = this.body;
+    b.u8(w.BLOCK);
+    b.u8(0x40);
+    b.u8(w.LOOP);
+    b.u8(0x40);
+    cond();
+    b.u8(w.BR_IF);
+    b.lebU(1);
+    body();
+    b.u8(w.BR);
+    b.lebU(0);
+    b.u8(w.END);
+    b.u8(w.END);
+  }
+
   // Pushes (arrayref, index) of element i (local) of raw $ELEMS local
   // `blk`; callers finish with aget (read) or push the value + aset (write).
   elemAddr(blk: number, i: number): void {

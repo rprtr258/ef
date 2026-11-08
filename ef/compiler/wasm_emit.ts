@@ -277,26 +277,22 @@ export function emitCaseFns(em: Emit): void {
     b.localSet(fresh);
     b.localGet(copy);
     b.localSet(cur);
-    b.u8(w.BLOCK);
-    b.u8(0x40);
-    b.u8(w.LOOP);
-    b.u8(0x40);
-    b.localGet(cur);
-    b.refCast(5, true);
-    b.structGet(5, 3);
-    b.localGet(hdl);
-    b.refCast(5, true);
-    b.refEq();
-    b.u8(w.BR_IF);
-    b.lebU(1); // cur is the bottom copy (its next is the old HDL)
-    b.localGet(cur);
-    b.refCast(5, true);
-    b.structGet(5, 3);
-    b.localSet(cur);
-    b.u8(w.BR);
-    b.lebU(0);
-    b.u8(w.END);
-    b.u8(w.END);
+    rf.walkLoop(
+      () => {
+        b.localGet(cur);
+        b.refCast(5, true);
+        b.structGet(5, 3);
+        b.localGet(hdl);
+        b.refCast(5, true);
+        b.refEq();
+      }, // cur is the bottom copy (its next is the old HDL)
+      () => {
+        b.localGet(cur);
+        b.refCast(5, true);
+        b.structGet(5, 3);
+        b.localSet(cur);
+      },
+    );
     b.localGet(cur);
     b.refCast(5, true);
     b.localGet(fresh);
@@ -340,6 +336,18 @@ function blockStmts(em: Emit, bodyId: ExprID): ExprID[] {
 // i31 payload read: anyref → i32 (i31 payload). Shared by the dispatch
 // walk (emitDispatch) and the handler walk (emitPerform).
 const i31of = (b: Buf): void => { b.refCast(w.I31REF, false); b.i31Get(); };
+
+// K_HDL case-table read: the table at k.a is a flat $ELEMS of i31
+// quadruples [opid, fnIdx, fsize, nparams]; entryI31 reads word `off` of
+// the entry at word index `ent`.
+const entryI31 = (b: Buf, tbl: number, ent: number, off: number): void => {
+  b.localGet(tbl);
+  b.refCast(1, true);
+  b.localGet(ent);
+  if (off !== 0) { b.i32Const(off); b.u8(w.ADD); }
+  b.arrayGet(1);
+  i31of(b);
+};
 
 // Freeze the ambient continuation as a K_SPILL cell (see snapWrap): the
 // cell's next is `kLocal`'s current value, and a fragment's re-emission
@@ -525,6 +533,8 @@ export function emitHelpers(em: Emit): Fn[] {
     const res = eq.i32();
     // decided: a typed path (or the null mismatch) already answered.
     const decided = eq.i32();
+    // both: both operands are bool i31s (shared by the IF and decided).
+    const both = eq.i32();
     b.i32Const(0);
     b.localSet(decided);
     // null ladder: equal nulls → true, one null → false.
@@ -549,12 +559,15 @@ export function emitHelpers(em: Emit): Fn[] {
     b.u8(w.EQ);
     b.u8(w.EQZ);
     b.localSet(decided);
-    // bool == bool: i31 payloads.
+    // bool == bool: i31 payloads (the shape test is computed once and
+    // reused for the decided flag below).
     b.localGet(0);
     b.refTest(w.I31REF, true);
     b.localGet(1);
     b.refTest(w.I31REF, true);
     b.u8(w.AND);
+    b.localSet(both);
+    b.localGet(both);
     b.u8(w.IF);
     b.u8(0x40);
     b.localGet(0);
@@ -566,11 +579,7 @@ export function emitHelpers(em: Emit): Fn[] {
     b.u8(w.EQ);
     b.localSet(res);
     // decided: the bool path answered.
-    b.localGet(0);
-    b.refTest(w.I31REF, true);
-    b.localGet(1);
-    b.refTest(w.I31REF, true);
-    b.u8(w.AND);
+    b.localGet(both);
     b.localGet(decided);
     b.u8(w.OR); // i32.or
     b.localSet(decided);
@@ -632,32 +641,26 @@ export function emitHelpers(em: Emit): Fn[] {
       b.u8(w.IF);
       b.u8(0x40);
       // wide vs wide: payloads (the raw bits), then the mixed-shape rule.
+      // readWide leaves v's raw i64 payload on the stack ($I64 box or the
+      // $U64 box reinterpreted bitwise).
+      const readWide = (v: number): void => {
+        b.localGet(v);
+        b.refTest(9, true);
+        b.u8(w.IF);
+        b.u8(0x7e);
+        b.localGet(v);
+        b.refCast(9, false);
+        b.structGet(9, 0);
+        b.u8(w.ELSE);
+        b.localGet(v);
+        b.refCast(10, false);
+        b.structGet(10, 0);
+        b.u8(w.END);
+      };
       const pa = eq.i64(), pb = eq.i64();
-      b.localGet(0);
-      b.refTest(9, true);
-      b.u8(w.IF);
-      b.u8(0x7e);
-      b.localGet(0);
-      b.refCast(9, false);
-      b.structGet(9, 0);
-      b.u8(w.ELSE);
-      b.localGet(0);
-      b.refCast(10, false);
-      b.structGet(10, 0);
-      b.u8(w.END);
+      readWide(0);
       b.localSet(pa);
-      b.localGet(1);
-      b.refTest(9, true);
-      b.u8(w.IF);
-      b.u8(0x7e);
-      b.localGet(1);
-      b.refCast(9, false);
-      b.structGet(9, 0);
-      b.u8(w.ELSE);
-      b.localGet(1);
-      b.refCast(10, false);
-      b.structGet(10, 0);
-      b.u8(w.END);
+      readWide(1);
       b.localSet(pb);
       // res = bits equal AND the signed side (if any) is non-negative.
       b.localGet(pa);
@@ -774,134 +777,69 @@ export function emitHelpers(em: Emit): Fn[] {
   box.body.structNew(0);
   // $captureSlice(k: (ref null $K), until: (ref null $K)) -> (ref null $K):
   // fresh copies of the cells from k up to (excluding) until, each
-  // {kind, a, b} verbatim; the bottom copy chains to `until`. Two passes:
-  // count (n ≥ 1: the slice always starts at a RET cell), then allocate
-  // n cells into a temp $ELEMS and link them (a $K cell is singly linked
-  // forward, so the copies are chained bottom-up out of the temp array).
+  // {kind, a, b} verbatim; the copies chain in walk order and the bottom
+  // copy's next is `until`. One pass: allocate each copy with next = null
+  // and patch the previous copy's next on the way (copies are fresh, so
+  // aliasing is not a concern). n ≥ 1: the slice always starts at a RET
+  // cell, so head is non-null at the end.
   const capture = new Fn(2, em);
   capture.typeIdx = w.T_CAPTURE;
   em.ix.funcRefTypes.set(em.ix.fCapture, w.T_CAPTURE);
   {
     const b = capture.body;
-    const n = capture.i32(), cur = capture.anyref(), tmp = capture.anyref();
-    const i = capture.i32(), src = capture.anyref(), cell = capture.anyref();
-    b.i32Const(0);
-    b.localSet(n);
+    const cur = capture.anyref(), cell = capture.anyref(),
+      prev = capture.anyref(), head = capture.anyref();
     b.localGet(0);
     b.localSet(cur);
-    b.u8(w.BLOCK);
-    b.u8(0x40);
-    b.u8(w.LOOP);
-    b.u8(0x40);
-    b.localGet(cur);
+    capture.walkLoop(
+      () => {
+        b.localGet(cur);
+        b.refCast(5, true);
+        b.localGet(1);
+        b.refEq();
+      },
+      () => {
+        // cell = a fresh copy of cur with next = null.
+        b.localGet(cur);
+        b.refCast(5, true);
+        b.structGet(5, 0);
+        b.localGet(cur);
+        b.refCast(5, true);
+        b.structGet(5, 1);
+        b.localGet(cur);
+        b.refCast(5, true);
+        b.structGet(5, 2);
+        b.refNull(5);
+        b.structNew(5);
+        b.localSet(cell);
+        // head = the first copy; later copies chain off the previous one.
+        b.localGet(head);
+        b.u8(0xd1); // ref.is_null: first copy → remember it as head
+        b.u8(w.IF);
+        b.u8(0x40);
+        b.localGet(cell);
+        b.localSet(head);
+        b.u8(w.ELSE);
+        b.localGet(prev);
+        b.refCast(5, true);
+        b.localGet(cell);
+        b.refCast(5, true); // the local is anyref; struct.set needs the exact $K type
+        b.structSet(3); // prev.next = cell
+        b.u8(w.END);
+        b.localGet(cell);
+        b.localSet(prev);
+        b.localGet(cur);
+        b.refCast(5, true);
+        b.structGet(5, 3);
+        b.localSet(cur);
+      },
+    );
+    // the bottom copy chains to `until`
+    b.localGet(prev);
     b.refCast(5, true);
     b.localGet(1);
-    b.refEq();
-    b.u8(w.BR_IF);
-    b.lebU(1);
-    b.localGet(n);
-    b.i32Const(1);
-    b.u8(w.ADD);
-    b.localSet(n);
-    b.localGet(cur);
-    b.refCast(5, true);
-    b.structGet(5, 3);
-    b.localSet(cur);
-    b.u8(w.BR);
-    b.lebU(0);
-    b.u8(w.END);
-    b.u8(w.END);
-    b.localGet(n);
-    b.arrayNew(1);
-    b.localSet(tmp);
-    b.localGet(0);
-    b.localSet(src);
-    b.i32Const(0);
-    b.localSet(i);
-    b.u8(w.BLOCK);
-    b.u8(0x40);
-    b.u8(w.LOOP);
-    b.u8(0x40);
-    b.localGet(i);
-    b.localGet(n);
-    b.u8(w.GEU);
-    b.u8(w.BR_IF);
-    b.lebU(1);
-    b.localGet(tmp);
-    b.refCast(1, true);
-    b.localGet(i);
-    b.localGet(src);
-    b.refCast(5, true);
-    b.structGet(5, 0);
-    b.localGet(src);
-    b.refCast(5, true);
-    b.structGet(5, 1);
-    b.localGet(src);
-    b.refCast(5, true);
-    b.structGet(5, 2);
-    b.refNull(5);
-    b.structNew(5);
-    b.arraySet();
-    b.localGet(i);
-    b.i32Const(1);
-    b.u8(w.ADD);
-    b.localSet(i);
-    b.localGet(src);
-    b.refCast(5, true);
-    b.structGet(5, 3);
-    b.localSet(src);
-    b.u8(w.BR);
-    b.lebU(0);
-    b.u8(w.END);
-    b.u8(w.END);
-    b.i32Const(0);
-    b.localSet(i);
-    b.u8(w.BLOCK);
-    b.u8(0x40);
-    b.u8(w.LOOP);
-    b.u8(0x40);
-    b.localGet(i);
-    b.localGet(n);
-    b.u8(w.GEU);
-    b.u8(w.BR_IF);
-    b.lebU(1);
-    b.localGet(tmp);
-    b.refCast(1, true);
-    b.localGet(i);
-    b.arrayGet(1);
-    b.refCast(5, true);
-    b.localSet(cell); // the cell is read as a statement: Buf statements run
-    // before pending ops, so a local.set must bind it before i++ mutates i
-    // (an op-pushed read would re-read the incremented i at its consumer).
-    b.localGet(i);
-    b.i32Const(1);
-    b.u8(w.ADD);
-    b.localSet(i);
-    b.localGet(cell);
-    b.refCast(5, true); // the local is anyref; struct.set needs the exact $K type
-    b.localGet(i);
-    b.localGet(n);
-    b.u8(w.GEU);
-    b.u8(w.IF);
-    b.u8(0x63);
-    b.u8(5); // next = until (the bottom of the slice)
-    b.localGet(1);
-    b.u8(w.ELSE);
-    b.localGet(tmp);
-    b.refCast(1, true);
-    b.localGet(i);
-    b.arrayGet(1);
-    b.refCast(5, true);
-    b.u8(w.END);
-    b.structSet(3);
-    b.u8(w.BR);
-    b.lebU(0);
-    b.u8(w.END);
-    b.u8(w.END);
-    b.localGet(tmp);
-    b.refCast(1, true);
-    b.i32Const(0);
-    b.arrayGet(1);
+    b.structSet(3); // prev.next = until
+    b.localGet(head);
     b.refCast(5, true);
   }
   // One arm of the adaptive unbox ladders ($num64/$f32of/$narrowOf/
@@ -1217,31 +1155,25 @@ export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
     kind(); b.i32Const(w.K_HDL); b.u8(w.EQ);
     b.u8(w.IF);
     b.u8(0x40);
-    const tbl = f.anyref(), nL = f.i32(), iL = f.i32(), found = f.i32(),
+    const tbl = f.anyref(), nL = f.i32(), found = f.i32(),
       fnIdx = f.i32(), nparams = f.i32(), ent = f.i32();
     b.localGet(k); b.refCast(5, true); b.structGet(5, 1); b.localSet(tbl);
     b.localGet(tbl); b.refCast(1, true); b.arrayLen(); b.i32Const(4); b.u8(w.DIVU); b.localSet(nL);
     b.i32Const(0); b.localSet(found);
-    b.i32Const(0); b.localSet(iL);
-    b.u8(w.BLOCK);
-    b.u8(0x40);
-    b.u8(w.LOOP);
-    b.u8(0x40);
-    b.localGet(iL); b.localGet(nL); b.u8(w.GEU); b.u8(w.BR_IF); b.lebU(1);
-    b.localGet(iL); b.i32Const(4); b.u8(w.MUL); b.localSet(ent);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.arrayGet(1); i31of(b);
-    b.i32Const(-1); b.u8(w.EQ);
-    b.u8(w.IF);
-    b.u8(0x40);
-    b.i32Const(1); b.localSet(found);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(1); b.u8(w.ADD); b.arrayGet(1); i31of(b); b.localSet(fnIdx);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(3); b.u8(w.ADD); b.arrayGet(1); i31of(b); b.localSet(nparams);
-    b.u8(w.BR); b.lebU(2); // exit the scan block
-    b.u8(w.END);
-    b.localGet(iL); b.i32Const(1); b.u8(w.ADD); b.localSet(iL);
-    b.u8(w.BR); b.lebU(0);
-    b.u8(w.END);
-    b.u8(w.END);
+    f.loop(() => {
+      b.localGet(nL);
+    }, i => {
+      b.localGet(i); b.i32Const(4); b.u8(w.MUL); b.localSet(ent);
+      entryI31(b, tbl, ent, 0);
+      b.i32Const(-1); b.u8(w.EQ);
+      b.u8(w.IF);
+      b.u8(0x40);
+      b.i32Const(1); b.localSet(found);
+      entryI31(b, tbl, ent, 1); b.localSet(fnIdx);
+      entryI31(b, tbl, ent, 3); b.localSet(nparams);
+      b.u8(w.BR); b.lebU(2); // exit the scan block
+      b.u8(w.END);
+    });
     b.localGet(found);
     b.u8(w.IF);
     b.u8(0x40);
@@ -1330,6 +1262,44 @@ function boxShapeOf(w2: string): number {
   return w2 === "f32" ? 11 : w2 === "i32" ? 7 : w2 === "u32" ? 8 : w2 === "i64" ? 9 : w2 === "u64" ? 10 : 0;
 }
 
+// The site's compute plane: the stamped numeric width, normalized — the
+// stamp can also be a recorded wildcard flex ("int"/"float"), and
+// unstamped (polymorphic) sites default to the f64 plane.
+const widthOf = (numKind: string | undefined): string =>
+  numKind === "f32" || numKind === "i32" || numKind === "u32"
+  || numKind === "i64" || numKind === "u64" ? numKind : "f64";
+
+// A fresh local of wk's compute-plane type: f32 stays f32, i32/u32 share
+// i32, i64/u64 share i64, everything else rides f64.
+const planeLocal = (f: Fn, wk: string): number =>
+  wk === "f32" ? f.f32() : wk === "i32" || wk === "u32" ? f.i32()
+  : wk === "i64" || wk === "u64" ? f.i64() : f.f64();
+
+// The adaptive per-width unbox helper for wk ($num64 for the f64 plane).
+const unboxHelperOf = (em: Emit, wk: string): number =>
+  wk === "f32" ? em.ix.fF32of : wk === "i32" ? em.ix.fI32of : wk === "u32" ? em.ix.fU32of
+  : wk === "i64" ? em.ix.fI64of : wk === "u64" ? em.ix.fU64of : em.ix.fNum64;
+
+// Unbox the operand ref on the stack into wk's plane value (left on the
+// stack). Direct rule — an operand whose stamp IS the site width: num
+// literals (statics key on the stamp) and app results (operators box at
+// their site stamp, calls at their return width — the pinWildcard
+// restriction keeps the two in sync) — reads its box payload directly.
+// A SYM's stamp comes from its binding, which can be a refinement of a
+// wildcard-typed producer (let x: i32 = neg(2147483648) boxes $I64) —
+// those go through the adaptive helper, which also serves any future
+// wildcard-flexed edge.
+const unboxStamped = (em: Emit, b: Buf, a: Expr, wk: string): void => {
+  if ((a.t === "num" || a.t === "app") && (a as Expr & {numKind?: string}).numKind === wk) {
+    const shape = boxShapeOf(wk);
+    b.refCast(shape, false);
+    b.structGet(shape, 0);
+  } else {
+    b.u8(w.CALL);
+    b.lebU(unboxHelperOf(em, wk));
+  }
+};
+
 function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"}, s: Scope, ctx: Ctx, ci: number): void {
   const b = f.body;
   // Typed widths: the site's numKind stamp picks the compute plane — f32
@@ -1338,8 +1308,7 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
   // unboxing goes through the adaptive per-width helpers ($f32of/$i32of/
   // $u32of/$num64): a wildcard value that flexed into a narrower position
   // may still sit in an $F64 box.
-  const wk = e.numKind === "f32" || e.numKind === "i32" || e.numKind === "u32"
-    || e.numKind === "i64" || e.numKind === "u64" ? e.numKind : "f64";
+  const wk = widthOf(e.numKind);
   const isF32 = wk === "f32", isI32 = wk === "i32", isU32 = wk === "u32";
   const isI64 = wk === "i64", isU64 = wk === "u64";
   const isNarrow = isI32 || isU32, isWide = isI64 || isU64;
@@ -1354,25 +1323,10 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
   };
   // Unbox operand i into a fresh width-typed local: push its ref, adapt
   // through the width's helper, store.
-  // Direct unbox of an operand whose stamp IS its box shape: num literals
-  // (statics key on the stamp) and app results (operators box at their site
-  // stamp, calls at their return width — the pinWildcard restriction keeps
-  // the two in sync). A SYM's stamp comes from its binding, which can be a
-  // refinement of a wildcard-typed producer (let x: i32 = neg(2147483648)
-  // boxes $I64) — those go through the adaptive helper, which also serves
-  // any future wildcard-flexed edge.
   const unbox = (i: number): number => {
-    const loc = isF32 ? f.f32() : isNarrow ? f.i32() : isWide ? f.i64() : f.f64();
-    const a = em.nodes[e.args[i]];
+    const loc = planeLocal(f, wk);
     pushArg(i);
-    if ((a.t === "num" || a.t === "app") && (a as Expr & {numKind?: string}).numKind === wk) {
-      b.refCast(boxShape, false);
-      b.structGet(boxShape, 0);
-    } else {
-      b.u8(w.CALL);
-      b.lebU(isF32 ? em.ix.fF32of : isI32 ? em.ix.fI32of : isU32 ? em.ix.fU32of
-        : isI64 ? em.ix.fI64of : isU64 ? em.ix.fU64of : em.ix.fNum64);
-    }
+    unboxStamped(em, b, em.nodes[e.args[i]], wk);
     b.localSet(loc);
     return loc;
   };
@@ -1559,8 +1513,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
       // i64/u64 literals box to their shapes; everything else rides the f64
       // plane).
       {
-        const wk = e.numKind === "f32" || e.numKind === "i32" || e.numKind === "u32"
-          || e.numKind === "i64" || e.numKind === "u64" ? e.numKind : "f64";
+        const wk = widthOf(e.numKind);
         // The key carries the raw lexeme (see Discovery) — exact for the
         // 64-bit widths.
         return {k: "g", gi: em.lay.numStatics.get(`${wk}:${e.raw ?? String(e.v)}`)!};
@@ -2034,25 +1987,15 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
         // backends fail with the same message and exit code; the f64 plane
         // (f64 and the i64/u64 widths until step 4) keeps the f64 path with
         // the f64 trunc for its int widths.
-        const wk = e.numKind === "f32" || e.numKind === "i32" || e.numKind === "u32"
-          || e.numKind === "i64" || e.numKind === "u64" ? e.numKind : "f64";
+        const wk = widthOf(e.numKind);
         const isF32 = wk === "f32", isI32 = wk === "i32", isU32 = wk === "u32";
         const isI64 = wk === "i64", isU64 = wk === "u64";
         const isInt = isI32 || isU32 || isI64 || isU64;
-        // Same direct-unbox rule as emitOperatorInline's unbox: a stamped
-        // operand's box is the site's shape.
+        // Same direct-unbox rule as emitOperatorInline's unbox; the operand
+        // ref is pushed by the caller (with its cut mode) before unboxDiv.
         const unboxDiv = (i: number): number => {
-          const loc = isF32 ? f.f32() : isI64 || isU64 ? f.i64() : f.i32();
-          const a = em.nodes[e.args[i]];
-          const shape = isF32 ? 11 : isI32 ? 7 : isU32 ? 8 : isI64 ? 9 : 10;
-          if ((a.t === "num" || a.t === "app") && (a as Expr & {numKind?: string}).numKind === wk) {
-            b.refCast(shape, false);
-            b.structGet(shape, 0);
-          } else {
-            b.u8(w.CALL);
-            b.lebU(isF32 ? em.ix.fF32of : isI32 ? em.ix.fI32of : isU32 ? em.ix.fU32of
-              : isI64 ? em.ix.fI64of : em.ix.fU64of);
-          }
+          const loc = planeLocal(f, wk);
+          unboxStamped(em, b, em.nodes[e.args[i]], wk);
           b.localSet(loc);
           return loc;
         };
@@ -2107,18 +2050,10 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
           // other numeric stamp (an int-stamped subexpression feeding a
           // float division, e.g. 4.0 / (size - 1)) reads through the
           // adaptive $num64 (the interpreter's Number() coercion).
-          const unboxF64 = (i: number, mode: "cut" | "pre" | "post"): void => {
-            f.pushRef(cutChildRef(em, e.args[i], f, s, ctx, mode));
-            if ((em.nodes[e.args[i]] as Expr & {numKind?: string}).numKind === "f64") {
-              b.refCast(0, false);
-              b.structGet(0, 0);
-            } else {
-              b.u8(w.CALL);
-              b.lebU(em.ix.fNum64);
-            }
-          };
-          unboxF64(0, ci === 1 ? "cut" : ci < 0 ? "post" : "pre");
-          unboxF64(1, ci === 2 ? "cut" : "post");
+          f.pushRef(cutChildRef(em, e.args[0], f, s, ctx, ci === 1 ? "cut" : ci < 0 ? "post" : "pre"));
+          unboxStamped(em, b, em.nodes[e.args[0]], wk);
+          f.pushRef(cutChildRef(em, e.args[1], f, s, ctx, ci === 2 ? "cut" : "post"));
+          unboxStamped(em, b, em.nodes[e.args[1]], wk);
           b.u8(w.FDIV);
           if (e.div === "i64" || e.div === "u64") b.u8(w.FTRUNC);
           b.u8(w.CALL);
@@ -2226,57 +2161,50 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   b.localSet(amb);
   b.i32Const(0);
   b.localSet(found);
-  b.u8(w.BLOCK);
-  b.u8(0x40);
-  b.u8(w.LOOP);
-  b.u8(0x40);
-  b.localGet(kL);
-  b.u8(0xd1); // ref.is_null: k=0 → no handler anywhere → host fallback
-  b.u8(w.BR_IF);
-  b.lebU(1);
-  b.localGet(kL); b.refCast(5, true); b.structGet(5, 0); b.i31Get();
-  b.i32Const(w.K_HDL);
-  b.u8(w.EQ);
-  b.u8(w.IF);
-  b.u8(0x40);
-  b.localGet(kL); b.refCast(5, true); b.structGet(5, 1);
-  b.localSet(tbl);
-  b.localGet(tbl); b.refCast(1, true); b.arrayLen(); b.i32Const(4); b.u8(w.DIVU);
-  b.localSet(nL);
-  f.loop(() => {
-    b.localGet(nL);
-  }, i => {
-    b.localGet(i); b.i32Const(4); b.u8(w.MUL);
-    b.localSet(ent);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.arrayGet(1); i31of(b);
-    b.i32Const(opid);
-    b.u8(w.EQ);
-    b.u8(w.IF);
-    b.u8(0x40);
-    b.i32Const(1);
-    b.localSet(found);
-    b.localGet(kL);
-    b.localSet(hdl);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(1); b.u8(w.ADD); b.arrayGet(1); i31of(b);
-    b.localSet(fnIdx);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(2); b.u8(w.ADD); b.arrayGet(1); i31of(b);
-    b.localSet(fsz);
-    b.localGet(tbl); b.refCast(1, true); b.localGet(ent); b.i32Const(3); b.u8(w.ADD); b.arrayGet(1); i31of(b);
-    b.localSet(nparams);
-    b.u8(w.BR);
-    b.lebU(2); // exit the table scan
-    b.u8(w.END);
-  });
-  b.localGet(found);
-  b.u8(w.BR_IF);
-  b.lebU(2); // matched handler → leave the walk
-  b.u8(w.END);
-  b.localGet(kL); b.refCast(5, true); b.structGet(5, 3);
-  b.localSet(kL);
-  b.u8(w.BR);
-  b.lebU(0);
-  b.u8(w.END);
-  b.u8(w.END);
+  f.walkLoop(
+    () => {
+      b.localGet(kL);
+      b.u8(0xd1); // ref.is_null: k=0 → no handler anywhere → host fallback
+    },
+    () => {
+      b.localGet(kL); b.refCast(5, true); b.structGet(5, 0); b.i31Get();
+      b.i32Const(w.K_HDL);
+      b.u8(w.EQ);
+      b.u8(w.IF);
+      b.u8(0x40);
+      b.localGet(kL); b.refCast(5, true); b.structGet(5, 1);
+      b.localSet(tbl);
+      b.localGet(tbl); b.refCast(1, true); b.arrayLen(); b.i32Const(4); b.u8(w.DIVU);
+      b.localSet(nL);
+      f.loop(() => {
+        b.localGet(nL);
+      }, i => {
+        b.localGet(i); b.i32Const(4); b.u8(w.MUL);
+        b.localSet(ent);
+        entryI31(b, tbl, ent, 0);
+        b.i32Const(opid);
+        b.u8(w.EQ);
+        b.u8(w.IF);
+        b.u8(0x40);
+        b.i32Const(1);
+        b.localSet(found);
+        b.localGet(kL);
+        b.localSet(hdl);
+        entryI31(b, tbl, ent, 1); b.localSet(fnIdx);
+        entryI31(b, tbl, ent, 2); b.localSet(fsz);
+        entryI31(b, tbl, ent, 3); b.localSet(nparams);
+        b.u8(w.BR);
+        b.lebU(2); // exit the table scan
+        b.u8(w.END);
+      });
+      b.localGet(found);
+      b.u8(w.BR_IF);
+      b.lebU(2); // matched handler → leave the walk
+      b.u8(w.END);
+      b.localGet(kL); b.refCast(5, true); b.structGet(5, 3);
+      b.localSet(kL);
+    },
+  );
   // Freeze the frame image for this capture and chain the rest fragment
   // behind a K_SPILL cell carrying it: the fragment's pre-cut operand
   // reloads read the frozen values, so a multi-shot resume re-runs the
