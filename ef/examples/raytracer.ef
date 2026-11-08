@@ -8,9 +8,7 @@
 # Render to a PNG (the script derives the resolution from the output):
 #
 #   bun run cli.ts runwasm examples/raytracer.ef > /tmp/rt.txt
-#   bun scripts/rt-to-png.ts /tmp/rt.txt /tmp/raytracer.png 4
-#
-# (third argument = integer upscale factor; omit for native 200x200)
+#   bun scripts/rt-to-png.ts /tmp/rt.txt /tmp/raytracer.png
 
 # ---- Math on [x, y, z] vectors ----
 type V3 = [float, float, float];
