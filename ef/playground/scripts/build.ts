@@ -35,7 +35,7 @@ const stubPlugin: Bun.BunPlugin = {
   },
 };
 
-export async function build(): Promise<void> {
+export async function build(): Promise<boolean> {
   mkdirSync(dist, {recursive: true});
 
 const result = await Bun.build({
@@ -51,7 +51,7 @@ const result = await Bun.build({
 
 if (!result.success) {
   for (const log of result.logs) console.error(log);
-  process.exit(1);
+  return false;
 }
 
 copyFileSync(here("../index.html"), join(dist, "index.html"));
@@ -67,6 +67,9 @@ for (const f of await Array.fromAsync(new Bun.Glob("*.css").scan({cwd: dist})))
     console.warn(`WARNING: ${f} emitted but not referenced by index.html`);
 
 console.log(`built playground → ${dist} (${result.outputs.length} files)`);
+return true;
 }
 
-if (import.meta.main) await build();
+if (import.meta.main) {
+  if (!await build()) process.exit(1);
+}

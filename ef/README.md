@@ -68,7 +68,7 @@ compilation unit (concatenated in order); the entry file — the one holding the
 last top-level expression — is marked in the tree.
 
 ```sh
-cd playground && bun run dev     # build + serve on http://localhost:8917
+cd playground && bun run dev     # build + watch + serve on http://localhost:8917 (rebuilds on source change, tabs live-reload)
 bun run build                    # rebuild dist/ only
 ```
 
