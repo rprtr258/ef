@@ -701,7 +701,7 @@ function staticInit(m: binaryen.Module, d: StaticDesc): binaryen.ExpressionRef {
   }
 }
 
-export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]): Uint8Array {
+export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]): Uint8Array<ArrayBuffer> {
   // import section
   for (let i = 0; i < o.liveImports.length; i++) {
     const n = o.liveImports[i];
@@ -745,7 +745,10 @@ export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]
   }
   const bytes = m.emitBinary();
   m.dispose();
-  return bytes;
+  // emitBinary declares a plain Uint8Array (ArrayBufferLike); the buffer is a
+  // real ArrayBuffer in every binaryen build we ship, and hosts consume the
+  // module through DOM-lib WebAssembly typings that require that distinction.
+  return bytes as Uint8Array<ArrayBuffer>;
 }
 // --- module-level optimization pipeline ---------------------------------------
 

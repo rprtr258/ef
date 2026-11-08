@@ -101,14 +101,14 @@ import {emitBuiltins, emitInits, emitMain} from "./wasm_module.ts";
 
 // --- compiler ---------------------------------------------------------------
 
-export function compile(src: string): Uint8Array {
+export function compile(src: string): Uint8Array<ArrayBuffer> {
   return compileWithOps(src).bytes;
 }
 
 // compile + the effect op table (opid → name) the host needs to interpret
 // ef_perform calls. The table is built by the same discovery pass that emits
 // the code, so the wasm module and the host agree on op numbering.
-export function compileWithOps(src: string): {bytes: Uint8Array, ops: string[]} {
+export function compileWithOps(src: string): {bytes: Uint8Array<ArrayBuffer>, ops: string[]} {
   const prog = new Parser(src).parseProgram();
   // One compile at a time runs in-process; bind the module for the Buf
   // emitters (they construct binaryen expressions without threading it

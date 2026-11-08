@@ -4,7 +4,7 @@
 // functions (the §4 accessor ABI — see wasm.ts's module docstring), and
 // implements the host imports, including effects that reach the host with
 // no matching handler (builtins.ts's builtinEffectHosts, optionally
-// overridden per-op through runWasm's `interp` argument).
+// overridden per-op through the `interp` argument).
 import {type Value, show} from "./env.ts";
 import {builtinEffectHosts} from "./builtins.ts";
 import {compileWithOps} from "./wasm.ts";
@@ -113,10 +113,18 @@ function hostStr(ex: Accessors, v: unknown): string {
   return s;
 }
 
-type EffectInterp = Partial<Record<string, (args: Value[]) => Value>>;
+// Host-side effect interpretation for a compiled module: per-op sync
+// replacements for builtinEffectHosts (the wasm host's CPS-free interp shape).
+export type EffectInterp = Partial<Record<string, (args: Value[]) => Value>>;
 
 export function runWasm(src: string, interp?: EffectInterp): Value {
   const {bytes, ops} = compileWithOps(src);
+  return runModule(bytes, ops, interp);
+}
+
+// Instantiate and run an already-compiled module: used by runWasm and by hosts
+// that compile separately from running (the playground runs through here).
+export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[], interp?: EffectInterp): Value {
   const mod = new WebAssembly.Module(bytes);
   const imports = {
     ef_perform: (opid: number, args: unknown) => {

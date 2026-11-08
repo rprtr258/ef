@@ -58,10 +58,12 @@ the README stay at the workspace root.
 
 `playground/` is a browser studio for ef: a multi-file ef IDE
 served as a static bundle. The compiler's TypeScript frontend runs natively in
-the browser — parse/check/lint are live as you type, **Run** (⌘↩) interprets
-the project with the CPS evaluator and streams `Out!`/`Println!` into the
-output pane, and **Build** (⌘B) emits a WasmGC `main.wasm` through the real
-wasm backend (binaryen shrink pass, lazily loaded) for download. Files are one
+the browser — parse/check/lint are live as you type, **Run** (⌘↩) compiles the
+project through the wasm backend and executes it in the browser's
+WebAssembly (streaming `Out!`/`Println!` into the output pane; wasm tail
+calls make the stack O(1) in every engine, unlike the CPS interpreter, which
+relies on JSC tail calls), and **Build** (⌘B) emits the same WasmGC
+`main.wasm` (binaryen shrink pass, lazily loaded) for download. Files are one
 compilation unit (concatenated in order); the entry file — the one holding the
 last top-level expression — is marked in the tree.
 

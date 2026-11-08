@@ -1,7 +1,9 @@
 import {describe, expect, test} from "bun:test";
+import {showT} from "../../compiler/types.ts";
+
 import {
   buildWasm, browserInterp, concatProject, entryFile, interpret, isEntryFile,
-  outline, problems, tokenize, ExitSignal,
+  outline, problems, runWasmProgram, tokenize, ExitSignal,
 } from "./bridge.ts";
 
 describe("bridge", () => {
@@ -82,6 +84,46 @@ describe("bridge", () => {
     const out = interp["Out"]!(["x"], () => ({tag: "done", value: null}));
     expect(out).toEqual({tag: "done", value: null});
     expect(buf).toBe("x");
+  });
+
+  test("wasm run streams Println!/Out! and returns the program value", () => {
+    let buf = "";
+    const r = runWasmProgram("Out!(\"raw\");\nPrintln!(1 + 2);\n7", (s) => {
+      buf += s;
+    });
+    expect(buf).toBe("raw3\n");
+    expect(r.value).toBe(7);
+    expect(showT(r.type)).toBe("int");
+    expect(r.ops).toEqual(["Out", "Println"]);
+  });
+
+  test("wasm run handles deep recursion (the CPS interpreter overflows V8)", () => {
+    const r = runWasmProgram([
+      "let fib = fn(n: int): int {",
+      "  if (n < 2) { n } else { fib(n - 1) + fib(n - 2) }",
+      "};",
+      "Println!(fib(27));",
+      "0",
+    ].join("\n"), () => {});
+    expect(r.value).toBe(0);
+  });
+
+  test("wasm run: Exit! unwinds with an ExitSignal", () => {
+    let buf = "";
+    expect(() => runWasmProgram("Out!(\"a\");\nExit!(3);", (s) => {
+      buf += s;
+    })).toThrow(ExitSignal);
+    expect(buf).toBe("a");
+  });
+
+  test("wasm run: Wait! busy-waits, Random! goes through the interp", () => {
+    const real = Math.random;
+    Math.random = () => 0.42;
+    try {
+      expect(runWasmProgram("Wait!(1); Random!()", () => {}).value).toBe(0.42);
+    } finally {
+      Math.random = real;
+    }
   });
 
   test("tokenize scopes keywords, strings, tags and comments", () => {

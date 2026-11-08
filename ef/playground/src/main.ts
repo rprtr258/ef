@@ -7,10 +7,12 @@
 // `fun main()` — the program value is the last top-level expression, so the
 // entry file is the last one whose last item is a bare expression.
 //
-// Run interprets the project with the CPS evaluator and streams
-// Out!/Println! into the output pane; Build emits a WasmGC main.wasm
-// (downloadable). Performed ops — a typecheck byproduct, not a wasm artifact —
-// are reported by both run and build.
+// Run compiles the project through the wasm backend and executes it in the
+// browser's WebAssembly (streaming Out!/Println! into the output pane) —
+// O(1) stack via wasm tail calls, unlike the CPS interpreter which leans on
+// JSC tail calls and overflows V8. Build emits the same WasmGC main.wasm
+// (downloadable). Performed ops — a typecheck byproduct, not a wasm artifact
+// — are reported by both run and build.
 //
 // Shell: "Instrument" — explorer tree | editor + tabbed output | insight rail
 // (BUILD / OUTLINE cards), Ctrl+K command palette, light/dark themes
@@ -18,8 +20,8 @@
 
 import * as monaco from "monaco-editor/esm/vs/editor/editor.main.js";
 import {
-  buildWasm, concatProject, entryFile, ExitSignal, interpret, outline,
-  problems, tokenize, type OutlineItem, type Problem,
+  buildWasm, concatProject, entryFile, ExitSignal, outline, problems,
+  runWasmProgram, tokenize, type OutlineItem, type Problem,
 } from "./bridge.ts";
 import {show} from "../../compiler/env.ts";
 import {showT} from "../../compiler/types.ts";
@@ -369,18 +371,14 @@ function setTab(t: Tab): void {
 
 // --- pipeline card ----------------------------------------------------------
 
-// ef's stages run inside one synchronous call (interpret / compileWithOps), so
+// ef's stages run inside one synchronous call (runWasmProgram / compileWithOps), so
 // per-stage times are a proportional split of the real measured total
 // (deterministic weights).
-const PIPE_W = [0.14, 0.2, 0.3, 0.36];
+const PIPE_W = [0.22, 0.31, 0.47];
 
-function stageNames(last: string): string[] {
-  return ["Lex", "Parse", "Check", last];
-}
-
-function renderStages(last: string, reset: boolean): void {
+function renderStages(reset: boolean): void {
   els.stages.replaceChildren();
-  for (const name of stageNames(last)) {
+  for (const name of ["Lex", "Parse", "Check"]) {
     const d = document.createElement("div");
     d.className = "stage";
     const dot = document.createElement("span");
@@ -396,8 +394,8 @@ function renderStages(last: string, reset: boolean): void {
   }
 }
 
-function stagesBusy(last: string): void {
-  renderStages(last, true);
+function stagesBusy(): void {
+  renderStages(true);
   for (const [i, r] of [...els.stages.children].entries()) {
     r.className = "stage" + (i === 0 ? " busy" : "");
     const msEl = r.querySelector(".sms");
@@ -625,11 +623,11 @@ function run(): void {
   onEditNow();
   clearOutput();
   setTab("output");
-  stagesBusy("Interpret");
+  stagesBusy();
   const src = concatProject(codes());
   const t0 = performance.now();
   try {
-    const r = interpret(src, (s) => {
+    const r = runWasmProgram(src, (s) => {
       const parts = s.split("\n");
       if (parts[parts.length - 1] === "") parts.pop();
       for (const line of parts) outLine(line);
@@ -668,7 +666,7 @@ async function build(): Promise<void> {
   onEditNow();
   clearOutput();
   setTab("output");
-  stagesBusy("Emit wasm-gc");
+  stagesBusy();
   const src = concatProject(codes());
   const t0 = performance.now();
   try {
@@ -739,7 +737,7 @@ type Cmd = {label: string, hint: string, run: () => void};
 function commands(): Cmd[] {
   const f = activeFile();
   return [
-    {label: "Run", hint: "Ctrl+↩ — interpret the project, stream Out!/Println!", run: () => void run()},
+    {label: "Run", hint: "Ctrl+↩ — compile to wasm and run, streaming Out!/Println!", run: () => void run()},
     {label: "Build wasm", hint: "Ctrl+B — emit WasmGC main.wasm (binaryen shrink)", run: () => void build()},
     {label: "New file…", hint: "add a .ef file to src/", run: () =>
       openModal({title: "New file", value: "untitled.ef", ok: "Create", onOk: (v) => {
@@ -923,7 +921,7 @@ function boot(): void {
 
   openFile(state.active);
   setTab("output");
-  renderStages("Interpret", true);
+  renderStages(true);
   renderBuildCard();
   outLine("ef playground ready — Ctrl+K for commands, Ctrl+↩ to run, Ctrl+B to build wasm.", "dim");
   outLine(`project “${state.project.name}” · ${state.project.files.length} files · ef compiler running in your browser.`, "dim");

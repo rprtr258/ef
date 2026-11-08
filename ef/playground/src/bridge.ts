@@ -1,9 +1,9 @@
 // Bridge between the browser playground and the ef compiler: parse, check,
-// lint, outline, tokenize, interpret (streaming stdout), and wasm emit.
+// lint, outline, tokenize, wasm run (streaming stdout), and wasm emit.
 //
 // The compiler's frontend is plain TypeScript, so it runs in the browser as-is;
 // the only node-flavored corners are stubbed (`src/shim.ts` + bundle-time
-// stubs) and preempted by the browser effect interpreter.
+// stubs) and preempted by the browser effect interpreters.
 
 import "./shim.ts";
 import {Parser, type Program, type Expr} from "../../compiler/parser.ts";
@@ -14,6 +14,7 @@ import {num, show, type Cont, type Outcome, type Value} from "../../compiler/env
 import {KEYWORDS, lex} from "../../compiler/lexer.ts";
 import {collectEffectOps} from "../../compiler/analysis.ts";
 import {compileWithOps} from "../../compiler/wasm.ts";
+import {runModule, type EffectInterp as WasmInterp} from "../../compiler/wasm_host.ts";
 
 // --- effect interpretation ------------------------------------------------
 
@@ -50,6 +51,34 @@ export function browserInterp(out: (s: string) => void): EffectInterp {
       return k(null);
     },
     Random: (_args: Value[], k: Cont): Outcome => k(Math.random()),
+  };
+}
+
+// Sync effect interpretation for the wasm run path — the wasm host calls
+// hosts with plain args → Value (no CPS). Same contract as browserInterp:
+// Out!/Println! stream to the output pane, Exit! raises ExitSignal, Wait!
+// busy-waits, Random! is Math.random; Read!/Write! fall through to the
+// bundle-time stubs ("unavailable in browser").
+export function browserWasmInterp(out: (s: string) => void): WasmInterp {
+  return {
+    Out: (args) => {
+      const s = args[0];
+      out(typeof s === "string" ? s : show(s));
+      return null;
+    },
+    Println: (args) => {
+      out(show(args[0]) + "\n");
+      return null;
+    },
+    Exit: (args) => {
+      throw new ExitSignal(num(args[0]));
+    },
+    Wait: (args) => {
+      const until = Date.now() + num(args[0]);
+      while (Date.now() < until) {} // busy-wait, mirroring the builtin default
+      return null;
+    },
+    Random: () => Math.random(),
   };
 }
 
@@ -105,6 +134,22 @@ export function interpret(src: string, out: (s: string) => void): RunResult {
 export async function buildWasm(src: string): Promise<{bytes: Uint8Array, ops: string[]}> {
   const {bytes} = compileWithOps(src);
   return {bytes, ops: collectEffectOps(parse(src))};
+}
+
+// Run the program on the wasm backend: compile (parse → check → CPS codegen →
+// binaryen shrink), instantiate, execute in this engine's WebAssembly.
+// Unlike the CPS interpreter — which leans on JSC tail calls and overflows
+// the V8 stack on deep continuation chains (e.g. naive fib) — wasm tail
+// calls are O(1) stack in every WasmGC engine. Throws on parse/type errors;
+// ExitSignal unwinds `Exit!`; wasm traps (head/index OOB) surface as plain
+// Errors. The extra parse is the ops/typecheck byproduct source;
+// compileWithOps parses and checks its own fresh copy.
+export function runWasmProgram(src: string, out: (s: string) => void): RunResult {
+  const prog = parse(src);
+  const type = checkProgram(prog).lastType;
+  const {bytes, ops} = compileWithOps(src);
+  const value = runModule(bytes, ops, browserWasmInterp(out));
+  return {value, type, ops: collectEffectOps(prog)};
 }
 
 // --- structure ------------------------------------------------------------
