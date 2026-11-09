@@ -120,7 +120,7 @@ export function compileWithOps(src: string): {bytes: Uint8Array<ArrayBuffer>, op
   const ix = assignIndices(prog, d, o);
   const lay = layoutStatics(d, ix, o);
   const funcs = emit(prog, d, o, ix, lay);
-  return {bytes: buildModule(mod, o, lay, funcs), ops: d.effOps};
+  return {bytes: buildModule(mod, o, lay, funcs), ops: [...d.effOpIds.keys()]};
 }
 
 // The binaryen shrink pass runs inside buildModule (the module is built via

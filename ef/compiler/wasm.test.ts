@@ -5,6 +5,8 @@ import {readFileSync, readdirSync, writeFileSync} from "node:fs";
 import binaryen from "binaryen";
 import {run} from "./eval.ts";
 import {BIN_FEATURES, compile} from "./wasm.ts";
+import {discover, optimize, assignIndices, layoutStatics} from "./wasm_pipeline.ts";
+import {Parser} from "./parser.ts";
 import {runWasm} from "./wasm_host.ts";
 import {show} from "./env.ts";
 
@@ -68,6 +70,24 @@ describe("wasm backend", () => {
   test("emits a valid module", () => {
     assertModule(compile("1 + 2"));
     assertModule(compile("let f = fn(x: i64): i64 { x }; f(1)"));
+  });
+
+  test("pipeline phases run standalone (init-order/TDZ guard)", () => {
+    // Regression guard (batch A): layoutStatics briefly had a closure
+    // (newStatic) capturing `lay` before lay's own initializer ran — a
+    // use-before-init typecheck cannot see, fatal only when called.
+    // Drive each exported phase directly so an init-order bug fails here,
+    // named by phase, instead of as a generic compile() error. The program
+    // touches every layoutStatics branch: number + string literals, a PI
+    // reference, and a value-referenced builtin (closure static).
+    const prog = new Parser("let x = 1;\nlet s = \"a\";\nlet pi = PI;\nlet l = len;\nx;").parseProgram();
+    const d = discover(prog);
+    const o = optimize(prog);
+    const ix = assignIndices(prog, d, o);
+    const lay = layoutStatics(d, ix, o); // the batch-A TDZ site
+    expect(lay.statics.length).toBeGreaterThan(3);
+    expect(lay.unitRef.k).toBe("g");
+    expect(lay.piG).toBeGreaterThanOrEqual(0); // PI referenced → static
   });
 
   test("every example compiles to a valid module with no empty function bodies", () => {

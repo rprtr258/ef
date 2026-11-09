@@ -11,7 +11,7 @@ import {checkProgram, showT, type Type, type Effs, type EffectSig} from "../../c
 import {lint} from "../../compiler/lint.ts";
 import {exec, newCtx, type EffectInterp} from "../../compiler/eval.ts";
 import {num, show, type Cont, type Outcome, type Value} from "../../compiler/env.ts";
-import {KEYWORDS, lex} from "../../compiler/lexer.ts";
+import {KEYWORDS, ONE, TWO, lex} from "../../compiler/lexer.ts";
 import {collectEffectOps} from "../../compiler/analysis.ts";
 import {compileWithOps} from "../../compiler/wasm.ts";
 import {runModule, type EffectInterp as WasmInterp} from "../../compiler/wasm_host.ts";
@@ -284,8 +284,6 @@ export function isEntryFile(src: string): boolean {
 // constructs, so tokenization is stateless per line.
 export type LineToken = {start: number, len: number, scope: string};
 
-const TWO = ["==", "!=", "<=", ">=", "&&", "||", "=>"];
-const ONE = "()[]{}<>+-*/!=:;,.%";
 const OPERATOR_ONE = "=!";
 
 export function tokenize(src: string): LineToken[][] {

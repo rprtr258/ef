@@ -34,6 +34,57 @@ type ScopeRec = {
 };
 
 
+// Numeric instruction tables for Buf.numeric (all immediate-less ops):
+// opcode → binaryen call. Entries are lazy arrows — MOD is rebound per
+// compile, so nothing may capture a MOD method at module init.
+const BIN_OPS: Record<number, ((l: binaryen.ExpressionRef, r: binaryen.ExpressionRef) => binaryen.ExpressionRef) | undefined> = {
+  [w.EQ]: (l, r) => MOD.i32.eq(l, r), [w.LTS]: (l, r) => MOD.i32.lt_s(l, r),
+  [w.LTU]: (l, r) => MOD.i32.lt_u(l, r), [w.GTS]: (l, r) => MOD.i32.gt_s(l, r),
+  [w.GTU]: (l, r) => MOD.i32.gt_u(l, r), [w.LES]: (l, r) => MOD.i32.le_s(l, r),
+  [w.LEU]: (l, r) => MOD.i32.le_u(l, r), [w.GES]: (l, r) => MOD.i32.ge_s(l, r),
+  [w.GEU]: (l, r) => MOD.i32.ge_u(l, r), [w.ADD]: (l, r) => MOD.i32.add(l, r),
+  [w.SUB]: (l, r) => MOD.i32.sub(l, r), [w.MUL]: (l, r) => MOD.i32.mul(l, r),
+  [w.DIVS]: (l, r) => MOD.i32.div_s(l, r), [w.DIVU]: (l, r) => MOD.i32.div_u(l, r),
+  [w.REMS]: (l, r) => MOD.i32.rem_s(l, r), [w.REMU]: (l, r) => MOD.i32.rem_u(l, r),
+  [w.AND]: (l, r) => MOD.i32.and(l, r), [w.OR]: (l, r) => MOD.i32.or(l, r),
+  [w.I64_ADD]: (l, r) => MOD.i64.add(l, r), [w.I64_SUB]: (l, r) => MOD.i64.sub(l, r),
+  [w.I64_MUL]: (l, r) => MOD.i64.mul(l, r), [w.I64_DIVS]: (l, r) => MOD.i64.div_s(l, r),
+  [w.I64_DIVU]: (l, r) => MOD.i64.div_u(l, r), [w.I64_REMS]: (l, r) => MOD.i64.rem_s(l, r),
+  [w.I64_REMU]: (l, r) => MOD.i64.rem_u(l, r), [w.I64_EQ]: (l, r) => MOD.i64.eq(l, r),
+  [w.I64_NE]: (l, r) => MOD.i64.ne(l, r), [w.I64_XOR]: (l, r) => MOD.i64.xor(l, r),
+  [w.I64_LTS]: (l, r) => MOD.i64.lt_s(l, r), [w.I64_LTU]: (l, r) => MOD.i64.lt_u(l, r),
+  [w.I64_GTS]: (l, r) => MOD.i64.gt_s(l, r), [w.I64_GTU]: (l, r) => MOD.i64.gt_u(l, r),
+  [w.I64_LES]: (l, r) => MOD.i64.le_s(l, r), [w.I64_LEU]: (l, r) => MOD.i64.le_u(l, r),
+  [w.I64_GES]: (l, r) => MOD.i64.ge_s(l, r), [w.I64_GEU]: (l, r) => MOD.i64.ge_u(l, r),
+  [w.FADD]: (l, r) => MOD.f64.add(l, r), [w.FSUB]: (l, r) => MOD.f64.sub(l, r),
+  [w.FMUL]: (l, r) => MOD.f64.mul(l, r), [w.FDIV]: (l, r) => MOD.f64.div(l, r),
+  [w.FEQ]: (l, r) => MOD.f64.eq(l, r), [w.FLT]: (l, r) => MOD.f64.lt(l, r),
+  [w.FGT]: (l, r) => MOD.f64.gt(l, r), [w.FLE]: (l, r) => MOD.f64.le(l, r),
+  [w.FGE]: (l, r) => MOD.f64.ge(l, r),
+  [w.F32_ADD]: (l, r) => MOD.f32.add(l, r), [w.F32_SUB]: (l, r) => MOD.f32.sub(l, r),
+  [w.F32_MUL]: (l, r) => MOD.f32.mul(l, r), [w.F32_DIV]: (l, r) => MOD.f32.div(l, r),
+  [w.F32_EQ]: (l, r) => MOD.f32.eq(l, r), [w.F32_LT]: (l, r) => MOD.f32.lt(l, r),
+  [w.F32_GT]: (l, r) => MOD.f32.gt(l, r), [w.F32_LE]: (l, r) => MOD.f32.le(l, r),
+  [w.F32_GE]: (l, r) => MOD.f32.ge(l, r),
+};
+const UN_OPS: Record<number, ((v: binaryen.ExpressionRef) => binaryen.ExpressionRef) | undefined> = {
+  [w.EQZ]: (v) => MOD.i32.eqz(v),
+  [w.I64_EXTEND_I32_S]: (v) => MOD.i64.extend_s(v), [w.I64_EXTEND_I32_U]: (v) => MOD.i64.extend_u(v),
+  [w.I64_EQZ]: (v) => MOD.i64.eqz(v),
+  [w.FABS]: (v) => MOD.f64.abs(v), [w.FNEG]: (v) => MOD.f64.neg(v),
+  [w.FCEIL]: (v) => MOD.f64.ceil(v), [w.FFLOOR]: (v) => MOD.f64.floor(v),
+  [w.FTRUNC]: (v) => MOD.f64.trunc(v), [w.FSQRT]: (v) => MOD.f64.sqrt(v),
+  [w.F32_ABS]: (v) => MOD.f32.abs(v), [w.F32_NEG]: (v) => MOD.f32.neg(v),
+  [w.F32_TRUNC]: (v) => MOD.f32.trunc(v), [w.F32_SQRT]: (v) => MOD.f32.sqrt(v),
+  [w.I64_TRUNC_F64]: (v) => MOD.i64.trunc_s.f64(v), [w.I32_WRAP_I64]: (v) => MOD.i32.wrap(v),
+  [w.TRUNC_F64]: (v) => MOD.i32.trunc_s.f64(v),
+  [w.CONV_I32]: (v) => MOD.f64.convert_s.i32(v), [w.CONV_I32_U]: (v) => MOD.f64.convert_u.i32(v),
+  [w.CONV_F32_I32]: (v) => MOD.f32.convert_s.i32(v), [w.CONV_F32_U32]: (v) => MOD.f32.convert_u.i32(v),
+  [w.CONV_F32_I64]: (v) => MOD.f32.convert_s.i64(v), [w.CONV_F32_U64]: (v) => MOD.f32.convert_u.i64(v),
+  [w.CONV_F64_I64]: (v) => MOD.f64.convert_s.i64(v), [w.CONV_F64_U64]: (v) => MOD.f64.convert_u.i64(v),
+  [w.F32_DEMOTE]: (v) => MOD.f32.demote(v), [w.F64_PROMOTE]: (v) => MOD.f64.promote(v),
+};
+
 export class Buf {
   private scopes: ScopeRec[] = [{kind: "fn", label: "", result: 0x40, extra: 0, stmts: [], dead: false}];
   // Operand stack — mirrors the wasm operand stack the emitters juggle.
@@ -371,100 +422,18 @@ export class Buf {
     }
   }
 
-  // MVP numeric ops + f64 ops + conversions (all immediate-less).
+  // MVP numeric ops + f64 ops + conversions (all immediate-less): table
+  // dispatch (BIN_OPS/UN_OPS above).
   private numeric(op: number): void {
-    const bin = (f: (l: binaryen.ExpressionRef, r: binaryen.ExpressionRef) => binaryen.ExpressionRef) => {
+    const bin = BIN_OPS[op];
+    if (bin !== undefined) {
       const r = this.pop(), l = this.pop();
-      this.push(f(l, r));
-    };
-    const un = (f: (v: binaryen.ExpressionRef) => binaryen.ExpressionRef) => {
-      const x = this.pop();
-      this.push(f(x));
-    };
-    switch (op) {
-      case w.EQZ: un((v) => MOD.i32.eqz(v)); return;
-      case w.EQ: bin((l, r) => MOD.i32.eq(l, r)); return;
-      case w.LTS: bin((l, r) => MOD.i32.lt_s(l, r)); return;
-      case w.LTU: bin((l, r) => MOD.i32.lt_u(l, r)); return;
-      case w.GTS: bin((l, r) => MOD.i32.gt_s(l, r)); return;
-      case w.GTU: bin((l, r) => MOD.i32.gt_u(l, r)); return;
-      case w.LES: bin((l, r) => MOD.i32.le_s(l, r)); return;
-      case w.LEU: bin((l, r) => MOD.i32.le_u(l, r)); return;
-      case w.GES: bin((l, r) => MOD.i32.ge_s(l, r)); return;
-      case w.GEU: bin((l, r) => MOD.i32.ge_u(l, r)); return;
-      case w.ADD: bin((l, r) => MOD.i32.add(l, r)); return;
-      case w.SUB: bin((l, r) => MOD.i32.sub(l, r)); return;
-      case w.MUL: bin((l, r) => MOD.i32.mul(l, r)); return;
-      case w.DIVS: bin((l, r) => MOD.i32.div_s(l, r)); return;
-      case w.DIVU: bin((l, r) => MOD.i32.div_u(l, r)); return;
-      case w.REMS: bin((l, r) => MOD.i32.rem_s(l, r)); return;
-      case w.REMU: bin((l, r) => MOD.i32.rem_u(l, r)); return;
-      case w.AND: bin((l, r) => MOD.i32.and(l, r)); return;
-      case w.OR: bin((l, r) => MOD.i32.or(l, r)); return;
-      case w.I64_ADD: bin((l, r) => MOD.i64.add(l, r)); return;
-      case w.I64_SUB: bin((l, r) => MOD.i64.sub(l, r)); return;
-      case w.I64_MUL: bin((l, r) => MOD.i64.mul(l, r)); return;
-      case w.I64_DIVS: bin((l, r) => MOD.i64.div_s(l, r)); return;
-      case w.I64_DIVU: bin((l, r) => MOD.i64.div_u(l, r)); return;
-      case w.I64_REMS: bin((l, r) => MOD.i64.rem_s(l, r)); return;
-      case w.I64_REMU: bin((l, r) => MOD.i64.rem_u(l, r)); return;
-      case w.I64_EQ: bin((l, r) => MOD.i64.eq(l, r)); return;
-      case w.I64_NE: bin((l, r) => MOD.i64.ne(l, r)); return;
-      case w.I64_XOR: bin((l, r) => MOD.i64.xor(l, r)); return;
-      case w.I64_LTS: bin((l, r) => MOD.i64.lt_s(l, r)); return;
-      case w.I64_LTU: bin((l, r) => MOD.i64.lt_u(l, r)); return;
-      case w.I64_GTS: bin((l, r) => MOD.i64.gt_s(l, r)); return;
-      case w.I64_GTU: bin((l, r) => MOD.i64.gt_u(l, r)); return;
-      case w.I64_LES: bin((l, r) => MOD.i64.le_s(l, r)); return;
-      case w.I64_LEU: bin((l, r) => MOD.i64.le_u(l, r)); return;
-      case w.I64_GES: bin((l, r) => MOD.i64.ge_s(l, r)); return;
-      case w.I64_GEU: bin((l, r) => MOD.i64.ge_u(l, r)); return;
-      case w.I64_EXTEND_I32_S: un((v) => MOD.i64.extend_s(v)); return;
-      case w.I64_EXTEND_I32_U: un((v) => MOD.i64.extend_u(v)); return;
-      case w.I64_EQZ: un((v) => MOD.i64.eqz(v)); return;
-      case w.FADD: bin((l, r) => MOD.f64.add(l, r)); return;
-      case w.FSUB: bin((l, r) => MOD.f64.sub(l, r)); return;
-      case w.FMUL: bin((l, r) => MOD.f64.mul(l, r)); return;
-      case w.FDIV: bin((l, r) => MOD.f64.div(l, r)); return;
-      case w.FEQ: bin((l, r) => MOD.f64.eq(l, r)); return;
-      case w.FLT: bin((l, r) => MOD.f64.lt(l, r)); return;
-      case w.FGT: bin((l, r) => MOD.f64.gt(l, r)); return;
-      case w.FLE: bin((l, r) => MOD.f64.le(l, r)); return;
-      case w.FGE: bin((l, r) => MOD.f64.ge(l, r)); return;
-      case w.FABS: un((v) => MOD.f64.abs(v)); return;
-      case w.FNEG: un((v) => MOD.f64.neg(v)); return;
-      case w.FCEIL: un((v) => MOD.f64.ceil(v)); return;
-      case w.FFLOOR: un((v) => MOD.f64.floor(v)); return;
-      case w.FTRUNC: un((v) => MOD.f64.trunc(v)); return;
-      case w.FSQRT: un((v) => MOD.f64.sqrt(v)); return;
-      case w.F32_ADD: bin((l, r) => MOD.f32.add(l, r)); return;
-      case w.F32_SUB: bin((l, r) => MOD.f32.sub(l, r)); return;
-      case w.F32_MUL: bin((l, r) => MOD.f32.mul(l, r)); return;
-      case w.F32_DIV: bin((l, r) => MOD.f32.div(l, r)); return;
-      case w.F32_EQ: bin((l, r) => MOD.f32.eq(l, r)); return;
-      case w.F32_LT: bin((l, r) => MOD.f32.lt(l, r)); return;
-      case w.F32_GT: bin((l, r) => MOD.f32.gt(l, r)); return;
-      case w.F32_LE: bin((l, r) => MOD.f32.le(l, r)); return;
-      case w.F32_GE: bin((l, r) => MOD.f32.ge(l, r)); return;
-      case w.F32_ABS: un((v) => MOD.f32.abs(v)); return;
-      case w.F32_NEG: un((v) => MOD.f32.neg(v)); return;
-      case w.F32_TRUNC: un((v) => MOD.f32.trunc(v)); return;
-      case w.F32_SQRT: un((v) => MOD.f32.sqrt(v)); return;
-      case w.I64_TRUNC_F64: un((v) => MOD.i64.trunc_s.f64(v)); return;
-      case w.I32_WRAP_I64: un((v) => MOD.i32.wrap(v)); return;
-      case w.TRUNC_F64: un((v) => MOD.i32.trunc_s.f64(v)); return;
-      case w.CONV_I32: un((v) => MOD.f64.convert_s.i32(v)); return;
-      case w.CONV_I32_U: un((v) => MOD.f64.convert_u.i32(v)); return;
-      case w.CONV_F32_I32: un((v) => MOD.f32.convert_s.i32(v)); return;
-      case w.CONV_F32_U32: un((v) => MOD.f32.convert_u.i32(v)); return;
-      case w.CONV_F32_I64: un((v) => MOD.f32.convert_s.i64(v)); return;
-      case w.CONV_F32_U64: un((v) => MOD.f32.convert_u.i64(v)); return;
-      case w.CONV_F64_I64: un((v) => MOD.f64.convert_s.i64(v)); return;
-      case w.CONV_F64_U64: un((v) => MOD.f64.convert_u.i64(v)); return;
-      case w.F32_DEMOTE: un((v) => MOD.f32.demote(v)); return;
-      case w.F64_PROMOTE: un((v) => MOD.f64.promote(v)); return;
-      default: throw new WasmError(`internal: unknown opcode 0x${op.toString(16)}`);
+      this.push(bin(l, r));
+      return;
     }
+    const un = UN_OPS[op];
+    if (un === undefined) throw new WasmError(`internal: unknown opcode 0x${op.toString(16)}`);
+    this.push(un(this.pop()));
   }
 
   // --- instruction emit methods ---------------------------------------------

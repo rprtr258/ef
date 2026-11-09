@@ -21,8 +21,6 @@ export type State = {
 export const $ = (s: string) => document.querySelector(s) as HTMLElement;
 
 export const els = {
-  topbar: $("#topbar"),
-  brand: $("#brand"),
   paletteBtn: $("#palette-btn"),
   runBtn: $("#run-btn") as HTMLButtonElement,
   buildBtn: $("#build-btn") as HTMLButtonElement,
@@ -36,7 +34,6 @@ export const els = {
   crumbPos: $("#crumb-pos"),
   chip: $("#chip"),
   edhost: $("#edhost"),
-  panel: $("#panel"),
   splitPanel: $("#split-panel"),
   tabOutput: $("#tab-output"),
   tabProblems: $("#tab-problems"),
@@ -49,11 +46,7 @@ export const els = {
   statRunTime: $("#stat-run-time"),
   statOps: $("#stat-ops"),
   stages: $("#stages"),
-  rail: $("#rail"),
   splitRail: $("#split-rail"),
-  buildCard: $("#build-card"),
-  outlineCard: $("#outline-card"),
-  statusbar: $("#statusbar"),
   statusLeft: $("#status-left"),
   statusRight: $("#status-right"),
   palette: $("#palette"),

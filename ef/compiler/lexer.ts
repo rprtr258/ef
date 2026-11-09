@@ -2,8 +2,9 @@ export const KEYWORDS = new Set([
   "let", "fn", "if", "else", "while", "handle", "case",
   "true", "false", "unit", "effect", "type",
 ]);
-const TWO = ["==", "!=", "<=", ">=", "&&", "||", "=>"];
-const ONE = "()[]{},;<>+-*/!=:%.@";
+// Token character tables (shared with the playground's line tokenizer).
+export const TWO = ["==", "!=", "<=", ">=", "&&", "||", "=>"];
+export const ONE = "()[]{},;<>+-*/!=:%.@";
 
 // A source position: 1-indexed line and column.
 export type Pos = { line: number, col: number };

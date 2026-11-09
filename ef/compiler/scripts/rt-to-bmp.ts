@@ -1,5 +1,5 @@
 /**
- * Render a microml raytracer output to a color BMP image.
+ * Render an ef raytracer output to a color BMP image.
  *
  * Usage:
  *   bun scripts/rt-to-bmp.ts <in.txt> [out.bmp]

@@ -27,12 +27,12 @@ export type Discovery = {
   // Scope per lambda/block (ExprID → its Scope).
   scopes: Map<ExprID, Scope>,
   globalScope: Scope,
-  // Literal presence maps (value → placeholder -1; static layout resolves
-  // the global indices into Layout.numStatics/strStatics).
+  // Literal presence maps (keys only; static layout resolves the global
+  // indices into Layout.numStatics/strStatics).
   // "width:value" → width — number literals with their stamped width (the
   // f64 0.1 and the f32 0.1 are distinct statics).
   numLits: Map<string, string>,
-  strLits: Map<string, number>,
+  strLits: Set<string>,
   // App nodes whose call is a non-builtin (lambda) call: split sites (§3
   // emitCall). map/each/flatmap are builtins but land-style too.
   landCalls: Set<ExprID>,
@@ -65,8 +65,8 @@ export type Discovery = {
   hasHandle: boolean,
   // Effect op table: builtin ops pre-seeded (analysis.ts EFFECT_OPS,
   // builtins.ts table order); the program's performed/handled ops intern in
-  // first-appearance AST order. Returned to the host by compileWithOps.
-  effOps: string[],
+  // first-appearance AST order (insertion order = the op table order).
+  // Returned to the host by compileWithOps as [...effOpIds.keys()].
   effOpIds: Map<string, number>,
 };
 
@@ -186,21 +186,17 @@ export function discover(prog: Program): Discovery {
     scopes: new Map(),
     globalScope: {frame: globalFrame, parent: null, map: new Map()},
     numLits: new Map(),
-    strLits: new Map(),
+    strLits: new Set(),
     landCalls: new Set(),
     hdlCases: new Map(),
     hasHandle: prog.nodes.some(n => n.t === "handle"),
-    effOps: [...EFFECT_OPS],
     effOpIds: new Map(EFFECT_OPS.map((op, i) => [op, i])),
   };
   // Effect op discovery (analysis.ts): builtin ops are pre-seeded above; the
   // program's performed/handled ops intern in first-appearance AST order —
   // before the walk below, whose handler records read effOpIds.
   for (const op of collectEffectOps(prog))
-    if (!d.effOpIds.has(op)) {
-      d.effOpIds.set(op, d.effOps.length);
-      d.effOps.push(op);
-    }
+    if (!d.effOpIds.has(op)) d.effOpIds.set(op, d.effOpIds.size);
   // Scope discovery: scopes per lambda/block, slot numbering, literals,
   // split sites, handler records.
   const rec = (id: ExprID, sc: Scope): void => {
@@ -220,7 +216,7 @@ export function discover(prog: Program): Discovery {
         break;
       }
       case "str":
-        d.strLits.set(e.v, -1);
+        d.strLits.add(e.v);
         break;
       case "lambda": {
         const frame = {slots: 0};
@@ -271,7 +267,7 @@ export function discover(prog: Program): Discovery {
         break; // children only — see exprChildren
       case "field":
         rec(e.obj, sc);
-        d.strLits.set(e.name, -1); // for the out-of-bounds message
+        d.strLits.add(e.name); // for the out-of-bounds message
         return;
       case "handle": {
         // Size the shared hframe: op params at slots 0..npMax-1 (per matched
@@ -513,26 +509,20 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
 }
 
 export function layoutStatics(d: Discovery, ix: Indices, o: Opt): Layout {
+  const statics: StaticDesc[] = [];
+  const newStatic = (desc: StaticDesc): number => statics.push(desc) - 1;
   const lay: Layout = {
-    statics: [],
-    unitRef: {k: "g", gi: 0},
-    trueRef: {k: "g", gi: 0},
-    falseRef: {k: "g", gi: 0},
+    statics,
+    // Unit: ref.null any; bools: i31(1)/i31(0).
+    unitRef: {k: "g", gi: newStatic({t: "null"})},
+    trueRef: {k: "g", gi: newStatic({t: "i31", v: 1})},
+    falseRef: {k: "g", gi: newStatic({t: "i31", v: 0})},
     piG: -1,
     numStatics: new Map(),
     strStatics: new Map(),
     cloOffsets: new Map(),
     hdlTableOff: new Map(),
   };
-  const newStatic = (desc: StaticDesc): number => {
-    lay.statics.push(desc);
-    return lay.statics.length - 1;
-  };
-  // Unit: ref.null any.
-  lay.unitRef = {k: "g", gi: newStatic({t: "null"})};
-  // Bools: i31(0/1).
-  lay.trueRef = {k: "g", gi: newStatic({t: "i31", v: 1})};
-  lay.falseRef = {k: "g", gi: newStatic({t: "i31", v: 0})};
   // Number literals (deduped by width + value; the Discovery keys carry both).
   for (const [k, w] of d.numLits) {
     const lex = k.slice(k.indexOf(":") + 1);
@@ -543,7 +533,7 @@ export function layoutStatics(d: Discovery, ix: Indices, o: Opt): Layout {
   if (o.usedBuiltins.has("PI"))
     lay.piG = newStatic({t: "num", w: "f64", v: Math.PI});
   // String literals (field names included — same constant pool).
-  for (const [v] of d.strLits)
+  for (const v of d.strLits)
     lay.strStatics.set(v, newStatic({t: "str", s: v}));
   // Builtin closures: $CLO {fnIdx, env = null, fsize = params + map-like
   // extras} — only VALUE-referenced builtins get one (treeShakeBuiltins +
@@ -679,7 +669,7 @@ export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]
   m.addActiveElementSegment("t0", "e0",
     Array.from({length: total}, (_, i) => `f${i}`), m.i32.const(0));
   if (process.env["DBGEMIT"] === "1") console.error(m.emitText());
-  // exports: run + the 14 accessors (§4) — the last 15 functions
+  // exports: run + the 13 accessors (§4) — the last 15 functions (main + these)
   const expNames = ["run", "__tag", "__num", "__str_len", "__str_get",
     "__arr_len", "__arr_get", "__mk_num", "__mk_f32", "__f32", "__mk_i32",
     "__mk_u32", "__i32", "__u32", "__mk_i64", "__mk_u64", "__i64", "__u64",

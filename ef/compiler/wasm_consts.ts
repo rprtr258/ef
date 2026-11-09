@@ -15,7 +15,7 @@ export const FLT = 0x63, FGT = 0x64, FLE = 0x65, FGE = 0x66, FEQ = 0x61;
 // f32 arithmetic/comparison (typed-widths step 2)
 export const F32_ABS = 0x8b, F32_NEG = 0x8c, F32_TRUNC = 0x8f, F32_SQRT = 0x91;
 export const F32_ADD = 0x92, F32_SUB = 0x93, F32_MUL = 0x94, F32_DIV = 0x95;
-export const F32_EQ = 0x5b, F32_NE = 0x5c, F32_LT = 0x5d, F32_GT = 0x5e, F32_LE = 0x5f, F32_GE = 0x60;
+export const F32_EQ = 0x5b, F32_LT = 0x5d, F32_GT = 0x5e, F32_LE = 0x5f, F32_GE = 0x60;
 export const TRUNC_F64 = 0xaa, TRUNC_F64_U = 0xab, CONV_I32 = 0xb7, CONV_I32_U = 0xb8; // i32.trunc_f64_s/u, f64.convert_i32_s/u
 export const CONV_F32_I32 = 0xb2, CONV_F32_U32 = 0xb3; // f32.convert_i32_s/u
 export const CONV_F32_I64 = 0xb4, CONV_F32_U64 = 0xb5; // f32.convert_i64_s/u

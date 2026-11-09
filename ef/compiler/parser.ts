@@ -332,17 +332,7 @@ export class Parser {
       this.eat("-");
       this.eat(">");
       const ret = this.parseType();
-      const effs = new Set<string>();
-      if (this.is("!")) {
-        this.next();
-        this.eat("{");
-        while (!this.is("}")) {
-          effs.add(this.next());
-          if (this.is(",")) this.i++;
-        }
-        this.eat("}");
-      }
-      return tFun(ps, ret, effs);
+      return tFun(ps, ret, this.parseEffAnnot() ?? new Set());
     }
     const name = this.next();
     // type parameter of an enclosing alias body → a type variable.
