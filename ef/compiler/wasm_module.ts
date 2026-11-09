@@ -62,9 +62,7 @@ function collectCopy(f: Fn, src: number, dst: number, n: number): void {
     b.if();
     b.localGet(cell);
     f.unboxArr(xb);
-    b.localGet(xb);
-    b.refCast(1, true);
-    b.arrayLen();
+    b.arrLenOf(xb);
     b.localSet(xl);
     f.loop(() => { b.localGet(xl); }, j => {
       f.elemAddr(dst, ww);
@@ -151,56 +149,24 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.localSet(a);
         f.slot(1);
         b.localSet(bv);
-        b.localGet(a);
-        b.refTest(0, false);
-        b.localGet(bv);
-        b.refTest(0, false);
-        b.u8(w.AND);
-        b.if(0x6e); // result anyref
-        b.localGet(a);
-        b.refCast(0, false);
-        b.structGet(0, 0);
-        b.localGet(bv);
-        b.refCast(0, false);
-        b.structGet(0, 0);
+        b.bothIs(0, a, bv); // result anyref
+        b.loadPayload(0, a);
+        b.loadPayload(0, bv);
         b.u8(w.FADD);
         box();
         b.u8(w.ELSE);
-        b.localGet(a);
-        b.refTest(2, false);
-        b.localGet(bv);
-        b.refTest(2, false);
-        b.u8(w.AND);
-        b.if(0x6e);
+        b.bothIs(2, a, bv);
         f.emitStrCat(a, bv);
         b.u8(w.ELSE);
-        b.localGet(a);
-        b.refTest(9, false);
-        b.localGet(bv);
-        b.refTest(9, false);
-        b.u8(w.AND);
-        b.if(0x6e);
-        b.localGet(a);
-        b.refCast(9, false);
-        b.structGet(9, 0);
-        b.localGet(bv);
-        b.refCast(9, false);
-        b.structGet(9, 0);
+        b.bothIs(9, a, bv);
+        b.loadPayload(9, a);
+        b.loadPayload(9, bv);
         b.u8(w.I64_ADD);
         b.structNew(9);
         b.u8(w.ELSE);
-        b.localGet(a);
-        b.refTest(10, false);
-        b.localGet(bv);
-        b.refTest(10, false);
-        b.u8(w.AND);
-        b.if(0x6e);
-        b.localGet(a);
-        b.refCast(10, false);
-        b.structGet(10, 0);
-        b.localGet(bv);
-        b.refCast(10, false);
-        b.structGet(10, 0);
+        b.bothIs(10, a, bv);
+        b.loadPayload(10, a);
+        b.loadPayload(10, bv);
         b.u8(w.I64_ADD);
         b.structNew(10);
         b.u8(w.ELSE);
@@ -230,163 +196,52 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.localSet(a);
           f.slot(1);
           b.localSet(bv);
-          // $F32 arm, then $I32/$U32 arms (same bit ops, unsigned compares);
-          // anything else falls to the f64 plane below.
-          b.localGet(a);
-          b.refTest(11, false);
-          b.localGet(bv);
-          b.refTest(11, false);
-          b.u8(w.AND);
-          b.if(0x6e);
-          const fx = f.f32(), fy = f.f32();
-          b.localGet(a);
-          b.refCast(11, false);
-          b.structGet(11, 0);
-          b.localSet(fx);
-          b.localGet(bv);
-          b.refCast(11, false);
-          b.structGet(11, 0);
-          b.localSet(fy);
-          if (name === "%") {
-            // JS fmod: a - b * trunc(a/b)
-            const ft = f.f32();
-            b.localGet(fx);
-            b.localGet(fy);
-            b.u8(w.F32_DIV);
-            b.u8(w.F32_TRUNC);
-            b.localSet(ft);
-            b.localGet(fx);
-            b.localGet(fy);
-            b.localGet(ft);
-            b.u8(w.F32_MUL);
-            b.u8(w.F32_SUB);
-          } else {
-            b.localGet(fx);
-            b.localGet(fy);
-            b.u8(name === "-" ? w.F32_SUB : name === "*" ? w.F32_MUL : name === "<" ? w.F32_LT : name === ">" ? w.F32_GT : name === "<=" ? w.F32_LE : w.F32_GE);
-          }
-          if (name === "<" || name === ">" || name === "<=" || name === ">=") {
-            // i32 bool on the stack → i31 bool anyref
-            selectBool(em, f);
-          } else {
-            b.structNew(11);
-          }
-          b.u8(w.ELSE);
-          b.localGet(a);
-          b.refTest(7, false);
-          b.localGet(bv);
-          b.refTest(7, false);
-          b.u8(w.AND);
-          b.if(0x6e);
-          const ix32 = f.i32(), iy32 = f.i32();
-          b.localGet(a);
-          b.refCast(7, false);
-          b.structGet(7, 0);
-          b.localSet(ix32);
-          b.localGet(bv);
-          b.refCast(7, false);
-          b.structGet(7, 0);
-          b.localSet(iy32);
-          if (name === "%") {
-            const it = f.i32();
-            b.localGet(ix32);
-            b.localGet(iy32);
-            b.u8(w.REMS);
-            b.localSet(it);
-            b.localGet(ix32);
-            b.localGet(iy32);
-            b.localGet(it);
-            b.u8(w.MUL);
-            b.u8(w.SUB);
-          } else {
-            b.localGet(ix32);
-            b.localGet(iy32);
-            b.u8(name === "-" ? w.SUB : name === "*" ? w.MUL : name === "<" ? w.LTS : name === ">" ? w.GTS : name === "<=" ? w.LES : w.GES);
-          }
-          if (name === "<" || name === ">" || name === "<=" || name === ">=") {
-            selectBool(em, f);
-          } else {
-            b.structNew(7);
-          }
-          b.u8(w.ELSE);
-          b.localGet(a);
-          b.refTest(8, false);
-          b.localGet(bv);
-          b.refTest(8, false);
-          b.u8(w.AND);
-          b.if(0x6e);
-          const ux32 = f.i32(), uy32 = f.i32();
-          b.localGet(a);
-          b.refCast(8, false);
-          b.structGet(8, 0);
-          b.localSet(ux32);
-          b.localGet(bv);
-          b.refCast(8, false);
-          b.structGet(8, 0);
-          b.localSet(uy32);
-          if (name === "%") {
-            const ut = f.i32();
-            b.localGet(ux32);
-            b.localGet(uy32);
-            b.u8(w.REMU);
-            b.localSet(ut);
-            b.localGet(ux32);
-            b.localGet(uy32);
-            b.localGet(ut);
-            b.u8(w.MUL);
-            b.u8(w.SUB);
-          } else {
-            b.localGet(ux32);
-            b.localGet(uy32);
-            b.u8(name === "-" ? w.SUB : name === "*" ? w.MUL : name === "<" ? w.LTU : name === ">" ? w.GTU : name === "<=" ? w.LEU : w.GEU);
-          }
-          if (name === "<" || name === ">" || name === "<=" || name === ">=") {
-            selectBool(em, f);
-          } else {
-            b.structNew(8);
-          }
-          b.u8(w.ELSE);
-          // $I64/$U64 arms (typed-widths step 4): exact 64-bit compute.
-          for (const wide of [9, 10]) {
-            b.localGet(a);
-            b.refTest(wide, false);
-            b.localGet(bv);
-            b.refTest(wide, false);
-            b.u8(w.AND);
-            b.if(0x6e);
-            const wx = f.i64(), wy = f.i64();
-            b.localGet(a);
-            b.refCast(wide, false);
-            b.structGet(wide, 0);
-            b.localSet(wx);
-            b.localGet(bv);
-            b.refCast(wide, false);
-            b.structGet(wide, 0);
-            b.localSet(wy);
+          // name → index into each plane's opcode row [sub, mul, lt, gt, le, ge].
+          const oi = (n: string): number => (n === "-" ? 0 : n === "*" ? 1 : n === "<" ? 2 : n === ">" ? 3 : n === "<=" ? 4 : 5);
+          // One width plane (see the case comment): both operands are `ht`
+          // boxes → load their payloads and compute; % expands JS fmod as
+          // a - b*trunc(a/b) (floats: fmod[0] = [div, trunc]) or
+          // a - (a rem b)*b (ints: fmod[0] = [rem]); compares select an
+          // i31 bool, arithmetic reboxes.
+          const plane = (ht: number, alloc: () => number, ops: number[], fmod: [number[], number, number]): void => {
+            b.bothIs(ht, a, bv);
+            const x = alloc(), y = alloc(), t = alloc();
+            b.loadPayload(ht, a);
+            b.localSet(x);
+            b.loadPayload(ht, bv);
+            b.localSet(y);
             if (name === "%") {
-              const wt = f.i64();
-              b.localGet(wx);
-              b.localGet(wy);
-              b.u8(wide === 9 ? w.I64_REMS : w.I64_REMU);
-              b.localSet(wt);
-              b.localGet(wx);
-              b.localGet(wy);
-              b.localGet(wt);
-              b.u8(w.I64_MUL);
-              b.u8(w.I64_SUB);
+              b.localGet(x);
+              b.localGet(y);
+              for (const o of fmod[0]) b.u8(o);
+              b.localSet(t);
+              b.localGet(x);
+              b.localGet(y);
+              b.localGet(t);
+              b.u8(fmod[1]);
+              b.u8(fmod[2]);
             } else {
-              b.localGet(wx);
-              b.localGet(wy);
-              b.u8(wide === 9
-                ? (name === "-" ? w.I64_SUB : name === "*" ? w.I64_MUL : name === "<" ? w.I64_LTS : name === ">" ? w.I64_GTS : name === "<=" ? w.I64_LES : w.I64_GES)
-                : (name === "-" ? w.I64_SUB : name === "*" ? w.I64_MUL : name === "<" ? w.I64_LTU : name === ">" ? w.I64_GTU : name === "<=" ? w.I64_LEU : w.I64_GEU));
+              b.localGet(x);
+              b.localGet(y);
+              b.u8(ops[oi(name)]);
             }
             if (name === "<" || name === ">" || name === "<=" || name === ">=") {
               selectBool(em, f);
             } else {
-              b.structNew(wide);
+              b.structNew(ht);
             }
             b.u8(w.ELSE);
+          };
+          plane(11, () => f.f32(), [w.F32_SUB, w.F32_MUL, w.F32_LT, w.F32_GT, w.F32_LE, w.F32_GE],
+            [[w.F32_DIV, w.F32_TRUNC], w.F32_MUL, w.F32_SUB]);
+          plane(7, () => f.i32(), [w.SUB, w.MUL, w.LTS, w.GTS, w.LES, w.GES], [[w.REMS], w.MUL, w.SUB]);
+          plane(8, () => f.i32(), [w.SUB, w.MUL, w.LTU, w.GTU, w.LEU, w.GEU], [[w.REMU], w.MUL, w.SUB]);
+          // $I64/$U64 arms (typed-widths step 4): exact 64-bit compute.
+          for (const wide of [9, 10]) {
+            plane(wide, () => f.i64(), [
+              w.I64_SUB, w.I64_MUL,
+              ...(wide === 9 ? [w.I64_LTS, w.I64_GTS, w.I64_LES, w.I64_GES] : [w.I64_LTU, w.I64_GTU, w.I64_LEU, w.I64_GEU]),
+            ], [[wide === 9 ? w.I64_REMS : w.I64_REMU], w.I64_MUL, w.I64_SUB]);
           }
         }
         if (name === "<" || name === ">" || name === "<=" || name === ">=") {
@@ -532,9 +387,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         const blk = f.anyref();
         f.slot(0);
         f.unboxArr(blk);
-        b.localGet(blk);
-        b.refCast(1, true);
-        b.arrayLen();
+        b.arrLenOf(blk);
         b.u8(w.EQZ);
         b.if();
         emitFail(em, f, 0, null, f.constF64(0), f.constF64(0));
@@ -549,9 +402,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         const blk = f.anyref(), len = f.i32(), n1 = f.i32();
         f.slot(0);
         f.unboxArr(blk);
-        b.localGet(blk);
-        b.refCast(1, true);
-        b.arrayLen();
+        b.arrLenOf(blk);
         b.localSet(len);
         b.localGet(len);
         b.u8(w.EQZ);
@@ -572,13 +423,9 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         f.unboxArr(aBlk);
         f.slot(1);
         f.unboxArr(bBlk);
-        b.localGet(aBlk);
-        b.refCast(1, true);
-        b.arrayLen();
+        b.arrLenOf(aBlk);
         b.localSet(la);
-        b.localGet(bBlk);
-        b.refCast(1, true);
-        b.arrayLen();
+        b.arrLenOf(bBlk);
         b.localSet(lb);
         b.localGet(la);
         b.localGet(lb);
@@ -610,9 +457,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         const xss = f.anyref(), n = f.i32(), total = f.i32();
         f.slot(0);
         f.unboxArr(xss);
-        b.localGet(xss);
-        b.refCast(1, true);
-        b.arrayLen();
+        b.arrLenOf(xss);
         b.localSet(n);
         b.i32Const(0);
         b.localSet(total);
@@ -809,9 +654,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.localSet(idx64);
         f.slot(0);
         f.unboxArr(blk);
-        b.localGet(blk);
-        b.refCast(1, true);
-        b.arrayLen();
+        b.arrLenOf(blk);
         b.localSet(len);
         b.localGet(idx64);
         b.u8(w.I32_WRAP_I64);
@@ -846,9 +689,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.localSet(xs);
         b.localGet(xs);
         f.unboxArr(blk);
-        b.localGet(blk);
-        b.refCast(1, true);
-        b.arrayLen();
+        b.arrLenOf(blk);
         b.localSet(len);
         b.localGet(idx64);
         b.u8(w.I32_WRAP_I64);

@@ -517,6 +517,9 @@ export class Buf {
     this.stmt(MOD.array.set(ref, idx, v));
   }
   arrayLen(): void { this.push(MOD.array.len(this.pop())); }
+  // Length of the $ELEMS backing in local `blk` (the standard prologue after
+  // unboxArr — localGet, cast to the non-null $ELEMS type, array.len).
+  arrLenOf(blk: number): void { this.localGet(blk); this.refCast(1, true); this.arrayLen(); }
   arrayCopy(d: number, s: number): void { // pops (dst, dstOff, src, srcOff, len)
     const len = this.pop(), srcOff = this.pop(), src = this.pop(), dstOff = this.pop(), dst = this.pop();
     this.stmt(MOD.array.copy(dst, dstOff, src, srcOff, len));
@@ -530,6 +533,19 @@ export class Buf {
   refCast(ht: number, nullable: boolean): void {
     this.push(MOD.ref.cast(this.pop(), this.castType(ht, nullable)));
   }
+  // Both operands (locals x, y) are `ht` boxes → open the anyref-result if
+  // the emitters compute inside (refTest AND refTest, if 0x6e).
+  bothIs(ht: number, x: number, y: number): void {
+    this.localGet(x);
+    this.refTest(ht, false);
+    this.localGet(y);
+    this.refTest(ht, false);
+    this.u8(w.AND);
+    this.if(0x6e);
+  }
+  // Push the f64 payload of the `ht` box in local `x` (localGet + cast +
+  // struct.get of field 0).
+  loadPayload(ht: number, x: number): void { this.localGet(x); this.refCast(ht, false); this.structGet(ht, 0); }
   // Cast target: nullable = the full (ref null ht) type; non-nullable = the
   // bare heap type for concrete types (binaryen takes it directly) or the
   // non-null form for abstract ones (i31/any/eq — their heap-type constants
