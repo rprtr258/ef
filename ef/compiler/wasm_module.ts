@@ -7,8 +7,86 @@ import {BUILTINS} from "./analysis.ts";
 import {WasmError} from "./wasm_types.ts";
 import {Buf, Fn} from "./wasm_body.ts";
 import {frameSizeOf} from "./wasm_pipeline.ts";
-import {type Emit, Split, emitCallClosure, emitDispatch, emitFail, expr, fillRest, makeRestThunk, selectBool, unboxArm} from "./wasm_emit.ts";
+import {NUM64_ARMS, type Emit, Split, emitCallClosure, emitDispatch, emitFail, expr, fillRest, i31of, makeRestThunk, selectBool, unboxArm} from "./wasm_emit.ts";
 import * as w from "./wasm_consts.ts";
+
+// Σ over the n per-element cells in backing `src`: array elements add
+// their length, scalars add 1 (the tag test, not the value — JS
+// Array.prototype.flat parity; a resumed scalar flowing back through a
+// map-like land path lands exactly here). The shared size pass of flat
+// and flatmap; `total` accumulates.
+function collectLen(f: Fn, src: number, n: number, total: number): void {
+  const b = f.body;
+  f.loop(() => { b.localGet(n); }, i => {
+    const cell = f.anyref();
+    f.elemAddr(src, i);
+    b.arrayGet(1);
+    b.localSet(cell);
+    b.localGet(cell);
+    b.refTest(3, false); // is $ARR?
+    b.if();
+    b.localGet(cell);
+    b.refCast(3, true);
+    b.structGet(3, 0);
+    b.refCast(1, true);
+    b.arrayLen(); // inner len
+    b.localGet(total);
+    b.u8(w.ADD);
+    b.localSet(total);
+    b.u8(w.ELSE);
+    b.localGet(total);
+    b.i32Const(1);
+    b.u8(w.ADD);
+    b.localSet(total);
+    b.u8(w.END);
+  });
+}
+
+// Copy the n per-element cells from backing `src` into the fresh backing
+// `dst`: array elements copy their items at the running write index (the
+// element values, same layout the box/collect path reads back), scalars
+// copy as themselves. The shared finalize of flat and flatmap; boxArr(dst)
+// afterwards.
+function collectCopy(f: Fn, src: number, dst: number, n: number): void {
+  const b = f.body;
+  const ww = f.i32();
+  b.i32Const(0);
+  b.localSet(ww);
+  f.loop(() => { b.localGet(n); }, i => {
+    const cell = f.anyref(), xb = f.anyref(), xl = f.i32();
+    f.elemAddr(src, i);
+    b.arrayGet(1);
+    b.localSet(cell);
+    b.localGet(cell);
+    b.refTest(3, false);
+    b.if();
+    b.localGet(cell);
+    f.unboxArr(xb);
+    b.localGet(xb);
+    b.refCast(1, true);
+    b.arrayLen();
+    b.localSet(xl);
+    f.loop(() => { b.localGet(xl); }, j => {
+      f.elemAddr(dst, ww);
+      f.elemAddr(xb, j);
+      b.arrayGet(1);
+      b.arraySet();
+      b.localGet(ww);
+      b.i32Const(1);
+      b.u8(w.ADD);
+      b.localSet(ww);
+    });
+    b.u8(w.ELSE);
+    f.elemAddr(dst, ww);
+    b.localGet(cell);
+    b.arraySet();
+    b.localGet(ww);
+    b.i32Const(1);
+    b.u8(w.ADD);
+    b.localSet(ww);
+    b.u8(w.END);
+  });
+}
 
 export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
   const out: Fn[] = [];
@@ -42,20 +120,17 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
     bb.u8(w.IF);
     bb.u8(0x7e);
     bb.localGet(i);
-    bb.u8(w.CALL);
-    bb.lebU(em.ix.fU64of);
+    bb.callFn(em.ix.fU64of);
     bb.u8(w.ELSE);
     bb.localGet(i);
-    bb.u8(w.CALL);
-    bb.lebU(em.ix.fI64of);
+    bb.callFn(em.ix.fI64of);
     bb.u8(w.END);
   };
   // Adaptive f64 read of frame slot i ($num64 — any numeric box converts).
   const readNum64 = (fn: Fn, bb: Buf, i: number): number => {
     const l = fn.f64();
     fn.slot(i);
-    bb.u8(w.CALL);
-    bb.lebU(em.ix.fNum64);
+    bb.callFn(em.ix.fNum64);
     bb.localSet(l);
     return l;
   };
@@ -67,8 +142,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
     em.ix.funcRefTypes.set(f.idx, w.T_KABI);
     const b = f.body;
     const box = () => {
-      b.u8(w.CALL);
-      b.lebU(em.ix.fBox);
+      b.callFn(em.ix.fBox);
     };
     switch (name) {
       case "+": {
@@ -416,25 +490,21 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
       case "==": {
         f.slot(0);
         f.slot(1);
-        b.u8(w.CALL);
-        b.lebU(em.ix.fEq);
+        b.callFn(em.ix.fEq);
         break;
       }
       case "!=": {
         f.slot(0);
         f.slot(1);
-        b.u8(w.CALL);
-        b.lebU(em.ix.fEq);
-        b.refCast(w.I31REF, false); // eq result's i31 bool payload
-        b.i31Get();
+        b.callFn(em.ix.fEq);
+        i31of(b); // eq result's i31 bool payload
         b.u8(w.EQZ); // 1 when $eq said false
         selectBool(em, f);
         break;
       }
       case "not": {
         f.slot(0);
-        b.u8(w.CALL);
-        b.lebU(em.ix.fTruthy);
+        b.callFn(em.ix.fTruthy);
         b.u8(w.EQZ);
         selectBool(em, f);
         break;
@@ -461,9 +531,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
       case "head": {
         const blk = f.anyref();
         f.slot(0);
-        b.refCast(3, true);
-        b.structGet(3, 0);
-        b.localSet(blk);
+        f.unboxArr(blk);
         b.localGet(blk);
         b.refCast(1, true);
         b.arrayLen();
@@ -480,9 +548,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
       case "tail": {
         const blk = f.anyref(), len = f.i32(), n1 = f.i32();
         f.slot(0);
-        b.refCast(3, true);
-        b.structGet(3, 0);
-        b.localSet(blk);
+        f.unboxArr(blk);
         b.localGet(blk);
         b.refCast(1, true);
         b.arrayLen();
@@ -503,13 +569,9 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
       case "concat": {
         const aBlk = f.anyref(), bBlk = f.anyref(), la = f.i32(), lb = f.i32(), n = f.i32();
         f.slot(0);
-        b.refCast(3, true);
-        b.structGet(3, 0);
-        b.localSet(aBlk);
+        f.unboxArr(aBlk);
         f.slot(1);
-        b.refCast(3, true);
-        b.structGet(3, 0);
-        b.localSet(bBlk);
+        f.unboxArr(bBlk);
         b.localGet(aBlk);
         b.refCast(1, true);
         b.arrayLen();
@@ -547,87 +609,16 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
       case "flat": {
         const xss = f.anyref(), n = f.i32(), total = f.i32();
         f.slot(0);
-        b.refCast(3, true);
-        b.structGet(3, 0);
-        b.localSet(xss);
+        f.unboxArr(xss);
         b.localGet(xss);
         b.refCast(1, true);
         b.arrayLen();
         b.localSet(n);
         b.i32Const(0);
         b.localSet(total);
-        // JS Array.prototype.flat parity: non-array elements pass through
-        // instead of being read as inner arrays (a resumed scalar flowing
-        // back through a map-like land path lands exactly here).
-        f.loop(() => {
-          b.localGet(n);
-        }, k => {
-          const cell = f.anyref();
-          f.elemAddr(xss, k);
-          b.arrayGet(1);
-          b.localSet(cell);
-          b.localGet(cell);
-          b.refTest(3, false); // is $ARR?
-          b.if();
-          b.localGet(cell);
-          b.refCast(3, true);
-          b.structGet(3, 0);
-          b.refCast(1, true);
-          b.arrayLen(); // inner len
-          b.localGet(total);
-          b.u8(w.ADD);
-          b.localSet(total);
-          b.u8(w.ELSE);
-          b.localGet(total);
-          b.i32Const(1);
-          b.u8(w.ADD);
-          b.localSet(total);
-          b.u8(w.END);
-        });
+        collectLen(f, xss, n, total);
         const blk = f.allocArrBlk(total);
-        const ww = f.i32();
-        b.i32Const(0);
-        b.localSet(ww);
-        f.loop(() => {
-          b.localGet(n);
-        }, k => {
-          const cell = f.anyref(), xb = f.anyref(), xl = f.i32();
-          f.elemAddr(xss, k);
-          b.arrayGet(1);
-          b.localSet(cell);
-          b.localGet(cell);
-          b.refTest(3, false);
-          b.if();
-          b.localGet(cell);
-          b.refCast(3, true);
-          b.structGet(3, 0);
-          b.localSet(xb);
-          b.localGet(xb);
-          b.refCast(1, true);
-          b.arrayLen();
-          b.localSet(xl);
-          f.loop(() => {
-            b.localGet(xl);
-          }, j => {
-            f.elemAddr(blk, ww);
-            f.elemAddr(xb, j);
-            b.arrayGet(1);
-            b.arraySet();
-            b.localGet(ww);
-            b.i32Const(1);
-            b.u8(w.ADD);
-            b.localSet(ww);
-          });
-          b.u8(w.ELSE);
-          f.elemAddr(blk, ww);
-          b.localGet(cell);
-          b.arraySet();
-          b.localGet(ww);
-          b.i32Const(1);
-          b.u8(w.ADD);
-          b.localSet(ww);
-          b.u8(w.END);
-        });
+        collectCopy(f, xss, blk, n);
         f.boxArr(blk);
         break;
       }
@@ -654,19 +645,16 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         break;
       case "cos":
         f.slot(0);
-        b.u8(w.CALL);
-        b.lebU(em.o.impIdx.get("ef_cos")!);
+        b.callFn(em.o.impIdx.get("ef_cos")!);
         break;
       case "sin":
         f.slot(0);
-        b.u8(w.CALL);
-        b.lebU(em.o.impIdx.get("ef_sin")!);
+        b.callFn(em.o.impIdx.get("ef_sin")!);
         break;
       case "sqrt": {
         const x = f.f64();
         f.slot(0);
-        b.u8(w.CALL);
-        b.lebU(em.ix.fNum64); // adaptive: an $F32 box promotes
+        b.callFn(em.ix.fNum64); // adaptive: an $F32 box promotes
         b.localSet(x);
         b.localGet(x);
         b.u8(w.FSQRT);
@@ -676,8 +664,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
       case "abs": {
         const x = f.f64();
         f.slot(0);
-        b.u8(w.CALL);
-        b.lebU(em.ix.fNum64);
+        b.callFn(em.ix.fNum64);
         b.localSet(x);
         b.localGet(x);
         b.u8(w.FABS);
@@ -706,8 +693,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         const dirOK = f.i32(), n = f.i32();
         const readI64 = (i: number, loc: number): void => {
           f.pushRef({k: "slot", i});
-          b.u8(w.CALL);
-          b.lebU(em.ix.fI64of);
+          b.callFn(em.ix.fI64of);
           b.localSet(loc);
         };
         const abs = (loc: number): void => {
@@ -799,38 +785,30 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         // payload).
         const cp = f.i64();
         f.pushRef({k: "slot", i: 0});
-        b.u8(w.CALL);
-        b.lebU(em.ix.fI64of);
+        b.callFn(em.ix.fI64of);
         b.localSet(cp);
         b.localGet(cp);
         b.u8(w.I32_WRAP_I64);
         b.u8(w.CONV_I32);
-        b.u8(w.CALL);
-        b.lebU(em.ix.fBox);
-        b.u8(w.CALL);
-        b.lebU(em.o.impIdx.get("ef_char")!);
+        b.callFn(em.ix.fBox);
+        b.callFn(em.o.impIdx.get("ef_char")!);
         break;
       }
       case "number":
         f.slot(0);
-        b.u8(w.CALL);
-        b.lebU(em.o.impIdx.get("ef_number")!);
+        b.callFn(em.o.impIdx.get("ef_number")!);
         break;
       case "args":
-        b.u8(w.CALL);
-        b.lebU(em.o.impIdx.get("ef_args")!);
+        b.callFn(em.o.impIdx.get("ef_args")!);
         break;
       case "get": {
         const blk = f.anyref(), len = f.i32(), idx = f.i32();
         const idx64 = f.i64();
         f.pushRef({k: "slot", i: 1});
-        b.u8(w.CALL);
-        b.lebU(em.ix.fI64of);
+        b.callFn(em.ix.fI64of);
         b.localSet(idx64);
         f.slot(0);
-        b.refCast(3, true);
-        b.structGet(3, 0);
-        b.localSet(blk);
+        f.unboxArr(blk);
         b.localGet(blk);
         b.refCast(1, true);
         b.arrayLen();
@@ -862,15 +840,12 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         const xs = f.anyref(), blk = f.anyref(), len = f.i32(), idx = f.i32(), v = f.anyref();
         const idx64 = f.i64();
         f.pushRef({k: "slot", i: 1});
-        b.u8(w.CALL);
-        b.lebU(em.ix.fI64of);
+        b.callFn(em.ix.fI64of);
         b.localSet(idx64);
         f.slot(0);
         b.localSet(xs);
         b.localGet(xs);
-        b.refCast(3, true);
-        b.structGet(3, 0);
-        b.localSet(blk);
+        f.unboxArr(blk);
         b.localGet(blk);
         b.refCast(1, true);
         b.arrayLen();
@@ -960,7 +935,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
 // slots, so the loop survives suspension. The counter slot holds a boxed
 // number (slots are anyref); it is unboxed for comparisons and boxed
 // again when passed to the callback as the iteration index.
-export function emitMapLike(em: Emit, f: Fn, name: string): void {
+function emitMapLike(em: Emit, f: Fn, name: string): void {
   const b = f.body;
   const resSlot = name === "each" ? -1 : 2; // map: res, flatmap: tmp
   const iSlot = name === "each" ? 2 : 3;
@@ -974,12 +949,9 @@ export function emitMapLike(em: Emit, f: Fn, name: string): void {
     if (name !== "each") {
       const blk = t.anyref(), iL = t.i32();
       t.slot(resSlot);
-      tb.refCast(3, true);
-      tb.structGet(3, 0);
-      tb.localSet(blk);
+      t.unboxArr(blk);
       t.slot(iSlot);
-      tb.refCast(0, false);
-      tb.structGet(0, 0);
+      tb.readBoxPayload(0);
       tb.u8(w.TRUNC_F64);
       tb.localSet(iL);
       t.elemAddr(blk, iL);
@@ -990,12 +962,10 @@ export function emitMapLike(em: Emit, f: Fn, name: string): void {
     tb.localGet(0); tb.structGet(4, 1);
     tb.i32Const(iSlot);
     t.slot(iSlot);
-    tb.refCast(0, false);
-    tb.structGet(0, 0);
+    tb.readBoxPayload(0);
     tb.f64Const(1);
     tb.u8(w.FADD);
-    tb.u8(w.CALL);
-    tb.lebU(em.ix.fBox);
+    tb.callFn(em.ix.fBox);
     tb.arraySet();
     tb.localGet(0);
     t.pushRef(em.lay.unitRef);
@@ -1010,16 +980,13 @@ export function emitMapLike(em: Emit, f: Fn, name: string): void {
     const t = loopEntry, tb = t.body;
     const xb = t.anyref(), n = t.i32(), iL = t.i32(), fc = t.anyref();
     t.slot(1); // the xs wrapper (arg 1) → its backing array and length
-    tb.refCast(3, true);
-    tb.structGet(3, 0);
-    tb.localSet(xb);
+    t.unboxArr(xb);
     tb.localGet(xb);
     tb.refCast(1, true);
     tb.arrayLen();
     tb.localSet(n);
     t.slot(iSlot);
-    tb.refCast(0, false);
-    tb.structGet(0, 0);
+    tb.readBoxPayload(0);
     tb.u8(w.TRUNC_F64);
     tb.localSet(iL);
     tb.localGet(iL);
@@ -1031,9 +998,7 @@ export function emitMapLike(em: Emit, f: Fn, name: string): void {
     if (name === "map") {
       const res = t.anyref();
       t.slot(resSlot);
-      tb.refCast(3, true);
-      tb.structGet(3, 0);
-      tb.localSet(res);
+      t.unboxArr(res);
       t.boxArr(res);
     } else if (name === "each") {
       t.pushRef(em.lay.unitRef);
@@ -1041,87 +1006,12 @@ export function emitMapLike(em: Emit, f: Fn, name: string): void {
       // flatmap: total = Σ per-element lengths; allocate; copy; box.
       const tmp = t.anyref(), total = t.i32();
       t.slot(resSlot);
-      tb.refCast(3, true);
-      tb.structGet(3, 0);
-      tb.localSet(tmp);
+      t.unboxArr(tmp);
       tb.i32Const(0);
       tb.localSet(total);
-      t.loop(() => {
-        tb.localGet(n);
-      }, i => {
-        // total += len of callback result i: elem → its backing array →
-        // len (scalar elements count as 1 — the tag test, not the value).
-        const cell = t.anyref();
-        t.elemAddr(tmp, i);
-        tb.arrayGet(1);
-        tb.localSet(cell);
-        tb.localGet(cell);
-        tb.refTest(3, false);
-        tb.u8(w.IF);
-        tb.u8(0x40);
-        tb.localGet(cell);
-        tb.refCast(3, true);
-        tb.structGet(3, 0);
-        tb.refCast(1, true);
-        tb.arrayLen();
-        tb.localGet(total);
-        tb.u8(w.ADD);
-        tb.localSet(total);
-        tb.u8(w.ELSE);
-        tb.localGet(total);
-        tb.i32Const(1);
-        tb.u8(w.ADD);
-        tb.localSet(total);
-        tb.u8(w.END);
-      });
+      collectLen(t, tmp, n, total);
       const res = t.allocArrBlk(total);
-      const ww = t.i32();
-      tb.i32Const(0);
-      tb.localSet(ww);
-      t.loop(() => {
-        tb.localGet(n);
-      }, i => {
-        const xb2 = t.anyref(), xl = t.i32();
-        const cell = t.anyref();
-        t.elemAddr(tmp, i);
-        tb.arrayGet(1);
-        tb.localSet(cell);
-        tb.localGet(cell);
-        tb.refTest(3, false);
-        tb.u8(w.IF);
-        tb.u8(0x40);
-        tb.localGet(cell);
-        tb.refCast(3, true);
-        tb.structGet(3, 0);
-        tb.localSet(xb2);
-        tb.localGet(xb2);
-        tb.refCast(1, true);
-        tb.arrayLen();
-        tb.localSet(xl);
-        t.loop(() => {
-          tb.localGet(xl);
-        }, j => {
-          // dst = res[w], src = xb2[j] (element values, same layout the
-          // box/collect path reads back).
-          t.elemAddr(res, ww);
-          t.elemAddr(xb2, j);
-          tb.arrayGet(1);
-          tb.arraySet();
-          tb.localGet(ww);
-          tb.i32Const(1);
-          tb.u8(w.ADD);
-          tb.localSet(ww);
-        });
-        tb.u8(w.ELSE);
-        t.elemAddr(res, ww);
-        tb.localGet(cell);
-        tb.arraySet();
-        tb.localGet(ww);
-        tb.i32Const(1);
-        tb.u8(w.ADD);
-        tb.localSet(ww);
-        tb.u8(w.END);
-      });
+      collectCopy(t, tmp, res, n);
       t.boxArr(res);
     }
     tb.localSet(v);
@@ -1145,11 +1035,10 @@ export function emitMapLike(em: Emit, f: Fn, name: string): void {
       else {
         tb.localGet(iL);
         tb.u8(w.CONV_I32);
-        tb.u8(w.CALL);
-        tb.lebU(em.ix.fBox);
+        tb.callFn(em.ix.fBox);
       }
       tb.arraySet();
-    }, {land: true, kL: 2, noSplit: true, landA: iterLand.idx});
+    }, {land: true, kL: 2, landA: iterLand.idx});
     tb.u8(w.UNREACHABLE); // the callback always tails into iterLand
     tb.u8(w.END);
     tb.u8(w.UNREACHABLE); // both if arms diverge; keep the implicit end typed
@@ -1158,9 +1047,7 @@ export function emitMapLike(em: Emit, f: Fn, name: string): void {
   // tail-call the loop entry.
   const xb = f.anyref(), n = f.i32();
   f.slot(1);
-  b.refCast(3, true);
-  b.structGet(3, 0);
-  b.localSet(xb);
+  f.unboxArr(xb);
   b.localGet(xb);
   b.refCast(1, true);
   b.arrayLen();
@@ -1177,8 +1064,7 @@ export function emitMapLike(em: Emit, f: Fn, name: string): void {
   b.i32Const(iSlot);
   b.i32Const(0);
   b.u8(w.CONV_I32);
-  b.u8(w.CALL);
-  b.lebU(em.ix.fBox);
+  b.callFn(em.ix.fBox);
   b.arraySet();
   b.localGet(0);
   f.pushRef(em.lay.unitRef);
@@ -1258,8 +1144,7 @@ export function emitInits(em: Emit): void {
   // 6..10 = $I32/$U32/$I64/$U64/$F32 (tag = box shape − 1 for the appended
   // per-width number shapes 7..11).
   acc(1, 14, (b) => {
-    b.localGet(0);
-    b.u8(0xd1);
+    b.localIsNull(0);
     b.if(0x7f);
     b.i32Const(0);
     b.u8(w.ELSE);
@@ -1306,16 +1191,13 @@ export function emitInits(em: Emit): void {
   });
   // __num(v) -> f64: the full numeric-box ladder (the JS side reads any
   // width's box as a Number — $F32 promotes, the int boxes convert, $F64 is
-  // the payload; a non-number still traps at the final cast).
+  // the payload; a non-number still traps at the final cast). Same arms as
+  // $num64 minus its $F64-identity fast arm (the payload read is the
+  // default here).
   acc(1, 19, (b) => {
-    unboxArm(b, 0x7c, 11, [w.F64_PROMOTE]);
-    unboxArm(b, 0x7c, 7, [w.CONV_I32]);
-    unboxArm(b, 0x7c, 8, [w.CONV_I32_U]);
-    unboxArm(b, 0x7c, 9, [w.CONV_F64_I64]);
-    unboxArm(b, 0x7c, 10, [w.CONV_F64_U64]);
+    for (const [ht, ops] of NUM64_ARMS) unboxArm(b, 0x7c, ht, ops);
     b.localGet(0);
-    b.refCast(0, false);
-    b.structGet(0, 0);
+    b.readBoxPayload(0);
     for (let i = 0; i < 5; i++) b.u8(w.END);
   });
   // __str_len(v) -> i32
@@ -1334,19 +1216,17 @@ export function emitInits(em: Emit): void {
   // __arr_len(v) -> i32
   acc(1, 14, (b) => {
     b.localGet(0);
-    b.refCast(3, false);
-    b.structGet(3, 0);
+    b.readBoxPayload(3);
     b.arrayLen();
   });
   // __arr_get(v, i) -> anyref
   acc(2, 22, (b) => {
     b.localGet(0);
-    b.refCast(3, false);
-    b.structGet(3, 0);
+    b.readBoxPayload(3);
     b.localGet(1);
     b.arrayGet(1);
   });
-  // __mk_num(x) -> anyref
+  // __mk_num(x) -> anyref ($F64 box)
   acc(1, 13, (b) => {
     b.localGet(0);
     b.structNew(0);
@@ -1359,8 +1239,7 @@ export function emitInits(em: Emit): void {
   // __f32(v) -> f32: $F32 payload (typed-widths step 2)
   acc(1, w.T_F32, (b) => {
     b.localGet(0);
-    b.refCast(11, false);
-    b.structGet(11, 0);
+    b.readBoxPayload(11);
   });
   // __mk_i32/__mk_u32(x: i32) -> anyref (typed-widths step 3)
   acc(1, w.T_MKI32, (b) => {
@@ -1375,13 +1254,11 @@ export function emitInits(em: Emit): void {
   // HOST masks __u32 with >>> 0)
   acc(1, w.T_GETI32, (b) => {
     b.localGet(0);
-    b.refCast(7, false);
-    b.structGet(7, 0);
+    b.readBoxPayload(7);
   });
   acc(1, w.T_GETI32, (b) => {
     b.localGet(0);
-    b.refCast(8, false);
-    b.structGet(8, 0);
+    b.readBoxPayload(8);
   });
   // __mk_i64/__mk_u64(x: i64) -> anyref (typed-widths step 4; the param is
   // a JS BigInt through the standard wasm JS-BigInt integration)
@@ -1397,13 +1274,11 @@ export function emitInits(em: Emit): void {
   // HOST masks __u64 with BigInt.asUintN(64, ...))
   acc(1, w.T_GETI64, (b) => {
     b.localGet(0);
-    b.refCast(9, false);
-    b.structGet(9, 0);
+    b.readBoxPayload(9);
   });
   acc(1, w.T_GETI64, (b) => {
     b.localGet(0);
-    b.refCast(10, false);
-    b.structGet(10, 0);
+    b.readBoxPayload(10);
   });
   // __mk_bool(b) -> anyref
   acc(1, 12, (b) => {
@@ -1432,8 +1307,7 @@ export function emitInits(em: Emit): void {
   // __arr_set(v, i, x) -> ()
   acc(3, 23, (b) => {
     b.localGet(0);
-    b.refCast(3, false);
-    b.structGet(3, 0);
+    b.readBoxPayload(3);
     b.localGet(1);
     b.localGet(2);
     b.arraySet();

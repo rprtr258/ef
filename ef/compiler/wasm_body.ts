@@ -483,6 +483,14 @@ export class Buf {
   i32Const(n: number): void { this.push(MOD.i32.const(n)); }
   i64Const(v: bigint): void { this.push(MOD.i64.const(v)); }
   f64Const(x: number): void { this.push(MOD.f64.const(x)); }
+  // Box a small int (K-cell tags, bools): i31.new of a constant.
+  i31Const(v: number): void { this.i32Const(v); this.refI31(); }
+  // ref.is_null of local i (0xd1).
+  localIsNull(i: number): void { this.localGet(i); this.u8(0xd1); }
+  // Direct call to the helper/trampoline at funcref index idx.
+  callFn(idx: number): void { this.u8(w.CALL); this.lebU(idx); }
+  // Numeric-box payload read: cast to the box shape's (ref ht), read field 0.
+  readBoxPayload(ht: number): void { this.refCast(ht, false); this.structGet(ht, 0); }
   localGet(i: number): void { this.push(MOD.local.get(i, this.localType(i))); }
   localSet(i: number): void { this.stmt(MOD.local.set(i, this.pop())); }
   globalGet(gi: number): void { this.push(MOD.global.get(`g${gi}`, binaryen.anyref)); }
@@ -656,8 +664,7 @@ export class Fn {
   slotF64(i: number): number {
     const l = this.f64();
     this.slot(i);
-    this.body.refCast(0, false);
-    this.body.structGet(0, 0);
+    this.body.readBoxPayload(0);
     this.body.localSet(l);
     return l;
   }
@@ -667,10 +674,18 @@ export class Fn {
   slotF32(i: number): number {
     const l = this.f32();
     this.slot(i);
-    this.body.refCast(11, false);
-    this.body.structGet(11, 0);
+    this.body.readBoxPayload(11);
     this.body.localSet(l);
     return l;
+  }
+
+  // Unbox the $ARR wrapper on the stack → backing $ELEMS in local `into`
+  // (shared prologue of the array builtins and the emitters' array paths;
+  // pushRef(...)/slot(i) precedes for the wrapper's source).
+  unboxArr(into: number): void {
+    this.body.refCast(3, true);
+    this.body.structGet(3, 0);
+    this.body.localSet(into);
   }
 
 
@@ -820,10 +835,8 @@ export class Fn {
   retCell(fragIdx: number, nextE: () => void): number {
     const b = this.body;
     const cell = this.anyref();
-    b.i32Const(w.K_RET);
-    b.refI31();
-    b.i32Const(fragIdx);
-    b.refI31();
+    b.i31Const(w.K_RET);
+    b.i31Const(fragIdx);
     b.localGet(0); // b = the frame the fragment runs over
     nextE();
     b.refCast(5, true);
@@ -876,8 +889,7 @@ export class Fn {
     b.refCast(1, true);
     b.structNew(4);
     b.localSet(snapv);
-    b.i32Const(w.K_SPILL);
-    b.refI31();
+    b.i31Const(w.K_SPILL);
     b.localGet(snapv);
     b.refNull(w.ANYREF); // b unused (was UNIT_CELL)
     nextE();

@@ -154,7 +154,7 @@ export const BIN_FEATURES = binaryen.Features.MVP | binaryen.Features.ReferenceT
 
 // Emission orchestration: one Emit context per compile, dropped at return.
 // Lives here (not wasm_emit.ts) so the two emit modules stay one-way:
-// wasm_module.ts imports wasm_emit.ts (Split/selectBool/emitMapLike...), and
+// wasm_module.ts imports wasm_emit.ts (Split/selectBool...), and
 // nothing imports back up.
 function emit(prog: Program, d: Discovery, o: Opt, ix: Indices, lay: Layout): Fn[] {
   const em: Emit = {
