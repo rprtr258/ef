@@ -1062,60 +1062,35 @@ export function emitInits(em: Emit): void {
     b.localGet(1);
     b.arrayGet(1);
   });
-  // __mk_num(x) -> anyref ($F64 box)
-  acc(1, 13, (b) => {
-    b.localGet(0);
-    b.structNew(0);
-  });
-  // __mk_f32(x: f32) -> anyref (typed-widths step 2)
-  acc(1, w.T_MKF32, (b) => {
-    b.localGet(0);
-    b.structNew(11);
-  });
-  // __f32(v) -> f32: $F32 payload (typed-widths step 2)
-  acc(1, w.T_F32, (b) => {
-    b.localGet(0);
-    b.readBoxPayload(11);
-  });
-  // __mk_i32/__mk_u32(x: i32) -> anyref (typed-widths step 3)
-  acc(1, w.T_MKI32, (b) => {
-    b.localGet(0);
-    b.structNew(7);
-  });
-  acc(1, w.T_MKI32, (b) => {
-    b.localGet(0);
-    b.structNew(8);
-  });
-  // __i32/__u32(v) -> i32: the box payload raw (two's complement bits; the
-  // HOST masks __u32 with >>> 0)
-  acc(1, w.T_GETI32, (b) => {
-    b.localGet(0);
-    b.readBoxPayload(7);
-  });
-  acc(1, w.T_GETI32, (b) => {
-    b.localGet(0);
-    b.readBoxPayload(8);
-  });
-  // __mk_i64/__mk_u64(x: i64) -> anyref (typed-widths step 4; the param is
-  // a JS BigInt through the standard wasm JS-BigInt integration)
-  acc(1, w.T_MKI64, (b) => {
-    b.localGet(0);
-    b.structNew(9);
-  });
-  acc(1, w.T_MKI64, (b) => {
-    b.localGet(0);
-    b.structNew(10);
-  });
-  // __i64/__u64(v) -> i64: the box payload raw (two's complement bits; the
-  // HOST masks __u64 with BigInt.asUintN(64, ...))
-  acc(1, w.T_GETI64, (b) => {
-    b.localGet(0);
-    b.readBoxPayload(9);
-  });
-  acc(1, w.T_GETI64, (b) => {
-    b.localGet(0);
-    b.readBoxPayload(10);
-  });
+  // Box constructors/readers: __mk_num (the $F64 box), then __mk_f32/__f32,
+  // __mk_i32/__mk_u32/__i32/__u32, __mk_i64/__mk_u64/__i64/__u64 (typed-widths
+  // steps 2-4; the i64/u64 param is a JS BigInt through the standard wasm
+  // JS-BigInt integration). Payload is raw two's-complement bits — the HOST
+  // masks __u32 with >>> 0 and __u64 with BigInt.asUintN(64, ...). Call order
+  // is positional: export names zip onto the last functions in push order.
+  const mkBox = (ti: number, shape: number): void => {
+    acc(1, ti, (b) => {
+      b.localGet(0);
+      b.structNew(shape);
+    });
+  };
+  const getBox = (ti: number, shape: number): void => {
+    acc(1, ti, (b) => {
+      b.localGet(0);
+      b.readBoxPayload(shape);
+    });
+  };
+  mkBox(w.T_BOX, 0); // __mk_num
+  mkBox(w.T_MKF32, 11); // __mk_f32
+  getBox(w.T_F32, 11); // __f32
+  mkBox(w.T_MKI32, 7); // __mk_i32
+  mkBox(w.T_MKI32, 8); // __mk_u32
+  getBox(w.T_GETI32, 7); // __i32
+  getBox(w.T_GETI32, 8); // __u32
+  mkBox(w.T_MKI64, 9); // __mk_i64
+  mkBox(w.T_MKI64, 10); // __mk_u64
+  getBox(w.T_GETI64, 9); // __i64
+  getBox(w.T_GETI64, 10); // __u64
   // __mk_bool(b) -> anyref
   acc(1, 12, (b) => {
     b.localGet(0);
