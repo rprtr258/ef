@@ -24,7 +24,6 @@ export const I64_TRUNC_F64 = 0xb0, I32_WRAP_I64 = 0xa7; // i64.trunc_f64_s, i32.
 // i64 family (typed-widths step 4): arithmetic, signed/unsigned compares.
 export const I64_ADD = 0x7c, I64_SUB = 0x7d, I64_MUL = 0x7e, I64_DIVS = 0x7f, I64_DIVU = 0x80,
   I64_REMS = 0x81, I64_REMU = 0x82, I64_EQ = 0x51, I64_LTS = 0x53, I64_LTU = 0x54, I64_GTS = 0x55,
-  I64_GT = 0x55, // alias: i64.gt_s == i64.gts opcode; kept for readability at plain-value compares
   I64_GTU = 0x56, I64_LES = 0x57, I64_LEU = 0x58, I64_GES = 0x59, I64_GEU = 0x5a;
 export const I64_NE = 0x52, I64_XOR = 0x85; // i64.ne, i64.xor
 export const I64_EXTEND_I32_S = 0xac, I64_EXTEND_I32_U = 0xad, I64_EQZ = 0x50; // pinned @as int conversions
@@ -92,20 +91,10 @@ export function impType(n: string): number {
 // in this build, so abstract heap types derive from the nullable type
 // constants via getHeapType. Concrete-type non-null forms share the bare
 // heap type id, so both spellings of a cast target collapse onto HT[i].
-export const absHeaps: {
-  any: binaryen.HeapType,
-  eq: binaryen.HeapType,
-  i31: binaryen.HeapType,
-} = {
-  any: binaryen.getHeapType(binaryen.anyref),
-  eq: binaryen.getHeapType(binaryen.eqref),
-  i31: binaryen.getHeapType(binaryen.i31ref),
-};
-
 export function heapTypes(ht: number): {h: binaryen.HeapType, n: binaryen.Type} {
-  if (ht === ANYREF) return {h: absHeaps.any, n: binaryen.anyref};
-  if (ht === EQREF) return {h: absHeaps.eq, n: binaryen.eqref};
-  if (ht === I31REF) return {h: absHeaps.i31, n: binaryen.i31ref};
+  if (ht === ANYREF) return {h: binaryen.getHeapType(binaryen.anyref), n: binaryen.anyref};
+  if (ht === EQREF) return {h: binaryen.getHeapType(binaryen.eqref), n: binaryen.eqref};
+  if (ht === I31REF) return {h: binaryen.getHeapType(binaryen.i31ref), n: binaryen.i31ref};
   if (ht >= 0 && ht <= 11) return {h: _T.HT[ht], n: _T.RF[ht]};
   throw new WasmError(`internal: bad heaptype byte ${ht}`);
 }

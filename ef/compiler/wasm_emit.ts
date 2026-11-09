@@ -6,7 +6,7 @@
 import {exprChildren, type Expr, type ExprID, type Program} from "./parser.ts";
 import {BUILTINS} from "./analysis.ts";
 import {Ctx, INLINE, Scope, ValueRef, WasmError, _T} from "./wasm_types.ts";
-import {DBGEMIT, OPERATOR_OPS, mapLikeFrameWords} from "./wasm_tables.ts";
+import {DBGEMIT, MOD, OPERATOR_OPS, mapLikeFrameWords} from "./wasm_tables.ts";
 import {Buf, Fn} from "./wasm_body.ts";
 import {frameSizeOf, resolve, splits, type Discovery, type Indices, type Layout, type Opt} from "./wasm_pipeline.ts";
 import * as w from "./wasm_consts.ts";
@@ -135,10 +135,6 @@ export function emitLambdas(em: Emit, id: ExprID): void {
 // slot npMax+1 for a per-handler fn — where emitDispatch stashes it for
 // the matching nparams) through their k — eval.ts:132's (v, k2) => k2(v).
 export function emitCaseFns(em: Emit): void {
-  // Identity returns: read the frame's Return slot (1 for the shared
-  // npMax=0 fn, npMax+1 for a per-handler fn — where emitDispatch stashes
-  // it for the matching nparams) and dispatch it through the frame's k —
-  // eval.ts:132's (v, k2) => k2(v).
   const emitIdRet = (fn: Fn, slot: number): void => {
     fn.em = em;
     const b = fn.body;
@@ -1111,7 +1107,8 @@ export function selectBool(em: Emit, f: Fn, emitCond?: () => void): void {
   f.pushRef(em.lay.trueRef);
   f.pushRef(em.lay.falseRef);
   b.localGet(t);
-  b.typedSelect(); // typed select (result anyref)
+  const cond = b.pop(), v2 = b.pop(), v1 = b.pop();
+  b.push(MOD.if(cond, v1, v2)); // ref select: binaryen's select() is numeric-only
 }
 
 // Persist a ref into the operand spill slot computeSpills allocated for
@@ -1298,8 +1295,7 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
           b.localGet(x); b.localGet(y); b.u8(isF32 ? w.F32_EQ : isWide ? w.I64_EQ : w.EQ);
         });
         if (name === "!=") {
-          b.refCast(w.I31REF, false);
-          b.i31Get();
+          i31of(b);
           b.u8(w.EQZ);
           selectBool(em, f);
         }
@@ -1936,11 +1932,7 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
     // Value-explicit arg order: the child's ref is computed BEFORE the
     // destination address is pushed, so a split inside the child aborts
     // on a clean operand stack (same ordering as the app case's args).
-    const r = k === ci
-      ? cutChildRef(em, e.args[k], f, s, ctx, "cut")
-      : k < ci
-        ? cutChildRef(em, e.args[k], f, s, ctx, "pre")
-        : cutChildRef(em, e.args[k], f, s, ctx, "post");
+    const r = cutChildRef(em, e.args[k], f, s, ctx, cutMode(k, ci));
     b.localGet(blk);
     b.refCast(1, true);
     b.i32Const(k);
@@ -2430,8 +2422,7 @@ function emitLoopPass(em: Emit, f: Fn, e: Expr & {t: "while"}, s: Scope, kNext: 
     throw sp;
   }
   f.pushRef(condRef);
-  b.u8(w.CALL);
-  b.lebU(em.ix.fTruthy);
+  b.callFn(em.ix.fTruthy);
   b.if(); // void: the body path tails into the loop-back cell
   try {
     // RET cell over the pass's frame; next = the after-loop continuation

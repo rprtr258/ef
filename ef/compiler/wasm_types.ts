@@ -56,10 +56,6 @@ export const _T: {
   };
 })();
 
-// Shape indices of the number boxes (tag codes are shape-1 for 7..11, see
-// __tag in wasm_module.ts).
-export const T_F64 = 0, T_I32 = 7, T_U32 = 8, T_I64 = 9, T_U64 = 10, T_F32S = 11;
-
 // Emission context: which local holds the ambient continuation cell (1 = a
 // T_KABI function's k param, 2 = a rest-of-site fragment's kNext param, any
 // other local = a handle's K_HDL cell), plus the not-yet-executed cut path

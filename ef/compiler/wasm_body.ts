@@ -281,7 +281,9 @@ export class Buf {
       case w.CALL_INDIRECT: case w.RETURN_CALL_INDIRECT: {
         const [typeIdx, tableIdx] = got;
         if (tableIdx !== 0) throw new WasmError("internal: call_indirect table != 0");
-        const sig = this.tSig(typeIdx);
+        const sigT = SIGS[typeIdx] as {p: (number | number[])[], r: number | number[] | null} | undefined;
+        if (sigT === undefined) throw new WasmError(`internal: no sig for type ${typeIdx}`);
+        const sig = {ps: sigT.p.map((t) => vt(t)), r: sigT.r === null ? null : vt(sigT.r)};
         const idxExpr = this.pop();
         const args = sig.ps.map(() => this.pop()).reverse();
         const call = op === w.CALL_INDIRECT
@@ -345,19 +347,13 @@ export class Buf {
     // need no spilling.
     if ((kind === "block" || kind === "loop") && !sc.dead && this.ops.length > 0) {
       sc.spill = this.ops.splice(0).map((v) => {
-        const tmp = this.tempLocal(binaryen.getExpressionType(v));
+        const tmp = this.fn.typed(binaryen.getExpressionType(v));
         sc.stmts.push(MOD.local.set(tmp, v));
         return tmp;
       });
       sc.mark = 0;
     }
     this.scopes.push(sc);
-  }
-
-  // Fresh local of a binaryen type (spill slots keep the exact type so
-  // consumers keep validating).
-  private tempLocal(t: binaryen.Type): number {
-    return this.fn.typed(t);
   }
 
   // A closed scope is a statement (void) or a value (its blocktype has a
@@ -373,13 +369,6 @@ export class Buf {
       // is empty — exactly matching how the byte world's stack behaved.
       this.pending.push(...sc.spill);
     }
-  }
-
-  // Typed immediate from the stream's (typeidx, tableidx) pair.
-  private tSig(typeIdx: number): {ps: binaryen.Type[], r: binaryen.Type | null} {
-    const sig = SIGS[typeIdx] as {p: (number | number[])[], r: number | number[] | null} | undefined;
-    if (sig === undefined) throw new WasmError(`internal: no sig for type ${typeIdx}`);
-    return {ps: sig.p.map((t) => vt(t)), r: sig.r === null ? null : vt(sig.r)};
   }
 
   // MVP numeric ops + f64 ops + conversions (all immediate-less).
@@ -556,10 +545,6 @@ export class Buf {
   refI31(): void { this.push(MOD.ref.i31(this.pop())); }
   i31Get(): void { this.push(MOD.i31.get_s(this.pop())); }
   refEq(): void { const r = this.pop(), l = this.pop(); this.push(MOD.ref.eq(l, r)); }
-  typedSelect(): void {
-    const cond = this.pop(), v2 = this.pop(), v1 = this.pop();
-    this.push(MOD.if(cond, v1, v2)); // ref select: binaryen's select() is numeric-only
-  }
 
   // Finish the function body: close any open scopes (none expected) and wrap
   // the statement list, with a trailing operand as the function result.
@@ -665,16 +650,6 @@ export class Fn {
     const l = this.f64();
     this.slot(i);
     this.body.readBoxPayload(0);
-    this.body.localSet(l);
-    return l;
-  }
-
-  // f32 payload of slot i's number ($F32 box). Same trap semantics as
-  // slotF64; used by f32-dispatched trampoline arms.
-  slotF32(i: number): number {
-    const l = this.f32();
-    this.slot(i);
-    this.body.readBoxPayload(11);
     this.body.localSet(l);
     return l;
   }
@@ -812,9 +787,7 @@ export class Fn {
     else { b.localGet(0); b.structGet(4, 1); b.i32Const(r.i); b.arrayGet(1); }
   }
 
-  constF64(x: number) {
-    return () => this.body.f64Const(x);
-  }
+  constF64(x: number): () => void { return () => this.body.f64Const(x); }
 
   // Calls the closure in local `fc`; argEmit(k, ffp) stores argument k into
   // the fresh frame at local ffp. The callee has the uniform CPS ABI
@@ -862,14 +835,6 @@ export class Fn {
   // slots it legitimately reloads), while pre-outer-cut values still sit
   // unmutated in the live frame, so the live freeze sees them too.
   snapWrap(nextE: () => void): number {
-    // A K_SPILL cell {K_SPILL, snapshot, null, next} chained in front of a
-    // split site's rest fragment. The snapshot freezes the values the rest
-    // fragment reloads from operand-spill slots: a copy of the current frame
-    // image taken at the split site (per capture — this cell is allocated at
-    // runtime on every site execution and copied into every continuation
-    // captured here, so multi-shot resumes each see the values this execution
-    // had built up, matching the interpreter's CPS accs). Nested split sites
-    // inside a fragment re-emission freeze the live frame too — see above.
     const b = this.body;
     const ksp = this.anyref(), snapv = this.anyref();
     // Fresh $FRAME {same parent, slots array copied via array.copy} — the
@@ -899,7 +864,6 @@ export class Fn {
     return ksp;
   }
 }
-
 
 function sigOf(em: FnOwner, funcrefIdx: number): {ps: binaryen.Type[], r: binaryen.Type | null} {
   const typeIdx = funcrefIdx < em.o.liveImports.length

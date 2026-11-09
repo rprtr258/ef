@@ -96,9 +96,6 @@ import {emitBuiltins, emitInits, emitMain} from "./wasm_module.ts";
 // - wasm_module.ts  — builtin trampolines, main, run/accessor init fns
 // - wasm.ts         — this entry: compile/compileWithOps + emit() orchestration
 
-
-
-
 // --- compiler ---------------------------------------------------------------
 
 export function compile(src: string): Uint8Array<ArrayBuffer> {
@@ -191,6 +188,3 @@ function emit(prog: Program, d: Discovery, o: Opt, ix: Indices, lay: Layout): Fn
   emitInits(em);
   return em.funcs;
 }
-
-
-
