@@ -5,7 +5,7 @@ import {editor} from "./editor.ts";
 import {setTab} from "./output.ts";
 import {$, activeFile, els, state} from "./state.ts";
 
-export function renderProblems(ps: Problem[]): void {
+function renderProblems(ps: Problem[]): void {
   const box = $("#problems");
   box.replaceChildren();
   els.tabProblemsCount.textContent = ps.length === 0 ? "" : `${ps.length}`;

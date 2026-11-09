@@ -24,7 +24,7 @@ export function closeModal(): void {
   editor?.focus();
 }
 
-export function confirmModal(): void {
+function confirmModal(): void {
   const cb = modalOnOk;
   closeModal();
   cb?.(els.modalInput.value);

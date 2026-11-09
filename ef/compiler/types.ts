@@ -9,8 +9,8 @@ export type Prim = { tag: "prim", name: NumName | "string" | "bool" | "unit" };
 // "int" / "float" are the untyped numeric-literal types (produced only by
 // num literals): `1` accepts any numeric context and defaults to i64, `1.5`
 // any float context and defaults to f64. They are not writable in source.
-export const INT_NAMES = new Set<NumName>(["i32", "i64", "u32", "u64"]);
-export const FLOAT_NAMES = new Set<NumName>(["f32", "f64"]);
+const INT_NAMES = new Set<NumName>(["i32", "i64", "u32", "u64"]);
+const FLOAT_NAMES = new Set<NumName>(["f32", "f64"]);
 const NUMERIC_NAMES = new Set<NumName>([...INT_NAMES, ...FLOAT_NAMES, "int", "float"]);
 export type ArrT = { tag: "arr", elem: Type };
 // Tuples: a fixed-arity record. `name` is null for unnamed fields (`[int, float]`)
@@ -29,7 +29,7 @@ export type FunT = { tag: "fun", params: Type[], ret: Type, effs: Effs };
 export type Var = { tag: "var", id: number };
 export type AnyT = { tag: "any" };
 
-export {TI32, TI64, TU32, TU64, TF32, TF64, TINT, TFLOAT, TSTR, TBOOL, TNULL, TANY};
+export {TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TNULL, TANY};
 
 export function tArr(elem: Type): ArrT { return {tag: "arr", elem}; }
 export function tTup(fields: TupField[]): TupT { return {tag: "tup", fields}; }
@@ -387,7 +387,7 @@ export function showT(t: Type): string {
   return go(t);
 }
 
-export class TypeError_ extends Error {}
+class TypeError_ extends Error {}
 // A unification failure reported as "Type mismatch". Subclassed so `infer`
 // can attach the source position of the innermost expression being checked
 // when the mismatch surfaced.

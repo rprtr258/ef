@@ -59,7 +59,7 @@ export function setupMonaco(): void {
   });
 }
 
-export let tokenLines: {start: number, len: number, scope: string}[][] = [];
+let tokenLines: {start: number, len: number, scope: string}[][] = [];
 
 export function refreshTokens(): void {
   tokenLines = tokenize(editor === null ? activeFile().code : editor.getValue());

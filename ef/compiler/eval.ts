@@ -30,7 +30,7 @@ export function apply(f: Value, args: Value[], k: Cont): Outcome {
 }
 
 // Evaluator (CPS). `id` indexes into the program's flat node slice `nodes`.
-export function evalE(id: ExprID, nodes: Expr[], env: Env, k: Cont): Outcome {
+function evalE(id: ExprID, nodes: Expr[], env: Env, k: Cont): Outcome {
   // Width normalization: the checker stamps every node whose type is a
   // numeric width (concrete widths as-is, untyped literals defaulted to
   // i64/f64); the node's value is normalized to that width's runtime
@@ -286,7 +286,7 @@ export type EffectInterp = Partial<Record<string, (args: Value[], k: Cont) => Ou
 // it here instead would read `builtins` during eval's own init and be TDZ-
 // sensitive in the eval⇄builtins import cycle.
 
-export function runTop(out: Outcome, interp?: EffectInterp): Value {
+function runTop(out: Outcome, interp?: EffectInterp): Value {
   while (true) {
     if (out.tag === "done")
       return out.value;

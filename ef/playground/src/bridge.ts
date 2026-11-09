@@ -59,7 +59,7 @@ export function browserInterp(out: (s: string) => void): EffectInterp {
 // Out!/Println! stream to the output pane, Exit! raises ExitSignal, Wait!
 // busy-waits, Random! is Math.random; Read!/Write! fall through to the
 // bundle-time stubs ("unavailable in browser").
-export function browserWasmInterp(out: (s: string) => void): WasmInterp {
+function browserWasmInterp(out: (s: string) => void): WasmInterp {
   return {
     Out: (args) => {
       const s = args[0];
@@ -84,7 +84,7 @@ export function browserWasmInterp(out: (s: string) => void): WasmInterp {
 
 // --- compile pipeline -----------------------------------------------------
 
-export function parse(src: string): Program {
+function parse(src: string): Program {
   return new Parser(src).parseProgram();
 }
 

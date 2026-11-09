@@ -448,7 +448,7 @@ function emitStmtsDispatch(em: Emit, stmts: ExprID[], f: Fn, s: Scope, ctx: Ctx,
 // operand (local `at`, default 0) is a `ht` box, leave its payload
 // converted by `ops` on the stack; else fall through to the next arm.
 // `ret` is the arm's block result valtype byte.
-export function unboxArm(b: Buf, ret: number, ht: number, ops: number[], at = 0, nullable = false): void {
+function unboxArm(b: Buf, ret: number, ht: number, ops: number[], at = 0, nullable = false): void {
   b.localGet(at);
   b.refTest(ht, nullable);
   b.if(ret);

@@ -1,0 +1,10 @@
+{
+  "workspaces": {
+    "compiler": {
+      "entry": ["scripts/*.ts"]
+    },
+    "playground": {
+      "entry": ["src/worker.ts"]
+    }
+  }
+}

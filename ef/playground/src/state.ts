@@ -2,7 +2,7 @@
 // and persisted preferences (project in localStorage, light/dark theme).
 import {type Project, DEFAULT_PROJECT, File} from "./project.ts";
 
-export const LS_KEY = "ef.playground.project.v1";
+const LS_KEY = "ef.playground.project.v1";
 export const THEME_KEY = "ef.playground.theme";
 
 export type Tab = "output" | "problems";
