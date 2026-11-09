@@ -7,7 +7,7 @@ import {BUILTINS} from "./analysis.ts";
 import {WasmError} from "./wasm_types.ts";
 import {Buf, Fn} from "./wasm_body.ts";
 import {frameSizeOf} from "./wasm_pipeline.ts";
-import {NUM64_ARMS, type Emit, Split, emitCallClosure, emitDispatch, emitFail, expr, fillRest, i31of, makeRestThunk, selectBool, unboxArm} from "./wasm_emit.ts";
+import {NUM64_ARMS, type Emit, Split, emitCallClosure, emitDispatch, emitFail, expr, fillRest, i31of, ladderBody, makeRestThunk, selectBool} from "./wasm_emit.ts";
 import * as w from "./wasm_consts.ts";
 
 // Σ over the n per-element cells in backing `src`: array elements add
@@ -1194,12 +1194,7 @@ export function emitInits(em: Emit): void {
   // the payload; a non-number still traps at the final cast). Same arms as
   // $num64 minus its $F64-identity fast arm (the payload read is the
   // default here).
-  acc(1, 19, (b) => {
-    for (const [ht, ops] of NUM64_ARMS) unboxArm(b, 0x7c, ht, ops);
-    b.localGet(0);
-    b.readBoxPayload(0);
-    for (let i = 0; i < 5; i++) b.u8(w.END);
-  });
+  acc(1, 19, (b) => ladderBody(b, {ret: 0x7c, arms: NUM64_ARMS, defOps: []}));
   // __str_len(v) -> i32
   acc(1, 14, (b) => {
     b.localGet(0);

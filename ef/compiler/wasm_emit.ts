@@ -135,16 +135,20 @@ export function emitLambdas(em: Emit, id: ExprID): void {
 // slot npMax+1 for a per-handler fn — where emitDispatch stashes it for
 // the matching nparams) through their k — eval.ts:132's (v, k2) => k2(v).
 export function emitCaseFns(em: Emit): void {
-  const idf = em.ix.identityRet;
-  idf.em = em;
-  {
-    const b = idf.body;
-    const v = idf.anyref();
-    idf.slot(1); // hframe slot 1: the Return value
+  // Identity returns: read the frame's Return slot (1 for the shared
+  // npMax=0 fn, npMax+1 for a per-handler fn — where emitDispatch stashes
+  // it for the matching nparams) and dispatch it through the frame's k —
+  // eval.ts:132's (v, k2) => k2(v).
+  const emitIdRet = (fn: Fn, slot: number): void => {
+    fn.em = em;
+    const b = fn.body;
+    const v = fn.anyref();
+    fn.slot(slot); // hframe Return slot
     b.localSet(v);
-    emitDispatch(em, idf, v);
-  }
-  em.funcs.push(idf);
+    emitDispatch(em, fn, v);
+    em.funcs.push(fn);
+  };
+  emitIdRet(em.ix.identityRet, 1);
   for (const [hdlId, info] of em.d.hdlCases) {
     for (const c of info.cases) {
       c.fn.em = em;
@@ -156,14 +160,7 @@ export function emitCaseFns(em: Emit): void {
       bodyCatch(em, info.retCase.body, info.retCase.fn, info.scope, true, INLINE);
       em.funcs.push(info.retCase.fn);
     } else if (info.npMax > 0) {
-      const idr = em.ix.hdlIdRet.get(hdlId)!;
-      idr.em = em;
-      const b = idr.body;
-      const v = idr.anyref();
-      idr.slot(info.npMax + 1); // hframe Return slot (nparams = npMax)
-      b.localSet(v);
-      emitDispatch(em, idr, v);
-      em.funcs.push(idr);
+      emitIdRet(em.ix.hdlIdRet.get(hdlId)!, info.npMax + 1);
     }
   }
   // The shared resume closure fn (§4.6): (frame, k) -> anyref. frame's
@@ -181,22 +178,23 @@ export function emitCaseFns(em: Emit): void {
     const b = rf.body;
     const v = rf.anyref(), rec = rf.anyref(), slice = rf.anyref(), hdl = rf.anyref();
     const copy = rf.anyref(), fresh = rf.anyref(), cur = rf.anyref();
+    // Read capture-record slot n of the env frame (slot 1 = captured
+    // slice, 2 = matched HDL, 3 = the invocation's hframe copy).
+    const recSlot = (n: number): void => {
+      b.localGet(rec);
+      b.refCast(4, true);
+      b.structGet(4, 1);
+      b.i32Const(n);
+      b.arrayGet(1);
+    };
     rf.slot(0);
     b.localSet(v); // the resumed value: the closure call frame's slot 0
     b.localGet(0);
     b.structGet(4, 0); // the capture record (env frame)
     b.localSet(rec);
-    b.localGet(rec);
-    b.refCast(4, true);
-    b.structGet(4, 1);
-    b.i32Const(1);
-    b.arrayGet(1);
+    recSlot(1);
     b.localSet(slice);
-    b.localGet(rec);
-    b.refCast(4, true);
-    b.structGet(4, 1);
-    b.i32Const(2);
-    b.arrayGet(1);
+    recSlot(2);
     b.localSet(hdl);
     b.localGet(slice);
     b.refCast(5, true);
@@ -206,11 +204,7 @@ export function emitCaseFns(em: Emit): void {
     b.localSet(copy);
     b.i31Const(w.K_HDL);
     cellGet(b, hdl, 1); // a = the matched handler's case table
-    b.localGet(rec);
-    b.refCast(4, true);
-    b.structGet(4, 1);
-    b.i32Const(3);
-    b.arrayGet(1); // b = the invocation's hframe copy (rec slot 3)
+    recSlot(3); // b = the invocation's hframe copy (rec slot 3)
     b.localGet(1); // next = the k this closure was invoked with
     b.structNew(5);
     b.localSet(fresh);
@@ -455,14 +449,14 @@ function emitStmtsDispatch(em: Emit, stmts: ExprID[], f: Fn, s: Scope, ctx: Ctx,
 
 // One arm of the adaptive unbox ladders ($num64/$f32of/$narrowOf/
 // $wideOf below and the host __num accessor in wasm_module.ts): if the
-// operand (local 0) is a `ht` box, leave its payload converted by `ops`
-// on the stack; else fall through to the next arm. `ret` is the arm's
-// block result valtype byte.
-export function unboxArm(b: Buf, ret: number, ht: number, ops: number[]): void {
-  b.localGet(0);
-  b.refTest(ht, false);
+// operand (local `at`, default 0) is a `ht` box, leave its payload
+// converted by `ops` on the stack; else fall through to the next arm.
+// `ret` is the arm's block result valtype byte.
+export function unboxArm(b: Buf, ret: number, ht: number, ops: number[], at = 0, nullable = false): void {
+  b.localGet(at);
+  b.refTest(ht, nullable);
   b.if(ret);
-  b.localGet(0);
+  b.localGet(at);
   b.readBoxPayload(ht);
   for (const op of ops) b.u8(op);
   b.u8(w.ELSE);
@@ -473,25 +467,24 @@ export function unboxArm(b: Buf, ret: number, ht: number, ops: number[]): void {
 // $f32of/$i32of/$u32of/$i64of/$u64of and the host __num accessor all
 // share this one structure.
 export type LadderSpec = {
-  typeIdx: number,       // (anyref) -> ret (sig pre-registered in assignIndices)
+  typeIdx?: number,      // (anyref) -> ret (sig pre-registered in assignIndices)
   ret: number,           // arm/default block result valtype byte
-  ends: number,          // ENDs closing the arm chain (= arms.length + 1)
   arms: [number, number[]][],
-  defShape: number, defOps: number[],
+  defOps: number[],      // ops over the default ($F64) payload read
 };
 
 // Emit one ladder body into `b` (shared by the helper Fns and __num).
 export function ladderBody(b: Buf, spec: LadderSpec): void {
   for (const [shape, ops] of spec.arms) unboxArm(b, spec.ret, shape, ops);
   b.localGet(0); // default: trap (non-number)
-  b.readBoxPayload(spec.defShape);
+  b.readBoxPayload(0);
   for (const op of spec.defOps) b.u8(op);
-  for (let i = 0; i < spec.ends; i++) b.u8(w.END);
+  for (let i = 0; i < spec.arms.length; i++) b.u8(w.END);
 }
 
 const ladderFn = (em: Emit, spec: LadderSpec): Fn => {
   const fn = new Fn(1, em);
-  fn.typeIdx = spec.typeIdx;
+  if (spec.typeIdx !== undefined) fn.typeIdx = spec.typeIdx;
   ladderBody(fn.body, spec);
   return fn;
 };
@@ -625,12 +618,7 @@ export function emitHelpers(em: Emit): Fn[] {
       // readWide leaves v's raw i64 payload on the stack ($I64 box or the
       // $U64 box reinterpreted bitwise).
       const readWide = (v: number): void => {
-        b.localGet(v);
-        b.refTest(9, true);
-        b.if(0x7e);
-        b.localGet(v);
-        b.readBoxPayload(9);
-        b.u8(w.ELSE);
+        unboxArm(b, 0x7e, 9, [], v, true); // $I64 payload; else $U64
         b.localGet(v);
         b.readBoxPayload(10);
         b.u8(w.END);
@@ -808,12 +796,12 @@ export function emitHelpers(em: Emit): Fn[] {
   // float-wildcard values can flow into f64-plane positions (builtin params,
   // counters), so numeric unboxes must accept both shapes.
   const num64 = ladderFn(em, {
-    typeIdx: 19, ret: 0x7c, ends: 6, // __num's shape: (anyref) -> f64
+    typeIdx: 19, ret: 0x7c, // __num's shape: (anyref) -> f64
     // $F64 first (the common case for well-typed f64 sites pays one
     // refTest), then $F32 promotes, the int boxes convert (each box's own
     // signedness); a non-number still traps at the default cast.
     arms: [[0, []], ...NUM64_ARMS],
-    defShape: 0, defOps: [],
+    defOps: [],
   });
   // Adaptive unbox helpers (typed-widths steps 2-4). Each reads ANY of the
   // numeric box shapes into its width, applying the conversion the
@@ -828,30 +816,19 @@ export function emitHelpers(em: Emit): Fn[] {
   // A non-number operand still traps at the default ref.cast (the frozen
   // deviation for dynamically non-numeric values).
   const f32of = ladderFn(em, {
-    typeIdx: w.T_F32, ret: 0x7d, ends: 5,
+    typeIdx: w.T_F32, ret: 0x7d,
     arms: [[11, []], [7, [w.CONV_F32_I32]], [8, [w.CONV_F32_U32]], [9, [w.CONV_F32_I64]], [10, [w.CONV_F32_U64]]],
-    defShape: 0, defOps: [w.F32_DEMOTE], // default: $F64 demote
+    defOps: [w.F32_DEMOTE], // default: $F64 demote
   });
-  const i32of = ladderFn(em, {
-    typeIdx: w.T_GETI32, ret: 0x7f, ends: 4,
-    arms: [[7, []], [8, []], [9, [w.I32_WRAP_I64]], [10, [w.I32_WRAP_I64]]], // own + sibling narrow; low-32 wraps
-    defShape: 0, defOps: [w.I64_TRUNC_F64, w.I32_WRAP_I64], // default: $F64 truncate + wrap
-  });
-  const u32of = ladderFn(em, {
-    typeIdx: w.T_GETI32, ret: 0x7f, ends: 4,
-    arms: [[8, []], [7, []], [9, [w.I32_WRAP_I64]], [10, [w.I32_WRAP_I64]]],
-    defShape: 0, defOps: [w.I64_TRUNC_F64, w.I32_WRAP_I64],
-  });
-  const i64of = ladderFn(em, {
-    typeIdx: w.T_GETI64, ret: 0x7e, ends: 4,
-    arms: [[9, []], [10, []], [7, [w.I64_EXTEND_I32_S]], [8, [w.I64_EXTEND_I32_U]]], // own + sibling wide; $I32 sign-ext, $U32 zero-ext
-    defShape: 0, defOps: [w.I64_TRUNC_F64], // default: $F64 truncate
-  });
-  const u64of = ladderFn(em, {
-    typeIdx: w.T_GETI64, ret: 0x7e, ends: 4,
-    arms: [[10, []], [9, []], [7, [w.I64_EXTEND_I32_S]], [8, [w.I64_EXTEND_I32_U]]],
-    defShape: 0, defOps: [w.I64_TRUNC_F64],
-  });
+  // The signed/unsigned of-family: own box leads, the sibling shape is
+  // arm 2, the remaining int boxes convert (the box's own signedness);
+  // the default reads $F64 and truncates (wrapping to 32 bits too there).
+  const ofPair = (typeIdx: number, ret: number, own: number, sib: number, conv: [number, number[]][], defOps: number[]): Fn =>
+    ladderFn(em, {typeIdx, ret, arms: [[own, []], [sib, []], ...conv], defOps});
+  const i32of = ofPair(w.T_GETI32, 0x7f, 7, 8, [[9, [w.I32_WRAP_I64]], [10, [w.I32_WRAP_I64]]], [w.I64_TRUNC_F64, w.I32_WRAP_I64]);
+  const u32of = ofPair(w.T_GETI32, 0x7f, 8, 7, [[9, [w.I32_WRAP_I64]], [10, [w.I32_WRAP_I64]]], [w.I64_TRUNC_F64, w.I32_WRAP_I64]);
+  const i64of = ofPair(w.T_GETI64, 0x7e, 9, 10, [[7, [w.I64_EXTEND_I32_S]], [8, [w.I64_EXTEND_I32_U]]], [w.I64_TRUNC_F64]);
+  const u64of = ofPair(w.T_GETI64, 0x7e, 10, 9, [[7, [w.I64_EXTEND_I32_S]], [8, [w.I64_EXTEND_I32_U]]], [w.I64_TRUNC_F64]);
   return [truthy, eq, box, capture, num64, f32of, i32of, u32of, i64of, u64of];
 }
 
