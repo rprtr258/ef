@@ -2,13 +2,14 @@
 
 First phase of the [backend pipeline](wasm.md#pipeline). One walk over the
 checked program that produces the discovery record every later phase builds
-on.
+on. The caller (`compileWithOps`) runs `checkProgram` before the pipeline —
+rejecting ill-typed programs and stamping the runtime markers discovery
+reads — so discovery consumes the stamps as-is.
 
 ## What it collects
 
-1. **Types.** The checker runs once more on the program (the interpreter may
-   have run earlier in the same process); the `Checked` result is reused
-   as-is — the backend never re-derives types.
+1. **Types.** The program arrives pre-checked; the checker's runtime stamps
+   are read as-is — the backend never re-derives types.
 2. **Effect ops.** The builtin effects are pre-seeded into the module's op
    table in table order; the program's performed and handled ops are then
    interned in first-appearance order, program ops following the builtins.

@@ -1,7 +1,7 @@
 import * as readline from "node:readline";
 import {newCtx, exec} from "./eval.ts";
 import {show} from "./env.ts";
-import {showT} from "./types.ts";
+import {checkProgram, showT} from "./types.ts";
 import {Parser} from "./parser.ts";
 
 // repl: an interactive read-eval-print loop. Pipeline state (Ctx: runtime env
@@ -15,7 +15,10 @@ export function repl(): void {
   const rl = readline.createInterface({input: process.stdin, output: process.stdout, prompt: "ef> "});
   const evalLine = (src: string): void => {
     const prog = new Parser(src).parseProgram();
-    const {value, lastType, lastIsExpr} = exec(prog, ctx);
+    // Check against ctx's accumulator before exec runs; a type error throws
+    // here and leaves ctx.checked untouched.
+    const checked = checkProgram(prog, ctx.checked);
+    const {value, lastType, lastIsExpr} = exec(prog, ctx, checked);
     if (lastIsExpr && value !== null)
       console.log(show(value) + " : " + showT(lastType));
   };

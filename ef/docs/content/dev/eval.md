@@ -99,18 +99,20 @@ else `throw new Error("Unhandled effect: …")`.
 
 ## The `exec` pipeline
 
-`newCtx(interp?)` → fresh pipeline state; `exec(prog, ctx)`:
+`newCtx(interp?)` → fresh pipeline state; `exec(prog, ctx, checked)` — the
+program is checked by the caller *before* the interpreter runs (`run`
+checks once after parsing; a REPL line checks against
+`ctx.checked`):
 
-1. `checkProgram(prog, ctx.checked)` — the accumulated [checker](types.md) state.
-2. **Fail fast** on statically unhandled ops: any op in `checked.unhandled`
+1. **Fail fast** on statically unhandled ops: any op in `checked.unhandled`
    that is neither a builtin effect nor covered by `ctx.interp` throws
    *before evaluation begins* — a program that would die mid-run after side
    effects dies before its first side effect. `ctx.checked` is assigned only
    after the check passes, so a rejected REPL line leaves the accumulator
    untouched (like a type error does).
-3. `seedBuiltins(ctx.env, builtinRefs(prog))` — bind exactly the builtins this
+2. `seedBuiltins(ctx.env, builtinRefs(prog))` — bind exactly the builtins this
    program references; user shadows are never overwritten.
-4. Evaluate each item: `runTop(evalE(item, …))`. Returns
+3. Evaluate each item: `runTop(evalE(item, …))`. Returns
    `{value, lastType, lastIsExpr}` — `lastIsExpr` implements the REPL echo
    rule (declarations print nothing).
 

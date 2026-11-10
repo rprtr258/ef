@@ -5,6 +5,7 @@ import {readFileSync, readdirSync, writeFileSync} from "node:fs";
 import binaryen from "binaryen";
 import {run} from "./eval.ts";
 import {BIN_FEATURES, compile} from "./wasm.ts";
+import {checkProgram} from "./types.ts";
 import {discover, optimize, assignIndices, layoutStatics} from "./wasm_pipeline.ts";
 import {Parser} from "./parser.ts";
 import {runWasm} from "./wasm_host.ts";
@@ -81,6 +82,7 @@ describe("wasm backend", () => {
     // touches every layoutStatics branch: number + string literals, a PI
     // reference, and a value-referenced builtin (closure static).
     const prog = new Parser("x :: 1;\ns :: \"a\";\npi :: PI;\nl :: len;\nx;").parseProgram();
+    checkProgram(prog); // discover reads the runtime markers the check stamps
     const d = discover(prog);
     const o = optimize(prog);
     const ix = assignIndices(prog, d, o);

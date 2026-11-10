@@ -13,7 +13,7 @@ artifact it did not create:
 
 | Phase | Reads | Produces | Job |
 |-------|-------|----------|-----|
-| [`discover`](wasm-discover.md) | `Program` | `Discovery` | typecheck (reused as-is); intern effect ops into the op table (returned to the host so both agree on op numbering); handler-presence pre-scan; the scope/slot/literal/split-site walk over the whole program |
+| [`discover`](wasm-discover.md) | `Program` (pre-checked by `compileWithOps`) | `Discovery` | intern effect ops into the op table (returned to the host so both agree on op numbering); handler-presence pre-scan; the scope/slot/literal/split-site walk over the whole program |
 | [`optimize`](wasm-optimize.md) | `Program` | `Opt` | `OPT_PASSES`: `treeShakeBuiltins` (emit only referenced builtins) and `dropDeadHostImports` (live host-import set — funcref index assignment derives from it) |
 | [`assignIndices`](wasm-indices.md) | `Discovery`, `Opt` | `Indices` | funcref table indices: helpers, lambdas, builtins, case fns, main; perform/handle spill slots |
 | [`layoutStatics`](wasm-layout.md) | `Discovery`, `Indices`, `Opt` | `Layout` | static literal globals — nums, strings, bools, `PI`, per-handle case tables — each initialized by a GC constant expression at instantiation |

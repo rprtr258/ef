@@ -133,7 +133,8 @@ export type RunResult = {value: Value, type: Type, ops: string[]};
 // order — the same list a build reports.
 export function interpret(src: string, out: (s: string) => void): RunResult {
   const prog = parse(src);
-  const r = exec(prog, newCtx(browserInterp(out)));
+  const checked = checkProgram(prog); // reject type errors before exec runs
+  const r = exec(prog, newCtx(browserInterp(out)), checked);
   return {value: r.value, type: r.lastType, ops: collectEffectOps(prog)};
 }
 

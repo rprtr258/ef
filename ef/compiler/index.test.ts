@@ -19,8 +19,10 @@ const tmpPath = (n: string) => join(tmpdir(), `ef-test-${process.pid}-${n}.txt`)
 
 test("exec drives a REPL session: bindings persist, lastType resolved", () => {
   const ctx = newCtx();
-  const l1 = exec(new Parser("add :: fn(a: i64, b: i64): i64 { a + b };").parseProgram(), ctx);
-  const l2 = exec(new Parser("add(1, 2)").parseProgram(), ctx);
+  const p1 = new Parser("add :: fn(a: i64, b: i64): i64 { a + b };").parseProgram();
+  const l1 = exec(p1, ctx, checkProgram(p1, ctx.checked));
+  const p2 = new Parser("add(1, 2)").parseProgram();
+  const l2 = exec(p2, ctx, checkProgram(p2, ctx.checked));
   expect(l1.value).toBe(null);
   expect(l1.lastIsExpr).toBe(false);
   expect(l2.value).toBe(3n);
@@ -613,16 +615,20 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
 describe("Env seeding (exec binds referenced builtins per line)", () => {
   test("a later REPL line can reference a previously-unused builtin", () => {
     const ctx = newCtx();
-    exec(new Parser(`x :: 1;`).parseProgram(), ctx);
+    const p1 = new Parser(`x :: 1;`).parseProgram();
+    exec(p1, ctx, checkProgram(p1, ctx.checked));
     expect(ctx.env.vars.has("len")).toBe(false); // not referenced yet -> not bound
-    expect(exec(new Parser(`len([1, 2]);`).parseProgram(), ctx).value).toBe(2n);
+    const p2 = new Parser(`len([1, 2]);`).parseProgram();
+    expect(exec(p2, ctx, checkProgram(p2, ctx.checked)).value).toBe(2n);
     expect(ctx.env.vars.has("len")).toBe(true);
   });
 
   test("seeded bindings never overwrite a user shadow", () => {
     const ctx = newCtx();
-    exec(new Parser(`len :: fn(a, b) { 42 };`).parseProgram(), ctx);
-    expect(exec(new Parser(`len([1], [2])`).parseProgram(), ctx).value).toBe(42n);
+    const p1 = new Parser(`len :: fn(a, b) { 42 };`).parseProgram();
+    exec(p1, ctx, checkProgram(p1, ctx.checked));
+    const p2 = new Parser(`len([1], [2])`).parseProgram();
+    expect(exec(p2, ctx, checkProgram(p2, ctx.checked)).value).toBe(42n);
   });
 
   test("ef types prints symbols, then the program result type and effect row", () => {

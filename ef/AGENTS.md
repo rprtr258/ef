@@ -83,9 +83,11 @@ Hindley-Milner-flavoured type system with effect tracking.
    derived in the same module as the `builtins` array), so every module
    initializes cleanly regardless of entry point. This module
    also owns the pipeline shared by the REPL and `run`: `newCtx(interp?)`
-   seeds state (empty runtime env), `exec(prog, ctx)` checks, fails fast
+   seeds state (empty runtime env), `exec(prog, ctx, checked)` evaluates an
+   already-checked program (`checked = checkProgram(prog, ctx.checked)`, so
+   checking happens before the interpreter runs, once per line), fails fast
    on statically unhandled non-builtin ops not covered by `ctx.interp`
-   (via `Checked.unhandled` — the checker's residual top-level effect
+   (via `checked.unhandled` — the checker's residual top-level effect
    rows, which do ops-minus-handled matching through calls), seeds
    `builtinRefs(prog)` into the runtime env (so a later REPL line can
    reference a previously-unused builtin; user shadows are never

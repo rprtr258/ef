@@ -1,6 +1,7 @@
 // wasm.ts — WebAssembly backend for ef.
 //
-// Pipeline: parse → typecheck (types.ts, reused as-is) → frontend analysis
+// Pipeline: parse → typecheck (types.ts; stamps the runtime markers the
+// phases read) → frontend analysis
 // (analysis.ts: builtin tree-shaking, op discovery, live imports) → emit a
 // binary .wasm module (WasmGC value plane, no linear memory) → binaryen
 // shrink pass (optimizeBinary: in-process npm `binaryen`, no external
@@ -79,6 +80,7 @@
 // module init order is free; no entry-order breaker import needed.)
 import binaryen from "binaryen";
 import {Parser, type Program} from "./parser.ts";
+import {checkProgram} from "./types.ts";
 import {bindMOD} from "./wasm_tables.ts";
 import {buildModule, discover, layoutStatics, optimize, assignIndices, type Discovery, type Indices, type Layout, type Opt} from "./wasm_pipeline.ts";
 import {Fn} from "./wasm_body.ts";
@@ -107,6 +109,10 @@ export function compile(src: string): Uint8Array<ArrayBuffer> {
 // the code, so the wasm module and the host agree on op numbering.
 export function compileWithOps(src: string): {bytes: Uint8Array<ArrayBuffer>, ops: string[]} {
   const prog = new Parser(src).parseProgram();
+  // Check before the backend runs: rejects ill-typed programs and stamps the
+  // runtime markers the phases read (`numKind` on literals, `div` on
+  // applications of `/`, `idx` on field accesses).
+  checkProgram(prog);
   // One compile at a time runs in-process; bind the module for the Buf
   // emitters (they construct binaryen expressions without threading it
   // through every call).

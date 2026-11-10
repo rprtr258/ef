@@ -5,7 +5,6 @@
 // top of wasm.ts.
 import binaryen from "binaryen";
 import {exprChildren, type Program, type ExprID} from "./parser.ts";
-import {checkProgram} from "./types.ts";
 import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, performsAnyOp} from "./analysis.ts";
 import {_T, Scope, StaticDesc, ValueRef, WasmError} from "./wasm_types.ts";
 import {BUILTIN_IMPORTS, DBGEMIT, HOST_IMPORTS, MAP_LIKE, OPERATOR_OPS, SIGS, mapLikeFrameWords, vt} from "./wasm_tables.ts";
@@ -20,8 +19,8 @@ import {assertNever} from "./assert.ts";
 // mutable in place as before). compileWithOps composes the pipeline; the
 // emission phase at the bottom owns one local Emit context.
 
-// Phase 1 — discovery: typecheck, effect-op interning, handler-presence
-// pre-scan, then the scope/slot/literal/split-site walk over the whole
+// Phase 1 — discovery: effect-op interning, handler-presence pre-scan, then
+// the scope/slot/literal/split-site walk over the whole (pre-checked)
 // program. Written once; read by every later phase and by emission.
 export type Discovery = {
   // Scope per lambda/block (ExprID → its Scope).
@@ -177,10 +176,9 @@ export type Layout = {
 // --- phase functions ---------------------------------------------------------
 
 export function discover(prog: Program): Discovery {
-  // Typecheck first: rejects ill-typed programs and stamps the runtime
-  // markers this backend reads (`div` on applications of `/`, `idx` on
-  // field accesses).
-  checkProgram(prog);
+  // `prog` must be pre-checked: the caller (compileWithOps, tests) runs
+  // checkProgram before the pipeline, which stamps the runtime markers this
+  // phase reads (`div` on applications of `/`, `idx` on field accesses).
   const globalFrame = {slots: 0};
   const d: Discovery = {
     scopes: new Map(),

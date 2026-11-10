@@ -322,13 +322,12 @@ export function newCtx(interp?: EffectInterp): Ctx {
   };
 }
 
-// exec: the pipeline the REPL and `run` share — typecheck `prog` against
-// ctx's accumulated checker state, then evaluate its items in ctx's runtime
-// env. Returns the last item's value (null after a pure declaration), its
-// resolved type, and whether the program ends in a bare expression (the REPL
-// echo rule: declarations print nothing).
-export function exec(prog: Program, ctx: Ctx): {value: Value, lastType: Type, lastIsExpr: boolean} {
-  const checked = checkProgram(prog, ctx.checked);
+// exec: the pipeline the REPL and `run` share — evaluate an already-checked
+// program (`checked = checkProgram(prog, ctx.checked)` for REPL lines) in
+// ctx's runtime env. Returns the last item's value (null after a pure
+// declaration), its resolved type, and whether the program ends in a bare
+// expression (the REPL echo rule: declarations print nothing).
+export function exec(prog: Program, ctx: Ctx, checked: Checked): {value: Value, lastType: Type, lastIsExpr: boolean} {
   // Fail fast on statically unhandled ops before evaluating anything: an op
   // in `checked.unhandled` (performed with no matching handler in its
   // subtree) that is neither a builtin effect nor covered by ctx.interp
@@ -356,9 +355,10 @@ export function exec(prog: Program, ctx: Ctx): {value: Value, lastType: Type, la
   return {value, lastType: ctx.checked.lastType, lastIsExpr};
 }
 
-// run: one-shot pipeline — parse, typecheck, and evaluate a source string
-// with fresh state. Throws on type error. `interp` optionally overrides the
-// builtin interpretation of unhandled effects.
+// run: one-shot pipeline — parse, typecheck (before the interpreter runs),
+// and evaluate a source string with fresh state. Throws on type error.
+// `interp` optionally overrides the builtin interpretation of unhandled effects.
 export function run(src: string, interp?: EffectInterp): Value {
-  return exec(new Parser(src).parseProgram(), newCtx(interp)).value;
+  const prog = new Parser(src).parseProgram();
+  return exec(prog, newCtx(interp), checkProgram(prog)).value;
 }

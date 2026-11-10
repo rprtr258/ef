@@ -92,7 +92,8 @@ behaviour.
   <path class="arrow" marker-end="url(#arr)" d="M426 364 H394"/>
 
   <!-- frontend artifacts bus: both lanes consume Program + Checked + analysis
-       output (exec seeds builtinRefs; wasm discovery re-typechecks and the
+       output (exec seeds builtinRefs; both pipelines run checkProgram once
+       before the backend, and the
        OPT_PASSES tree-shake via builtinRefs/builtinValueUses).
        Declared last: SVG paints in document order, so the wires must come
        after the lane panels or the panels cover the lane-entry arrowheads. -->
@@ -120,12 +121,13 @@ both backends consume it without pulling in the evaluator.
 
 [Interpreter (CPS) →](eval.md)
 
-`newCtx(interp?)` seeds state; `exec(prog, ctx)` checks, fails fast on
-statically-unhandled non-builtin ops, seeds the referenced builtins into the
-runtime env, then evaluates under the CPS evaluator (`evalE`/`apply`).
-Multi-shot `resume` is a plain JS closure. Effects with no matching handler
-reach `runTop`, which interprets them through the builtin table (or an
-injected override — tests inject fake fs/time/randomness there).
+`newCtx(interp?)` seeds state; the caller checks the program
+(`checkProgram(prog, ctx.checked)`), then `exec(prog, ctx, checked)` fails
+fast on statically-unhandled non-builtin ops, seeds the referenced builtins
+into the runtime env, then evaluates under the CPS evaluator
+(`evalE`/`apply`). Multi-shot `resume` is a plain JS closure. Effects with no
+matching handler reach `runTop`, which interprets them through the builtin
+table (or an injected override — tests inject fake fs/time/randomness there).
 
 ## Backend: WebAssembly
 
