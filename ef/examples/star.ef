@@ -40,8 +40,8 @@ clear :: fn(): unit {
   paint(GRID_SIZE, 0, ">")
 };
 
-type V3 = [f64, f64, f64];
-type M3x3 = [V3, V3, V3];
+V3 :: [f64, f64, f64];
+M3x3 :: [V3, V3, V3];
 
 drawPolygon :: fn(points: [V3]): unit {
   n :: len(points);

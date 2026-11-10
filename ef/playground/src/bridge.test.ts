@@ -66,7 +66,7 @@ describe("bridge", () => {
   test("outline, entry detection and project concat", () => {
     const src = [
       "effect Tick(v: i64): i64;",
-      "type Pair = [i64, i64];",
+      "Pair :: [i64, i64];",
       "f :: fn(x: i64): i64 ! { Tick } { Tick!(x) };",
       "f(1)",
     ].join("\n");

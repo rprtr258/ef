@@ -38,7 +38,10 @@ effect declaration, or a type alias:
 program  ::= item*
 item     ::= effect-decl | type-alias | stmt
 effect-decl ::= "effect" name params ":" type ";"
-type-alias ::= "type" name ("(" name ("," name)* ")")? "=" type ";"
+type-alias ::= name "::" type ";"
+             | name "::" "fn" "(" (name ":" "type" ("," name ":" "type")*)? ")"
+                 ":" "type" "{" type "}" ";"    -- see §3.1
+type     ::= ...                               -- "type" is the type of types
 stmt     ::= decl | assign | expr (";" | blocky)
 ```
 
@@ -168,7 +171,7 @@ case        ::= "case" ("Return" | name) params "=>" name block
 type   ::= "[" type "]"                      -- array
          | "[" tup-field ("," tup-field)* "]"  -- tuple
          | "(" type ("," type)* ")" "->" type ("!" "{" name ("," name)* "}")?
-         | name ("[" type ("," type)* "]")?    -- alias instantiation
+         | name ("(" type ("," type)* ")")?    -- alias instantiation
          | "i32" | "i64" | "u32" | "u64" | "f32" | "f64"
          | "string" | "bool" | "unit" | "any"
 tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
@@ -214,10 +217,24 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
   may be named (`[x: f64, y: f64]`) or unnamed (`[i64, string]`); names
   are for access only and ignored by unification, which compares arity and
   positional types. `[T]` (one element, no comma) is an array, not a 1-tuple.
-- `type Name(p1, ..., pn) = T;` declares a **parametric type alias**. Use it
-  as `Name[A1, ..., An]`; the body `T` is substituted with the arguments at
-  parse time (nullary `type V = ...;` needs no `[...]`). Alias params are
-  type variables scoped to the body. Recursive aliases are not supported.
+- Aliases are declared without a keyword, in two forms (both are top-level
+  items, not statements):
+  - `Name :: T;` — a **nullary alias**: `V2 :: [f32, f32];` or `s32 :: i32;`.
+  - `Name :: fn(p1: type, ..., pn: type): type { T };` — a **parametric type
+    alias**: a type-level function over its parameters. Use it as
+    `Name(A1, ..., An)`; the body `T` is substituted with the arguments at
+    parse time. Alias params are type variables scoped to the body (their
+    annotation is `type`, the type of types — nothing inhabits `type` at
+    term level, so a type-level fn is never a callable value). Recursive
+    aliases are not supported.
+  Disambiguation from the `name :: expr;` const binding is type-first: a
+  top-level `name :: X;` is an alias iff `X` parses as a type up to the
+  `;` (brackets, fn types, bare names that resolve as types, alias
+  applications). Anything else stays a const binding — `y :: x;` over a
+  value variable binds the value. A name that is both a value variable and
+  an alias: `y :: V2;` declares an alias; copy the value with `y := V2;`. A
+  term lambda all of whose params and return are `: type` is claimed as an
+  alias, since no such term function could ever be called.
 - `(T1, ..., Tn) -> R` — function type. The optional `! { E1, ..., En }` is
   its **effect set**: the effects the function may perform. Empty/omitted =
   pure.
@@ -405,16 +422,18 @@ handle {
 ### Tuples, aliases, and field access
 
 ```ef
-type Point(a) = [x: a, y: a];
-p: Point[f64] = [1.0, 2.0];
+Point :: fn(a: type): type {[x: a, y: a]};
+p: Point(f64) = [1.0, 2.0];
 [x, y] := p;
 [x, p.x + p.y]
 # [1, 3]
 ```
 
-`type Point(a) = [x: a, y: a];` declares a parametric alias; `Point[f64]`
-substitutes `a = f64`. The literal `[1.0, 2.0]` is typed against the
-annotated tuple `[x: f64, y: f64]`, so `p.x` and `p.y` are `f64`.
+`Point :: fn(a: type): type {[x: a, y: a]};` declares a parametric alias;
+`Point(f64)` substitutes `a = f64`. The literal `[1.0, 2.0]` is typed
+against the annotated tuple `[x: f64, y: f64]`, so `p.x` and `p.y` are
+`f64`. Nullary aliases skip the parameters: `V2 :: [f32, f32];` or
+`s32 :: i32;`.
 
 ### Exceptions (non-resuming handler)
 

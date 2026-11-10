@@ -1,6 +1,6 @@
 import {
   type FunT, type Type, type EffectSig, type Var, type TupField, type NumName,
-  TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TNULL, TANY,
+  TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TNULL, TANY, TTYPE,
   tArr, tTup, tFun,
 } from "./types.ts";
 import {KEYWORDS, lex, type Pos, type Tok} from "./lexer.ts";
@@ -157,8 +157,10 @@ export class Parser {
     const items: Item[] = [];
     while (!this.atEnd()) {
       if (this.isKw("effect")) items.push(this.parseEffect());
-      else if (this.isKw("type")) items.push(this.parseAlias());
-      else items.push({e: this.parseStmt()});
+      else {
+        const al = this.tryParseAliasItem();
+        items.push(al ?? {e: this.parseStmt()});
+      }
     }
     return {nodes: this.nodes, items};
   }
@@ -172,29 +174,73 @@ export class Parser {
     return {effect: name, sig: {params: params.map(p => p.typ), ret}};
   }
 
-  // `type Name(p1, p2) = <body>;` — params are type variables scoped to body.
-  // Nullary aliases `type V = ...;` (no param list) are also allowed.
-  parseAlias(): Item {
-    this.next(); // type
-    const name = this.next();
-    const tparams = new Map<string, Var>();
-    if (this.is("(")) {
-      this.next();
-      while (!this.is(")")) {
-        const p = this.next();
-        tparams.set(p, parserVar());
-        if (this.is(",")) this.i++;
-      }
-      this.eat(")");
+  // Top-level type aliases, keyword-free (`type` is now the type-of-types
+  // primitive used in their parameter annotations):
+  //   `Name :: <type>;`                               — nullary alias
+  //   `Name :: fn(p: type, ...): type { <type> };`    — parametric alias
+  // Both produce the same {alias} Item the old `type Name = ...;` form did.
+  // Disambiguation from `name :: expr;` is type-first: the RHS must parse as
+  // a type landing on `;` (unknown names throw out of parseType, so
+  // `pair :: [a, b];` over value variables and bare `y :: x;` rewind and keep
+  // the binding reading). parseType allocates no Expr nodes, so the rewind
+  // leaves no orphans. The fn form claims the whole shape — every param and
+  // the return `: type` — which no useful term lambda can match, since
+  // nothing inhabits `type` at term level.
+  tryParseAliasItem(): Item | null {
+    const name = this.peek();
+    if (name === undefined || KEYWORDS.has(name)) return null;
+    const save = this.i;
+    this.next(); // name
+    if (!this.is("::")) {
+      this.i = save;
+      return null;
     }
-    this.eat("=");
-    this.typeParamStack.push(tparams);
-    const body = this.parseType();
-    this.typeParamStack.pop();
-    this.eat(";");
-    const alias = {name, tparams, body};
-    this.aliases.set(name, alias);
-    return {alias};
+    this.next(); // ::
+    let pushed = false;
+    try {
+      if (this.isKw("fn")) {
+        this.next(); // fn
+        this.eat("(");
+        const tparams = new Map<string, Var>();
+        while (!this.is(")")) {
+          const p = this.next();
+          if (KEYWORDS.has(p)) throw Error("not a type fn");
+          this.eat(":");
+          if (!this.isKw("type")) throw Error("not a type fn");
+          this.next(); // type
+          tparams.set(p, parserVar());
+          if (this.is(",")) this.next();
+        }
+        this.eat(")");
+        this.eat(":");
+        if (!this.isKw("type")) throw Error("not a type fn");
+        this.next(); // type
+        this.eat("{");
+        this.typeParamStack.push(tparams);
+        pushed = true;
+        const body = this.parseType();
+        this.typeParamStack.pop();
+        pushed = false;
+        this.eat("}");
+        this.eat(";");
+        const alias = {name, tparams, body};
+        this.aliases.set(name, alias);
+        return {alias};
+      }
+      // Nullary: the RHS is any type shape — bracket/paren/fn-type forms,
+      // plus bare names (`s32 :: i32`) and alias applications (`t :: V2[i64]`)
+      // — resolved by the same parseType fallback that throws on unknown
+      // names.
+      const body = this.parseType();
+      this.eat(";");
+      const alias = {name, tparams: new Map<string, Var>(), body};
+      this.aliases.set(name, alias);
+      return {alias};
+    } catch {
+      if (pushed) this.typeParamStack.pop();
+      this.i = save;
+      return null;
+    }
   }
 
   parseStmt(): ExprID {
@@ -368,17 +414,19 @@ export class Parser {
     const name = this.next();
     // type parameter of an enclosing alias body → a type variable.
     for (const m of this.typeParamStack) if (m.has(name)) return m.get(name)!;
-    // alias instantiation: `Name[T1, T2]` (or nullary `Name`).
+    // alias instantiation: `Name(T1, T2)` (or nullary `Name`). In a type
+    // position `Name(...)` has no other reading, so the call-like form is
+    // unambiguous.
     const al = this.aliases.get(name);
     if (al !== undefined) {
       const args: Type[] = [];
-      if (this.is("[")) {
+      if (this.is("(")) {
         this.next();
-        while (!this.is("]")) {
+        while (!this.is(")")) {
           args.push(this.parseType());
           if (this.is(",")) this.i++;
         }
-        this.eat("]");
+        this.eat(")");
       }
       return instantiateAlias(al, args);
     }
@@ -393,6 +441,7 @@ export class Parser {
       case "bool": return TBOOL;
       case "unit": return TNULL;
       case "any": return TANY;
+      case "type": return TTYPE;
       default: throw new Error("Unknown type: " + name);
     }
   }

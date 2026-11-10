@@ -210,10 +210,43 @@ describe("Tuples, aliases, and field access", () => {
     expect(show(run(`xs :: [10, 20]; [a, b] :: xs; a + b`))).toBe("30");
   });
   test("parametric type alias instantiates", () => {
-    expect(typeOf(`type Pair(a, b) = [a, b]; p: Pair[i64, string] :: [1, "a"]; p`)).toBe("[i64, string]");
+    expect(typeOf(`Pair :: fn(a: type, b: type): type {[a, b]}; p: Pair(i64, string) :: [1, "a"]; p`)).toBe("[i64, string]");
   });
   test("alias used in a function signature", () => {
-    expect(typeOf(`type Pair(a, b) = [a, b]; fst :: fn(p: Pair[i64, string]): i64 { p.0 }; fst`)).toBe("([i64, string]) -> i64");
+    expect(typeOf(`Pair :: fn(a: type, b: type): type {[a, b]}; fst :: fn(p: Pair(i64, string)): i64 { p.0 }; fst`)).toBe("([i64, string]) -> i64");
+  });
+  test("nullary alias sugar: name :: [T, T]", () => {
+    expect(typeOf(`V2 :: [f32, f32]; v: V2 :: [1.0, 2.0]; v`)).toBe("[f32, f32]");
+  });
+  test("nullary alias to a bare type name", () => {
+    expect(typeOf(`s32 :: i32; f :: fn(n: s32): i32 { n }; f`)).toBe("(i32) -> i32");
+  });
+  test("alias to an alias application", () => {
+    expect(typeOf(`Pair :: fn(a: type, b: type): type {[a, b]}; P2 :: Pair(i64, string); p: P2 :: [1, "a"]; p`)).toBe("[i64, string]");
+  });
+  test("type-annotated term lambda (ret not type) stays a term function", () => {
+    expect(typeOf(`f :: fn(a: type): i64 { 0 }; f`)).toBe("(type) -> i64");
+  });
+  test("parametric alias refuses bracket syntax in type position", () => {
+    expect(() => typeOf(`Pair :: fn(a: type, b: type): type {[a, b]}; p: Pair[i64, string] :: [1, "a"]; p`)).toThrow("Expected");
+  });
+  test("the `type` keyword form is gone", () => {
+    expect(() => typeOf(`type V = i64;`)).toThrow();
+  });
+  test("alias sugar with named fields and fn-type body", () => {
+    expect(typeOf(`P :: [x: f64, y: f64]; F :: (i64) -> i64; f: F :: fn(n: i64): i64 { n }; p: P :: [1.0, 2.0]; p.x`)).toBe("f64");
+  });
+  test("alias sugar chains with earlier aliases", () => {
+    expect(typeOf(`A :: [i64, i64]; B :: [A, A]; b: B :: [[1, 2], [3, 4]]; b`)).toBe("[[i64, i64], [i64, i64]]");
+  });
+  test("bracket RHS over value variables is still a const binding, not sugar", () => {
+    expect(show(run(`a :: 1; b :: 2; pair :: [a, b]; pair.1`))).toBe("2");
+  });
+  test("bare-name RHS is still a const binding, not sugar", () => {
+    expect(show(run(`x :: 5; y :: x; y`))).toBe("5");
+  });
+  test("sugar is top-level only: in a body the bracket stays a binding", () => {
+    expect(() => run(`f :: fn() { v :: [f32, f32]; v }; f()`)).toThrow("Unbound: f32");
   });
 });
 

@@ -1,11 +1,11 @@
 import type {Expr, ExprID, Program} from "./parser";
 import {builtins} from "./builtins.ts";
-import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TNULL, TSTR} from "./prims.ts";
+import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TNULL, TSTR, TTYPE} from "./prims.ts";
 import {assertNever} from "./assert.ts";
 
 export type Type = Prim | ArrT | TupT | FunT | Var | AnyT;
 export type NumName = "i32" | "i64" | "u32" | "u64" | "f32" | "f64" | "int" | "float";
-export type Prim = { tag: "prim", name: NumName | "string" | "bool" | "unit" };
+export type Prim = { tag: "prim", name: NumName | "string" | "bool" | "unit" | "type" };
 // "int" / "float" are the untyped numeric-literal types (produced only by
 // num literals): `1` accepts any numeric context and defaults to i64, `1.5`
 // any float context and defaults to f64. They are not writable in source.
@@ -29,7 +29,7 @@ export type FunT = { tag: "fun", params: Type[], ret: Type, effs: Effs };
 export type Var = { tag: "var", id: number };
 export type AnyT = { tag: "any" };
 
-export {TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TNULL, TANY};
+export {TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TNULL, TANY, TTYPE};
 
 export function tArr(elem: Type): ArrT { return {tag: "arr", elem}; }
 export function tTup(fields: TupField[]): TupT { return {tag: "tup", fields}; }

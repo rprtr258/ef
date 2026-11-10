@@ -310,6 +310,10 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     label: "alias, identity equality, one-element array",
     body: res => expect(res.stdout).toBe("42\n"),
   }],
+  "parametric_alias.ef": [{
+    label: "parametric aliases substitute into annotations and signatures",
+    body: res => expect(res.stdout).toBe("21\n"),
+  }],
   "pointer_operations.ef": [{
     label: "dereferences as binding aliases",
     body: res => expect(res.stdout).toBe("52\n"),

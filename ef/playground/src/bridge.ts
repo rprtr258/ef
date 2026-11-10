@@ -184,7 +184,7 @@ function sigT(sig: EffectSig): string {
 }
 
 // Alias body for display, with type parameters shown by their declared names
-// (showT's first-appearance lettering would lie for `type Swap(a, b) = [b, a]`).
+// (showT's first-appearance lettering would lie for `Swap :: fn(a: type, b: type): type {[b, a]}`).
 function aliasT(al: Alias): string {
   const names = new Map<number, string>();
   for (const [n, v] of al.tparams) names.set(v.id, n);
@@ -209,12 +209,15 @@ function aliasT(al: Alias): string {
 }
 
 // Effect/type items carry no position in the parser's Item union; find their
-// declaration line in the token stream (keyword + name only ever adjoin at the
-// declaration — keywords can't be identifiers and string tokens keep quotes).
+// declaration line in the token stream. Effects keep their keyword (keyword +
+// name only ever adjoin at the declaration); aliases are keyword-free
+// `name ::` — value bindings share that shape, but the name here is a
+// declared alias, whose `name ::` site is its declaration.
 function declLine(src: string, kw: "effect" | "type", name: string): number | null {
   const toks = lex(src);
   for (let i = 0; i < toks.length - 1; i++) {
-    if (toks[i].v === kw && toks[i + 1].v === name) return toks[i].pos.line;
+    if (kw === "effect" && toks[i].v === "effect" && toks[i + 1].v === name) return toks[i].pos.line;
+    if (kw === "type" && toks[i].v === name && toks[i + 1].v === "::") return toks[i].pos.line;
   }
   return null;
 }
