@@ -1,6 +1,6 @@
 # ef
 
-A tiny statically-typed language with **algebraic effects and effect handlers**, C/Go-flavored syntax, and a Hindley-Milner-flavoured type system that tracks effects. Implemented in a single TypeScript file (~900 lines).
+A tiny statically-typed language with **algebraic effects and effect handlers**, C/Go-flavored syntax, and a Hindley-Milner-flavoured type system that tracks effects.
 
 ```bash
 bun test        # test suite (demos live in it, no self-check block)
@@ -46,7 +46,7 @@ the README stay at the workspace root.
 
 | Path                | Contents                                       |
 |---------------------|------------------------------------------------|
-| `compiler/`         | The whole language: lexer, parser, type checker, CPS evaluator, builtins, wasm backend, `run`/`show`/`typeOf`. `compiler/*.test.ts` is the executable spec (`bun:test`); `compiler/scripts/` holds dev scripts (runtime-deps CI gate, raytracer output renderers). |
+| `compiler/`         | The whole language: lexer, parser, type checker, CPS evaluator, builtins, wasm backend, `run`/`show`. `compiler/*.test.ts` is the executable spec (`bun:test`); `compiler/scripts/` holds dev scripts (runtime-deps CI gate, raytracer output renderers). |
 | `compiler/cli.ts`   | Frontend: `ef run <file> \| ef buildwasm <file> [out] \| ef runwasm <file> \| ef types <file> \| ef lint <file> \| ef repl`. |
 | `playground/`       | In-browser studio (see below).                 |
 | `examples/`         | Example `.ef` programs, exercised by the test suite. |
@@ -444,20 +444,7 @@ handle {
 - **Multi-shot resume.** `k` is an ordinary JS function, so it can be invoked many times — each call re-runs the continuation from the point!.  This enables nondeterminism, backtracking, etc.
 - **Deep handlers.** The `Return` case sees the body's final value; effect cases see the site! and can resume or not. Effects performed inside a handler case propagate outward to the next handler.
 
-## 6. The `run` / `show` / `typeOf` API
-
-`index.ts` exports three functions:
-
-```ts
-function run(src: string): Value;      // typecheck then evaluate; throws on type error
-function show(v: Value): string;       // pretty-print a value; closures print as `[fn: <type>]`
-function typeOf(src: string): string;  // inferred type of the last expression, e.g. "(i64) -> i64 ! { Emit }"
-function repl(): void;                 // interactive REPL with persistent bindings
-```
-
-A type error is a thrown `Error` whose message contains the mismatch (e.g.  `at line 1, col 1: Type mismatch:\ngot : i64\nexpected : string`, `arity 1 ≠ 2`, `Unknown effect Nope`, `effect Emit not declared in signature`).
-
-## 7. Examples
+## 6. Examples
 
 ### Nondeterminism (multi-shot resume)
 
@@ -540,7 +527,7 @@ fact(5)
 effect Emit(m: i64): i64;
 let ask = fn(n: i64): i64 ! { Emit } { Emit!(n) };
 ask
-# typeOf → "(i64) -> i64 ! { Emit }"
+# inferred type: "(i64) -> i64 ! { Emit }"
 ```
 
 ### Builtin effects (default handler does real I/O)
@@ -561,7 +548,7 @@ handle {
 # → ["mocked"]
 ```
 
-## 8. CLI
+## 7. CLI
 
 `compiler/cli.ts` is a thin runner:
 
@@ -589,7 +576,7 @@ ABI: every value is a WasmGC `anyref` (unit = null ref, bool = i31, number/strin
 The REPL parses each line as a complete program; `let`/`effect` bindings accumulate across lines (both the runtime env and the type env persist). A bare expression prints both value and inferred type, e.g. `1 + 2` → `3 : i64`.
 Type `:q` to quit.
 
-## 9. Examples on disk
+## 8. Examples on disk
 
 - `examples/newton.ef` — Newton's method square root (`while` + assignment).
 - `examples/tco.ef` — recursion probe. The CPS evaluator is fully tail-call-structured, so Bun/JSC's TCO keeps the stack O(1) for both tail and non-tail calls; non-tail recursion costs heap allocation (linear time), not stack overflow. The wasm target also runs it: calls in tail position compile to `return_call_indirect` (O(1) wasm stack); each call still allocates a frame block, but the host GC reclaims them (the old linear-memory backend exhausted the heap at ~100M depth).
