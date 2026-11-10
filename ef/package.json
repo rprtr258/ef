@@ -4,13 +4,15 @@
   "private": true,
   "workspaces": [
     "compiler",
-    "playground"
+    "playground",
+    "docs"
   ],
   "scripts": {
     "lint": "eslint '**/*.{ts,json}' && knip",
-    "typecheck": "bun check && bun check --cwd playground",
+    "typecheck": "bun check && bun check --cwd playground && bun check --cwd docs",
     "check:deps": "bun compiler/scripts/check-runtime-deps.ts",
     "playground": "bun run --filter=playground dev",
+    "docs": "bun run --filter=docs dev",
     "ci": "bun run typecheck && bun run lint && bun run check:deps && bun test --parallel"
   },
   "devDependencies": {

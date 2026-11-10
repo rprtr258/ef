@@ -16,7 +16,7 @@ export default defineConfig([
     languageOptions: {
       parserOptions: {
         parser: tseslint.parser,
-        project: ["./tsconfig.json", "./playground/tsconfig.json"],
+        project: ["./tsconfig.json", "./playground/tsconfig.json", "./docs/tsconfig.json"],
         tsconfigRootDir: import.meta.dirname,
       },
     },

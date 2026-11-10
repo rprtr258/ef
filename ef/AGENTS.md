@@ -25,8 +25,14 @@ Hindley-Milner-flavoured type system with effect tracking.
 - Gates: `bun run ci` = typecheck + eslint + runtime-deps check + tests; all must stay clean.
 - `playground/` workspace: browser studio (multi-file ef IDE). Bundles the
   compiler frontend for the browser; `cd playground && bun
-  run dev` serves it. `typecheck` covers both tsconfigs; its tests run under
+  run dev` serves it. `typecheck` covers all package tsconfigs; its tests run under
   the root suite.
+- `docs/` workspace: this documentation site (markdown in `docs/content/` →
+  static HTML via `docs/build.ts`; theme tokens are lifted from
+  `playground/studio.css` at build time). `cd docs && bun run dev` serves it
+  with live reload; `docs/build.test.ts` (link integrity) runs under the root
+  suite. Published to the `gh-pages` branch by the monorepo's
+  `.github/workflows/docs.yml` on pushes to master.
 
 ## Architecture (top to bottom, dependency order)
 

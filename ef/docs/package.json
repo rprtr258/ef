@@ -1,0 +1,12 @@
+{
+  "name": "docs",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun run dev.ts",
+    "build": "bun run build.ts"
+  },
+  "dependencies": {
+    "marked": "latest"
+  }
+}

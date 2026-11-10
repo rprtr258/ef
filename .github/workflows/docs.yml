@@ -1,0 +1,42 @@
+name: Docs
+
+# Builds the ef documentation site (ef/docs) and publishes it to the gh-pages
+# branch on every push to master that touches the docs, their build scripts,
+# or the playground stylesheet the docs lift their theme tokens from.
+on:
+  push:
+    branches: [master]
+    paths:
+      - "ef/docs/**"
+      - "ef/playground/studio.css"
+      - ".github/workflows/docs.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    name: Build & publish to gh-pages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+        working-directory: ef
+
+      - name: Build docs
+        run: bun run build.ts
+        working-directory: ef/docs
+
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ef/docs/dist
+          force_orphan: true
+          # Project pages are served at /lish/ — the site uses relative links
+          # only, so no base-path rewrite is needed.
