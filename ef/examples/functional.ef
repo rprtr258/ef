@@ -1,7 +1,7 @@
-# Polymorphic identity: a let whose RHS is a lambda is let-generalized,
+# Polymorphic identity: a const whose RHS is a lambda is generalized,
 # so the same id applies at i64, bool, and any other type.
 
-let id = fn(x) {
+id :: fn(x) {
   x
 };
 

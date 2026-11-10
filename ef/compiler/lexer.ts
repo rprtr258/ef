@@ -1,9 +1,11 @@
 export const KEYWORDS = new Set([
-  "let", "fn", "if", "else", "while", "handle", "case",
+  "fn", "if", "else", "while", "handle", "case",
   "true", "false", "unit", "effect", "type",
 ]);
 // Token character tables (shared with the playground's line tokenizer).
-export const TWO = ["==", "!=", "<=", ">=", "&&", "||", "=>"];
+// `::` and `:=` are declaration operators (const / mutable), so they must lex
+// as single tokens before `:`.
+export const TWO = ["::", ":=", "==", "!=", "<=", ">=", "&&", "||", "=>"];
 export const ONE = "()[]{},;<>+-*/!=:%.@";
 
 // A source position: 1-indexed line and column.

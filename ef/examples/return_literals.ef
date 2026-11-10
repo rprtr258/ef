@@ -1,12 +1,12 @@
 # Functions returning literals of each numeric width; @as folds them back
 # into one i64 sum (round's result is an untyped int, the rest convert).
 
-let return_i32 = fn(): i32 { 42 };
-let return_i64 = fn(): i64 { 123 };
-let return_u32 = fn(): u32 { 42 };
-let return_u64 = fn(): u64 { 42 };
-let return_f32 = fn(): f32 { 3.14 };
-let return_f64 = fn(): f64 { 2.71 };
+return_i32 :: fn(): i32 { 42 };
+return_i64 :: fn(): i64 { 123 };
+return_u32 :: fn(): u32 { 42 };
+return_u64 :: fn(): u64 { 42 };
+return_f32 :: fn(): f32 { 3.14 };
+return_f64 :: fn(): f64 { 2.71 };
 
 @as(return_i32(), i64) + return_i64() + @as(return_u32(), i64) +
 @as(return_u64(), i64) + @as(round(@as(return_f32(), f64)), i64) +

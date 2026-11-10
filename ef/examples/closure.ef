@@ -2,12 +2,12 @@
 # `adder` returned by closure(3) closes over x = 3 and keeps reading it
 # after closure has returned, so add3(4) computes 3 + 4.
 
-let add = fn(x: i64, y: i64) { x + y };
+add :: fn(x: i64, y: i64) { x + y };
 
-let closure = fn(x) {
-  let adder = fn(y) { add(x, y) };
+closure :: fn(x) {
+  adder :: fn(y) { add(x, y) };
   adder
 };
 
-let add3 = closure(3);
+add3 :: closure(3);
 Println!(add3(4));

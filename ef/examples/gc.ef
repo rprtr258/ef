@@ -4,24 +4,24 @@
 # built one does not. Arrays grow with concat and report their length
 # with len.
 
-let test_parser = fn(): i64 {
-  let x = 42;
-  let y = x;  # plain binding: ints are copied, not aliased
-  let slice: [i64] = [];
+test_parser :: fn(): i64 {
+  x :: 42;
+  y :: x;  # plain binding: ints are copied, not aliased
+  slice: [i64] = [];
   slice = concat(slice, [42]);  # append 42
-  let len_ = len(slice);
+  len_ :: len(slice);
   y
 };
 
-let test_basic = fn(): i64 {
-  let point: [x: i64, y: i64] = [10, 20];
-  let x_val = point.x;
-  let y_val = point.y;
-  let slice: [i64] = [];
-  let slice_len = len(slice);
-  let slice2 = concat(slice, [42]);  # append 42
-  let new_len = len(slice2);
-  let elem = get(slice2, 0);
+test_basic :: fn(): i64 {
+  point: [x: i64, y: i64] :: [10, 20];
+  x_val :: point.x;
+  y_val :: point.y;
+  slice: [i64] = [];
+  slice_len :: len(slice);
+  slice2 :: concat(slice, [42]);  # append 42
+  new_len :: len(slice2);
+  elem :: get(slice2, 0);
   x_val + y_val + slice_len + new_len + elem
 };
 

@@ -404,6 +404,9 @@ type Scheme = () => Type; // polymorphic type scheme, instantiated fresh per use
 
 export class Env {
   vars = new Map<string, Type | Scheme>();
+  // Names bound mutable in this frame (`:=` / `: T =` / `[a, b] :=`). Assign
+  // resolves against the innermost frame binding the name and requires it here.
+  muts = new Set<string>();
   constructor(public parent: Env | null, public uni: Unifier) {}
   lookup(name: string): Type | Scheme | undefined {
     let e: Env | null = this.parent;
@@ -448,7 +451,7 @@ function inferArr(
       const ft = expected.fields[i].type;
       const el = e.elems[i];
       // Propagate the tuple expectation into a nested `[...]` literal so that
-      // `let m: [[f,f,f],...] = [[1,2,3],...]` builds inner tuples, not arrays.
+      // `m: [[f,f,f],...] = [[1,2,3],...]` builds inner tuples, not arrays.
       const et = (nodes[el].t === "arr" && env.uni.res(ft).tag === "tup")
         ? inferArr(el, nodes, env.uni.res(ft) as TupT, env, effs, effects)
         : infer(el, nodes, env, effs, effects);
@@ -649,6 +652,9 @@ function inferNode(
           n.vars.set(p.name, p.typ);
           ps.push(p.typ);
         }
+        // Params bind mutable: `n = n / 2` on a parameter rebinds it locally
+        // (pre-existing behavior under assignment-to-nearest-binding).
+        n.muts.add(p.name);
       }
       const innerEffs = new Set<string>();
       // Width-ambiguity tracking: register this lambda's unannotated param
@@ -702,18 +708,23 @@ function inferNode(
     }
     case "let": {
       // Recursive binding: the name is in scope in its own value, so
-      // `let f = fn(...){...}` can call itself.
+      // `f :: fn(...){...}` can call itself.
       const declared = e.typ ?? env.uni.fresh();
       env.vars.set(e.name, declared);
+      // Mutability is a property of the binding in this frame: redeclaring a
+      // name as const (or as mutable) in the same frame flips the flag, so
+      // assignment always resolves against the latest declaration.
+      if (e.mut) env.muts.add(e.name);
+      else env.muts.delete(e.name);
       // A tuple annotation on an `[...]` literal makes it a tuple even when its
-      // elements would otherwise unify homogeneously (e.g. `let p: [float, float] = [1.0, 2.0]`).
+      // elements would otherwise unify homogeneously (e.g. `p: [float, float] = [1.0, 2.0]`).
       const vt = (e.typ !== null && env.uni.res(e.typ).tag === "tup" && nodes[e.val].t === "arr")
         ? inferArr(e.val, nodes, env.uni.res(e.typ) as TupT, env, effs, effects)
         : infer(e.val, nodes, env, effs, effects);
       env.uni.unify(declared, vt);
       const rt = env.uni.res(declared);
       // Pin a wildcard-typed value literal to the binding's concrete width:
-      // `let x: i32 = 2147483647` boxes the literal as $I32 (wrapping at its
+      // `x: i32 = 2147483647` boxes the literal as $I32 (wrapping at its
       // own node, matching the interpreter's per-node normalization).
       const rw = widthOf(rt);
       if (rw !== null && rw.concrete && nodes[e.val].t === "num") {
@@ -734,7 +745,7 @@ function inferNode(
       env.vars.delete(e.name);
       // Value restriction: generalize only lambda values (literals carry no
       // type vars; `arr` literals are typed directly, not via `list`).
-      // This keeps mutable-array/assign soundness (no `let x = []` : [a]).
+      // This keeps mutable-array/assign soundness (no `x := []` : [a]).
       env.vars.set(e.name, e.typ !== null ? rt : (nodes[e.val].t === "lambda" ? env.uni.generalize(env, rt) : rt));
       if (e.typ === null && env.uni.containsAny(rt))
         env.uni.warnInferredAny(e.name, rt);
@@ -788,7 +799,7 @@ function inferNode(
       }
       throw new TypeError_(`field access on non-record type: ${showT(ot)}`);
     }
-    // `let [a, b] = val;` — destructure a tuple (or array) into bindings.
+    // `[a, b] := val;` — destructure a tuple (or array) into bindings.
     case "dlet": {
       const vt = env.uni.res(infer(e.val, nodes, env, effs, effects));
       if (vt.tag === "tup") {
@@ -809,6 +820,10 @@ function inferNode(
       } else {
         throw new TypeError_(`cannot destructure non-record type: ${showT(vt)}`);
       }
+      if (e.mut)
+        for (const f of e.fields) env.muts.add(f.name);
+      else
+        for (const f of e.fields) env.muts.delete(f.name);
       return TNULL;
     }
     case "if": {
@@ -826,10 +841,17 @@ function inferNode(
       return TNULL;
     }
     case "assign": {
-      const cur = env.lookup(e.name);
-      if (cur === undefined) throw new TypeError_(`Assignment to unbound symbol: ${e.name}`);
+      // Find the innermost frame binding the name; assignment mutates that
+      // binding and requires it to be mutable (`::` / `[a, b] ::` consts and
+      // builtin/effect bindings reject it).
+      let fr: Env | null = env;
+      while (fr !== null && !fr.vars.has(e.name)) fr = fr.parent;
+      if (fr === null) throw new TypeError_(`Assignment to unbound symbol: ${e.name}`);
+      if (!fr.muts.has(e.name))
+        throw new TypeError_(`cannot assign to const '${e.name}' (declare with := to make it mutable)`);
+      const cur = fr.vars.get(e.name)!;
       const vt = infer(e.val, nodes, env, effs, effects);
-      // Unify against the declared type so `let guess: float` keeps its type.
+      // Unify against the declared type so `guess: float` keeps its type.
       env.uni.unify(typeof cur === "function" ? cur() : cur, vt);
       return TNULL;
     }
@@ -981,7 +1003,7 @@ function inferNode(
       const fr = env.uni.res(ft);
       // When the callee is a known function, an `[...]` literal argument
       // passed against a tuple parameter type is inferred as that tuple
-      // (mirroring the `let : [..] = [...]` special case).
+      // (mirroring the `name: [..] = [...]` special case).
       const argTs = e.args.map((a, i) => {
         if (nodes[a].t === "arr" && fr.tag === "fun" && i < fr.params.length && env.uni.res(fr.params[i]).tag === "tup")
           return inferArr(a, nodes, env.uni.res(fr.params[i]) as TupT, env, effs, effects);

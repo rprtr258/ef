@@ -1,9 +1,9 @@
 # Closures: f reads the enclosing binding a — the environment is
 # inherited, no explicit capture needed.
 
-let a = 10;
+a :: 10;
 
-let f = fn(): i64 {
+f :: fn(): i64 {
   a
 };
 

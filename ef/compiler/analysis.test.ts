@@ -41,16 +41,16 @@ describe("builtinRefs (tree-shake pass)", () => {
   });
 
   test("shadowing at top level keeps the builtin unreferenced", () => {
-    expect(refs("let char = fn(x: i64): i64 { x }; char(97)")).toEqual(new Set());
+    expect(refs("char :: fn(x: i64): i64 { x }; char(97)")).toEqual(new Set());
   });
 
-  test("self-recursive let reads its own binding, not the builtin", () => {
-    expect(refs("let len = len;")).toEqual(new Set());
+  test("self-recursive const reads its own binding, not the builtin", () => {
+    expect(refs("len :: len;")).toEqual(new Set());
   });
 
   test("block-scoped shadowing (nested lambda bodies as blocks)", () => {
-    expect(refs("fn() { let len = 1; len }")).toEqual(new Set());
-    expect(refs("let f = fn() { let len = 1; len }; len([1])"))
+    expect(refs("fn() { len :: 1; len }")).toEqual(new Set());
+    expect(refs("f :: fn() { len :: 1; len }; len([1])"))
       .toEqual(new Set(["len"])); // only the outer use reaches the builtin
   });
 
@@ -78,7 +78,7 @@ describe("builtinValueUses (pool-closure / operator-trampoline split)", () => {
   });
 
   test("argument and binding positions are value uses", () => {
-    expect(vals("map(len, [[1]]); let f = head;"))
+    expect(vals("map(len, [[1]]); f :: head;"))
       .toEqual(new Set(["len", "head"]));
   });
 
@@ -87,8 +87,8 @@ describe("builtinValueUses (pool-closure / operator-trampoline split)", () => {
   });
 
   test("shadowing keeps the builtin out (mirrors builtinRefs)", () => {
-    expect(vals("let len = 1; len")).toEqual(new Set());
-    expect(vals("let len = len;")).toEqual(new Set());
+    expect(vals("len :: 1; len")).toEqual(new Set());
+    expect(vals("len :: len;")).toEqual(new Set());
     expect(vals("fn(len: i64): i64 { len }")).toEqual(new Set());
   });
 

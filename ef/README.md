@@ -10,15 +10,15 @@ bun check       # host typecheck (stays clean)
 
 ## In one paragraph
 
-`ef` is a small expression language. You write `let`, `fn`, `if`, and blocks like in C/Go. Functions can **perform** abstract *effects* instead of throwing or returning, and `handle` blocks install *handlers* that catch those effects and receive the suspended computation as a resumable continuation `k` — which can be called zero, one, or many times. A static type checker rejects ill-typed programs before evaluation and infers the effect set of every function (shown as `(i64) -> i64 ! { Emit }`).
+`ef` is a small expression language. You write declarations (`x := 1;` for a mutable variable, `f :: fn() { ... }` for a const/function), `fn`, `if`, and blocks like in C/Go. Functions can **perform** abstract *effects* instead of throwing or returning, and `handle` blocks install *handlers* that catch those effects and receive the suspended computation as a resumable continuation `k` — which can be called zero, one, or many times. A static type checker rejects ill-typed programs before evaluation and infers the effect set of every function (shown as `(i64) -> i64 ! { Emit }`).
 
 A taste:
 
 ```js
 effect Choose(opts: [i64]): i64;            # Choose yields an i64
 handle {
-  let x = Choose!([1, 2, 3]);        # pause, ask the handler
-  let y = Choose!([10, 20]);
+  x :: Choose!([1, 2, 3]);        # pause, ask the handler
+  y :: Choose!([10, 20]);
   [x, y]
 } case Return(v) => k { [v] }               # what to do with the final value
   case Choose(opts) => k { flat(map(k, opts)) }  # try every option, resume each
@@ -34,9 +34,9 @@ The handler calls `k` once per option, so the computation branches into all path
 - **Multi-shot resume** — the continuation `k` is a plain callable, so it can run zero, one, or many times (nondeterminism, backtracking, etc.).
 - **Effect propagation** through nested handlers: an unhandled effect walks outward to the nearest matching handler.
 - **Static typing** with type inference, union-find unification, and an absorbing `any` escape hatch.
-- **Tuples** — named `[x: f64, y: f64]` and unnamed `[i64, string]`, with `.x`/`.0` field access and `let [a, b] = p` destructuring. Bracket literals are arrays when homogeneous, tuples when not.
+- **Tuples** — named `[x: f64, y: f64]` and unnamed `[i64, string]`, with `.x`/`.0` field access and `[a, b] := p` destructuring. Bracket literals are arrays when homogeneous, tuples when not.
 - **Parametric type aliases** — `type Pair(a, b) = [a, b];`, instantiated as `Pair[i64, string]`.
-- **Function effect signatures** `let f = fn(p: T): R ! { Effs } { ... }` the checker verifies against the body.
+- **Function effect signatures** `f :: fn(p: T): R ! { Effs } { ... }` the checker verifies against the body.
 - **Polymorphic builtins** (`map : (A)->B, [A] -> [B]`, etc.).
 
 ## Layout
@@ -94,8 +94,8 @@ bun run build                    # rebuild dist/ only
   default to `f64` / `i64` (see §3.1). Unary minus is parsed as the unary
   `-` operator in `parseUnary`.
 - **Identifiers** start with a letter or `_`, continue with letters/digits/`_`.
-- **Keywords:** `let fn if else while handle case true false unit effect`.
-- **Two-char tokens:** `== != <= >= && || =>`.
+- **Keywords:** `fn if else while handle case true false unit effect`.
+- **Two-char tokens:** `:: := == != <= >= && || =>` (`::`/`:=` are the declaration operators, lexed before `:`).
 - **One-char tokens:** `( ) [ ] { } , ; < > + - * / ! = : % @`.
 - `->` is lexed as two tokens `-` `>` and reassembled by the type parser.
 
@@ -111,7 +111,7 @@ program  ::= item*
 item     ::= effect-decl | type-alias | stmt
 effect-decl ::= "effect" name params ":" type ";"
 type-alias ::= "type" name ("(" name ("," name)* ")")? "=" type ";"
-stmt     ::= let | expr (";" | blocky)
+stmt     ::= decl | assign | expr (";" | blocky)
 ```
 
 The value of a program is the value of its last expression statement. Type
@@ -120,18 +120,30 @@ aliases and effect declarations are not expressions and produce no value.
 ### 2.2 Declarations
 
 ```
-let       ::= "let" (name (":" type)? "=" expr | tuple-pattern "=" expr) ";"
+decl      ::= name (":=" expr | "::" expr | ":" type ("=" expr | "::" expr)) ";"
+            | tuple-pattern (":=" | "::") expr ";"
 tuple-pattern ::= "[" (name (":" type)? ("," name (":" type)?)*)? "]"
 params    ::= "(" (name (":" type)? ("," name (":" type)?)* )? ")"
 eff-annot ::= "!" "{" name ("," name)* "}"
 block     ::= "{" stmt* "}"
 ```
 
-- `let` binds recursively: the name is in scope in its own value, so
-  `let f = fn(...) { ... }` can call itself.
-- `let [a, b] = e;` **destructures** a tuple (or array): each name is bound
-  to the corresponding element. Optional per-field `: type` annotations
-  constrain the element type.
+There are two binding kinds:
+
+- `name := e;` — a **mutable variable** (inferred type).
+- `name :: e;` — a **const** (inferred type). Function declarations are
+  consts: `f :: fn(...) { ... }`.
+- An optional `: T` annotation precedes the initializer operator:
+  `name: T = e;` is a mutable variable of type `T`, `name: T :: e;` a const
+  of type `T`.
+- Destructuring: `[a, b] := e;` / `[a, b] :: e;` binds each name to the
+  corresponding tuple/array element, with optional per-field `: type`
+  annotations.
+- Consts are immutable: `name = e;` on a `::` binding is a compile-time type
+  error (`cannot assign to const 'name'`). Mutable bindings and lambda
+  parameters can be assigned.
+- Bindings are recursive: the name is in scope in its own value, so
+  `f :: fn(...) { ... }` can call itself.
 - Lambdas `fn (p: T): R ! { Effs } { body }` may carry optional `: R` and
   `! { Effs }` annotations; the checker verifies the body's performed effects
   ⊆ the declared set (or derives the set when `! { ... }` is omitted).
@@ -157,7 +169,7 @@ args     ::= "(" (expr ("," expr)*)? ")"
 
 - **Bracket literals** `[a, b, c]` are **arrays if all element types unify**
   (homogeneous → `[T]`), otherwise **tuples** (`[T1, ..., Tn]`). A tuple
-  **type annotation** on the binding (`let p: [f64, f64] = [1.0, 2.0]`)
+  **type annotation** on the binding (`p: [f64, f64] = [1.0, 2.0]`)
   forces a tuple even when the elements would unify. The same expectation
   flows from a tuple **return type** into a `[...]` body literal, and from a
   tuple **parameter type** into an `[...]` argument literal (including
@@ -186,8 +198,10 @@ args     ::= "(" (expr ("," expr)*)? ")"
 
 A **statement** is an expression used for its side effect. Inside a block, a
 bare `name = expr` is an **assignment**: it updates the nearest enclosing
-binding of `name` (which must already exist) and yields `unit` — the mutation
-primitive that makes `while` useful.
+binding of `name` (which must already exist and be mutable — a `:=`/`: T =`
+declaration or a lambda parameter; assigning to a `::` const is rejected at
+check time) and yields `unit` — the mutation primitive that makes `while`
+useful.
 
 ```
 effect-decl ::= "effect" name "(" params ")" ":" type ";"
@@ -240,7 +254,7 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
   - **Untyped literals flex**: a num literal (`1`, `1.5`) carries an
     internal untyped-int / untyped-float type that accepts any numeric (resp.
     float) context; unconstrained it defaults to `i64` / `f64`. So
-    `let x: i32 = 1` works, `sqrt(100)` works, but `let x: i32 = 1.5` is
+    `x: i32 = 1` works, `sqrt(100)` works, but `x: i32 = 1.5` is
     rejected (a float literal never narrows to an int width).
   - **@as(expr, T)** is the one explicit conversion between widths (and from
     `bool`): float → int truncates toward zero, bool → numeric gives `0/1`,
@@ -260,7 +274,8 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
   - **Widths must be static where values are computed**: arithmetic on
     `any`-typed operands is a type error (`any is not a numeric width`) —
     pin the width with `@as` first. Equality (`==`/`!=`) on `any` stays
-    allowed. A `let`-bound lambda whose body performs numeric ops on an
+    allowed. A generalized lambda (a `::`/`:=` binding whose value is a
+    lambda) whose body performs numeric ops on an
     **unannotated** parameter is rejected (`ambiguous numeric width —
     annotate the parameter (e.g. n: i64)`): the lambda is generalized, so the
     width would flex per call site while the body fixed one. Directly-passed
@@ -279,9 +294,9 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
   its **effect set**: the effects the function may perform. Empty/omitted =
   pure.
 - `any` — absorbing type. Unifies with anything and stays `any`. Because `any`
-  is an escape hatch, the checker **warns** when a `let` binding's
-  *inferred* type contains `any` (e.g. `let f = list` infers `(any) -> [any]`);
-  writing an explicit annotation (`let f: (any) -> [any] = list`) silences the
+  is an escape hatch, the checker **warns** when a binding's
+  *inferred* type contains `any` (e.g. `f :: list` infers `(any) -> [any]`);
+  writing an explicit annotation (`f: (any) -> [any] :: list`) silences the
   warning. Array literals like `[1,2,3]` are special-cased to `[i64]` and do
   not trigger it.
 
@@ -316,10 +331,10 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
   effects (the body's performed effects must be ⊆ the annotation), and the
   annotation becomes the function's effect set. Anonymous lambdas may also
   carry `: T` and `! { ... }` annotations: `fn(p): unit ! { Out } { ... }`.
-- `let x : T = e` — `T` (if present) unifies with `infer(e)`; `x : T`. When
-  `T` is a tuple and `e` is a bracket literal, the literal is typed as that
-  tuple.
-- `let [a, b] = e` — `e : [Ta, Tb]` (tuple) or `[T]` (array, each field `: T`);
+- `x := e` / `x :: e` — `e`'s type (with an optional `: T` annotation:
+  `T` unifies with `infer(e)`). When `T` is a tuple and `e` is a bracket
+  literal, the literal is typed as that tuple.
+- `[a, b] := e` — `e : [Ta, Tb]` (tuple) or `[T]` (array, each field `: T`);
   binds `a, b` to the element types.
 - `e.x` / `e.0` — `e` must be a tuple (`[x: T, ...]` or `[T, ...]`) or an array.
   For a named tuple field, `.name` resolves to its position; `.N` indexes by
@@ -341,16 +356,16 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
 
 ### 3.4 Polymorphism
 
-- User `let` bindings of a **lambda value** are **generalized** (HM
+- User `::`/`:=` bindings of a **lambda value** are **generalized** (HM
   let-generalization, value-restricted): type/effect variables not free in the
   surrounding environment are abstracted, and each use instantiates fresh
-  copies. So `let apply = fn (f, x) { f(x) }` gets `apply : ((a) -> b ! e, a) -> b ! e`
+  copies. So `apply :: fn (f, x) { f(x) }` gets `apply : ((a) -> b ! e, a) -> b ! e`
   and one definition works at many types in the same program.
 - **Value restriction:** only lambda RHS are generalized. Literals carry no
   type variables (generalization is a no-op), and bracket literals are typed
   directly (arrays via homogenization, tuples positionally — non-values), so
   they stay monomorphic — this keeps mutable arrays (`set`) and mutable
-  variables (`assign`) sound (no `let xs = [] : [a]` that any element type
+  variables (`assign`) sound (no `xs := []` typed `[a]` that any element type
   could flow into).
 - Bindings with an explicit `: type` annotation are monomorphic (the
   annotation fixes the type).
@@ -451,8 +466,8 @@ handle {
 ```js
 effect Choose(opts: [i64]): i64;
 handle {
-  let x = Choose!([1, 2, 3]);
-  let y = Choose!([10, 20]);
+  x :: Choose!([1, 2, 3]);
+  y :: Choose!([10, 20]);
   [x, y]
 } case Return(v) => k { [v] }
   case Choose(opts) => k { flat(map(k, opts)) }
@@ -463,8 +478,8 @@ handle {
 
 ```js
 type Point(a) = [x: a, y: a];
-let p: Point[f64] = [1.0, 2.0];
-let [x, y] = p;
+p: Point[f64] = [1.0, 2.0];
+[x, y] := p;
 [x, p.x + p.y]
 # [1, 3]
 ```
@@ -478,7 +493,7 @@ annotated tuple `[x: f64, y: f64]`, so `p.x` and `p.y` are `f64`.
 ```js
 effect Div(a: i64, b: i64): i64;
 handle {
-  let r = Div!(10, 0);
+  r :: Div!(10, 0);
   [r]
 } case Div(a, b) => k {
   if (b == 0) { ["div by zero"] } else { k(a / b) }
@@ -514,7 +529,7 @@ handle {
 ### Recursion with a typed signature
 
 ```js
-let fact = fn(n: i64): i64 {
+fact :: fn(n: i64): i64 {
   if (n == 0) { 1 } else { n * fact(n - 1) }
 };
 fact(5)
@@ -525,7 +540,7 @@ fact(5)
 
 ```js
 effect Emit(m: i64): i64;
-let ask = fn(n: i64): i64 ! { Emit } { Emit!(n) };
+ask :: fn(n: i64): i64 ! { Emit } { Emit!(n) };
 ask
 # inferred type: "(i64) -> i64 ! { Emit }"
 ```
@@ -571,9 +586,9 @@ ABI: every value is a WasmGC `anyref` (unit = null ref, bool = i31, number/strin
 
 `ef lint <file>` runs a sequence of lint passes over the parsed program and prints each finding as `rule: message`. The current passes are:
 
-- `unused-arg` — a function parameter never referenced in the body. Scope-aware: a name shadowed by an inner lambda parameter or a `let` binding (or a handler-case parameter / `resume`) does not count as a use of the outer argument. Named functions (`let` of a `fn`) are reported as `function \`name\``; bare lambdas as `anonymous function`.
+- `unused-arg` — a function parameter never referenced in the body. Scope-aware: a name shadowed by an inner lambda parameter or a `:=`/`::` binding (or a handler-case parameter / `resume`) does not count as a use of the outer argument. Named functions (`::` of a `fn`) are reported as `function \`name\``; bare lambdas as `anonymous function`.
 
-The REPL parses each line as a complete program; `let`/`effect` bindings accumulate across lines (both the runtime env and the type env persist). A bare expression prints both value and inferred type, e.g. `1 + 2` → `3 : i64`.
+The REPL parses each line as a complete program; declaration and `effect` bindings accumulate across lines (both the runtime env and the type env persist). A bare expression prints both value and inferred type, e.g. `1 + 2` → `3 : i64`.
 Type `:q` to quit.
 
 ## 8. Examples on disk

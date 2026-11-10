@@ -72,7 +72,7 @@ export type Expr =
       // ids, and the union-find roots of those vars that numeric ops touched
       // during body inference.
       unannParams?: {name: string, id: number}[], numTouched?: Set<number>, }
-  | { t: "let", name: string, typ: Type | null, val: ExprID, pos?: Pos }
+  | { t: "let", name: string, typ: Type | null, val: ExprID, mut: boolean, pos?: Pos } // `name := e;` / `name :: e;` / `name: T = e;` / `name: T :: e;`
   | { t: "if", c: ExprID, a: ExprID, b: ExprID, pos?: Pos }
   | { t: "while", c: ExprID, body: ExprID, pos?: Pos }
   | { t: "assign", name: string, val: ExprID, pos?: Pos }
@@ -83,7 +83,7 @@ export type Expr =
   | { t: "as", e: ExprID, typ: Type, asKind?: "trunc" | "boolnum", pos?: Pos } // `@as(expr, T)` numeric cast; asKind stamped by the checker.
   | { t: "arr", elems: ExprID[], pos?: Pos } // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous.
   | { t: "field", obj: ExprID, name: string, idx?: number, pos?: Pos } // `obj.x` / `obj.0` field access; `idx` is resolved by the checker.
-  | { t: "dlet", fields: { name: string, typ: Type | null }[], val: ExprID, pos?: Pos }; // `let [a, b] = val;` tuple/array destructuring bind.
+  | { t: "dlet", fields: { name: string, typ: Type | null }[], val: ExprID, mut: boolean, pos?: Pos }; // `[a, b] := val;` / `[a, b] :: val;` destructuring bind.
 
 // Unescape a string literal token (with surrounding quotes).
 function parseStr(t: string): string {
@@ -200,10 +200,39 @@ export class Parser {
   parseStmt(): ExprID {
     const p = this.pos();
     let e: ExprID;
-    if (this.isKw("let")) {
-      this.next();
-      if (this.is("[")) {
-        // destructuring let: `let [a: T, b] = val;`
+    const nonKw = this.peek() !== undefined && !KEYWORDS.has(this.peek()!);
+    if (nonKw && this.peek(1) === ":=") {
+      // `name := val;` — mutable, inferred type.
+      const name = this.next();
+      this.next(); // :=
+      const val = this.parseExpr();
+      this.eat(";");
+      e = this.add({t: "let", name, typ: null, val, mut: true, pos: p});
+    } else if (nonKw && this.peek(1) === "::") {
+      // `name :: val;` — const, inferred type.
+      const name = this.next();
+      this.next(); // ::
+      const val = this.parseExpr();
+      this.eat(";");
+      e = this.add({t: "let", name, typ: null, val, mut: false, pos: p});
+    } else if (nonKw && this.peek(1) === ":") {
+      // `name: T = val;` — mutable, annotated; `name: T :: val;` — const, annotated.
+      const name = this.next();
+      this.next(); // :
+      const typ = this.parseType();
+      const isConst = this.is("::");
+      if (isConst) this.next();
+      else this.eat("=");
+      const val = this.parseExpr();
+      this.eat(";");
+      e = this.add({t: "let", name, typ, val, mut: !isConst, pos: p});
+    } else if (this.is("[")) {
+      // Destructuring bind (`[a: T, b] := val;` / `[a: T, b] :: val;`) or an
+      // array literal as an expression statement (`[x, y]` as a block tail).
+      // The bracketed prefix is ambiguous, so try destructuring and backtrack
+      // to an expression unless a bind operator follows `]`.
+      const save = this.i;
+      try {
         this.next();
         const fields: { name: string, typ: Type | null }[] = [];
         while (!this.is("]")) {
@@ -213,19 +242,21 @@ export class Parser {
           if (this.is(",")) this.i++;
         }
         this.eat("]");
-        this.eat("=");
+        const isConst = this.is("::");
+        if (isConst) this.next();
+        else this.eat(":=");
         const val = this.parseExpr();
         this.eat(";");
-        e = this.add({t: "dlet", fields, val, pos: p});
-      } else {
-        const name = this.next();
-        const typ = this.is(":") ? (this.next(), this.parseType()) : null;
-        this.eat("=");
-        const val = this.parseExpr();
-        this.eat(";");
-        e = this.add({t: "let", name, typ, val, pos: p});
+        e = this.add({t: "dlet", fields, val, mut: !isConst, pos: p});
+      } catch {
+        this.i = save;
+        e = this.parseExpr();
+        if (this.is(";"))
+          this.i++;
+        else if (!isBlocky(this.nodes[e]) && !this.is("}") && !this.atEnd())
+          this.eat(";");
       }
-    } else if (!KEYWORDS.has(this.peek() ?? "") && this.peek(1) === "=") {
+    } else if (nonKw && this.peek(1) === "=") {
       const name = this.next();
       this.next(); // =
       const val = this.parseExpr();

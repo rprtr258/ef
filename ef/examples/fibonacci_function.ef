@@ -1,7 +1,7 @@
 # Naive doubly-recursive Fibonacci. Bindings are sequential in ef, so fib
 # is defined before it is used.
 
-let fib = fn(n: i64): i64 {
+fib :: fn(n: i64): i64 {
   if (n <= 1) {
     n
   } else {

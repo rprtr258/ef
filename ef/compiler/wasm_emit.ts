@@ -1443,7 +1443,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
     }
     case "let": {
       // Binds in the current frame (mirrors the interpreter: the binding
-      // exists before the value is computed, so `let x = x` sees null —
+      // exists before the value is computed, so `x :: x` sees null —
       // a null slot read normalizes to unit inside the module).
       const slot = s.map.get(e.name)!;
       const vr = expr(em, e.val, f, s, false, chainCtx(ctx));

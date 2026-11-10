@@ -13,10 +13,10 @@
 effect Choose(lo: i64, hi: i64): i64;
 effect Emit(t: [i64]): unit;
 
-let triple = fn(n: i64): unit ! { Choose, Emit } {
-  let a = Choose!(1, n);
-  let b = Choose!(a + 1, n);
-  let c = Choose!(b + 1, n);
+triple :: fn(n: i64): unit ! { Choose, Emit } {
+  a :: Choose!(1, n);
+  b :: Choose!(a + 1, n);
+  c :: Choose!(b + 1, n);
   if (a * a + b * b == c * c) {
     Emit!([a, b, c])                  # one solution
   } else {
@@ -25,7 +25,7 @@ let triple = fn(n: i64): unit ! { Choose, Emit } {
 };
 
 # Interprets nondeterminism only; emitted solutions propagate outward.
-let solutions = fn(n: i64): unit ! { Emit } {
+solutions :: fn(n: i64): unit ! { Emit } {
   handle {
     triple(n)
   } case Choose(lo, hi) => k {
@@ -34,7 +34,7 @@ let solutions = fn(n: i64): unit ! { Emit } {
 };
 
 # Gathers every value emitted across all branches (the original's scollect).
-let collect = fn(n: i64): [[i64]] {
+collect :: fn(n: i64): [[i64]] {
   handle {
     solutions(n)
   } case Emit(t) => k {

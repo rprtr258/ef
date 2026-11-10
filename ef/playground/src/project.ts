@@ -23,10 +23,10 @@ effect Emit(t: [i64]): unit;
 
 # Nondeterministic search: the Choose handler resumes the continuation once
 # per option, so pyth branches into every path (examples/amb.ef has the tour).
-let pyth = fn(n: i64): unit ! { Choose, Emit } {
-  let a = Choose!(1, n);
-  let b = Choose!(a + 1, n);
-  let c = Choose!(b + 1, n);
+pyth :: fn(n: i64): unit ! { Choose, Emit } {
+  a :: Choose!(1, n);
+  b :: Choose!(a + 1, n);
+  c :: Choose!(b + 1, n);
   if (a * a + b * b == c * c) {
     Emit!([a, b, c])
   } else {
@@ -35,7 +35,7 @@ let pyth = fn(n: i64): unit ! { Choose, Emit } {
 };
 
 # Interprets nondeterminism only; emitted solutions propagate outward.
-let solutions = fn(n: i64): unit ! { Emit } {
+solutions :: fn(n: i64): unit ! { Emit } {
   handle {
     pyth(n)
   } case Choose(lo, hi) => k {
@@ -44,7 +44,7 @@ let solutions = fn(n: i64): unit ! { Emit } {
 };
 
 # Gathers every value emitted across all branches.
-let triples = fn(n: i64): [[i64]] {
+triples :: fn(n: i64): [[i64]] {
   handle {
     solutions(n)
   } case Emit(t) => k {
@@ -65,8 +65,8 @@ each(fn(t: [i64], _) { Println!(t) }, triples(14));`,
 # the next value. Resume k is multi-shot, so map over Tick! just works.
 effect Tick(): i64;
 
-let counter = fn(steps: i64): [i64] {
-  let cell = list();
+counter :: fn(steps: i64): [i64] {
+  cell :: list();
   set(cell, 0, 0);
   handle {
     map(fn(_) { Tick!() }, range(0, steps, 1))
@@ -77,7 +77,7 @@ let counter = fn(steps: i64): [i64] {
 };
 
 # Random! interpreted deterministically: every draw resumes with 0.42.
-let deterministic = fn(n: i64): [f64] {
+deterministic :: fn(n: i64): [f64] {
   handle {
     map(fn(_) { Random!() }, range(0, n, 1))
   } case Random() => r {
@@ -95,7 +95,7 @@ Println!(deterministic(8));`,
 # open file, and ef has no imports yet — files share nothing. effects.ef and
 # state.ef are standalone demos of effects and state; this one keeps to
 # builtins.
-let squares = fn(n: i64): [i64] {
+squares :: fn(n: i64): [i64] {
   map(fn(i: i64): i64 { i * i }, range(0, n, 1))
 };
 each(fn(s: i64, _) { Println!(s) }, squares(6));

@@ -1,7 +1,7 @@
 # Float comparison: 3.14 > 2.71 holds; @as converts the bool to an int for
 # the program value.
 
-let cmp = fn(): i32 {
+cmp :: fn(): i32 {
   @as(3.14 > 2.71, i32)
 };
 

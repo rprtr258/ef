@@ -3,32 +3,32 @@
 # [f64, f64, f64] return keeps [a.0 + b.0, ...] a tuple). An empty
 # function body returns unit.
 
-let vec3_add = fn(a: [f64, f64, f64], b: [f64, f64, f64]): [f64, f64, f64] {
+vec3_add :: fn(a: [f64, f64, f64], b: [f64, f64, f64]): [f64, f64, f64] {
   [a.0 + b.0, a.1 + b.1, a.2 + b.2]
 };
 
-let do_nothing = fn() { };  # empty body -> unit
+do_nothing :: fn() { };  # empty body -> unit
 
-let named = fn(): i64 {
-  let point: [x: i64, y: i64] = [10, 20];  # fields named in the type
-  let x = point.x;
-  let y = point.y;
+named :: fn(): i64 {
+  point: [x: i64, y: i64] :: [10, 20];  # fields named in the type
+  x :: point.x;
+  y :: point.y;
   y - x
 };
 
 # the same shape, expressed with the field access order swapped
-let named_reorder = fn(): i64 {
-  let point: [x: i64, y: i64] = [10, 20];
-  let x = point.x;
-  let y = point.y;
+named_reorder :: fn(): i64 {
+  point: [x: i64, y: i64] :: [10, 20];
+  x :: point.x;
+  y :: point.y;
   y - x
 };
 
-let t: [i64, f64] = [42, 3.14];  # heterogeneous -> tuple
+t: [i64, f64] :: [42, 3.14];  # heterogeneous -> tuple
 do_nothing();
-let v1: [f64, f64, f64] = [1.0, 2.0, 3.0];
-let v2: [f64, f64, f64] = [4.0, 5.0, 6.0];
-let v3: [f64, f64, f64] = vec3_add(v1, v2);
-let x = named();
-let y = named_reorder();
+v1: [f64, f64, f64] :: [1.0, 2.0, 3.0];
+v2: [f64, f64, f64] :: [4.0, 5.0, 6.0];
+v3: [f64, f64, f64] :: vec3_add(v1, v2);
+x :: named();
+y :: named_reorder();
 round(v3.0 + v3.1 + v3.2) + x + y

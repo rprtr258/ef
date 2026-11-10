@@ -283,7 +283,7 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     body: res => expect(res.stdout).toBe("0\n"),
   }],
   "local_decl.ef": [{
-    label: "a let inside a block is local to that block",
+    label: "a := binding inside a block is local to that block",
     body: res => expect(res.stdout).toBe("5\nunit\n"),
   }],
   "literals.ef": [{

@@ -9,11 +9,11 @@
 # full speed to any depth. Crank DEPTH to see the contrast: tail stays fast,
 # non-tail slows linearly on allocation/GC but does not crash.
 
-#let DEPTH = 100 * 1000 * 1000;
-let DEPTH = 100 * 1 * 1000;
+#DEPTH := 100 * 1000 * 1000;
+DEPTH :: 100 * 1 * 1000;
 
 # Tail-recursive: the recursive call is the whole body. No stack growth.
-let testTCO = fn(n: i64): i64 {
+testTCO :: fn(n: i64): i64 {
   if (n <= 0) { 0 } else { testTCO(n - 1) }
 };
 

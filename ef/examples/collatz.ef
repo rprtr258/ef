@@ -2,7 +2,7 @@
 # printing every value it passes through; fib is naive doubly-recursive
 # Fibonacci. Both print from inside while/if bodies with Println!.
 
-let fib = fn(n: i64): i64 {
+fib :: fn(n: i64): i64 {
   if (n <= 1) {
     n
   } else {
@@ -10,7 +10,7 @@ let fib = fn(n: i64): i64 {
   }
 };
 
-let collatz = fn(n: i64): unit {
+collatz :: fn(n: i64): unit {
   Println!(n);
   while (n > 1) {
     if (n % 2 == 1) {

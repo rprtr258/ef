@@ -1,18 +1,18 @@
-# User-defined polymorphic `apply`. The language now does HM
-# let-generalization for lambda bindings, so `apply` is polymorphic:
+# User-defined polymorphic `apply`. The language does HM
+# generalization for lambda-valued consts, so `apply` is polymorphic:
 # each call instantiates fresh type variables, letting one definition work
 # at many types in the same program.
 #
 #   apply : ((a) -> b ! e, a) -> b ! e
 
-let apply = fn (f, x) { f(x) };
+apply :: fn (f, x) { f(x) };
 
-let inc = fn (n: i64) { n + 1 };
-let quote = fn (n: i64) { "n=" + char(48 + n) }; # '0'+n as a 1-char string
+inc :: fn (n: i64) { n + 1 };
+quote :: fn (n: i64) { "n=" + char(48 + n) }; # '0'+n as a 1-char string
 
-let a = apply(inc, 41);                            # (i64  )->i64    applied to i64   => i64
-let b = apply(quote, 7);                           # (i64  )->string applied to i64   => string
-let c = apply(fn (xs: [i64]) { head(xs) }, [99]);  # ([i64])->i64    applied to [i64] => i64
+a :: apply(inc, 41);                            # (i64  )->i64    applied to i64   => i64
+b :: apply(quote, 7);                           # (i64  )->string applied to i64   => string
+c :: apply(fn (xs: [i64]) { head(xs) }, [99]);  # ([i64])->i64    applied to [i64] => i64
 
 Println!(a);                       # 42
 Println!(b);                       # n=7

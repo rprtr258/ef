@@ -1,6 +1,6 @@
 # Named tuples: field names live in the type annotation and bracket
 # literals are positional; .x/.y read the fields.
 
-let p: [x: i64, y: i64] = [3, 4];
+p: [x: i64, y: i64] :: [3, 4];
 
 p.x * p.x + p.y * p.y

@@ -3,7 +3,7 @@
 # `k` and decrements it on every call, so each recursive call shares state
 # with the closures passed into it. With n=10 the answer is -67.
 
-let a = fn(
+a :: fn(
   k: i64,
   x1: () -> i64,
   x2: () -> i64,
@@ -11,7 +11,7 @@ let a = fn(
   x4: () -> i64,
   x5: () -> i64
 ): i64 {
-  let b = fn(): i64 {
+  b :: fn(): i64 {
     k = k - 1;
     a(k, b, x1, x2, x3, x4)
   };
@@ -22,7 +22,7 @@ let a = fn(
   }
 };
 
-let x = fn(n: i64): () -> i64 {
+x :: fn(n: i64): () -> i64 {
   fn(): i64 {
     n
   }

@@ -146,7 +146,7 @@ export function collectEffectOps(prog: Program): string[] {
 // Every builtin the program references as a value: a bare sym that resolves
 // to no user binding and names a BUILTINS entry. Scope handling mirrors the
 // checker's binding order (types.ts `let` — the name is in scope in its own
-// value, so `let len = len` reads the let's own binding, not the builtin;
+// value, so `len :: len` reads the binding's own value, not the builtin;
 // dlet fields bind before their value, mirroring the backend's discovery) —
 // a user let shadowing a builtin name keeps that builtin unreferenced. Any
 // reference (call site, argument, lambda body) marks it used; user code is
@@ -197,7 +197,7 @@ function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<str
       }
       case "let":
         // The binding is already in sc before the value, mirroring emission:
-        // `let len = len` reads the slot, not the builtin.
+        // `len :: len` reads the slot, not the builtin.
         sc.names.add(e.name);
         break;
       case "dlet":

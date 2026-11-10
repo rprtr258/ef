@@ -3,8 +3,8 @@
 # uses a `done` flag instead — the odd step skips the halving, and
 # halving down to 1 stops the loop.
 
-let check_if = fn(): i64 {
-  let x = 0;
+check_if :: fn(): i64 {
+  x := 0;
   if (x < 10) {
     x = x + 1;
   } else {
@@ -13,24 +13,24 @@ let check_if = fn(): i64 {
   x
 };
 
-let check_var_inside_if = fn(): i64 {
-  let x = 0;
+check_var_inside_if :: fn(): i64 {
+  x := 0;
   if (x < 10) {
-    let y = 42;
+    y :: 42;
   };
   x
 };
 
-let check_while = fn(): i64 {
-  let x = 0;
+check_while :: fn(): i64 {
+  x := 0;
   while (x < 10) {
     x = x + 1;
   };
   x
 };
 
-let check_nested_while = fn(): i64 {
-  let x = 0;
+check_nested_while :: fn(): i64 {
+  x := 0;
   while (x < 10) {
     x = x + 1;
     while (x < 20) {
@@ -40,9 +40,9 @@ let check_nested_while = fn(): i64 {
   x
 };
 
-let check_break_continue = fn(): i64 {
-  let x = 1234;
-  let done = false;
+check_break_continue :: fn(): i64 {
+  x := 1234;
+  done := false;
   while (!done) {
     Println!(x);
     if (x % 2 == 1) {

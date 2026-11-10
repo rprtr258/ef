@@ -3,13 +3,13 @@
 # |guess^2 - x| < precision (a real tolerance, not a step count):
 #   guess_{n+1} = (guess_n + x / guess_n) / 2
 
-let makeNewtonRoot = fn(precision: f64): (f64) -> f64 {
-  let find = fn(x: f64): f64 {
-    let guess = x/2;
-    let done = false;
+makeNewtonRoot :: fn(precision: f64): (f64) -> f64 {
+  find :: fn(x: f64): f64 {
+    guess := x/2;
+    done := false;
     while (!done) {
-      let diff = guess * guess - x;
-      let adiff = if (diff < 0) { -diff } else { diff };
+      diff :: guess * guess - x;
+      adiff :: if (diff < 0) { -diff } else { diff };
       if (adiff < precision) {
         done = true
       } else {
@@ -21,5 +21,5 @@ let makeNewtonRoot = fn(precision: f64): (f64) -> f64 {
   find
 };
 
-let sqrt = makeNewtonRoot(0.0001);
+sqrt :: makeNewtonRoot(0.0001);
 Println!(sqrt(2))

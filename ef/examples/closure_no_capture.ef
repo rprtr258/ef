@@ -1,6 +1,6 @@
 # A closure that touches nothing from its environment.
 
-let f = fn(): i64 {
+f :: fn(): i64 {
   1
 };
 

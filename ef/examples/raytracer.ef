@@ -13,65 +13,65 @@
 # ---- Math on [x, y, z] vectors ----
 type V3 = [f64, f64, f64];
 
-let vAdd = fn(a: V3, b: V3): V3 { [a.0 + b.0, a.1 + b.1, a.2 + b.2] };
-let vSub = fn(a: V3, b: V3): V3 { [a.0 - b.0, a.1 - b.1, a.2 - b.2] };
-let vScale = fn(a: V3, s: f64): V3 { [a.0 * s, a.1 * s, a.2 * s] };
-let vDot = fn(a: V3, b: V3): f64 { (a.0 * b.0) + ((a.1 * b.1) + (a.2 * b.2)) };
-let vAll = fn(s: f64): V3 { [s, s, s] };
+vAdd :: fn(a: V3, b: V3): V3 { [a.0 + b.0, a.1 + b.1, a.2 + b.2] };
+vSub :: fn(a: V3, b: V3): V3 { [a.0 - b.0, a.1 - b.1, a.2 - b.2] };
+vScale :: fn(a: V3, s: f64): V3 { [a.0 * s, a.1 * s, a.2 * s] };
+vDot :: fn(a: V3, b: V3): f64 { (a.0 * b.0) + ((a.1 * b.1) + (a.2 * b.2)) };
+vAll :: fn(s: f64): V3 { [s, s, s] };
 
 # ---- Scene ----
-let size = 200;
-let step = 4.0 / (size - 1);      # viewport maps pixel indices to [-2, 2]
-let substep = step / 4.0;
+size :: 200;
+step :: 4.0 / (size - 1);      # viewport maps pixel indices to [-2, 2]
+substep :: step / 4.0;
 
-let camDir: V3 = [0.1, 0.0, -2.5];   # camera at the origin, facing -z
-let ambient = 0.15;
-let lightIntensity = 0.85;
-let light: V3 = [2.4, 1.0, -3.0];    # point light
+camDir: V3 :: [0.1, 0.0, -2.5];   # camera at the origin, facing -z
+ambient :: 0.15;
+lightIntensity :: 0.85;
+light: V3 :: [2.4, 1.0, -3.0];    # point light
 
 type Sphere = [V3, f64, V3];    # center, radius, color
-let s1: Sphere = [[0.0, 0.0, -5.0], 1.5, [1.0, 0.4, 0.3]];    # warm orange
-let s2: Sphere = [[2.0, 0.5, -4.5], 1.0, [0.3, 0.5, 1.0]];    # cool blue
+s1: Sphere :: [[0.0, 0.0, -5.0], 1.5, [1.0, 0.4, 0.3]];    # warm orange
+s2: Sphere :: [[2.0, 0.5, -4.5], 1.0, [0.3, 0.5, 1.0]];    # cool blue
 
-let planeZ = -7.0;                # the ground plane z = planeZ
-let checkSize = 2.0;              # checkerboard cell size
+planeZ :: -7.0;                # the ground plane z = planeZ
+checkSize :: 2.0;              # checkerboard cell size
 
 # ---- Ray-sphere intersection ----
 # Smaller root t of |t*d - c|^2 = r^2 (camera at the origin), or -1.0
 # when the ray misses.
-let sphereT = fn(d: V3, c: V3, r: f64): f64 {
-  let a = vDot(d, d);
-  let b = -2.0 * vDot(d, c);
-  let q = vDot(c, c) - r * r;
-  let disc = (b * b) - ((4.0 * a) * q);
+sphereT :: fn(d: V3, c: V3, r: f64): f64 {
+  a :: vDot(d, d);
+  b :: -2.0 * vDot(d, c);
+  q :: vDot(c, c) - r * r;
+  disc :: (b * b) - ((4.0 * a) * q);
   if (disc < 0.0) { -1.0 } else { (-b - sqrt(disc)) / (2.0 * a) }
 };
 
 # ---- Diffuse lighting (unnormalized, distance-attenuated) ----
-let diffuse = fn(n: V3, l: V3): f64 {
-  let ndl = vDot(n, l);
+diffuse :: fn(n: V3, l: V3): f64 {
+  ndl :: vDot(n, l);
   if (ndl > 0.0) { ndl / vDot(l, l) } else { 0.0 }
 };
 
 # Shading of a sphere hit: normal = (hit - center)/radius, light
 # direction = light - hit, color scaled by ambient + intensity*diffuse.
-let sphereShade = fn(s: Sphere, d: V3, t: f64): V3 {
-  let [c, r, col] = s;
-  let hit = vScale(d, t);
-  let n = vScale(vSub(hit, c), 1.0 / r);
-  let l = vSub(light, hit);
+sphereShade :: fn(s: Sphere, d: V3, t: f64): V3 {
+  [c, r, col] :: s;
+  hit :: vScale(d, t);
+  n :: vScale(vSub(hit, c), 1.0 / r);
+  l :: vSub(light, hit);
   vScale(col, ambient + lightIntensity * diffuse(n, l))
 };
 
 # ---- Checkerboard cell parity (symmetric about the origin) ----
-let cellParity = fn(coord: f64, cell: f64): f64 {
+cellParity :: fn(coord: f64, cell: f64): f64 {
   if (coord < 0.0) { cellParity(-coord, cell) }
   else if (coord < cell) { 0.0 }
   else if (coord < 2.0 * cell) { 1.0 }
   else { cellParity(coord - 2.0 * cell, cell) }
 };
 
-let checkerVal = fn(x: f64, y: f64, cell: f64): f64 {
+checkerVal :: fn(x: f64, y: f64, cell: f64): f64 {
   if (cellParity(x, cell) < 0.5) {
     if (cellParity(y, cell) < 0.5) { 0.7 } else { 0.2 }
   } else {
@@ -80,13 +80,13 @@ let checkerVal = fn(x: f64, y: f64, cell: f64): f64 {
 };
 
 # ---- Color of one ray through direction camDir + [dx, dy, 0] ----
-let sample = fn(dx: f64, dy: f64): V3 {
-  let d: V3 = [camDir.0 + dx, camDir.1 + dy, camDir.2];
-  let t1 = sphereT(d, s1.0, s1.1);
+sample :: fn(dx: f64, dy: f64): V3 {
+  d: V3 :: [camDir.0 + dx, camDir.1 + dy, camDir.2];
+  t1 :: sphereT(d, s1.0, s1.1);
   if (t1 > 0.0) {
     sphereShade(s1, d, t1)
   } else {
-    let t2 = sphereT(d, s2.0, s2.1);
+    t2 :: sphereT(d, s2.0, s2.1);
     if (t2 > 0.0) {
       sphereShade(s2, d, t2)
     } else {
@@ -102,9 +102,9 @@ let sample = fn(dx: f64, dy: f64): V3 {
 };
 
 # ---- 2x2 supersampling: average the four corner samples ----
-let pixel = fn(px: i64, py: i64): V3 {
-  let x = (@as(px, f64) * step) - 2.0;
-  let y = (@as(py, f64) * step) - 2.0;
+pixel :: fn(px: i64, py: i64): V3 {
+  x :: (@as(px, f64) * step) - 2.0;
+  y :: (@as(py, f64) * step) - 2.0;
   vScale(vAdd(
     vAdd(sample(x - substep, y - substep), sample(x + substep, y - substep)),
     vAdd(sample(x - substep, y + substep), sample(x + substep, y + substep))),
@@ -112,11 +112,11 @@ let pixel = fn(px: i64, py: i64): V3 {
 };
 
 # ---- Scan the viewport row by row ----
-let py = 0;
+py := 0;
 while (py < size) {
-  let px = 0;
+  px := 0;
   while (px < size) {
-    let c = pixel(px, py);
+    c :: pixel(px, py);
     Println!(c.0);
     Println!(c.1);
     Println!(c.2);

@@ -146,19 +146,19 @@ typing rules.
 - **Effect declarations required for `Op!`.** `effect Op(args): ret` — the
   checker rejects `Op!` of an undeclared effect. `ret` is the type
   `Op!(...)` evaluates to (i.e. what `resume` injects).
-- **Function effect signatures.** `let f = fn(p: T): R ! { Effs } { ... }` —
+- **Function effect signatures.** `f :: fn(p: T): R ! { Effs } { ... }` —
   **mandatory for effectful bodies**: if the body performs any effect, a
   `! { ... }` annotation listing a superset must be present (pure bodies may
   omit it). The declared set must cover what the body performs; it becomes the
   function type's effect set, shown as `(T) -> R ! { Effs }`. Functions are
-  defined via `let` + an anonymous lambda; the lambda carries the same
+  defined via a `::` const + an anonymous lambda; the lambda carries the same
   `: R` and `! { Effs }` annotations.
 - **No-Return handle rule.** When the handled body has effects, the result
   type `R` is NOT unified with the body type (handlers transform results).
   When the body is pure, `R ~ bodyType`.
 - **resume `k` type.** `k : (effectRetType) -> R` where `R` is the handle
   result type, not the body type.
-- **Value restriction.** `let` with a lambda RHS is generalized
+- **Value restriction.** `::`/`:=` with a lambda RHS is generalized
   (user-defined polymorphic functions); a non-lambda RHS is not. Builtins
   get fresh type vars per use via scheme thunks.
 - **Bracket literals.** Homogeneous → array; heterogeneous → tuple (named

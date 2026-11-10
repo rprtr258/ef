@@ -1,19 +1,19 @@
-let argv = args();
+argv :: args();
 if (len(argv) != 3) {
   Out!("Usage: ef run examples/approx_pi.ef <n>\n");
   Exit!(1)
 }
-let n = number(get(argv, 2));
+n :: number(get(argv, 2));
 if (n <= 0) { Out!("Incorrect n value\n"); Exit!(1) }
 
-let p = 0;
+p := 0;
 each(fn(_, _) {
-  let x = Random!();
-  let y = Random!();
+  x :: Random!();
+  y :: Random!();
   if (x * x + y * y <= 1) {
     p = p + 1;
   }
 }, range(1, @as(n, i64), 1));
 
-let pi = 4 * p / n;
+pi :: 4 * p / n;
 Println!(pi);

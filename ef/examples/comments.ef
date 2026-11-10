@@ -2,7 +2,7 @@
 # whitespace is allowed. The body is naive doubly-recursive Fibonacci.
 
 # This is a comment
-let fib = fn(n: i64): i64 {
+fib :: fn(n: i64): i64 {
   # Another comment
   if (n <= 1) {
     n

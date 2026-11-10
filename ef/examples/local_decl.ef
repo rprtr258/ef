@@ -1,9 +1,9 @@
-# Local declarations: a `let` inside a block binds a name for the rest
+# Local declarations: a `:=` binding inside a block binds a name for the rest
 # of that block only. `x` lives inside the fn body; the top level never
 # sees it.
 
-let f = fn() {
-  let x = 5;
+f :: fn() {
+  x :: 5;
   Println!(x)
 };
 

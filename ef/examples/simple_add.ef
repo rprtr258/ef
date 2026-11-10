@@ -2,10 +2,10 @@
 # closure composing them. Multi-argument functions take a tuple and
 # are called `f(a, b)`.
 
-let id = fn (x) { x };
+id :: fn (x) { x };
 
-let x = fn (y: i64, z: i64) { if (y < z) { y * z } else { y / z } };
+x :: fn (y: i64, z: i64) { if (y < z) { y * z } else { y / z } };
 
-let q = fn (f, g) { fn (x) { f(g(x)) } };
+q :: fn (f, g) { fn (x) { f(g(x)) } };
 
 Println!(x(1, 2));

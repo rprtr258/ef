@@ -1,9 +1,9 @@
 # int/float conversions with @as: int -> f64 is value-preserving,
 # f64 -> int truncates toward zero.
 
-let cast = fn(x: i64): i64 {
-  let f = @as(x, f64);   # int -> float
-  let f2 = f + 1.0;
+cast :: fn(x: i64): i64 {
+  f :: @as(x, f64);   # int -> float
+  f2 :: f + 1.0;
   @as(f2, i64)           # float -> int
 };
 

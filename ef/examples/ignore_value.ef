@@ -3,7 +3,7 @@
 
 Println!(42);
 
-let pair = fn(): [i64, i64] {
+pair :: fn(): [i64, i64] {
   [1, 2]
 };
 

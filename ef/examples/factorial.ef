@@ -1,7 +1,7 @@
 # Factorial by recursion: the base case is the if's then-branch, the
 # recursive step its else-branch.
 
-let factorial = fn(n: i64): i64 {
+factorial :: fn(n: i64): i64 {
   if (n <= 1) {
     1
   } else {

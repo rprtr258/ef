@@ -1,9 +1,9 @@
 # Arrays: build by appending with concat; len reports the length, get
 # reads an element, and sub rebuilds the range [from, to) with a loop.
 
-let sub = fn(xs: [i64], from: i64, to: i64): [i64] {
-  let out: [i64] = [];
-  let i = from;
+sub :: fn(xs: [i64], from: i64, to: i64): [i64] {
+  out: [i64] = [];
+  i := from;
   while (i < to) {
     out = concat(out, [get(xs, i)]);
     i = i + 1;
@@ -11,12 +11,12 @@ let sub = fn(xs: [i64], from: i64, to: i64): [i64] {
   out
 };
 
-let slice: [i64] = [];
+slice: [i64] = [];
 slice = concat(slice, [1]);  # append 1
 slice = concat(slice, [2]);  # append 2
 slice = concat(slice, [3]);  # append 3
 
-let len_ = len(slice);
-let elem = get(slice, 0);
-let s = sub(slice, 1, 2);
+len_ :: len(slice);
+elem :: get(slice, 0);
+s :: sub(slice, 1, 2);
 elem + len_ + len(s)

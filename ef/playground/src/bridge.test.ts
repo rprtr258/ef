@@ -22,7 +22,7 @@ describe("bridge", () => {
     let buf = "";
     const src = [
       "effect Ask(who: string): string;",
-      "let hi = handle { \"hi, \" + Ask!(\"ef\") } case Ask(w) => k { k(w) };",
+      "hi :: handle { \"hi, \" + Ask!(\"ef\") } case Ask(w) => k { k(w) };",
       "Println!(hi);",
     ].join("\n");
     interpret(src, (s) => {
@@ -40,11 +40,11 @@ describe("bridge", () => {
   });
 
   test("parse and type errors surface as problems", () => {
-    expect(problems("let x = ;")[0]?.stage).toBe("parse");
+    expect(problems("x :: ;")[0]?.stage).toBe("parse");
     expect(problems("1 + true")[0]?.stage).toBe("check");
-    expect(problems("let f = fn(x: i64): i64 { x }; f(2)")).toEqual([]);
+    expect(problems("f :: fn(x: i64): i64 { x }; f(2)")).toEqual([]);
     // lint: unused argument, with a line number
-    const p = problems("let f = fn(unused: i64): i64 { 1 };\nf(2)");
+    const p = problems("f :: fn(unused: i64): i64 { 1 };\nf(2)");
     expect(p[0]?.stage).toBe("lint");
     expect(p[0]?.line).toBe(1);
   });
@@ -56,9 +56,9 @@ describe("bridge", () => {
   });
 
   test("topLevelEffs: the residual row `ef types` prints on its _ line", () => {
-    expect(topLevelEffs("let fib = fn(n: i64): i64 { n };\nPrintln!(fib(27))")).toEqual(["Println"]);
+    expect(topLevelEffs("fib :: fn(n: i64): i64 { n };\nPrintln!(fib(27))")).toEqual(["Println"]);
     // lambdas defer their performs, and internally-handled ops don't escape
-    expect(topLevelEffs("effect E(): unit;\nlet f = fn() { E!() };\n1")).toEqual([]);
+    expect(topLevelEffs("effect E(): unit;\nf :: fn() { E!() };\n1")).toEqual([]);
     expect(topLevelEffs("effect E(): unit;\nhandle { E!() } case E() => k { k(unit) }")).toEqual([]);
     expect(topLevelEffs("effect E(): unit;\nE!()")).toEqual(["E"]);
   });
@@ -67,7 +67,7 @@ describe("bridge", () => {
     const src = [
       "effect Tick(v: i64): i64;",
       "type Pair = [i64, i64];",
-      "let f = fn(x: i64): i64 ! { Tick } { Tick!(x) };",
+      "f :: fn(x: i64): i64 ! { Tick } { Tick!(x) };",
       "f(1)",
     ].join("\n");
     const ol = outline(src);
@@ -83,9 +83,9 @@ describe("bridge", () => {
     expect(ol[1]?.typ).toBe("[i64, i64]");
     expect(ol[2]?.typ).toBe("(i64) -> i64 ! { Tick }");
     // a type error elsewhere leaves typs null — the outline still lists names
-    expect(outline("let x = 1;\nx(2)").map((o) => o.typ)).toEqual([null]);
+    expect(outline("x :: 1;\nx(2)").map((o) => o.typ)).toEqual([null]);
     expect(isEntryFile(src)).toBe(true);
-    expect(isEntryFile("let x = 1;")).toBe(false);
+    expect(isEntryFile("x :: 1;")).toBe(false);
   });
 
   test("browser interp works standalone", () => {
@@ -112,7 +112,7 @@ describe("bridge", () => {
 
   test("wasm run handles deep recursion (the CPS interpreter overflows V8)", () => {
     const r = runWasmProgram([
-      "let fib = fn(n: i64): i64 {",
+      "fib :: fn(n: i64): i64 {",
       "  if (n < 2) { n } else { fib(n - 1) + fib(n - 2) }",
       "};",
       "Println!(fib(27));",
@@ -140,9 +140,9 @@ describe("bridge", () => {
   });
 
   test("tokenize scopes keywords, strings, tags and comments", () => {
-    const toks = tokenize("let s = \"a#b\";  # note\nTick!()");
+    const toks = tokenize("s :: \"a#b\";  # note\nTick!()");
     expect(toks[0].map((t) => t.scope)).toEqual([
-      "keyword", "identifier", "operator", "string", "delimiter", "comment",
+      "identifier", "operator", "string", "delimiter", "comment",
     ]);
     expect(toks[1][0].scope).toBe("tag");
   });

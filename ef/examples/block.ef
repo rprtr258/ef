@@ -3,7 +3,7 @@
 # of its last statement — so calling f prints 42 and 99, then evaluates
 # to 123.
 
-let f = fn() {
+f :: fn() {
   Println!(42);
   Println!(99);
   123

@@ -1,7 +1,7 @@
 # Closures: the same shape as a curried adder, with different constants —
 # make_adder(10)(5) reads the captured 10 and the argument 5.
 
-let make_adder = fn(x: i64): (i64) -> i64 {
+make_adder :: fn(x: i64): (i64) -> i64 {
   fn(y: i64): i64 {
     x + y
   }

@@ -2,6 +2,6 @@
 # condition) and i64 (the taken branch's value). Each use instantiates
 # fresh type variables. Prints 2.
 
-let id = fn (x) { x };
+id :: fn (x) { x };
 
 Println!(if (id(1 > 2)) { id(1) } else { 2 });

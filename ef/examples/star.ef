@@ -6,28 +6,28 @@
 # Records are represented as homogeneous arrays: a Point is [x, y, z] : [f64],
 # a matrix is [[f64]]. The grid is a mutable [[string]] indexed via get/set.
 
-let GRID_SIZE = 50;
-let radius = 20;
-let SIZE = GRID_SIZE * 2 + 1;
-let m_grid = map(fn(_) {map(fn(_) {" "}, range(0, SIZE, 1))}, range(0, SIZE, 1));
+GRID_SIZE :: 50;
+radius :: 20;
+SIZE :: GRID_SIZE * 2 + 1;
+m_grid :: map(fn(_) {map(fn(_) {" "}, range(0, SIZE, 1))}, range(0, SIZE, 1));
 
-let paint = fn(x: i64, y: i64, color: string): unit {
-  let gx = x + GRID_SIZE;
-  let gy = GRID_SIZE - y;
+paint :: fn(x: i64, y: i64, color: string): unit {
+  gx :: x + GRID_SIZE;
+  gy :: GRID_SIZE - y;
   set(get(m_grid, gx), gy, color)
 };
 
-let line = fn(x1: f64, y1: f64, x2: f64, y2: f64, color: string): unit {
-  let dx = (x2 - x1) / 100.0;
-  let dy = (y2 - y1) / 100.0;
-  let c = [x1, y1];
+line :: fn(x1: f64, y1: f64, x2: f64, y2: f64, color: string): unit {
+  dx :: (x2 - x1) / 100.0;
+  dy :: (y2 - y1) / 100.0;
+  c := [x1, y1];
   while (abs(c.0 - x2) > 0.01 || abs(c.1 - y2) > 0.01) {
     c = [c.0 + dx, c.1 + dy];
     paint(round(c.0), round(c.1), color)
   }
 };
 
-let clear = fn(): unit {
+clear :: fn(): unit {
   each(fn(i, _) {
     each(fn(j, _) {
       paint(i, j, " ")
@@ -43,19 +43,19 @@ let clear = fn(): unit {
 type V3 = [f64, f64, f64];
 type M3x3 = [V3, V3, V3];
 
-let drawPolygon = fn(points: [V3]): unit {
-  let n = len(points);
-  let idx = map(fn(i): [i64, i64] {[i, (i + 1) % n]}, range(0, n, 1));
+drawPolygon :: fn(points: [V3]): unit {
+  n :: len(points);
+  idx :: map(fn(i): [i64, i64] {[i, (i + 1) % n]}, range(0, n, 1));
   each(fn(ij: [i64, i64], _) {
-    let [i, j] = ij;
-    let p = get(points, i);
-    let q = get(points, j);
+    [i, j] :: ij;
+    p :: get(points, i);
+    q :: get(points, j);
     paint(round(p.0), round(p.1), "*");
     line(p.0, p.1, q.0, q.1, "*")
   }, idx)
 };
 
-let printGrid = fn(): unit {
+printGrid :: fn(): unit {
   each(fn(y, _) {
     each(fn(x, _) {
       Out!(get(get(m_grid, x + GRID_SIZE), GRID_SIZE - y))
@@ -65,27 +65,27 @@ let printGrid = fn(): unit {
 };
 
 # --- 3x3 matrix * point ---
-let apply = fn(p: V3, m: M3x3): V3 {
-  let x = p.0 * m.0.0 + p.1 * m.0.1 + p.2 * m.0.2;
-  let y = p.0 * m.1.0 + p.1 * m.1.1 + p.2 * m.1.2;
-  let z = p.0 * m.2.0 + p.1 * m.2.1 + p.2 * m.2.2;
+apply :: fn(p: V3, m: M3x3): V3 {
+  x :: p.0 * m.0.0 + p.1 * m.0.1 + p.2 * m.0.2;
+  y :: p.0 * m.1.0 + p.1 * m.1.1 + p.2 * m.1.2;
+  z :: p.0 * m.2.0 + p.1 * m.2.1 + p.2 * m.2.2;
   [x, y, z]
 };
 
-let argv = args();
+argv :: args();
 if (len(argv) != 4) {
   Out!("Usage: ef run examples/star.ef <num_of_vertices> <draw_step>\n<draw_step> must be in range (0..<num_of_vertices> / 2)\n");
   Exit!(1)
 }
-let vertices = round(number(get(argv, 2)));
-let step = round(number(get(argv, 3)));
+vertices :: round(number(get(argv, 2)));
+step :: round(number(get(argv, 3)));
 if (vertices <= 0) { Out!("Incorrect vertices value\n"); Exit!(1) }
 if (step < 0 || step > vertices / 2) { Out!("Incorrect step value\n"); Exit!(1) }
 
-let poly = flatmap(fn(i, _) {
+poly := flatmap(fn(i, _) {
   map(fn(t): V3 {
-    let k = i + step * t;
-    let angle = 2.0 * PI * @as(k, f64) / @as(vertices, f64) + PI / 2.0;
+    k :: i + step * t;
+    angle :: 2.0 * PI * @as(k, f64) / @as(vertices, f64) + PI / 2.0;
     [
       @as(round(radius * cos(angle)), f64),
       @as(round(radius * sin(angle)), f64),
@@ -94,8 +94,8 @@ let poly = flatmap(fn(i, _) {
   }, range(0, vertices, 1))
 }, range(0, vertices, 1));
 
-let rotAroundZOrY = false;
-let rotateSpeed = 0.05;
+rotAroundZOrY :: false;
+rotateSpeed :: 0.05;
 
 Out!("\x1B[?25l");
 while (true) {

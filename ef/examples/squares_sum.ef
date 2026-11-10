@@ -3,9 +3,9 @@
 # accumulates left-to-right: it calls f with the current
 # element first and the accumulator second, looping over indices; the
 # empty list yields z.
-let foldl = fn(f, z, xs) {
-  let acc = z;
-  let i = 0;
+foldl :: fn(f, z, xs) {
+  acc := z;
+  i := 0;
   while (i < len(xs)) {
     acc = f(get(xs, i), acc);
     i = i + 1;
@@ -13,7 +13,7 @@ let foldl = fn(f, z, xs) {
   acc
 };
 
-let sqr = fn(x: i64): i64 { x * x };
-let sqrs = map(sqr, range(1, 5, 1));
+sqr :: fn(x: i64): i64 { x * x };
+sqrs :: map(sqr, range(1, 5, 1));
 
 foldl(fn(x, acc) { x + acc }, 0, sqrs)

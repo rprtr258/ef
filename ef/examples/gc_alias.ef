@@ -1,16 +1,16 @@
 # Aliasing and identity: p2 aliases p, so p == p2 is true (same object);
 # arrays grow with concat and report their length with len.
 
-let p: [x: i64, y: i64] = [10, 20];
-let p2: [x: i64, y: i64] = p;  # alias: same object as p
-let same = p == p2;            # same object -> true
+p: [x: i64, y: i64] :: [10, 20];
+p2: [x: i64, y: i64] :: p;  # alias: same object as p
+same :: p == p2;            # same object -> true
 
 if (!same) {
   -1
 } else {
-  let slice: [i64] = [];
+  slice: [i64] = [];
   slice = concat(slice, [42]);  # append 42
   slice = concat(slice, [7]);   # append 7
-  let i = 1;
+  i :: 1;
   get(slice, 0) + get(slice, i) + p.x + p2.y
 }

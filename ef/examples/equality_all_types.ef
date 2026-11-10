@@ -1,7 +1,7 @@
 # Int equality: two separately written literals with the same value compare
 # equal under ==; @as converts the bool to an int for the program value.
 
-let a = 42;
-let b = 42;
+a :: 42;
+b :: 42;
 
 @as(a == b, i32)

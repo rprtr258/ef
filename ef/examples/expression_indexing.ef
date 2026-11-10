@@ -1,10 +1,10 @@
 # Element access with a variable index: an array built by appending with
 # concat, then get(slice, idx).
 
-let slice: [i64] = [];
+slice: [i64] = [];
 slice = concat(slice, [10]);  # append 10
 slice = concat(slice, [20]);  # append 20
 slice = concat(slice, [30]);  # append 30
 
-let idx = 1;
+idx :: 1;
 get(slice, idx)
