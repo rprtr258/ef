@@ -172,9 +172,33 @@ describe("Declarations: consts vs mutable bindings", () => {
   test("typed mutable destructuring [a: T, b] := e", () => {
     expect(show(run(`p: [i64, i64] = [3, 4]; [a: i64, b: i64] := p; a = a + b; a`))).toBe("7");
   });
-  test("redeclaring a mutable binding as const flips mutability", () => {
-    expect(() => run(`x := 1; x :: 2; x = 3;`)).toThrow("cannot assign to const 'x'");
-    expect(show(run(`x :: 1; x := 2; x = 3; x`))).toBe("3");
+  test("shadowing is prohibited: redeclaration, inner scopes, params, builtins", () => {
+    // Same frame: a later binding never replaces an earlier one, in either
+    // mutability direction.
+    expect(() => run(`x := 1; x :: 2;`)).toThrow("cannot redeclare 'x'");
+    expect(() => run(`x :: 1; x := 2;`)).toThrow("cannot redeclare 'x'");
+    // Child frames (lambda bodies, handler cases) may not hide outer bindings.
+    expect(() => run(`x :: 1; g :: fn(): i64 { x :: 2; x }; g()`)).toThrow("cannot shadow 'x'");
+    // Parameters may not shadow outer bindings, their own function's name, or
+    // each other.
+    expect(() => run(`x :: 1; f :: fn(x: i64): i64 { x }; f(1)`)).toThrow("cannot shadow 'x'");
+    expect(() => run(`f :: fn(f: i64): i64 { f };`)).toThrow("cannot shadow 'f'");
+    expect(() => run(`f :: fn(x: i64, x: i64): i64 { x };`)).toThrow("cannot redeclare 'x'");
+    // Destructure fields follow the same rule, within the pattern too.
+    expect(() => run(`[a, a] := [1, 2];`)).toThrow("cannot redeclare 'a'");
+    expect(() => run(`a :: 1; [a, b] := [1, 2];`)).toThrow("cannot redeclare 'a'");
+    expect(() => run(`x :: 1; g :: fn(): i64 { [x] := [2]; x }; g()`)).toThrow("cannot shadow 'x'");
+    // Builtin names (incl. operators like `neg`) are reserved everywhere.
+    expect(() => run(`len :: 1;`)).toThrow("cannot shadow builtin 'len'");
+    expect(() => run(`f :: fn(len: i64): i64 { len };`)).toThrow("cannot shadow builtin 'len'");
+    expect(() => run(`effect T(n: i64): i64; handle { T!(1) } case T(len) => k { len }`))
+      .toThrow("cannot shadow builtin 'len'");
+    // `_` is the discard wildcard: repeatable, rebindable, shadowing-free.
+    expect(show(run(`[_, x] := [1, 2]; [_, y] := [3, 4]; [x, y]`))).toBe("[2, 4]");
+    expect(show(run(`each(fn(_, _) { 0 }, [1]); 5`))).toBe("5");
+    // Effect declarations are a separate namespace: a binding may share an
+    // effect op's name (`Out!` is unaffected).
+    expect(show(run(`Out :: 1; Out`))).toBe("1");
   });
   test("lambda parameters are mutable", () => {
     expect(show(run(`halve :: fn(n: i64): i64 { n = n / 2; n }; halve(10)`))).toBe("5");
@@ -656,12 +680,19 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
     expect(ctx.env.vars.has("len")).toBe(true);
   });
 
-  test("seeded bindings never overwrite a user shadow", () => {
+  test("rebinding across REPL lines is an error (strict no-shadowing)", () => {
+    // checkProgram's acc reuses one top-level frame, so earlier lines' names
+    // (and builtins) collide exactly like same-frame redeclarations.
     const ctx = newCtx();
-    const p1 = new Parser(`len :: fn(a, b) { 42 };`).parseProgram();
+    const p1 = new Parser(`x :: 1;`).parseProgram();
     exec(p1, ctx, checkProgram(p1, ctx.checked));
-    const p2 = new Parser(`len([1], [2])`).parseProgram();
-    expect(exec(p2, ctx, checkProgram(p2, ctx.checked)).value).toBe(42n);
+    const p2 = new Parser(`x := 2;`).parseProgram();
+    expect(() => checkProgram(p2, ctx.checked)).toThrow("cannot redeclare 'x'");
+    const p3 = new Parser(`len :: 3;`).parseProgram();
+    expect(() => checkProgram(p3, ctx.checked)).toThrow("cannot shadow builtin 'len'");
+    // A rejected line leaves the accumulator untouched: x still reads as 1.
+    const p4 = new Parser(`x`).parseProgram();
+    expect(exec(p4, ctx, checkProgram(p4, ctx.checked)).value).toBe(1n);
   });
 
   test("ef types prints symbols, then the program result type and effect row", () => {

@@ -75,6 +75,16 @@ There are two binding kinds:
   parameters can be assigned.
 - Bindings are recursive: the name is in scope in its own value, so
   `f :: fn(...) { ... }` can call itself.
+- **No shadowing**: every name is bound exactly once in its visible scope
+  chain. A compile-time type error results from redeclaring a name in the
+  same frame (`x := 1; x :: 2;`), hiding an enclosing binding from an inner
+  frame (lambda body, handler case, or parameter list), or binding any
+  builtin name (`len`, `map`, `PI`, the operator `neg`, ...). Lambda
+  parameters, destructure fields, and handler binders follow the same rule,
+  duplicates within one list included. The wildcard `_` is exempt (it
+  discards and may repeat). Effect declarations are a separate namespace, so
+  a binding named like an effect op (`Out`) is legal and `Out!` is
+  unaffected. The REPL checks each line against everything bound so far.
 - Lambdas `fn (p: T): R ! { Effs } { body }` may carry optional `: R` and
   `! { Effs }` annotations; the checker verifies the body's performed effects
   ⊆ the declared set (or derives the set when `! { ... }` is omitted).

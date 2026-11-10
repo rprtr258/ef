@@ -1,4 +1,5 @@
 import type {Expr, ExprID, Program} from "./parser";
+import {BUILTINS} from "./analysis.ts";
 import {builtins} from "./builtins.ts";
 import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TNULL, TSTR, TTYPE} from "./prims.ts";
 import {assertNever} from "./assert.ts";
@@ -430,6 +431,31 @@ export class Env {
   }
 }
 
+// Names no binding may take: analysis.ts's BUILTINS surface is the shared,
+// sync-tested list of everything an ef program can name — operators
+// (structural, not env-seeded) plus non-effect builtins. Read at module
+// init: analysis.ts is a leaf module, so this stays safe under the
+// eval⇄builtins import cycle (unlike reading builtins.ts's array here).
+const BUILTIN_NAMES = new Set(BUILTINS.map(b => b.name));
+
+// No shadowing: a binding may not take any name reachable from its frame —
+// not a builtin (they live in the top frame), not an enclosing binding, not
+// even a same-frame redeclaration (later bindings never overwrite earlier
+// ones, so the REPL acc chain is strict for free). Effect names are a
+// separate namespace (`Out!` vs a binding `Out`) and stay bindable.
+function checkBind(env: Env, name: string): void {
+  // `_` is the discard convention (the unused-arg lint skips it too), so it
+  // may repeat and rebind freely.
+  if (name === "_") return;
+  if (BUILTIN_NAMES.has(name))
+    throw new TypeError_(`cannot shadow builtin '${name}'`);
+  if (env.vars.has(name))
+    throw new TypeError_(`cannot redeclare '${name}'`);
+  for (let p = env.parent; p !== null; p = p.parent)
+    if (p.vars.has(name))
+      throw new TypeError_(`cannot shadow '${name}'`);
+}
+
 // Infer an `[...]` literal. With an `expected` tuple, elements are checked
 // against the tuple's field types (named-tuple construction). Without one,
 // attempt homogeneous unification behind a checkpoint; on failure build a
@@ -643,6 +669,7 @@ function inferNode(
       const ps: Type[] = [];
       const unann: {name: string, id: number}[] = [];
       for (const p of e.params) {
+        checkBind(n, p.name);
         if (p.typ === null) {
           const pt = env.uni.fresh();
           unann.push({name: p.name, id: pt.id});
@@ -707,6 +734,7 @@ function inferNode(
       return ft;
     }
     case "let": {
+      checkBind(env, e.name);
       // Recursive binding: the name is in scope in its own value, so
       // `f :: fn(...){...}` can call itself.
       const declared = e.typ ?? env.uni.fresh();
@@ -809,12 +837,14 @@ function inferNode(
           const ft = e.fields[i].typ;
           if (ft !== null)
             env.uni.unify(ft, vt.fields[i].type);
+          checkBind(env, e.fields[i].name);
           env.vars.set(e.fields[i].name, ft ?? vt.fields[i].type);
         }
       } else if (vt.tag === "arr") {
         for (const f of e.fields) {
           if (f.typ !== null)
             env.uni.unify(f.typ, vt.elem);
+          checkBind(env, f.name);
           env.vars.set(f.name, f.typ ?? vt.elem);
         }
       } else {
@@ -882,9 +912,11 @@ function inferNode(
         if (sig === undefined && c.op !== "Return")
           throw new TypeError_(`Handler for unknown effect: ${c.op}`);
         if (c.op === "Return") {
+          checkBind(n, c.params[0].name);
           n.vars.set(c.params[0].name, env.uni.res(bodyT));
         } else {
           for (let i = 0; i < c.params.length; i++) {
+            checkBind(n, c.params[i].name);
             n.vars.set(c.params[i].name, sig!.params[i] ?? TANY);
           }
         }
@@ -892,6 +924,7 @@ function inferNode(
         const resumeT = c.op === "Return"
           ? tFun([env.uni.res(bodyT)], env.uni.fresh(), new Set())
           : tFun([sig!.ret], env.uni.fresh(), new Set());
+        checkBind(n, c.resume);
         n.vars.set(c.resume, resumeT);
         // Case bodies run outside this handler (its perform's continuation
         // resumes past it), so their performed effects forward to the

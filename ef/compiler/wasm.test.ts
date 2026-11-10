@@ -317,25 +317,30 @@ describe("wasm backend", () => {
     expect(parity("@as(-9223372036854775808, i64) / @as(-1, i64)")).toBe("ERR: integer overflow");
   });
 
-  test("builtin shadowing: a user binding keeps the builtin unreferenced", () => {
-    // A `let` shadowing a builtin name must resolve to the user binding,
-    // not reach the builtin's closure.
-    expect(parity("len :: fn(xs: [i64]): i64 { 42 }; len([1, 2, 3])")).toBe("42");
+  test("builtin shadowing is rejected before codegen", () => {
+    // No shadowing: a user binding can never take a builtin's name, so
+    // tree-shaking never sees an occluded builtin. compile()'s checkProgram
+    // rejects these before any module is emitted.
+    expect(() => compile("len :: fn(xs: [i64]): i64 { 42 }; len([1, 2, 3])"))
+      .toThrow("cannot shadow builtin 'len'");
+    expect(parity("len :: fn(xs: [i64]): i64 { 42 }; len([1, 2, 3])"))
+      .toBe("ERR: cannot shadow builtin 'len'");
     // Parameter shadowing a builtin name.
-    expect(parity("f :: fn(len: i64): i64 { len * 2 }; f(21)")).toBe("42");
-    // Inner shadow, outer builtin use: only the outer reference is reachable.
-    expect(parity(`g :: fn() {
+    expect(() => compile("f :: fn(len: i64): i64 { len * 2 }; f(21)"))
+      .toThrow("cannot shadow builtin 'len'");
+    // Inner shadow of an outer builtin use.
+    expect(() => compile(`g :: fn() {
   len :: fn(xs: [i64]): i64 { 0 };
   len([1])
 };
-g() + len([9, 9])`)).toBe("2");
+g() + len([9, 9])`)).toThrow("cannot shadow builtin 'len'");
   });
 
   test("builtins as values: references beyond call sites keep them emitted", () => {
     // A builtin passed as an argument still needs its closure cell.
     expect(parity("apply1 :: fn(f, x) { f(x) }; apply1(round, 2.6)")).toBe("3");
     // Multiple builtins-as-values, referenced inside lambdas.
-    expect(parity(`f :: fn(f, x) { f(x) };
+    expect(parity(`f :: fn(g, x) { g(x) };
 a :: f(round, 2.6);
 b :: f(len, [1, 2, 3]);
 a + b`)).toBe("6");
@@ -553,10 +558,10 @@ describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () =>
     expect(parity("len(args())")).toBe(String(process.argv.slice(2).length));
   });
 
-  test("a user binding shadowing a served builtin keeps its import dead", () => {
+  test("shadowing a served builtin is rejected before codegen", () => {
     const src = "char :: fn(x: i64): i64 { x }; char(97)";
-    expect(importsOf(src)).not.toContain("ef_char");
-    expect(parity(src)).toBe("97");
+    expect(() => importsOf(src)).toThrow("cannot shadow builtin 'char'");
+    expect(parity(src)).toBe("ERR: cannot shadow builtin 'char'");
   });
 
   test("a program using everything keeps all 7 imports in original order", () => {

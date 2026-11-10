@@ -111,7 +111,8 @@ checks once after parsing; a REPL line checks against
    after the check passes, so a rejected REPL line leaves the accumulator
    untouched (like a type error does).
 2. `seedBuiltins(ctx.env, builtinRefs(prog))` — bind exactly the builtins this
-   program references; user shadows are never overwritten.
+   program references (the checker's no-shadowing rule keeps user bindings
+   off builtin names, so seeding never overwrites anything).
 3. Evaluate each item: `runTop(evalE(item, …))`. Returns
    `{value, lastType, lastIsExpr}` — `lastIsExpr` implements the REPL echo
    rule (declarations print nothing).

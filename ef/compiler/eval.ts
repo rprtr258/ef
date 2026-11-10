@@ -339,8 +339,9 @@ export function exec(prog: Program, ctx: Ctx, checked: Checked): {value: Value, 
       throw new Error("Unhandled effect: " + op);
   ctx.checked = checked;
   // Bind builtins this program references that the env lacks yet (a later
-  // REPL line can use a previously-unreferenced builtin; user shadowing
-  // bindings are never overwritten).
+  // REPL line can use a previously-unreferenced builtin; the checker's
+  // no-shadowing rule keeps user bindings off builtin names, so seeding
+  // never overwrites anything).
   seedBuiltins(ctx.env, builtinRefs(prog));
   let value: Value = null;
   let lastIsExpr = false;

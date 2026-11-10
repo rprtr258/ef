@@ -90,9 +90,9 @@ Hindley-Milner-flavoured type system with effect tracking.
    (via `checked.unhandled` — the checker's residual top-level effect
    rows, which do ops-minus-handled matching through calls), seeds
    `builtinRefs(prog)` into the runtime env (so a later REPL line can
-   reference a previously-unused builtin; user shadows are never
-   overwritten), then evaluates and returns `{value, lastType,
-   lastIsExpr}`; `run(src, interp?)` is a one-shot `exec`.
+   reference a previously-unused builtin; the no-shadowing checker rule
+   keeps collisions impossible), then evaluates and returns `{value,
+   lastType, lastIsExpr}`; `run(src, interp?)` is a one-shot `exec`.
 8. **`wasm.ts`** — WebAssembly backend: CPS→wasm codegen over the same
    parser/types output, OPT_PASSES seam (tree-shaking, dead host-import
    elimination), in-process binaryen shrink pass. Split into strictly-layered
@@ -154,6 +154,12 @@ typing rules.
 - **Effect declarations required for `Op!`.** `effect Op(args): ret` — the
   checker rejects `Op!` of an undeclared effect. `ret` is the type
   `Op!(...)` evaluates to (i.e. what `resume` injects).
+- **No shadowing.** Every binding site (`let`, destructure field, lambda
+  parameter, handler binder/resume) goes through the checker's `checkBind`:
+  no same-frame redeclaration, no hiding an enclosing binding, no colliding
+  with a builtin/operator name (analysis.ts's `BUILTINS` surface). The REPL
+  acc reuses the top frame, so rebinding across lines errors too. `_` is
+  the exempt discard wildcard; effect names are a separate namespace.
 - **Function effect signatures.** `f :: fn(p: T): R ! { Effs } { ... }` —
   **mandatory for effectful bodies**: if the body performs any effect, a
   `! { ... }` annotation listing a superset must be present (pure bodies may

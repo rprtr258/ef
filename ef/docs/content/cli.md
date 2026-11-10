@@ -59,7 +59,7 @@ on one line):
 
 | Behaviour | Detail |
 |-----------|--------|
-| Bindings accumulate | both the runtime env and the type env persist across lines |
+| Bindings accumulate | both the runtime env and the type env persist across lines; rebinding a name (or binding a builtin's name) is an error — ef has no shadowing |
 | Echo rule | a bare expression prints `value : type` (e.g. `1 + 2` → `3 : i64`); declarations print nothing |
 | Rejected lines | a type error or unhandled-effect rejection leaves the accumulator untouched — the session continues with the last good state |
 | Late builtins | a later line may reference a builtin it never mentioned before — it is seeded into the env on that line |

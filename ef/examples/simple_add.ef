@@ -6,6 +6,6 @@ id :: fn (x) { x };
 
 x :: fn (y: i64, z: i64) { if (y < z) { y * z } else { y / z } };
 
-q :: fn (f, g) { fn (x) { f(g(x)) } };
+q :: fn (f, g) { fn (v) { f(g(v)) } };
 
 Println!(x(1, 2));
