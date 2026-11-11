@@ -4,7 +4,7 @@
 // (wasm.ts). The §-numbered design doc for the whole backend lives at the
 // top of wasm.ts.
 import binaryen from "binaryen";
-import {exprChildren, type Program, type ExprID} from "./parser.ts";
+import {exprChildren, type Expr, type Program, type ExprID} from "./parser.ts";
 import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, performsAnyOp} from "./analysis.ts";
 import {_T, Scope, StaticDesc, ValueRef, WasmError} from "./wasm_types.ts";
 import {BUILTIN_IMPORTS, DBGEMIT, HOST_IMPORTS, MAP_LIKE, OPERATOR_OPS, SIGS, mapLikeFrameWords, vt} from "./wasm_tables.ts";
@@ -63,6 +63,12 @@ export type Discovery = {
   // K_RET/K_SPILL cells only and emitDispatch can skip the handler
   // case-table scan.
   hasHandle: boolean,
+  calleeOf: Map<ExprID, ExprID>,
+  calleeSyms: Set<ExprID>,
+  lambdaValueUsed: Set<ExprID>,
+  pureLambdas: Set<ExprID>,
+  typedLambdas: Map<ExprID, string>,
+  lambdaCalleeFree: Map<ExprID, boolean>,
   // Effect op table: builtin ops pre-seeded (analysis.ts EFFECT_OPS,
   // builtins.ts table order); the program's performed/handled ops intern in
   // first-appearance AST order (insertion order = the op table order).
@@ -137,6 +143,7 @@ export type Indices = {
   // Shared resume-closure fn (§4.6): the T_KABI fn every perform site's
   // boxed resume binder points at.
   resumeFn: Fn,
+  lambdaWrapIdx: Map<ExprID, number>,
   // Total count of handler case functions (idf + per-handler fns + rf).
   caseFnTotal: number,
   // Per-handler default-Return identity fns: for handlers without an
@@ -190,6 +197,12 @@ export function discover(prog: Program): Discovery {
     landCalls: new Set(),
     hdlCases: new Map(),
     hasHandle: prog.nodes.some(n => n.t === "handle"),
+    calleeOf: new Map(),
+    calleeSyms: new Set<ExprID>(),
+    lambdaValueUsed: new Set<ExprID>(),
+    pureLambdas: new Set<ExprID>(),
+    typedLambdas: new Map(),
+    lambdaCalleeFree: new Map<ExprID, boolean>(),
     effOpIds: new Map(EFFECT_OPS.map((op, i) => [op, i])),
   };
   // Effect op discovery (analysis.ts): builtin ops are pre-seeded above; the
@@ -265,6 +278,11 @@ export function discover(prog: Program): Discovery {
         if (name === null || !isBuiltin || MAP_LIKE.has(name)) {
           d.landCalls.add(id);
         }
+        const cdef = fne.t === "sym" ? constLamOf(d, sc, fne.v) : undefined;
+        if (cdef !== undefined) {
+          d.calleeOf.set(id, cdef.id);
+          d.calleeSyms.add(e.fn);
+        }
         break;
       }
       case "arr":
@@ -316,7 +334,13 @@ export function discover(prog: Program): Discovery {
         for (const c of e.cases) rec(c.body, hs);
         return;
       }
-      case "sym":
+      case "sym": {
+        if (!d.calleeSyms.has(id)) {
+          const cdef = constLamOf(d, sc, e.v);
+          if (cdef !== undefined) d.lambdaValueUsed.add(cdef.id);
+        }
+        break;
+      }
       case "bool":
       case "unit":
         break;
@@ -331,7 +355,243 @@ export function discover(prog: Program): Discovery {
   for (const defs of d.constLambdas.values())
     for (const info of defs.values())
       info.free = lambdaCapturesFree(prog, d, info.id);
+  planTypedLambdas(prog, d);
   return d;
+}
+
+function constLamOf(d: Discovery, sc: Scope, name: string): {id: ExprID, free: boolean} | undefined {
+  for (let cur: Scope | null = sc; cur !== null; cur = cur.parent) {
+    if (cur.map.has(name)) return d.constLambdas.get(cur)?.get(name);
+  }
+  return undefined;
+}
+
+// Unboxed calling convention (v1): the single seam comment for the whole
+// optimization.
+//
+// WHAT: a `::`-const lambda that qualifies is emitted twice — a TYPED body
+// function over a per-plane unboxed frame ($UF_I32/$UF_I64/$UF_F32/$UF_F64,
+// shapes 13–16, slots a raw (array i32/i64/f32/f64), wasm types 17–20) plus
+// a boxed T_KABI wrapper that unboxes the boxed frame's arg slots into a
+// fresh typed frame and tail-calls the typed body. Inside a typed body,
+// params/lets live raw in the typed frame, operators/comparisons compute on
+// raw wasm values (no box per op), and the result is boxed once at return.
+// Call sites in BOXED code (expr()'s app case) reach the qualified callee
+// through the wrapper — the land/RET/K_SPILL protocol there is unchanged.
+//
+// QUALIFICATION PREDICATE (per const lambda, all conservative):
+// - referenced only as a callee (never as a value), and its only possible
+//   free-variable references are const-lambda callee syms (resolved
+//   statically via calleeOf — typed bodies never read a parent frame, so
+//   env = null is exact for them);
+// - all params AND the return annotated-and-resolved to concrete numeric
+//   widths of ONE plane group ({i32,u32}→i32, {i64,u64}→i64, f32, f64);
+//   every `let` binding in the body stamps to that same group. Bools are
+//   NOT representable: any bool-typed binding/param (bools are i31s in the
+//   boxed world) disqualifies; raw comparisons produce i32 0/1 conditions
+//   consumed immediately by `if`/`@as(…, T)`.
+// - body over the emitter's node whitelist (num/sym/app/if/as/let/assign/
+//   block; no while, no inner lambda, no handler binder or resume, no
+//   dlet/arr/str/field/perform/handle), and every call inside the body
+//   targets a non-map-like builtin or a PURE const lambda (see
+//   pureLambdas) — so the whole dynamic extent of a qualified call is
+//   statically effect-op-free.
+//
+// BOUNDARY/DEOPT RULE (values cross into the anyref world exactly at):
+// calls to boxed callees (builtins, pure boxed lambdas) — args boxed at the
+// call, results unboxed on assignment; the single boxing at the typed
+// function's return; anyref containers (none can occur inside a qualified
+// body) and host accessors; and handler capture points — which cannot
+// occur, since the qualification's op-freeness makes the k=null (inline,
+// non-land) call convention sound: no perform can ever walk the k chain
+// out of a qualified call, so no typed K_RET/K_SPILL cells are needed and
+// multi-shot resume never sees a typed frame. The interpreter and checker
+// are untouched; the host ABI only ever sees boxed returns.
+function planTypedLambdas(prog: Program, d: Discovery): void {
+  const lamIds: ExprID[] = [];
+  const lamFree = new Map<ExprID, boolean>();
+  for (const defs of d.constLambdas.values())
+    for (const info of defs.values()) {
+      lamIds.push(info.id);
+      lamFree.set(info.id, info.free);
+    }
+  if (lamIds.length === 0) return;
+  for (const id2 of lamFree.keys()) d.lambdaCalleeFree.set(id2, calleeFreeOf(prog, d, id2));
+  const SIX = new Set(["i32", "u32", "i64", "u64", "f32", "f64"]);
+  const groupOf = (w2: string): string =>
+    w2 === "i32" || w2 === "u32" ? "i32" : w2 === "i64" || w2 === "u64" ? "i64" : w2;
+  const marked = new Set<ExprID>();
+  const edges = new Map<ExprID, Set<ExprID>>();
+  const walkPure = (owner: ExprID, wid: ExprID, sc: Scope): void => {
+    const e2 = prog.nodes[wid];
+    switch (e2.t) {
+      case "lambda":
+        return;
+      case "perform":
+      case "handle":
+        marked.add(owner);
+        return;
+      case "app": {
+        const callee = d.calleeOf.get(wid);
+        if (callee !== undefined) {
+          if (!edges.has(owner)) edges.set(owner, new Set());
+          edges.get(owner)!.add(callee);
+        } else {
+          const fne = prog.nodes[e2.fn];
+          const isBuiltin = fne.t === "sym" && resolve(sc, fne.v) === null &&
+            BUILTINS.some(bb => bb.name === fne.v);
+          if (!isBuiltin || MAP_LIKE.has(fne.v)) {
+            marked.add(owner);
+            return;
+          }
+        }
+        for (const k of exprChildren(e2)) walkPure(owner, k, sc);
+        return;
+      }
+      default:
+        for (const k of exprChildren(e2)) walkPure(owner, k, sc);
+    }
+  };
+  for (const id of lamIds)
+    walkPure(id, (prog.nodes[id] as Expr & {t: "lambda"}).body, d.scopes.get(id)!);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [from, tos] of edges)
+      for (const to of tos)
+        if (marked.has(to) && !marked.has(from)) {
+          marked.add(from);
+          changed = true;
+        }
+  }
+  for (const id of lamIds)
+    if (!marked.has(id)) d.pureLambdas.add(id);
+  const okValue = (wid: ExprID, sc: Scope, grp: string): boolean => {
+    const e2 = prog.nodes[wid];
+    switch (e2.t) {
+      case "num":
+        return true;
+      case "sym": {
+        const r = resolve(sc, e2.v);
+        if (r !== null) return r.d === 0;
+        return e2.v === "PI";
+      }
+      case "as": {
+        if (!(e2.typ.tag === "prim" && SIX.has(e2.typ.name))) return false;
+        if (e2.asKind === "boolnum") return okBool(e2.e, sc, grp);
+        return okValue(e2.e, sc, grp);
+      }
+      case "if": {
+        const ifW = (e2 as Expr & {numKind?: string}).numKind;
+        const arm = (aw: ExprID): boolean => {
+          const ae = prog.nodes[aw];
+          if (ae.t !== "block") return okValue(aw, sc, grp);
+          for (let k = 0; k < ae.stmts.length - 1; k++)
+            if (!okStmt(ae.stmts[k], d.scopes.get(aw) ?? sc, grp)) return false;
+          return ae.stmts.length > 0 &&
+            okValue(ae.stmts[ae.stmts.length - 1], d.scopes.get(aw) ?? sc, grp);
+        };
+        return ifW !== undefined && SIX.has(ifW) && okBool(e2.c, sc, grp) &&
+          arm(e2.a) && arm(e2.b);
+      }
+      case "app": {
+        if (e2.div !== undefined)
+          return e2.numKind !== undefined && SIX.has(e2.numKind) &&
+            okValue(e2.args[0], sc, grp) && okValue(e2.args[1], sc, grp);
+        const fn3 = prog.nodes[e2.fn];
+        if (fn3.t !== "sym") return false;
+        const callee = d.calleeOf.get(wid);
+        if (callee !== undefined)
+          return d.pureLambdas.has(callee) && d.lambdaCalleeFree.get(callee) === false &&
+            e2.args.every(a => okValue(a, sc, grp));
+        if (resolve(sc, fn3.v) === null && BUILTINS.some(bb => bb.name === fn3.v) &&
+          !MAP_LIKE.has(fn3.v))
+          return e2.args.every(a => okValue(a, sc, grp));
+        return false;
+      }
+      default:
+        return false;
+    }
+  };
+  const okBool = (wid: ExprID, sc: Scope, grp: string): boolean => {
+    const e2 = prog.nodes[wid];
+    if (e2.t === "bool") return true;
+    if (e2.t === "if") return okBool(e2.c, sc, grp) && okBool(e2.a, sc, grp) && okBool(e2.b, sc, grp);
+    if (e2.t === "app") {
+      const fn3 = prog.nodes[e2.fn];
+      if (fn3.t !== "sym") return false;
+      if (resolve(sc, fn3.v) === null && BUILTINS.some(bb => bb.name === fn3.v)) {
+        if (fn3.v === "not") return okBool(e2.args[0], sc, grp);
+        if (fn3.v === "<" || fn3.v === ">" || fn3.v === "<=" || fn3.v === ">=" ||
+          fn3.v === "==" || fn3.v === "!=")
+          return e2.numKind !== undefined && SIX.has(e2.numKind) &&
+            okValue(e2.args[0], sc, grp) && okValue(e2.args[1], sc, grp);
+      }
+      const callee = d.calleeOf.get(wid);
+      if (callee !== undefined)
+        return d.pureLambdas.has(callee) && d.lambdaCalleeFree.get(callee) === false &&
+          e2.args.every(a => okValue(a, sc, grp));
+      if (resolve(sc, fn3.v) === null && BUILTINS.some(bb => bb.name === fn3.v) &&
+        !MAP_LIKE.has(fn3.v))
+        return e2.args.every(a => okValue(a, sc, grp));
+      return false;
+    }
+    return false;
+  };
+  const okStmt = (wid: ExprID, sc: Scope, grp: string): boolean => {
+    const e2 = prog.nodes[wid];
+    switch (e2.t) {
+      case "let": {
+        const vk = (prog.nodes[e2.val] as Expr & {numKind?: string}).numKind;
+        return vk !== undefined && SIX.has(vk) && groupOf(vk) === grp &&
+          okValue(e2.val, sc, grp);
+      }
+      case "assign": {
+        const r = resolve(sc, e2.name);
+        const vk = (prog.nodes[e2.val] as Expr & {numKind?: string}).numKind;
+        return r !== null && r.d === 0 && vk !== undefined && SIX.has(vk) &&
+          groupOf(vk) === grp && okValue(e2.val, sc, grp);
+      }
+      case "if": {
+        const ifW = (e2 as Expr & {numKind?: string}).numKind;
+        if (ifW !== undefined && SIX.has(ifW))
+          return okBool(e2.c, sc, grp) && okValue(e2.a, sc, grp) && okValue(e2.b, sc, grp);
+        return okBool(e2.c, sc, grp) && okStmt(e2.a, sc, grp) && okStmt(e2.b, sc, grp);
+      }
+      case "block": {
+        const bs = d.scopes.get(wid) ?? sc;
+        for (const st of e2.stmts)
+          if (!okStmt(st, bs, grp)) return false;
+        return true;
+      }
+      default:
+        return okValue(wid, sc, grp);
+    }
+  };
+  for (const id of lamIds) {
+    const e = prog.nodes[id] as Expr & {t: "lambda"};
+    if (d.lambdaValueUsed.has(id) || lamFree.get(id) === undefined) continue;
+    if (d.lambdaCalleeFree.get(id) !== false) continue;
+    if (!d.pureLambdas.has(id) || e.typ === undefined) continue;
+    const ft = e.typ;
+    if (!(ft.effs instanceof Set) || ft.effs.size > 0) continue;
+    let group: string | null = null;
+    let ok = true;
+    for (const p of ft.params) {
+      if (!(p.tag === "prim" && SIX.has(p.name))) { ok = false; break; }
+      const g = groupOf(p.name);
+      if (group === null) group = g;
+      else if (group !== g) { ok = false; break; }
+    }
+    if (!(ok && group !== null && ft.ret.tag === "prim" && SIX.has(ft.ret.name) && group === groupOf(ft.ret.name))) continue;
+    const body = prog.nodes[e.body].t === "block" ? (prog.nodes[e.body] as {stmts: ExprID[]}).stmts : [e.body];
+    const bsc = d.scopes.get(e.body) ?? d.scopes.get(id)!;
+    ok = body.length > 0;
+    for (let k = 0; k < body.length - 1; k++)
+      if (!okStmt(body[k], bsc, group)) { ok = false; break; }
+    if (ok && !okValue(body[body.length - 1], bsc, group)) ok = false;
+    if (ok) d.typedLambdas.set(id, group);
+  }
 }
 
 function lambdaCapturesFree(prog: Program, d: Discovery, id: ExprID): boolean {
@@ -342,6 +602,29 @@ function lambdaCapturesFree(prog: Program, d: Discovery, id: ExprID): boolean {
     const e = prog.nodes[wid];
     const ws = d.scopes.get(wid) ?? sc;
     if (e.t === "sym") {
+      const r = resolve(ws, e.v);
+      if (r !== null && r.d > 0) free = true;
+      return;
+    }
+    if (e.t === "assign") {
+      const r = resolve(ws, e.name);
+      if (r !== null && r.d > 0) free = true;
+    }
+    for (const k of exprChildren(e)) walk(k, ws);
+  };
+  walk(lam.body, d.scopes.get(id)!);
+  return free;
+}
+
+function calleeFreeOf(prog: Program, d: Discovery, id: ExprID): boolean {
+  const lam = prog.nodes[id];
+  if (lam.t !== "lambda") throw new WasmError("internal: const value is not a lambda");
+  let free = false;
+  const walk = (wid: ExprID, sc: Scope): void => {
+    const e = prog.nodes[wid];
+    const ws = d.scopes.get(wid) ?? sc;
+    if (e.t === "sym") {
+      if (d.calleeSyms.has(wid)) return;
       const r = resolve(ws, e.v);
       if (r !== null && r.d > 0) free = true;
       return;
@@ -384,6 +667,7 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
     fU64of: o.liveImports.length + 9,
     fLambda0: o.liveImports.length + 10,
     lambdaIdx: new Map(),
+    lambdaWrapIdx: new Map(),
     spillOf: new Map(),
     valSpill: new Map(),
     operandSpill: new Map(),
@@ -405,11 +689,19 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
   ix.funcRefTypes.set(ix.fI64of, w.T_GETI64); // (anyref) -> i64
   ix.funcRefTypes.set(ix.fU64of, w.T_GETI64); // (anyref) -> i64
   // 2c. Function index assignment (deterministic AST order).
+  let nextLam = ix.fLambda0;
   const assignLambdas = (id: ExprID): void => {
     const e = prog.nodes[id];
     if (e.t === "lambda") {
-      ix.lambdaIdx.set(id, ix.fLambda0 + ix.lambdaIdx.size);
-      ix.funcRefTypes.set(ix.lambdaIdx.get(id)!, w.T_KABI); // sigs resolve before emission
+      ix.lambdaIdx.set(id, nextLam++);
+      const plane = d.typedLambdas.get(id);
+      ix.funcRefTypes.set(ix.lambdaIdx.get(id)!, plane === undefined ? w.T_KABI // sigs resolve before emission
+        : plane === "i32" ? w.T_UKABI_I32 : plane === "i64" ? w.T_UKABI_I64
+        : plane === "f32" ? w.T_UKABI_F32 : w.T_UKABI_F64);
+      if (plane !== undefined) {
+        ix.lambdaWrapIdx.set(id, nextLam++);
+        ix.funcRefTypes.set(ix.lambdaWrapIdx.get(id)!, w.T_KABI);
+      }
     }
     for (const k of exprChildren(e)) assignLambdas(k);
   };
@@ -499,7 +791,7 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
   // for npMax > 0). Case functions run over the handler's shared hframe, so
   // every case of one handler shares its fsize.
   const idf = new Fn(2);
-  idf.idx = ix.fLambda0 + ix.lambdaIdx.size;
+  idf.idx = nextLam;
   ix.identityRet = idf;
   ix.funcRefTypes.set(idf.idx, w.T_KABI);
   let next = idf.idx + 1;
@@ -530,7 +822,7 @@ export function assignIndices(prog: Program, d: Discovery, o: Opt): Indices {
   // trampolines (must match emitBuiltins' emission order: BUILTINS filtered
   // by usedBuiltins).
   const builtins = BUILTINS.filter(b => o.usedBuiltins.has(b.name));
-  ix.builtin0 = ix.fLambda0 + ix.lambdaIdx.size + ix.caseFnTotal;
+  ix.builtin0 = idf.idx + ix.caseFnTotal;
   ix.thunk0 = ix.builtin0 + builtins.length;
   for (let i = 0; i < builtins.length; i++) {
     ix.builtinFnIdx.set(builtins[i].name, ix.builtin0 + i);

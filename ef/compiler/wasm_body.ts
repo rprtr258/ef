@@ -522,7 +522,7 @@ export class Buf {
   private castType(ht: number, nullable: boolean): binaryen.Type {
     if (nullable)
       return w.heapTypes(ht).n;
-    if (ht >= 0 && ht <= 6)
+    if (ht >= 0 && ht <= 6 || ht >= 13 && ht <= 20)
       return _T.HT[ht];
     return binaryen.getTypeFromHeapType(w.heapTypes(ht).h, false);
   }

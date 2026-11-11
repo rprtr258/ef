@@ -77,6 +77,7 @@ export const T_RUN = 7, T_PERFORM = 9, T_FAIL = 10, T_STRNUM = 11,
   T_BOX = 13, T_TRUTHY = 14, T_EQ = 15, T_CAPTURE = 16, T_KABI = 17,
   T_III_I = 18, T_MKF32 = 24, T_F32 = 25, T_MKI32 = 26, T_GETI32 = 27,
   T_MKI64 = 28, T_GETI64 = 29;
+export const T_UKABI_I32 = 30, T_UKABI_I64 = 31, T_UKABI_F32 = 32, T_UKABI_F64 = 33;
 
 export function impType(n: string): number {
   if (n === "ef_perform") return T_PERFORM;
@@ -95,6 +96,6 @@ export function heapTypes(ht: number): {h: binaryen.HeapType, n: binaryen.Type} 
   if (ht === ANYREF) return {h: binaryen.getHeapType(binaryen.anyref), n: binaryen.anyref};
   if (ht === EQREF) return {h: binaryen.getHeapType(binaryen.eqref), n: binaryen.eqref};
   if (ht === I31REF) return {h: binaryen.getHeapType(binaryen.i31ref), n: binaryen.i31ref};
-  if (ht >= 0 && ht <= 12) return {h: _T.HT[ht], n: _T.RF[ht]};
+  if (ht >= 0 && ht <= 20) return {h: _T.HT[ht], n: _T.RF[ht]};
   throw new WasmError(`internal: bad heaptype byte ${ht}`);
 }

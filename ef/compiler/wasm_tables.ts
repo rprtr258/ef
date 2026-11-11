@@ -61,6 +61,10 @@ export const SIGS: Record<number, {p: (number | number[])[], r: number | number[
   [w.T_GETI32]: {p: [w.ANYREF], r: 0x7f},             // __i32/__u32/fI32of/fU32of (step 3)
   [w.T_MKI64]: {p: [0x7e], r: w.ANYREF},              // __mk_i64/__mk_u64 (step 4; BigInt at the host)
   [w.T_GETI64]: {p: [w.ANYREF], r: 0x7e},             // __i64/__u64/fI64of/fU64of (step 4)
+  [w.T_UKABI_I32]: {p: [[0x63, 13], [0x63, 5]], r: w.ANYREF},
+  [w.T_UKABI_I64]: {p: [[0x63, 14], [0x63, 5]], r: w.ANYREF},
+  [w.T_UKABI_F32]: {p: [[0x63, 15], [0x63, 5]], r: w.ANYREF},
+  [w.T_UKABI_F64]: {p: [[0x63, 16], [0x63, 5]], r: w.ANYREF},
 };
 
 // Valtype byte (or [0x63, idx] pair) → binaryen Type. 0x40 → none (void).
@@ -102,4 +106,8 @@ export const STRUCT_FIELDS: Record<number, (number | number[])[]> = {
   [10]: [0x7e],                      // $U64: i64
   [11]: [0x7d],                      // $F32: f32
   [12]: [[0x63, 1]],                 // $TUP: (ref null $ELEMS)
+  [13]: [[0x63, 4], [0x63, 17]],     // $UF_I32
+  [14]: [[0x63, 4], [0x63, 18]],     // $UF_I64
+  [15]: [[0x63, 4], [0x63, 19]],     // $UF_F32
+  [16]: [[0x63, 4], [0x63, 20]],     // $UF_F64
 };

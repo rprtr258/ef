@@ -22,8 +22,8 @@ export const _T: {
   RF: binaryen.Type[],
   RN: binaryen.Type[],
 } = (() => {
-  const tb = new binaryen.TypeBuilder(13);
-  tb.createRecGroup(0, 13);
+  const tb = new binaryen.TypeBuilder(21);
+  tb.createRecGroup(0, 21);
   const fld = (ty: binaryen.Type, mutable: boolean) => ({type: ty, packedType: binaryen.notPacked, mutable});
   tb.setStructType(0, [fld(binaryen.f64, false)]);                       // 0 $F64 (f64 plane)
   tb.setArrayType(1, binaryen.anyref, binaryen.notPacked, true);         // 1 $ELEMS
@@ -55,6 +55,26 @@ export const _T: {
   tb.setStructType(10, [fld(binaryen.i64, false)]);                      // 10 $U64
   tb.setStructType(11, [fld(binaryen.f32, false)]);                      // 11 $F32
   tb.setStructType(12, [fld(tb.getTempRefType(tb.getTempHeapType(1), true), false)]); // 12 $TUP
+  tb.setStructType(13, [
+    fld(tb.getTempRefType(tb.getTempHeapType(4), true), true),
+    fld(tb.getTempRefType(tb.getTempHeapType(17), true), true),
+  ]);
+  tb.setStructType(14, [
+    fld(tb.getTempRefType(tb.getTempHeapType(4), true), true),
+    fld(tb.getTempRefType(tb.getTempHeapType(18), true), true),
+  ]);
+  tb.setStructType(15, [
+    fld(tb.getTempRefType(tb.getTempHeapType(4), true), true),
+    fld(tb.getTempRefType(tb.getTempHeapType(19), true), true),
+  ]);
+  tb.setStructType(16, [
+    fld(tb.getTempRefType(tb.getTempHeapType(4), true), true),
+    fld(tb.getTempRefType(tb.getTempHeapType(20), true), true),
+  ]);
+  tb.setArrayType(17, binaryen.i32, binaryen.notPacked, true);
+  tb.setArrayType(18, binaryen.i64, binaryen.notPacked, true);
+  tb.setArrayType(19, binaryen.f32, binaryen.notPacked, true);
+  tb.setArrayType(20, binaryen.f64, binaryen.notPacked, true);
   const HT = tb.buildAndDispose();
   return {
     HT,

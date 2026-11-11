@@ -3,10 +3,11 @@
 // §4.2, handle §4.4, split-mode if/while §6), plus the helper/case/lambda
 // function bodies. The §-numbered design doc for the whole backend lives
 // at the top of wasm.ts.
+import binaryen from "binaryen";
 import {exprChildren, type Expr, type ExprID, type Program} from "./parser.ts";
 import {BUILTINS} from "./analysis.ts";
 import {Ctx, INLINE, Scope, ValueRef, WasmError, _T} from "./wasm_types.ts";
-import {DBGEMIT, MOD, OPERATOR_OPS, mapLikeFrameWords} from "./wasm_tables.ts";
+import {DBGEMIT, MAP_LIKE, MOD, OPERATOR_OPS, mapLikeFrameWords} from "./wasm_tables.ts";
 import {Buf, Fn} from "./wasm_body.ts";
 import {frameSizeOf, resolve, splits, type Discovery, type Indices, type Layout, type Opt} from "./wasm_pipeline.ts";
 import * as w from "./wasm_consts.ts";
@@ -114,15 +115,565 @@ export type Emit = {
 export function emitLambdas(em: Emit, id: ExprID): void {
   const e = em.nodes[id];
   if (e.t === "lambda") {
-    const f = new Fn(2, em);
-    f.idx = em.ix.lambdaIdx.get(id)!; // funcref index (assignLambdas order)
-    em.ix.funcRefTypes.set(f.idx, w.T_KABI);
-    // bodyCatch emits the body and its completion dispatch (dead when
-    // the body ended in a tail call or split).
-    bodyCatch(em, e.body, f, em.d.scopes.get(id)!, true, INLINE);
-    em.funcs.push(f);
+    if (em.d.typedLambdas.has(id)) {
+      emitTypedPair(em, id);
+    } else {
+      const f = new Fn(2, em);
+      f.idx = em.ix.lambdaIdx.get(id)!;
+      em.ix.funcRefTypes.set(f.idx, w.T_KABI);
+      bodyCatch(em, e.body, f, em.d.scopes.get(id)!, true, INLINE);
+      em.funcs.push(f);
+    }
   }
   for (const k of exprChildren(e)) emitLambdas(em, k);
+}
+
+function emitTypedPair(em: Emit, id: ExprID): void {
+  const e = em.nodes[id] as Expr & {t: "lambda"};
+  const plane = em.d.typedLambdas.get(id)!;
+  const s = em.d.scopes.get(id)!;
+  const ufShape = plane === "i32" ? 13 : plane === "i64" ? 14 : plane === "f32" ? 15 : 16;
+  const arrShape = ufShape + 4;
+  const ukabi = plane === "i32" ? w.T_UKABI_I32 : plane === "i64" ? w.T_UKABI_I64
+    : plane === "f32" ? w.T_UKABI_F32 : w.T_UKABI_F64;
+  const SIX = new Set(["i32", "u32", "i64", "u64", "f32", "f64"]);
+  const groupOf = (w2: string): string =>
+    w2 === "i32" || w2 === "u32" ? "i32" : w2 === "i64" || w2 === "u64" ? "i64" : w2;
+  const rawT = (w2: string): binaryen.Type =>
+    w2 === "f32" ? binaryen.f32 : w2 === "i64" || w2 === "u64" ? binaryen.i64
+    : w2 === "f64" ? binaryen.f64 : binaryen.i32;
+  const helperOf = (w2: string): number =>
+    w2 === "f32" ? em.ix.fF32of : w2 === "i32" || w2 === "u32" ? em.ix.fI32of
+    : w2 === "i64" || w2 === "u64" ? em.ix.fI64of : em.ix.fNum64;
+  type Raw = {l: number, w: string};
+  const f = new Fn(2, em);
+  f.typeIdx = ukabi;
+  f.idx = em.ix.lambdaIdx.get(id)!;
+  em.ix.funcRefTypes.set(f.idx, ukabi);
+  const b = f.body;
+  const loadSlot = (i: number): Raw => {
+    const l = f.typed(rawT(plane));
+    b.localGet(0);
+    b.structGet(ufShape, 1);
+    b.i32Const(i);
+    b.arrayGet(arrShape);
+    b.localSet(l);
+    return {l, w: plane};
+  };
+  const storeSlot = (i: number, r: Raw): void => {
+    b.localGet(0);
+    b.structGet(ufShape, 1);
+    b.i32Const(i);
+    b.localGet(r.l);
+    b.arraySet();
+  };
+  const boxRaw = (r: Raw): void => {
+    b.localGet(r.l);
+    if (r.w === "bool") b.refI31();
+    else if (r.w !== "any") b.structNew(boxShapeOf(r.w));
+  };
+  const unboxAny = (w2: string): Raw => {
+    const l = f.typed(rawT(w2));
+    if (w2 === "f64") b.callFn(em.ix.fNum64);
+    else b.callFn(helperOf(w2));
+    b.localSet(l);
+    return {l, w: w2};
+  };
+  const numRaw = (e2: Expr & {t: "num"}): Raw => {
+    const w2 = widthOf(e2.numKind);
+    if (w2 === "i64" || w2 === "u64") {
+      const l = f.i64();
+      b.i64Const(BigInt(e2.raw ?? String(e2.v)));
+      b.localSet(l);
+      return {l, w: w2};
+    }
+    if (w2 === "f32") {
+      const l = f.f32();
+      b.push(MOD.f32.const(e2.v));
+      b.localSet(l);
+      return {l, w: w2};
+    }
+    if (w2 === "f64") {
+      const l = f.f64();
+      b.f64Const(e2.v);
+      b.localSet(l);
+      return {l, w: w2};
+    }
+    const l = f.i32();
+    b.i32Const(e2.v);
+    b.localSet(l);
+    return {l, w: w2};
+  };
+  const cvt = (r: Raw, tgt: string): Raw => {
+    if (r.w === tgt) return r;
+    if (r.w === "any") return unboxAny(tgt);
+    const l = f.typed(rawT(tgt));
+    b.localGet(r.l);
+    const narrow = (x: string): boolean => x === "i32" || x === "u32";
+    const wide = (x: string): boolean => x === "i64" || x === "u64";
+    if (r.w === "bool") {
+      if (tgt === "i32" || tgt === "u32") {
+        b.localSet(l);
+        return {l, w: tgt};
+      }
+      if (tgt === "i64" || tgt === "u64") b.u8(w.I64_EXTEND_I32_S);
+      else if (tgt === "f32") { b.u8(w.CONV_I32); b.u8(w.F32_DEMOTE); }
+      else b.u8(w.CONV_I32);
+    } else if (tgt === "f32") {
+      if (r.w === "f64") b.u8(w.F32_DEMOTE);
+      else if (r.w === "i32") b.u8(w.CONV_F32_I32);
+      else if (r.w === "u32") b.u8(w.CONV_F32_U32);
+      else if (r.w === "i64") b.u8(w.CONV_F32_I64);
+      else b.u8(w.CONV_F32_U64);
+    } else if (tgt === "f64") {
+      if (r.w === "f32") b.u8(w.F64_PROMOTE);
+      else if (r.w === "i32") b.u8(w.CONV_I32);
+      else if (r.w === "u32") b.u8(w.CONV_I32_U);
+      else if (r.w === "i64") b.u8(w.CONV_F64_I64);
+      else b.u8(w.CONV_F64_U64);
+    } else if (narrow(tgt)) {
+      if (wide(r.w)) b.u8(w.I32_WRAP_I64);
+      else if (r.w === "f32") { b.u8(w.F64_PROMOTE); b.u8(tgt === "i32" ? w.TRUNC_F64 : w.TRUNC_F64_U); }
+      else if (r.w === "f64") { b.u8(w.I64_TRUNC_F64); b.u8(w.I32_WRAP_I64); }
+    } else {
+      if (narrow(r.w)) b.u8(r.w === "i32" ? w.I64_EXTEND_I32_S : w.I64_EXTEND_I32_U);
+      else if (r.w === "f32") { b.u8(w.F64_PROMOTE); b.u8(w.I64_TRUNC_F64); }
+      else if (r.w === "f64") b.u8(w.I64_TRUNC_F64);
+    }
+    b.localSet(l);
+    return {l, w: tgt};
+  };
+  const rawOp = (name: string, e2: Expr & {t: "app"}, s2: Scope): Raw => {
+    const wk = e2.numKind!;
+    const isF32 = wk === "f32", isI32 = wk === "i32", isU32 = wk === "u32";
+    const isI64 = wk === "i64", isU64 = wk === "u64";
+    const isNarrow = isI32 || isU32, isWide = isI64 || isU64;
+    const l = f.typed(rawT(wk));
+    if (name === "not") {
+      const c = tBool(e2.args[0], s2);
+      b.localGet(c);
+      b.u8(w.EQZ);
+      b.localSet(l);
+      return {l, w: "bool"};
+    }
+    const x = cvt(tValue(e2.args[0], s2), wk);
+    if (name === "neg") {
+      if (isF32) b.localGet(x.l);
+      else if (isNarrow) { b.i32Const(0); b.localGet(x.l); }
+      else if (isWide) { b.i64Const(0n); b.localGet(x.l); }
+      else b.localGet(x.l);
+      b.u8(isF32 ? w.F32_NEG : isNarrow ? w.SUB : isWide ? w.I64_SUB : w.FNEG);
+      b.localSet(l);
+      return {l, w: wk};
+    }
+    const y = cvt(tValue(e2.args[1], s2), wk);
+    if (name === "%" && !isF32 && wk !== "f64") {
+      b.localGet(y.l);
+      b.u8(isWide ? w.I64_EQZ : w.EQZ);
+      b.if();
+      emitFail(em, f, 3, null, f.constF64(0), f.constF64(0), f.constF64(0));
+      b.u8(w.END);
+    }
+    if (name === "%" && !isNarrow && !isWide) {
+      const t = f.typed(rawT(wk));
+      b.localGet(x.l);
+      b.localGet(y.l);
+      b.u8(isF32 ? w.F32_DIV : w.FDIV);
+      b.u8(isF32 ? w.F32_TRUNC : w.FTRUNC);
+      b.localSet(t);
+      b.localGet(x.l);
+      b.localGet(y.l);
+      b.localGet(t);
+      b.u8(isF32 ? w.F32_MUL : w.FMUL);
+      b.u8(isF32 ? w.F32_SUB : w.FSUB);
+    } else {
+      b.localGet(x.l);
+      b.localGet(y.l);
+      b.u8(name === "+" ? (isF32 ? w.F32_ADD : isNarrow ? w.ADD : isWide ? w.I64_ADD : w.FADD)
+        : name === "-" ? (isF32 ? w.F32_SUB : isNarrow ? w.SUB : isWide ? w.I64_SUB : w.FSUB)
+        : name === "*" ? (isF32 ? w.F32_MUL : isNarrow ? w.MUL : isWide ? w.I64_MUL : w.FMUL)
+        : isI32 ? w.REMS : isU32 ? w.REMU : isI64 ? w.I64_REMS : w.I64_REMU);
+    }
+    b.localSet(l);
+    return {l, w: wk};
+  };
+  const rawCmp = (e2: Expr & {t: "app"}, s2: Scope): Raw => {
+    const wk = e2.numKind!;
+    const name = (em.nodes[e2.fn] as Expr & {t: "sym"}).v;
+    const l = f.i32();
+    if (name === "==" || name === "!=") {
+      const x = cvt(tValue(e2.args[0], s2), wk);
+      const y = cvt(tValue(e2.args[1], s2), wk);
+      b.localGet(x.l);
+      b.localGet(y.l);
+      b.u8(wk === "f32" ? w.F32_EQ : wk === "i64" || wk === "u64" ? w.I64_EQ
+        : wk === "f64" ? w.FEQ : w.EQ);
+      if (name === "!=") b.u8(w.EQZ);
+    } else {
+      const x = cvt(tValue(e2.args[0], s2), wk);
+      const y = cvt(tValue(e2.args[1], s2), wk);
+      b.localGet(x.l);
+      b.localGet(y.l);
+      b.u8(CMP_OPS[name][wk]);
+    }
+    b.localSet(l);
+    return {l, w: "bool"};
+  };
+  const callTyped = (e2: Expr & {t: "app"}, calleeId: ExprID, s2: Scope, tail: boolean): Raw => {
+    const cs = em.d.scopes.get(calleeId)!;
+    const cplane = em.d.typedLambdas.get(calleeId)!;
+    const cuf = cplane === "i32" ? 13 : cplane === "i64" ? 14 : cplane === "f32" ? 15 : 16;
+    const carr = cuf + 4;
+    const uf = f.typed(_T.RF[cuf]);
+    b.refNull(4);
+    b.i32Const(frameSizeOf(em.ix, cs));
+    b.arrayNew(carr);
+    b.structNew(cuf);
+    b.localSet(uf);
+    const args = e2.args.map(a => tValue(a, s2));
+    for (let k = 0; k < args.length; k++) {
+      b.localGet(uf);
+      b.structGet(cuf, 1);
+      b.i32Const(k);
+      b.localGet(args[k].l);
+      b.arraySet();
+    }
+    if (tail) {
+      b.localGet(uf);
+      b.localGet(1);
+      b.u8(w.RETURN_CALL);
+      b.lebU(em.ix.lambdaIdx.get(calleeId)!);
+      return {l: 0, w: "tail"};
+    }
+    b.localGet(uf);
+    b.refNull(5);
+    b.callFn(em.ix.lambdaIdx.get(calleeId)!);
+    if (e2.numKind === undefined || !SIX.has(e2.numKind)) {
+      const t = f.anyref();
+      b.localSet(t);
+      return {l: t, w: "any"};
+    }
+    return unboxAny(e2.numKind);
+  };
+  const callBoxed = (e2: Expr & {t: "app"}, direct: {idx: number, fsize: number}, s2: Scope, tail: boolean): Raw => {
+    emitCallClosure(em, f, 0, e2.args.length, (k, ffp) => {
+      const r = tValue(e2.args[k], s2);
+      b.localGet(ffp);
+      b.refCast(4, true);
+      b.structGet(4, 1);
+      b.i32Const(k);
+      boxRaw(r);
+      b.arraySet();
+    }, {tail, land: false, kL: 1, direct});
+    if (tail) return {l: 0, w: "tail"};
+    const t = f.anyref();
+    b.localSet(t);
+    const nk = e2.numKind;
+    return nk !== undefined && SIX.has(nk) ? unboxAny(nk) : {l: t, w: "any"};
+  };
+  const tApp = (wid: ExprID, e2: Expr & {t: "app"}, s2: Scope, tail: boolean): Raw => {
+    if (e2.div !== undefined) {
+      const wk = e2.numKind!;
+      const isF32 = wk === "f32", isI32 = wk === "i32", isU32 = wk === "u32";
+      const isI64 = wk === "i64", isU64 = wk === "u64";
+      const isInt = isI32 || isU32 || isI64 || isU64;
+      const l = f.typed(rawT(wk));
+      const x = cvt(tValue(e2.args[0], s2), wk);
+      const y = cvt(tValue(e2.args[1], s2), wk);
+      if (isInt) {
+        const isWide = isI64 || isU64;
+        b.localGet(y.l);
+        b.u8(isWide ? w.I64_EQZ : w.EQZ);
+        b.if();
+        emitFail(em, f, 3, null, f.constF64(0), f.constF64(0), f.constF64(0));
+        b.u8(w.END);
+        if (isI32 || isI64) {
+          b.localGet(x.l);
+          if (isI64) b.i64Const(-(2n ** 63n));
+          else b.i32Const(-2147483648);
+          b.u8(isI64 ? w.I64_EQ : w.EQ);
+          b.localGet(y.l);
+          if (isI64) b.i64Const(-1n);
+          else b.i32Const(-1);
+          b.u8(isI64 ? w.I64_EQ : w.EQ);
+          b.u8(w.AND);
+          b.if();
+          emitFail(em, f, 4, null, f.constF64(0), f.constF64(0), f.constF64(0));
+          b.u8(w.END);
+        }
+        b.localGet(x.l);
+        b.localGet(y.l);
+        b.u8(isF32 ? w.F32_DIV : isI32 ? w.DIVS : isU32 ? w.DIVU : isI64 ? w.I64_DIVS : w.I64_DIVU);
+      } else {
+        b.localGet(x.l);
+        b.localGet(y.l);
+        b.u8(w.FDIV);
+        if (e2.div === "i64" || e2.div === "u64") b.u8(w.FTRUNC);
+      }
+      b.localSet(l);
+      return {l, w: wk};
+    }
+    const fne = em.nodes[e2.fn];
+    if (fne.t !== "sym") throw new WasmError("internal: unqualified call in a typed body");
+    const callee = em.d.calleeOf.get(wid);
+    if (callee !== undefined) {
+      if (!em.d.pureLambdas.has(callee) || em.d.lambdaCalleeFree.get(callee) !== false)
+        throw new WasmError("internal: uncapturable-call violation in a typed body");
+      if (em.d.typedLambdas.has(callee)) return callTyped(e2, callee, s2, tail);
+      return callBoxed(e2, {
+        idx: em.ix.lambdaIdx.get(callee)!,
+        fsize: frameSizeOf(em.ix, em.d.scopes.get(callee)!),
+      }, s2, tail);
+    }
+    const bi = BUILTINS.find(bb => bb.name === fne.v);
+    if (bi === undefined || MAP_LIKE.has(fne.v))
+      throw new WasmError(`internal: call to ${fne.v} in a typed body`);
+    return callBoxed(e2, {
+      idx: em.ix.builtinFnIdx.get(fne.v)!,
+      fsize: bi.params + mapLikeFrameWords(fne.v),
+    }, s2, tail);
+  };
+  const tBool = (wid: ExprID, s2: Scope): number => {
+    const e2 = em.nodes[wid];
+    if (e2.t === "bool") {
+      const l = f.i32();
+      b.i32Const(e2.v ? 1 : 0);
+      b.localSet(l);
+      return l;
+    }
+    if (e2.t === "app") {
+      const fn3 = em.nodes[e2.fn];
+      if (fn3.t === "sym" && fn3.v === "not") return rawOp("not", e2, s2).l;
+      if (fn3.t === "sym" && e2.numKind !== undefined && SIX.has(e2.numKind) &&
+        (fn3.v === "<" || fn3.v === ">" || fn3.v === "<=" || fn3.v === ">=" ||
+          fn3.v === "==" || fn3.v === "!="))
+        return rawCmp(e2, s2).l;
+    }
+    if (e2.t === "if") {
+      const c = tBool(e2.c, s2);
+      const l = f.i32();
+      b.localGet(c);
+      b.if(0x7f);
+      b.localGet(tBool(e2.a, s2));
+      b.u8(w.ELSE);
+      b.localGet(tBool(e2.b, s2));
+      b.u8(w.END);
+      b.localSet(l);
+      return l;
+    }
+    const r = tValue(wid, s2);
+    if (r.w === "bool") return r.l;
+    if (r.w !== "any") throw new WasmError("internal: non-bool condition in a typed body");
+    const l = f.i32();
+    b.localGet(r.l);
+    b.callFn(em.ix.fTruthy);
+    b.localSet(l);
+    return l;
+  };
+  const tIfValue = (e2: Expr & {t: "if"}, s2: Scope): Raw => {
+    const wk = (e2 as Expr & {numKind?: string}).numKind!;
+    const c = tBool(e2.c, s2);
+    const bt = wk === "f32" ? 0x7d : wk === "i64" || wk === "u64" ? 0x7e : wk === "f64" ? 0x7c : 0x7f;
+    const l = f.typed(rawT(wk));
+    const arm = (aw: ExprID): Raw => {
+      const ae = em.nodes[aw];
+      if (ae.t !== "block") return tValue(aw, s2);
+      const asc = em.d.scopes.get(aw) ?? s2;
+      let out: Raw | null = null;
+      for (let k = 0; k < ae.stmts.length; k++) {
+        const r = tStmt(ae.stmts[k], asc, k === ae.stmts.length - 1 ? "value" : "void");
+        if (k === ae.stmts.length - 1) out = r;
+      }
+      if (out === null || out.w === "tail")
+        throw new WasmError("internal: block arm of a value-if in a typed body has no value");
+      return out;
+    };
+    b.localGet(c);
+    b.if(bt);
+    const a = cvt(arm(e2.a), wk);
+    b.localGet(a.l);
+    b.u8(w.ELSE);
+    const b2 = cvt(arm(e2.b), wk);
+    b.localGet(b2.l);
+    b.u8(w.END);
+    b.localSet(l);
+    return {l, w: wk};
+  };
+  const tAs = (e2: Expr & {t: "as"}, s2: Scope): Raw => {
+    const tgt = e2.typ.tag === "prim" ? e2.typ.name : "";
+    if (!SIX.has(tgt)) throw new WasmError("internal: non-numeric @as in a typed body");
+    if (e2.asKind === "boolnum") return cvt({l: tBool(e2.e, s2), w: "bool"}, tgt);
+    return cvt(tValue(e2.e, s2), tgt);
+  };
+  const tValue = (wid: ExprID, s2: Scope): Raw => {
+    const e2 = em.nodes[wid];
+    switch (e2.t) {
+      case "num":
+        return numRaw(e2);
+      case "sym": {
+        const r = resolve(s2, e2.v);
+        if (r !== null) {
+          if (r.d !== 0) throw new WasmError("internal: free variable in a typed body");
+          return loadSlot(r.i);
+        }
+        if (e2.v === "PI" && em.lay.piG >= 0) {
+          b.globalGet(em.lay.piG);
+          return unboxAny("f64");
+        }
+        throw new WasmError(`internal: unbound ${e2.v} in a typed body`);
+      }
+      case "as":
+        return tAs(e2, s2);
+      case "if":
+        return tIfValue(e2, s2);
+      case "app": {
+        if (e2.div === undefined && e2.numKind !== undefined && SIX.has(e2.numKind)) {
+          const fn3 = em.nodes[e2.fn];
+          if (fn3.t === "sym" && OPERATOR_OPS.has(fn3.v))
+            return fn3.v === "not" ? rawOp("not", e2, s2)
+              : fn3.v === "==" || fn3.v === "!=" || fn3.v === "<" || fn3.v === ">"
+              || fn3.v === "<=" || fn3.v === ">=" ? rawCmp(e2, s2) : rawOp(fn3.v, e2, s2);
+        }
+        const r = tApp(wid, e2, s2, false);
+        return r;
+      }
+      default:
+        throw new WasmError(`internal: node ${e2.t} in a typed body`);
+    }
+  };
+  const armStmts = (wid: ExprID, s2: Scope, mode: "void" | "tail"): void => {
+    const e2 = em.nodes[wid];
+    if (e2.t === "block") {
+      const bsc = em.d.scopes.get(wid) ?? s2;
+      for (let k = 0; k < e2.stmts.length; k++)
+        tStmt(e2.stmts[k], bsc, k === e2.stmts.length - 1 ? mode : "void");
+      return;
+    }
+    tStmt(wid, s2, mode);
+  };
+  const tStmt = (wid: ExprID, s2: Scope, mode: "void" | "value" | "tail"): Raw | null => {
+    const e2 = em.nodes[wid];
+    switch (e2.t) {
+      case "let": {
+        const r = tValue(e2.val, s2);
+        if (r.w !== "any" && SIX.has(r.w) && groupOf(r.w) !== plane)
+          throw new WasmError("internal: cross-plane binding in a typed body");
+        storeSlot(s2.map.get(e2.name)!, r);
+        return null;
+      }
+      case "assign": {
+        const rr = resolve(s2, e2.name);
+        if (rr === null || rr.d !== 0) throw new WasmError("internal: outer assign in a typed body");
+        const r = tValue(e2.val, s2);
+        if (r.w !== "any" && SIX.has(r.w) && groupOf(r.w) !== plane)
+          throw new WasmError("internal: cross-plane assignment in a typed body");
+        storeSlot(rr.i, r);
+        return null;
+      }
+      case "if": {
+        const ifW = (e2 as Expr & {numKind?: string}).numKind;
+        if (ifW !== undefined && SIX.has(ifW)) {
+          if (mode === "tail") {
+            const c = tBool(e2.c, s2);
+            b.localGet(c);
+            b.if();
+            armStmts(e2.a, s2, "tail");
+            b.u8(w.ELSE);
+            armStmts(e2.b, s2, "tail");
+            b.u8(w.END);
+            b.u8(0x00);
+            return {l: 0, w: "tail"};
+          }
+          const r = tIfValue(e2, s2);
+          return mode === "void" ? null : r;
+        }
+        const c = tBool(e2.c, s2);
+        b.localGet(c);
+        b.if();
+        armStmts(e2.a, s2, "void");
+        b.u8(w.ELSE);
+        armStmts(e2.b, s2, "void");
+        b.u8(w.END);
+        return null;
+      }
+      case "block": {
+        const bsc = em.d.scopes.get(wid) ?? s2;
+        const inner = e2.stmts;
+        let out: Raw | null = null;
+        for (let k = 0; k < inner.length; k++) {
+          out = tStmt(inner[k], bsc, k === inner.length - 1 ? mode : "void");
+          if (out !== null && out.w === "tail") return out;
+        }
+        return out;
+      }
+      case "app": {
+        const fn3 = em.nodes[e2.fn];
+        const isStampedOp = e2.div === undefined && e2.numKind !== undefined &&
+          SIX.has(e2.numKind) && fn3.t === "sym" && OPERATOR_OPS.has(fn3.v);
+        if (mode === "tail" && !isStampedOp && e2.div === undefined)
+          return tApp(wid, e2, s2, true);
+        const r = isStampedOp || e2.div !== undefined ? tValue(wid, s2)
+          : tApp(wid, e2, s2, false);
+        if (mode === "void") return null;
+        if (mode === "value") return r;
+        const v = f.anyref();
+        boxRaw(r);
+        b.localSet(v);
+        emitDispatch(em, f, v);
+        b.u8(w.RETURN);
+        return {l: 0, w: "tail"};
+      }
+      default: {
+        if (mode === "void") {
+          tValue(wid, s2);
+          return null;
+        }
+        if (mode === "value") return tValue(wid, s2);
+        const r = tValue(wid, s2);
+        const v = f.anyref();
+        boxRaw(r);
+        b.localSet(v);
+        emitDispatch(em, f, v);
+        b.u8(w.RETURN);
+        return {l: 0, w: "tail"};
+      }
+    }
+  };
+  const bodyId = e.body;
+  const stmts = em.nodes[bodyId].t === "block" ? (em.nodes[bodyId] as {stmts: ExprID[]}).stmts : [bodyId];
+  const bsc = em.d.scopes.get(bodyId) ?? s;
+  let fin: Raw | null = null;
+  for (let k = 0; k < stmts.length; k++) {
+    const r = tStmt(stmts[k], bsc, k === stmts.length - 1 ? "tail" : "void");
+    if (k === stmts.length - 1) fin = r;
+  }
+  if (fin === null || fin.w !== "tail")
+    throw new WasmError(`internal: typed body of ${plane}-plane fn does not end in a plane value`);
+  em.funcs.push(f);
+  const wf = new Fn(2, em);
+  wf.typeIdx = w.T_KABI;
+  wf.idx = em.ix.lambdaWrapIdx.get(id)!;
+  em.ix.funcRefTypes.set(wf.idx, w.T_KABI);
+  const wb = wf.body;
+  const uf = wf.typed(_T.RF[ufShape]);
+  wb.refNull(4);
+  wb.i32Const(frameSizeOf(em.ix, s));
+  wb.arrayNew(arrShape);
+  wb.structNew(ufShape);
+  wb.localSet(uf);
+  for (let k = 0; k < e.params.length; k++) {
+    wb.localGet(uf);
+    wb.structGet(ufShape, 1);
+    wb.i32Const(k);
+    wf.slot(k);
+    wb.callFn(helperOf(plane));
+    wb.arraySet();
+  }
+  wb.localGet(uf);
+  wb.localGet(1);
+  wb.u8(w.RETURN_CALL);
+  wb.lebU(f.idx);
+  em.funcs.push(wf);
 }
 
 // 4b. Handler case function bodies (§4.4). Each case body runs over the
@@ -1950,7 +2501,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
         // qualify for the null-env path (the builtin direct convention).
         const cdef = fne.t === "sym" ? constLambdaOf(em.d, s, fne.v) : undefined;
         const direct = cdef === undefined ? undefined : {
-          idx: em.ix.lambdaIdx.get(cdef.id)!,
+          idx: em.ix.lambdaWrapIdx.get(cdef.id) ?? em.ix.lambdaIdx.get(cdef.id)!,
           fsize: frameSizeOf(em.ix, em.d.scopes.get(cdef.id)!),
           envClo: cdef.free,
         };
