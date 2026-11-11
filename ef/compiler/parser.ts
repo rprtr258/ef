@@ -44,7 +44,7 @@ function subst(t: Type, tm: Map<number, Type>): Type {
 
 export type Param = { name: string, typ: Type | null, pos?: Pos };
 
-export type HandlerCase = {
+type HandlerCase = {
   op: string,
   params: Param[],
   resume: string,

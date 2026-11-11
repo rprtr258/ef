@@ -1,12 +1,19 @@
 // A tiny interpreted language with algebraic effects, C/Go-flavoured syntax.
 // Two passes: a static type checker (bidirectional + union-find unification,
-// with monomorphic effect tracking), then a CPS evaluator whose continuation
-// is a plain JS function — giving true multi-shot `resume`.
+// with monomorphic effect tracking), then CPS conversion (cps.ts) to the
+// cps_ir.ts term, interpreted here with continuations as plain JS functions —
+// giving true multi-shot `resume`. The IR's continuation names resolve at
+// runtime (jump/call/perform k operands), which is what makes recursive letk
+// loops and handler re-entry work; the interpreter threads the ambient
+// continuation for value delivery, and the term's explicit continuations are
+// what the wasm backend defunctionalizes in stage 2.
 
 import {checkProgram, type Checked, type Type} from "./types.ts";
 import {Env, show, asSlice, mkSlice, mkTup, sliceElems, type Cont, type Native, type Outcome, type Value, num, globalEnv, seedBuiltins, type Closure} from "./env.ts";
 import {builtinRefs} from "./analysis.ts";
-import {Parser, type Expr, type ExprID, type HandlerCase, type Program} from "./parser.ts";
+import {Parser, type Program} from "./parser.ts";
+import {toCps, RET} from "./cps.ts";
+import type {CAtom, CIr, CPrim, CTerm} from "./cps_ir.ts";
 import {assertNever} from "./assert.ts";
 import {builtinInterps} from "./builtins.ts";
 
@@ -24,22 +31,182 @@ export function apply(f: Value, args: Value[], k: Cont): Outcome {
     const n = f.env.extend();
     for (let i = 0; i < f.params.length; i++)
       n.vars.set(f.params[i], args[i] ?? null);
-    return evalE(f.body, f.nodes, n, k);
+    // The body's tails jump `$ret` — the caller's continuation, reified.
+    n.vars.set(RET, {tag: "cont", fn: k});
+    return evalTerm(f.ir.funcs[f.fun].body, f.ir, n, k);
   }
   throw new Error("Not callable: " + show(f));
 }
 
-// Evaluator (CPS). `id` indexes into the program's flat node slice `nodes`.
-function evalE(id: ExprID, nodes: Expr[], env: Env, k: Cont): Outcome {
-  // Width normalization: the checker stamps every node whose type is a
-  // numeric width (concrete widths as-is, untyped literals defaulted to
-  // i64/f64); the node's value is normalized to that width's runtime
-  // representation exactly like the wasm backend's per-width ops. Unstamped
-  // nodes (polymorphic uses) pass values through — operators then dispatch
-  // on the value's runtime representation.
-  const nk = (nodes[id] as Expr & { numKind?: string }).numKind;
-  if (nk === undefined) return evalEInner(id, nodes, env, k);
-  return evalEInner(id, nodes, env, (v) => k(normWidth(v, nk)));
+// Term interpreter. `k` is the ambient continuation, consumed only by halt
+// (the program boundary); every other value delivery resolves a named
+// continuation (jump/call/perform k operands), which the converter guarantees
+// to denote the ambient one at that point.
+function evalTerm(t: CTerm, ir: CIr, env: Env, k: Cont): Outcome {
+  switch (t.t) {
+    case "letk": {
+      const n = env.extend();
+      // Frozen accs: cross-suspension temps are captured NOW (pre-perform)
+      // and restored on every entry — a resume must never see a later
+      // activation's re-binding of the same temp. Source named variables
+      // stay live (frame-shared), matching the wasm backend's K_SPILL
+      // (frozen operand image) vs $FRAME (live named slots) split.
+      const frozen = t.freeze?.map(fr => [fr.name, evalAtom(fr.val, env)] as const);
+      n.vars.set(t.name, {tag: "cont", fn: (v) => {
+        const nb = n.extend();
+        if (frozen !== undefined)
+          for (const [nm, val] of frozen) nb.vars.set(nm, val);
+        nb.vars.set(t.param, t.norm !== undefined ? normWidth(v, t.norm) : v);
+        return evalTerm(t.body, ir, nb, k);
+      }});
+      return evalTerm(t.rest, ir, n, k);
+    }
+    case "let":
+      env.vars.set(t.name, evalPrim(t.rhs, env));
+      return evalTerm(t.rest, ir, env, k);
+    case "bind":
+      env.vars.set(t.name, evalAtom(t.val, env));
+      return evalTerm(t.rest, ir, env, k);
+    case "mkfn":
+      env.vars.set(t.name, {tag: "fn", params: t.params, fun: t.fun, ir, env, typ: ir.funcs[t.fun].typ});
+      return evalTerm(t.rest, ir, env, k);
+    case "call": {
+      const f = evalAtom(t.fn, env);
+      const args = t.args.map(a => evalAtom(a, env));
+      return apply(f, args, resolveCont(t.k, env));
+    }
+    case "perform": {
+      const args = t.args.map(a => evalAtom(a, env));
+      return {tag: "eff", op: t.op, args, k: resolveCont(t.k, env)};
+    }
+    case "handle":
+      return evalHandle(t, ir, env);
+    case "if": {
+      const c = evalAtom(t.c, env);
+      return evalTerm(c !== false && c !== null ? t.a : t.b, ir, env, k);
+    }
+    case "scope":
+      return evalTerm(t.rest, ir, env.extend(), k);
+    case "dlet": {
+      const v = evalAtom(t.val, env);
+      // Tuples carry their fields directly; arrays destructure through the
+      // view's window (the checker statically picks which shape `v` has).
+      const a = v !== null && typeof v === "object" && v.tag === "tup" ? v.elems : sliceElems(asSlice(v));
+      for (let i = 0; i < t.fields.length; i++) env.vars.set(t.fields[i], a[i]);
+      return evalTerm(t.rest, ir, env, k);
+    }
+    case "assign":
+      env.assignVar(t.name, evalAtom(t.val, env));
+      return evalTerm(t.rest, ir, env, k);
+    case "jump":
+      return resolveCont(t.k, env)(evalAtom(t.arg, env));
+    case "halt":
+      return k(evalAtom(t.v, env));
+    default:
+      return assertNever(t);
+  }
+}
+
+// Handler installation: the run() loop from the pre-IR evaluator, driving
+// the CPS term. `ret` is bound once to the done-wrapper (the handled body's
+// tails jump it); `exit` is rebound per run() to the current continuation —
+// resume re-entries pass a different kOuter than the first run did.
+function evalHandle(t: CTerm & {t: "handle"}, ir: CIr, env: Env): Outcome {
+  const handlers = new Map(t.cases.map(c => [c.op, c]));
+  const retC = handlers.get("Return");
+  // The handle's own continuation, resolved from its explicit k operand.
+  const kHandle = resolveCont(t.k, env);
+  const nBody = env.extend();
+  nBody.vars.set(t.ret, {tag: "cont", fn: (v) => ({tag: "done", value: v})});
+  function run(out: Outcome, kOuter: Cont): Outcome {
+    if (out.tag === "done") {
+      if (retC !== undefined) {
+        const n = env.extend();
+        n.vars.set(retC.params[0], out.value);
+        n.vars.set(retC.resume, {tag: "native", fn: (_a, k2) => k2(out.value)});
+        n.vars.set(t.exit, {tag: "cont", fn: kOuter});
+        return evalTerm(retC.body, ir, n, kOuter);
+      }
+      return kOuter(out.value);
+    }
+    const h = handlers.get(out.op);
+    if (h === undefined)
+      return {tag: "eff", op: out.op, args: out.args, k: (v) => run(out.k(v), kOuter)};
+    const resume: Native = {
+      tag: "native",
+      fn: (args, k2) => run(out.k(args[0] ?? null), k2),
+    };
+    const n = env.extend();
+    n.vars.set(h.resume, resume);
+    for (let i = 0; i < h.params.length; i++) n.vars.set(h.params[i], out.args[i] ?? null);
+    n.vars.set(t.exit, {tag: "cont", fn: kOuter});
+    return evalTerm(h.body, ir, n, kOuter);
+  }
+  return run(evalTerm(t.body, ir, nBody, kHandle), kHandle);
+}
+
+function resolveCont(a: CAtom, env: Env): Cont {
+  if (a.t !== "var")
+    throw new Error("internal: continuation operand must be a var");
+  const v = env.lookup(a.name);
+  if (v !== null && typeof v === "object" && v.tag === "cont") return v.fn;
+  throw new Error("internal: not a continuation: " + a.name);
+}
+
+// Atoms materialize with their width stamp: i64/u64 literals from the raw
+// lexeme (a JS number loses bits beyond 2^53), everything normalized exactly
+// like the wasm backend's per-width values. Unstamped atoms pass through —
+// operators then dispatch on the value's runtime representation.
+function evalAtom(a: CAtom, env: Env): Value {
+  if (a.t === "lit") {
+    let v: Value = a.v;
+    if (a.raw !== undefined && (a.stamp === "i64" || a.stamp === "u64")) v = BigInt(a.raw);
+    return a.stamp !== undefined ? normWidth(v, a.stamp) : v;
+  }
+  const v = env.lookup(a.name);
+  return a.stamp !== undefined ? normWidth(v, a.stamp) : v;
+}
+
+// Prims never suspend; they may throw (÷0, index out of bounds) — the throw
+// propagates out of evalTerm like any runtime error did pre-CPS-IR.
+function evalPrim(p: CPrim, env: Env): Value {
+  switch (p.t) {
+    case "op": {
+      const a = evalAtom(p.args[0], env);
+      const b = p.args.length > 1 ? evalAtom(p.args[1], env) : undefined;
+      const v = widthOp(p.op, a, b, p.stamp);
+      return p.norm !== undefined ? normWidth(v, p.norm) : v;
+    }
+    case "arr": {
+      const vals = p.args.map(a => evalAtom(a, env));
+      return p.kind === "tup" ? mkTup(vals) : mkSlice(vals);
+    }
+    case "as": {
+      const v = evalAtom(p.arg, env);
+      // @as conversion: float -> int truncates toward zero, bool -> numeric
+      // gives 0/1; an f32 target rounds via the generic f32 stamp.
+      let out: Value = v;
+      if (p.asKind === "trunc") out = Math.trunc(num(v));
+      else if (p.asKind === "boolnum") out = v === true ? 1 : 0;
+      return p.stamp !== undefined ? normWidth(out, p.stamp) : out;
+    }
+    case "field": {
+      const o = evalAtom(p.obj, env);
+      const idx = p.idx;
+      // Tuples index their fields; arrays index through the view's window.
+      if (o !== null && typeof o === "object" && o.tag === "tup") {
+        if (idx < 0 || idx >= o.elems.length || !Number.isInteger(idx))
+          throw new Error(`.${p.name}: index ${idx} out of bounds [0, ${o.elems.length})`);
+        return o.elems[idx];
+      }
+      const s = asSlice(o);
+      if (idx < 0 || idx >= s.len || !Number.isInteger(idx))
+        throw new Error(`.${p.name}: index ${idx} out of bounds [0, ${s.len})`);
+      return s.data[s.off + idx];
+    }
+    default:
+      return assertNever(p);
+  }
 }
 
 // Normalize a value to its stamped width's representation: i32 wraps via |0,
@@ -69,12 +236,10 @@ function toBig(v: Value): bigint {
 
 // Stamped operator application (all numeric ops except string `+`): coerce
 // both operands to the stamp's representation and compute the raw
-// mathematical result — evalE's normWidth wraps it to the width (i32 |0,
-// u32 >>>0, f32 fround, i64/u64 asIntN/asUintN). Comparisons return bool.
-// Integer / and % trap on ÷0 and INT_MIN÷-1 like wasm's div_s/rem ops;
-// BigInt division truncates toward zero natively, so no Math.trunc needed.
-const NUM_OPS = new Set(["+", "-", "*", "<", ">", "<=", ">=", "==", "!=", "neg"]);
-
+// mathematical result — the prim's norm wraps it to the width (i32 |0,
+// f32 fround, i64/u64 asIntN/asUintN). Comparisons return bool. Integer /
+// and % trap on ÷0 and INT_MIN÷-1 like wasm's div_s/rem ops; BigInt division
+// truncates toward zero natively, so no Math.trunc needed.
 function widthOp(op: string, a: Value, b: Value | undefined, nk: string): Value {
   const big = nk === "i64" || nk === "u64";
   if (op === "/" || op === "%") {
@@ -125,168 +290,6 @@ function widthOp(op: string, a: Value, b: Value | undefined, nk: string): Value 
   }
 }
 
-function evalEInner(id: ExprID, nodes: Expr[], env: Env, k: Cont): Outcome {
-  const e = nodes[id];
-  switch (e.t) {
-    case "num": {
-      // i64/u64-stamped integer literals evaluate to BigInt from the raw
-      // lexeme — JS numbers lose the low bits beyond 2^53. The width stamp
-      // normalizes (asIntN/asUintN), as does every read of the value at an
-      // i64/u64-typed site.
-      if (!e.isFloat && (e.numKind === "i64" || e.numKind === "u64"))
-        return k(BigInt(e.raw ?? String(e.v)));
-      return k(e.v);
-    }
-    case "str":
-    case "bool":
-      return k(e.v);
-    case "unit":
-      return k(null);
-    case "sym":
-      return k(env.lookup(e.v));
-    case "lambda":
-      return k({tag: "fn", params: e.params.map(p => p.name), body: e.body, nodes, env, typ: e.typ});
-    case "let":
-      env.vars.set(e.name, null);
-      return evalE(e.val, nodes, env, (v) => {
-        env.vars.set(e.name, v);
-        return k(null);
-      });
-    case "if":
-      return evalE(e.c, nodes, env, (c) =>
-        evalE(c !== false && c !== null ? e.a : e.b, nodes, env, k),
-      );
-    case "while": {
-      const loop = (): Outcome =>
-        evalE(e.c, nodes, env, (c) =>
-          c !== false && c !== null
-            ? evalE(e.body, nodes, env, () => loop())
-            : k(null),
-        );
-      return loop();
-    }
-    case "assign":
-      return evalE(e.val, nodes, env, (v) => {
-        env.assignVar(e.name, v);
-        return k(null);
-      });
-    case "block": {
-      const n = env.extend();
-      return evalSeq(e.stmts, 0, nodes, n, k);
-    }
-    case "perform":
-      return evalArgs(e.args, nodes, env, [], (args) => ({tag: "eff", op: e.op, args, k}));
-    case "handle":
-      return handle(e.body, nodes, e.cases, env, k);
-    case "as":
-      // @as conversion: float -> int truncates toward zero, bool -> numeric
-      // gives 0/1; an f32 target rounds via evalE's generic f32 stamp.
-      return evalE(e.e, nodes, env, (v) => {
-        if (e.asKind === "trunc") return k(Math.trunc(num(v)));
-        if (e.asKind === "boolnum") return k(v === true ? 1 : 0);
-        return k(v);
-      });
-    case "arr":
-      // Runtime shape comes from the checker's arrKind stamp: homogeneous
-      // literals build slices, heterogeneous ones build tuple records.
-      return evalArgs(e.elems, nodes, env, [], (vals) =>
-        k(e.arrKind === "tup" ? mkTup(vals) : mkSlice(vals)));
-    case "field":
-      return evalE(e.obj, nodes, env, (o) => {
-        const idx = e.idx!;
-        // Tuples index their fields; arrays index through the view's window.
-        if (o !== null && typeof o === "object" && o.tag === "tup") {
-          if (idx < 0 || idx >= o.elems.length || !Number.isInteger(idx))
-            throw new Error(`.${e.name}: index ${idx} out of bounds [0, ${o.elems.length})`);
-          return k(o.elems[idx]);
-        }
-        const s = asSlice(o);
-        if (idx < 0 || idx >= s.len || !Number.isInteger(idx))
-          throw new Error(`.${e.name}: index ${idx} out of bounds [0, ${s.len})`);
-        return k(s.data[s.off + idx]);
-      });
-    case "dlet":
-      return evalE(e.val, nodes, env, (v) => {
-        // Tuples carry their fields directly; arrays destructure through the
-        // view's window (the checker statically picks which shape `v` has).
-        const a = v !== null && typeof v === "object" && v.tag === "tup" ? v.elems : sliceElems(asSlice(v));
-        for (let i = 0; i < e.fields.length; i++) env.vars.set(e.fields[i].name, a[i]);
-        return k(null);
-      });
-    case "app": {
-      // Operator application dispatches on the app node's width stamp (the
-      // checker stamps the result width; operands are strict same-width or
-      // untyped literals that defaulted). The stamp decides the operand
-      // representation — BigInt for i64/u64, JS number otherwise — which
-      // value dispatch alone can't (an i64-stamped literal 100 in an f64
-      // context must coerce DOWN, not truncate the f64 up). `/` and `%` add
-      // the int/float division stamp: integer division truncates and traps
-      // on ÷0 and INT_MIN÷-1 exactly like wasm's div/rem ops; unstamped
-      // (polymorphic) operator apps fall through to the value-dispatch
-      // natives in env.ts (string +, polymorphic ==, untyped / %).
-      const fn = nodes[e.fn];
-      if (fn.t === "sym") {
-        const op = fn.v;
-        const nk = e.numKind;
-        if (op === "/" || op === "%") {
-          const wnk = nk ?? e.div ?? "f64";
-          return evalArgs(e.args, nodes, env, [], (args) => k(widthOp(op, args[0], args[1], wnk)));
-        }
-        if (nk !== undefined && NUM_OPS.has(op))
-          return evalArgs(e.args, nodes, env, [], (args) => k(widthOp(op, args[0], args[1], nk)));
-      }
-      return evalE(e.fn, nodes, env, (f) =>
-        evalArgs(e.args, nodes, env, [], (args) => apply(f, args, k)),
-      );
-    }
-    default:
-      return assertNever(e);
-  }
-}
-
-function evalArgs(args: ExprID[], nodes: Expr[], env: Env, acc: Value[], k: (vals: Value[]) => Outcome): Outcome {
-  if (acc.length === args.length)
-    return k(acc);
-  return evalE(args[acc.length], nodes, env, (v) => evalArgs(args, nodes, env, [...acc, v], k));
-}
-
-function evalSeq(stmts: ExprID[], i: number, nodes: Expr[], env: Env, k: Cont): Outcome {
-  if (i >= stmts.length)
-    return k(null);
-  if (i === stmts.length - 1)
-    return evalE(stmts[i], nodes, env, k);
-  return evalE(stmts[i], nodes, env, () => evalSeq(stmts, i + 1, nodes, env, k));
-}
-
-function handle(body: ExprID, nodes: Expr[], cases: HandlerCase[], env: Env, k: Cont): Outcome {
-  const handlers = new Map(cases.map(c => [c.op, c]));
-  const ret = handlers.get("Return");
-  function run(out: Outcome, kOuter: Cont): Outcome {
-    if (out.tag === "done") {
-      if (ret !== undefined) {
-        const n = env.extend();
-        n.vars.set(ret.params[0].name, out.value);
-        n.vars.set(ret.resume, {tag: "native", fn: (_a, k2) => k2(out.value)});
-        return evalE(ret.body, nodes, n, kOuter);
-      }
-      return kOuter(out.value);
-    }
-    const h = handlers.get(out.op);
-    if (h === undefined) {
-      return {tag: "eff", op: out.op, args: out.args, k: (v) => run(out.k(v), kOuter)};
-    }
-    const resume: Native = {
-      tag: "native",
-      fn: (args, k2) => run(out.k(args[0] ?? null), k2),
-    };
-    const n = env.extend();
-    n.vars.set(h.resume, resume);
-    for (let i = 0; i < h.params.length; i++) n.vars.set(h.params[i].name, out.args[i] ?? null);
-    return evalE(h.body, nodes, n, kOuter);
-  }
-  return run(evalE(body, nodes, env, (v) => ({tag: "done", value: v})), k);
-}
-
 // An effect interpreter: ops it knows map to host actions; unknown ops fall
 // through to the builtin table's default interpretation.
 export type EffectInterp = Partial<Record<string, (args: Value[], k: Cont) => Outcome>>;
@@ -296,7 +299,6 @@ export type EffectInterp = Partial<Record<string, (args: Value[], k: Cont) => Ou
 // is a top-level const there — entry-order safe only same-module; deriving
 // it here instead would read `builtins` during eval's own init and be TDZ-
 // sensitive in the eval⇄builtins import cycle.
-
 function runTop(out: Outcome, interp?: EffectInterp): Value {
   while (true) {
     if (out.tag === "done")
@@ -354,16 +356,15 @@ export function exec(prog: Program, ctx: Ctx, checked: Checked): {value: Value, 
   // no-shadowing rule keeps user bindings off builtin names, so seeding
   // never overwrites anything).
   seedBuiltins(ctx.env, builtinRefs(prog));
-  let value: Value = null;
+  // One conversion, one term, one runTop drive: items chain inside the term,
+  // so an interp-resumed effect continues into the next item exactly like
+  // the old per-item loop did. Top-level binds land in ctx.env (the items
+  // bind in the caller's frame), preserving the REPL accumulator protocol.
+  const ir = toCps(prog);
   let lastIsExpr = false;
-  for (const it of prog.items) {
-    if ("e" in it) {
-      value = runTop(evalE(it.e, prog.nodes, ctx.env, v => ({tag: "done", value: v})), ctx.interp);
-      lastIsExpr = prog.nodes[it.e].t !== "let";
-    } else {
-      lastIsExpr = false; // effect decl / alias: not an echoable expression
-    }
-  }
+  for (const it of prog.items)
+    lastIsExpr = "e" in it ? prog.nodes[it.e].t !== "let" : false; // effect decl / alias: not echoable
+  const value = runTop(evalTerm(ir.term, ir, ctx.env, v => ({tag: "done", value: v})), ctx.interp);
   return {value, lastType: ctx.checked.lastType, lastIsExpr};
 }
 

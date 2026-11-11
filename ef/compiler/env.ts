@@ -1,15 +1,17 @@
 import {showT, type FunT} from "./types.ts";
-import type {Expr, ExprID} from "./parser.ts";
+import type {CIr} from "./cps_ir.ts";
 import {builtins} from "./builtins.ts";
 
 // --- Values (runtime) ---
 export type Closure = {
   tag: "fn",
   params: string[],
-  body: ExprID,
-  // The flat node slice the body's ExprIDs index into; closures carry their
-  // own arena so they stay valid across REPL lines and separate programs.
-  nodes: Expr[],
+  // Index into the closure's CPS IR function table; `$ret` (the caller's
+  // continuation) is bound in the call frame at entry.
+  fun: number,
+  // The IR the fun index resolves in; closures carry their own IR so they
+  // stay valid across REPL lines and separate programs.
+  ir: CIr,
   env: Env,
   typ?: FunT,
 };
@@ -17,6 +19,14 @@ export type Closure = {
 export type Native = {
   tag: "native",
   fn: (args: Value[], k: Cont) => Outcome,
+};
+
+// Reified continuation as a first-class runtime value: what letk names,
+// function `$ret`s, and handle ret/exit bindings resolve to. Internal only —
+// the checker never lets source code name one.
+type ContVal = {
+  tag: "cont",
+  fn: Cont,
 };
 
 // Slice: the runtime form of every `[T]` value — a fat pointer over a shared
@@ -45,7 +55,8 @@ export type Value =
   | Slice
   | Tup
   | Closure
-  | Native;
+  | Native
+  | ContVal;
 
 export const mkSlice = (data: Value[], off = 0, len = data.length - off): Slice =>
   ({tag: "slice", data, off, len});
@@ -93,6 +104,7 @@ export function show(v: Value): string {
       return "[" + v.elems.map(show).join(", ") + "]";
     if (v.tag === "fn")
       return v.typ !== undefined ? "[fn: " + showT(v.typ) + "]" : "[fn]";
+    if (v.tag === "cont") return "[cont]"; // unreachable from source code
   }
   return "[fn]";
 }
