@@ -5,38 +5,94 @@
 // file without a table entry (and the real test body the entry carries)
 // fails the run, and a stale entry for a deleted file fails too.
 //
-// Tests run the real CLI (`bun run cli.ts run <file>`, cwd: compiler/) so args handling and
-// top-level printing are covered end to end. Each test also runs the wasm
-// backend (`bun run cli.ts runwasm <file>`) and asserts the wasm result
-// coincides with the interpreter's (runExample). runCli pins EF_RANDOM_SEED
-// for every invocation, so Random!-driven examples (approx_pi.ef) are
-// reproducible and parity-checked exactly like the rest.
+// Tests run the compiler in-process (run / runWasm), capturing the stdout
+// the CLI would print: Println!'s console.log lines, Out!'s raw
+// process.stdout.write chunks, then the top-level result's show() line (see
+// runOne). Each test also runs the wasm backend and asserts the wasm result
+// coincides with the interpreter's (runExample). Exit! is intercepted with
+// a thrown sentinel (the default host interpretation is process.exit, which
+// would kill the test runner) and Random! is driven by a local seed-42
+// mulberry32, so Random!-driven examples (approx_pi.ef) are reproducible
+// and parity-checked exactly like the rest. The CLI executable surface
+// itself (argv, exit codes, stderr) is smoke-tested separately in
+// cli.test.ts.
 //
 // star.ef is the exception in shape, not in coverage: it is an infinite
 // animation loop, so instead of runExample it is compared against the
 // interpreter over a bounded output prefix (compile health for every
 // example, star included, is asserted in wasm.test.ts).
 import {test, expect, describe} from "bun:test";
-import {execFileSync} from "node:child_process";
-import {readdirSync} from "node:fs";
+import {readdirSync, readFileSync} from "node:fs";
 import {join} from "node:path";
+import {run} from "./eval.ts";
+import {runWasm} from "./wasm_host.ts";
+import {num, show, type Value} from "./env.ts";
 
 const compilerDir = import.meta.dir; // every path below is relative to this source file's directory
 
 type RunResult = {stdout: string, code: number};
 
-// execFileSync throws on non-zero exit; the catch recovers stdout + code.
-// EF_RANDOM_SEED is pinned so every run (both backends) draws the same
-// Random! sequence — parity stays exact even for stochastic examples.
-function runCli(sub: string, example: string, args: string[]): RunResult {
+// The default host interpretation of Exit! is process.exit, which would
+// kill the test runner; runOne swaps it for this sentinel and maps it back
+// to an exit code at its boundary.
+class ExitSignal extends Error {
+  constructor(readonly code: number) { super(`exit ${code}`); }
+}
+
+// Local mulberry32 PRNG seeded with 42, standing in for Math.random(): the
+// interpreter and the wasm host would otherwise draw from the same global
+// Math.random() stream sequentially, so Random!-driven examples would fail
+// their parity check. A fresh stream per run keeps backend parity exact.
+function mulberry42(): () => number {
+  let a = 42 | 0;
+  return () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Runs one example through one backend in-process and returns the stdout
+// the CLI would print, plus the exit code (Exit! mapped from the sentinel).
+// Printed output is captured by swapping console.log (Println!) and
+// process.stdout.write (Out!) around the run, then the top-level result is
+// appended as the CLI's final show() line. argv mimics the CLI's shape —
+// the `args` builtin and wasm's ef_args host import read
+// process.argv.slice(2) at call time, and approx_pi.ef counts the
+// subcommand as part of its argv.
+function runOne(mode: "run" | "runwasm", example: string, args: string[]): RunResult {
   const file = join(compilerDir, "..", "examples", example);
-  const env = {...process.env, EF_RANDOM_SEED: "42"};
+  const src = readFileSync(file, "utf8");
+  const rand = mulberry42();
+  const chunks: string[] = [];
+  const realLog = console.log.bind(console);
+  const realWrite = process.stdout.write.bind(process.stdout);
+  const savedArgv = process.argv;
+  console.log = (...a: unknown[]) => { chunks.push(a.map(String).join(" ") + "\n"); };
+  process.stdout.write = (s: string) => { chunks.push(s); return true; };
+  process.argv = [process.argv[0], join(compilerDir, "cli.ts"), mode, file, ...args];
   try {
-    const stdout = execFileSync("bun", ["run", "cli.ts", sub, file, ...args], {encoding: "utf8", timeout: 60_000, env, cwd: compilerDir});
-    return {stdout, code: 0};
-  } catch (e) {
-    const err = e as {stdout?: string | Buffer, status?: number | null};
-    return {stdout: String(err.stdout ?? ""), code: err.status ?? 1};
+    let value: Value;
+    try {
+      value = mode === "run"
+        ? run(src, {
+            Exit: a => { throw new ExitSignal(num(a[0])); },
+            Random: (_a, k) => k(rand()),
+          })
+        : runWasm(src, {
+            Exit: a => { throw new ExitSignal(num(a[0])); },
+            Random: () => rand(),
+          });
+    } catch (e) {
+      if (e instanceof ExitSignal) return {stdout: chunks.join(""), code: e.code};
+      throw e;
+    }
+    return {stdout: chunks.join("") + show(value) + "\n", code: 0};
+  } finally {
+    console.log = realLog;
+    process.stdout.write = realWrite;
+    process.argv = savedArgv;
   }
 }
 
@@ -44,8 +100,8 @@ function runCli(sub: string, example: string, args: string[]): RunResult {
 // coincides with the interpreter's (stdout + exit code); returns the
 // interpreter result.
 function runExample(example: string, args: string[] = []): RunResult {
-  const interp = runCli("run", example, args);
-  const wasm = runCli("runwasm", example, args);
+  const interp = runOne("run", example, args);
+  const wasm = runOne("runwasm", example, args);
   expect(wasm).toEqual(interp);
   return interp;
 }
@@ -147,8 +203,9 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     label: "converges toward pi for large n",
     args: ["10000"],
     body: res => {
-      // runCli pins EF_RANDOM_SEED, so both backends sample the same points
-      // and must print the same estimate (checked by runExample's parity).
+      // runOne seeds Random! with a local seed-42 mulberry32, so both
+      // backends sample the same points and must print the same estimate
+      // (checked by runExample's parity).
       const pi = Number(res.stdout.split("\n")[0]);
       expect(pi).toBeCloseTo(3.14, 1);
     },
@@ -382,14 +439,29 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     label: "renders identically in interpreter and wasm (bounded prefix)",
     self: true,
     body: async file => {
+      // Output-bounded, not wall-clock-bounded: read stdout until the
+      // 3000-char cap is reached, then kill the child. A time budget here
+      // (the old timeout 8) flaked under parallel test load — startup plus
+      // wasm compile could eat the whole window and yield 0 bytes. Bytes
+      // are load-independent: slower machines just take longer to fill the
+      // cap. If star ever stops producing output (a real regression), the
+      // read blocks until the test-level timeout fails the test.
       const runBounded = async (mode: string): Promise<string> => {
         const p = Bun.spawn(
-          ["sh", "-c", `timeout 8 bun run cli.ts ${mode} ../examples/${file} 6 2 2>/dev/null | head -c 3000`],
+          ["bun", "run", "cli.ts", mode, `../examples/${file}`, "6", "2"],
           {cwd: compilerDir, stdout: "pipe", stderr: "ignore"},
         );
-        const out = await new Response(p.stdout).text();
+        const reader = p.stdout.getReader();
+        const decode = new TextDecoder();
+        let out = "";
+        while (out.length < 3000) {
+          const {done, value} = await reader.read();
+          if (done) break;
+          out += decode.decode(value, {stream: true});
+        }
+        p.kill();
         await p.exited;
-        return out;
+        return out.slice(0, 3000);
       };
       const [interp, wasm] = [await runBounded("run"), await runBounded("runwasm")];
       // The first frame is deterministic; later frames diverge only by wall

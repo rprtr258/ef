@@ -40,7 +40,7 @@ views of the same table:
 | `Out(s)` | `process.stdout.write(s)` | — |
 | `Exit(code)` | `process.exit(code)` — never resumes | — |
 | `Wait(secs)` | busy-wait (synchronous evaluator) | — |
-| `Random()` | `Math.random()` | `EF_RANDOM_SEED=<int>` → seeded mulberry32 PRNG, so runs are reproducible; both backends interpret `Random` through this host, each starting from the same seed per process |
+| `Random()` | `Math.random()` | both backends interpret `Random` through this host |
 
 Injectability: `runTop`/`run`/`newCtx` (interpreter) and `runWasm` (host)
 accept an `EffectInterp` override checked **before** the builtin defaults —

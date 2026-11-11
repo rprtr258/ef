@@ -394,7 +394,7 @@ These are pre-declared like user effects and invoked with the `!` postfix. With 
 | `Out` | `(s: string): unit` | `process.stdout.write(s)` — raw string, no newline. |
 | `Exit` | `(code: i64): unit` | `process.exit(code)` — terminates without resuming. |
 | `Wait` | `(secs: i64): unit` | Busy-wait `secs` seconds then resume with unit (synchronous evaluator). |
-| `Random` | `(): f64` | Resume with a random number in [0, 1) (`Math.random()`; a seeded PRNG when the `EF_RANDOM_SEED` env var is set to an integer). |
+| `Random` | `(): f64` | Resume with a random number in [0, 1) (`Math.random()`). |
 
 ```ef
 # Println is an ordinary effect: a handler can capture it instead of printing.

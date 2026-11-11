@@ -19,7 +19,9 @@ Hindley-Milner-flavoured type system with effect tracking.
   it, so a new node variant fails typecheck in each walker that forgets it),
   frontends `cli.ts`/`repl.ts`.
 - Tests (under `compiler/`): `index.test.ts` + `lint.test.ts` + `wasm.test.ts` +
-  `analysis.test.ts` + `examples.test.ts` (`bun:test`).
+  `analysis.test.ts` + `examples.test.ts` (in-process: per-example interpreter↔wasm
+  parity, `Exit!` sentinel + seeded `Random!` override) + `cli.test.ts` (CLI
+  integration smoke: argv, exit codes, stdout/stderr) (`bun:test`).
 - Run a file: `bun compiler/cli.ts run <file>` (subcommands: `run`, `buildwasm`,
   `runwasm`, `types`, `lint`, `repl`, `lsp`).
 - Gates: `bun run ci` = typecheck + eslint + runtime-deps check + tests; all must stay clean.
