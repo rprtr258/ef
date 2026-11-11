@@ -718,22 +718,28 @@ export function emitCaseFns(em: Emit): void {
     }
   }
   // The shared resume closure fn (§4.6): (frame, k) -> anyref. frame's
-  // parent is the perform site's capture record {slot 1 = captured slice,
-  // slot 2 = matched HDL, slot 3 = the invocation's hframe copy}; frame's
-  // slot 0 is the resumed value. Copies the slice afresh (originals
-  // untouched — multi-shot safe), re-chains the copy's bottom to a fresh
-  // HDL {case table, hframe, next = this call's k} and dispatches the
-  // resumed value through the fresh chain: RET cells run the segment's
-  // fragments, the fresh HDL's Return entry fires, and dispatch
-  // terminates at the caller's continuation.
+  // parent is the perform site's capture record {slot 1 = captured slice
+  // (self-contained: bottom next = null), slot 2 = the matched handler's
+  // case table, slot 3 = the invocation's hframe copy, slot 4 = the slice
+  // length}; frame's slot 0 is the resumed value. Copies the slice afresh
+  // (originals untouched — multi-shot safe), finds the copy's bottom by
+  // position (the record's length — no sentinel ref: the record must not
+  // reach into the live chain or earlier generations' records, or every
+  // per-perform O(depth) slice would retain all previous ones) and
+  // re-chains it to a fresh HDL {case table, hframe, next = this call's
+  // k}, then dispatches the resumed value through the fresh chain: RET
+  // cells run the segment's fragments, the fresh HDL's Return entry
+  // fires, and dispatch terminates at the caller's continuation.
   const rf = em.ix.resumeFn;
   rf.em = em;
   {
     const b = rf.body;
-    const v = rf.anyref(), rec = rf.anyref(), slice = rf.anyref(), hdl = rf.anyref();
+    const v = rf.anyref(), rec = rf.anyref(), slice = rf.anyref();
     const copy = rf.anyref(), fresh = rf.anyref(), cur = rf.anyref();
+    const len = rf.i32(), j = rf.i32();
     // Read capture-record slot n of the env frame (slot 1 = captured
-    // slice, 2 = matched HDL, 3 = the invocation's hframe copy).
+    // slice, 2 = the matched handler's case table, 3 = the invocation's
+    // hframe copy, 4 = the slice length).
     const recSlot = (n: number): void => {
       b.localGet(rec);
       b.refCast(4, true);
@@ -748,32 +754,40 @@ export function emitCaseFns(em: Emit): void {
     b.localSet(rec);
     recSlot(1);
     b.localSet(slice);
-    recSlot(2);
-    b.localSet(hdl);
+    recSlot(4); // the slice length (i31)
+    i31of(b);
+    b.localSet(len);
     b.localGet(slice);
     b.refCast(5, true);
-    b.localGet(hdl);
-    b.refCast(5, true);
+    b.localGet(len);
+    b.refI31(); // the length rides as an i31 (see $captureSlice)
     b.callFn(em.ix.fCapture);
     b.localSet(copy);
     b.i31Const(w.K_HDL);
-    cellGet(b, hdl, 1); // a = the matched handler's case table
+    recSlot(2); // a = the matched handler's case table
     recSlot(3); // b = the invocation's hframe copy (rec slot 3)
     b.localGet(1); // next = the k this closure was invoked with
     b.structNew(5);
     b.localSet(fresh);
+    // Splice the fresh HDL onto the copy's bottom: len-1 next-steps from
+    // the head (len ≥ 1 — the slice always starts at a RET cell).
     b.localGet(copy);
     b.localSet(cur);
+    b.i32Const(1);
+    b.localSet(j);
     rf.walkLoop(
       () => {
-        cellGet(b, cur, 3);
-        b.localGet(hdl);
-        b.refCast(5, true);
-        b.refEq();
-      }, // cur is the bottom copy (its next is the old HDL)
+        b.localGet(j);
+        b.localGet(len);
+        b.u8(w.EQ);
+      }, // j reached len → cur is the bottom copy
       () => {
         cellGet(b, cur, 3);
         b.localSet(cur);
+        b.localGet(j);
+        b.i32Const(1);
+        b.u8(w.ADD);
+        b.localSet(j);
       },
     );
     b.localGet(cur);
@@ -1287,13 +1301,22 @@ export function emitHelpers(em: Emit): Fn[] {
   em.ix.funcRefTypes.set(em.ix.fBox, w.T_BOX);
   box.body.localGet(0);
   box.body.structNew(0);
-  // $captureSlice(k: (ref null $K), until: (ref null $K)) -> (ref null $K):
-  // fresh copies of the cells from k up to (excluding) until, each
-  // {kind, a, b} verbatim; the copies chain in walk order and the bottom
-  // copy's next is `until`. One pass: allocate each copy with next = null
-  // and patch the previous copy's next on the way (copies are fresh, so
-  // aliasing is not a concern). n ≥ 1: the slice always starts at a RET
-  // cell, so head is non-null at the end.
+  // $captureSlice(k: (ref null $K), n: anyref i31) -> (ref null $K): fresh
+  // copies of the first n cells of the chain at k, each {kind, a, b} verbatim;
+  // the copies chain in walk order and the bottom copy's next is null — the
+  // slice is self-contained. It must not chain onto the live chain's
+  // handler cell: the record holding the slice stays reachable while its
+  // resume closure is (the invocation's hframe copy → the resume binder
+  // slot), and a link out would root the previous generation's record
+  // through this one, so every per-perform O(depth) slice would retain all
+  // earlier ones — O(n²) live cells over a run of n performs. The resume
+  // fn splices its fresh HDL onto the copy's bottom by position (the
+  // record's length) instead. One pass: allocate each copy with next =
+  // null and patch the previous copy's next on the way (copies are fresh,
+  // so aliasing is not a concern). n ≥ 1: the slice always starts at a
+  // RET cell, so head is non-null at the end. (The length rides as an
+  // i31 in an anyref param: a [ref, i32] param tuple makes binaryen.js's
+  // createType abort mid-pipeline.)
   const capture = new Fn(2, em);
   capture.typeIdx = w.T_CAPTURE;
   em.ix.funcRefTypes.set(em.ix.fCapture, w.T_CAPTURE);
@@ -1301,14 +1324,16 @@ export function emitHelpers(em: Emit): Fn[] {
     const b = capture.body;
     const cur = capture.anyref(), cell = capture.anyref(),
       prev = capture.anyref(), head = capture.anyref();
+    const n = capture.i32();
     b.localGet(0);
     b.localSet(cur);
+    b.localGet(1); // the length, i31-boxed into the anyref param
+    i31of(b);
+    b.localSet(n);
     capture.walkLoop(
       () => {
-        b.localGet(cur);
-        b.refCast(5, true);
-        b.localGet(1);
-        b.refEq();
+        b.localGet(n);
+        b.u8(w.EQZ);
       },
       () => {
         // cell = a fresh copy of cur with next = null.
@@ -1334,13 +1359,13 @@ export function emitHelpers(em: Emit): Fn[] {
         b.localSet(prev);
         cellGet(b, cur, 3);
         b.localSet(cur);
+        b.localGet(n);
+        b.i32Const(1);
+        b.u8(w.SUB);
+        b.localSet(n);
       },
     );
-    // the bottom copy chains to `until`
-    b.localGet(prev);
-    b.refCast(5, true);
-    b.localGet(1);
-    b.structSet(3); // prev.next = until
+    // the bottom copy's next stays null (self-contained slice)
     b.localGet(head);
     b.refCast(5, true);
   }
@@ -2677,11 +2702,14 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   // skipping it.
   const opid = em.d.effOpIds.get(e.op)!;
   const kL = f.anyref(), hdl = f.anyref(), tbl = f.anyref(), amb = f.anyref();
+  const steps = f.i32(), slen = f.i32();
   let found = 0, fnIdx = 0, fsz = 0, nparams = 0; // set by the case scan below
   b.localGet(ctx.kL); // the ambient continuation
   b.localSet(kL);
   b.localGet(ctx.kL);
   b.localSet(amb);
+  b.i32Const(0);
+  b.localSet(steps); // cells walked between amb and the matched handler
   f.walkLoop(
     () => {
       b.localIsNull(kL); // ref.is_null: k=0 → no handler anywhere → host fallback
@@ -2703,6 +2731,10 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
       b.u8(w.END);
       cellGet(b, kL, 3);
       b.localSet(kL);
+      b.localGet(steps); // one more cell between amb and the handler
+      b.i32Const(1);
+      b.u8(w.ADD);
+      b.localSet(steps);
     },
   );
   // Freeze the pre-perform frame image behind the rest fragment (see
@@ -2748,31 +2780,41 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   const ret = f.retCell(restFn.idx, () => {
     b.localGet(ksp); // next = K_SPILL{frozen frame image, pre-walk ambient}
   }); // b = the current frame (holds the spilled args cell)
-  // Capture the slice above the handler into fresh cells (originals
-  // untouched; the resume closure copies again on every call).
+  // Capture the slice above the handler into fresh cells — exactly
+  // slen = 2 (this site's RET + K_SPILL) + steps cells, bottom next =
+  // null (self-contained: a link out of the record would retain every
+  // earlier generation's record — see $captureSlice). Originals
+  // untouched; the resume closure copies again on every call.
   const slice = f.anyref();
+  b.localGet(steps);
+  b.i32Const(2);
+  b.u8(w.ADD);
+  b.localSet(slen);
   b.localGet(ret);
   b.refCast(5, true);
-  b.localGet(hdl);
-  b.refCast(5, true);
+  b.localGet(slen);
+  b.refI31(); // the length rides as an i31 (see $captureSlice)
   b.callFn(em.ix.fCapture);
   b.localSet(slice);
   // The resume binder (§4.6): a $CLO over the shared resume fn and a
-  // capture-record frame {slot 1 = the slice, slot 2 = the matched HDL
-  // (the capture sentinel), slot 3 = this invocation's hframe copy}. The
-  // resume fn copies the slice afresh per call (sentinel = slot 2) and
-  // re-chains its bottom to a fresh HDL {slot 2's table, slot 3's frame,
-  // next = the k the closure was invoked with}, so the resumed segment
-  // runs against the caller's continuation and its Return lands in the
-  // invocation's frame copy.
+  // capture-record frame {slot 1 = the slice (self-contained, bottom
+  // next = null), slot 2 = the matched handler's case table (not the HDL
+  // cell — the record must not reach into the live chain), slot 3 = this
+  // invocation's hframe copy, slot 4 = the slice length}. The resume fn
+  // copies the slice afresh per call (originals stay frozen for
+  // multi-shot), splices a fresh HDL {slot 2's table, slot 3's frame,
+  // next = the k the closure was invoked with} onto the copy's bottom by
+  // position, so the resumed segment runs against the caller's
+  // continuation and its Return lands in the invocation's frame copy.
   const recs = f.anyref(), rec = f.anyref(), rclo = f.anyref();
-  b.i32Const(4);
+  b.i32Const(5);
   b.arrayNew(1);
   b.localSet(recs);
   b.localGet(recs); b.refCast(1, true); b.i32Const(0); b.refNull(w.ANYREF); b.arraySet(); // slot 0 unused
   b.localGet(recs); b.refCast(1, true); b.i32Const(1); b.localGet(slice); b.arraySet(); // slot 1: the captured slice
-  b.localGet(recs); b.refCast(1, true); b.i32Const(2); b.localGet(hdl); b.arraySet(); // slot 2: the matched HDL (sentinel)
+  b.localGet(recs); b.refCast(1, true); b.i32Const(2); b.localGet(tbl); b.arraySet(); // slot 2: the matched handler's case table
   b.localGet(recs); b.refCast(1, true); b.i32Const(3); b.localGet(hfc); b.arraySet(); // slot 3: this invocation's hframe copy
+  b.localGet(recs); b.refCast(1, true); b.i32Const(4); b.localGet(slen); b.refI31(); b.arraySet(); // slot 4: the slice length
   b.refNull(4); // parent = none
   b.localGet(recs);
   b.refCast(1, true);

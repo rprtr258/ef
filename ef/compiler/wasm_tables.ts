@@ -47,7 +47,7 @@ export const SIGS: Record<number, {p: (number | number[])[], r: number | number[
   [w.T_BOX]: {p: [0x7c], r: w.ANYREF},                // fBox, __mk_num
   [w.T_TRUTHY]: {p: [w.ANYREF], r: 0x7f},             // fTruthy, __tag/__str_len/__arr_len/__tup_len
   [w.T_EQ]: {p: [w.ANYREF, w.ANYREF], r: w.ANYREF},       // fEq
-  [w.T_CAPTURE]: {p: [[0x63, 5], [0x63, 5]], r: [0x63, 5]}, // fCapture
+  [w.T_CAPTURE]: {p: [[0x63, 5], w.ANYREF], r: [0x63, 5]}, // fCapture(k, n: i31)
   [w.T_KABI]: {p: [[0x63, 4], [0x63, 5]], r: w.ANYREF},       // (frame, k) program fns
   [w.T_III_I]: {p: [[0x63, 4], w.ANYREF, [0x63, 5]], r: w.ANYREF}, // land thunks
   [19]: {p: [w.ANYREF], r: 0x7c},                   // __num/fNum64

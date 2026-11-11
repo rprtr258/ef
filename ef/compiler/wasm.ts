@@ -22,10 +22,15 @@
 // the inline body and reifies the code after it as a rest-of-site fragment
 // via the compile-time split protocol below. Resume as a value (§4.6): the
 // resume binder is a $CLO closure over the shared resume fn plus a
-// per-perform-site capture record; every call copies the captured slice
-// afresh, re-chains the copy's bottom to a fresh HDL whose next is the k
-// the closure was invoked with, and dispatches the resumed value through
-// that chain (terminating at the caller's continuation).
+// per-perform-site capture record {self-contained slice — its bottom's
+// next is null, so the record never reaches into the live chain or
+// earlier generations' records, which would retain every per-perform
+// O(depth) slice (O(n²) live cells over n performs); plus the matched
+// case table, the invocation's hframe copy and the slice length}; every
+// call copies the captured slice afresh, splices a fresh HDL {case table,
+// hframe, next = the k the closure was invoked with} onto the copy's
+// bottom by position, and dispatches the resumed value through that
+// chain (terminating at the caller's continuation).
 //
 // Representation (WasmGC — every wasm operand value is an anyref):
 // - unit = ref.null any; bool = i31ref 0/1; number = $NUM {f64} (immutable
