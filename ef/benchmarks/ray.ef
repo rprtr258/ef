@@ -1,0 +1,105 @@
+# Bench: raytracer-derived checksum. Same math as examples/raytracer.ef
+# (f64 tuple vectors, deep ::-const call chains, supersampled viewport)
+# with the per-pixel Println! effects replaced by a checksum accumulator,
+# so the run is pure compute — it measures the call/frame path, not the
+# effect path. Prints the channel sum.
+V3 :: [f64, f64, f64];
+
+vAdd :: fn(a: V3, b: V3): V3 { [a.0 + b.0, a.1 + b.1, a.2 + b.2] };
+vSub :: fn(a: V3, b: V3): V3 { [a.0 - b.0, a.1 - b.1, a.2 - b.2] };
+vScale :: fn(a: V3, s: f64): V3 { [a.0 * s, a.1 * s, a.2 * s] };
+vDot :: fn(a: V3, b: V3): f64 { (a.0 * b.0) + ((a.1 * b.1) + (a.2 * b.2)) };
+vAll :: fn(s: f64): V3 { [s, s, s] };
+
+size :: 160;
+step :: 4.0 / (size - 1);
+substep :: step / 4.0;
+
+camDir: V3 :: [0.1, 0.0, -2.5];
+ambient :: 0.15;
+lightIntensity :: 0.85;
+light: V3 :: [2.4, 1.0, -3.0];
+
+Sphere :: [V3, f64, V3];
+s1: Sphere :: [[0.0, 0.0, -5.0], 1.5, [1.0, 0.4, 0.3]];
+s2: Sphere :: [[2.0, 0.5, -4.5], 1.0, [0.3, 0.5, 1.0]];
+
+planeZ :: -7.0;
+checkSize :: 2.0;
+
+sphereT :: fn(d: V3, c: V3, r: f64): f64 {
+  a :: vDot(d, d);
+  b :: -2.0 * vDot(d, c);
+  q :: vDot(c, c) - r * r;
+  disc :: (b * b) - ((4.0 * a) * q);
+  if (disc < 0.0) { -1.0 } else { (-b - sqrt(disc)) / (2.0 * a) }
+};
+
+diffuse :: fn(n: V3, l: V3): f64 {
+  ndl :: vDot(n, l);
+  if (ndl > 0.0) { ndl / vDot(l, l) } else { 0.0 }
+};
+
+sphereShade :: fn(s: Sphere, d: V3, t: f64): V3 {
+  [c, r, col] :: s;
+  hit :: vScale(d, t);
+  n :: vScale(vSub(hit, c), 1.0 / r);
+  l :: vSub(light, hit);
+  vScale(col, ambient + lightIntensity * diffuse(n, l))
+};
+
+cellParity :: fn(coord: f64, cell: f64): f64 {
+  if (coord < 0.0) { cellParity(-coord, cell) }
+  else if (coord < cell) { 0.0 }
+  else if (coord < 2.0 * cell) { 1.0 }
+  else { cellParity(coord - 2.0 * cell, cell) }
+};
+
+checkerVal :: fn(x: f64, y: f64, cell: f64): f64 {
+  if (cellParity(x, cell) < 0.5) {
+    if (cellParity(y, cell) < 0.5) { 0.7 } else { 0.2 }
+  } else {
+    if (cellParity(y, cell) < 0.5) { 0.2 } else { 0.7 }
+  }
+};
+
+sample :: fn(dx: f64, dy: f64): V3 {
+  d: V3 :: [camDir.0 + dx, camDir.1 + dy, camDir.2];
+  t1 :: sphereT(d, s1.0, s1.1);
+  if (t1 > 0.0) {
+    sphereShade(s1, d, t1)
+  } else {
+    t2 :: sphereT(d, s2.0, s2.1);
+    if (t2 > 0.0) {
+      sphereShade(s2, d, t2)
+    } else {
+      if (d.2 < 0.0) {
+        vAll(checkerVal((planeZ * d.0) / d.2, (planeZ * d.1) / d.2, checkSize))
+      } else {
+        vAll(0.0)
+      }
+    }
+  }
+};
+
+pixel :: fn(px: i64, py: i64): V3 {
+  x :: (@as(px, f64) * step) - 2.0;
+  y :: (@as(py, f64) * step) - 2.0;
+  vScale(vAdd(
+    vAdd(sample(x - substep, y - substep), sample(x + substep, y - substep)),
+    vAdd(sample(x - substep, y + substep), sample(x + substep, y + substep))),
+    0.25)
+};
+
+acc := 0.0;
+py := 0;
+while (py < size) {
+  px := 0;
+  while (px < size) {
+    c :: pixel(px, py);
+    acc = acc + c.0 + c.1 + c.2;
+    px = px + 1;
+  };
+  py = py + 1;
+};
+acc

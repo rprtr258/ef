@@ -1,0 +1,27 @@
+# Bench: Sieve of Eratosthenes over [0, 100000]. HOF builtins (map/each)
+# with closures, while loops, slice get/set — the boxed land path.
+max :: 100000;
+
+prime :: map(fn(_) { true }, range(0, max + 1, 1));
+set(prime, 0, false);
+set(prime, 1, false);
+
+limit :: round(sqrt(max));
+
+each(fn(n, _) {
+  if (get(prime, n)) {
+    m := n * n;
+    while (m <= max) {
+      set(prime, m, false);
+      m = m + n;
+    };
+  };
+}, range(2, limit, 1));
+
+count := 0;
+each(fn(n, _) {
+  if (get(prime, n)) {
+    count = count + 1;
+  };
+}, range(2, max + 1, 1));
+count

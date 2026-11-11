@@ -1,0 +1,10 @@
+# Bench: pure boxed while-loop arithmetic. No calls, no frames — control
+# workload: the numeric op path is unchanged by the optimizations, so old
+# and new should time within noise.
+i := 0;
+acc := 0;
+while (i < 20000000) {
+  acc = acc + i;
+  i = i + 1;
+};
+acc
