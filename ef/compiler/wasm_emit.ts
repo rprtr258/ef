@@ -859,8 +859,15 @@ type CallOpts = {
   land?: boolean,      // lambda call site: land through a RET cell
   kL?: number,         // the ambient continuation local (default 1)
   landA?: number,      // explicit per-iteration land cell (map/each/flatmap)
-  direct?: {idx: number, fsize: number}, // direct builtin: static funcref + fsize
+  direct?: {idx: number, fsize: number, envClo?: boolean}, // direct builtin: static funcref + fsize
 };
+
+function constLambdaOf(d: Discovery, s: Scope, name: string): {id: ExprID, free: boolean} | undefined {
+  for (let cur: Scope | null = s; cur !== null; cur = cur.parent) {
+    if (cur.map.has(name)) return d.constLambdas.get(cur)?.get(name);
+  }
+  return undefined;
+}
 
 export function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, opts: CallOpts = {}): void {
   const {tail = false, land = false, kL = 1, landA, direct} = opts;
@@ -879,8 +886,15 @@ export function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEm
   } else {
     b.i32Const(direct.idx);
     b.localSet(idx);
-    b.refNull(4); // env: builtins run over the call frame itself
-    b.localSet(cf);
+    if (direct.envClo === true) {
+      b.localGet(fc);
+      b.refCast(6, true);
+      b.structGet(6, 1);
+      b.localSet(cf);
+    } else {
+      b.refNull(4); // env: builtins run over the call frame itself
+      b.localSet(cf);
+    }
     b.i32Const(direct.fsize);
     b.localSet(fs);
   }
@@ -1924,9 +1938,28 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
           direct: {idx: em.ix.builtinFnIdx.get(bname)!, fsize: bi.params + mapLikeFrameWords(bname)},
         });
       } else {
-        const fc = f.anyref();
-        f.pushRef(cutChildRef(em, e.fn, f, s, ctx, cutMode(0, ci)));
-        b.localSet(fc);
+        // Direct user call: a callee sym bound by a `::` const whose value
+        // is a lambda has a statically known funcref index and fsize (the
+        // checker guarantees consts bind once and nothing shadows, so the
+        // binding's slot holds exactly that closure), so the $CLO field
+        // reads and the table dispatch collapse to a direct call. The env
+        // still loads from the const's slot — the lambda may capture its
+        // defining frame — unless the lambda references nothing outside its
+        // own frame: a non-null env would be the caller's frame chain, not
+        // the defining one, so only self-frame and builtin references
+        // qualify for the null-env path (the builtin direct convention).
+        const cdef = fne.t === "sym" ? constLambdaOf(em.d, s, fne.v) : undefined;
+        const direct = cdef === undefined ? undefined : {
+          idx: em.ix.lambdaIdx.get(cdef.id)!,
+          fsize: frameSizeOf(em.ix, em.d.scopes.get(cdef.id)!),
+          envClo: cdef.free,
+        };
+        const loadCallee = direct === undefined || direct.envClo;
+        const fc = loadCallee ? f.anyref() : 0;
+        if (loadCallee) {
+          f.pushRef(cutChildRef(em, e.fn, f, s, ctx, cutMode(0, ci)));
+          b.localSet(fc);
+        }
         // Builtins never perform or capture, so they keep the k=0
         // trampoline convention; every other (lambda) call site lands
         // through a RET cell and is a split site (§3 emitCall).
@@ -1934,6 +1967,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
           tail: cut === undefined && tail,
           land: em.d.landCalls.has(id),
           kL: ctx.kL,
+          direct,
         });
       }
       // emitCallClosure leaves the landed result on the stack (or

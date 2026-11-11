@@ -26,6 +26,7 @@ export type Discovery = {
   // Scope per lambda/block (ExprID → its Scope).
   scopes: Map<ExprID, Scope>,
   globalScope: Scope,
+  constLambdas: Map<Scope, Map<string, {id: ExprID, free: boolean}>>,
   // Literal presence maps (keys only; static layout resolves the global
   // indices into Layout.numStatics/strStatics).
   // "width:value" → width — number literals with their stamped width (the
@@ -183,6 +184,7 @@ export function discover(prog: Program): Discovery {
   const d: Discovery = {
     scopes: new Map(),
     globalScope: {frame: globalFrame, parent: null, map: new Map()},
+    constLambdas: new Map(),
     numLits: new Map(),
     strLits: new Set(),
     landCalls: new Set(),
@@ -232,9 +234,15 @@ export function discover(prog: Program): Discovery {
         for (const stmt of e.stmts) rec(stmt, s);
         return;
       }
-      case "let":
+      case "let": {
         sc.map.set(e.name, sc.frame.slots++);
+        if (!e.mut && prog.nodes[e.val].t === "lambda") {
+          let defs = d.constLambdas.get(sc);
+          if (defs === undefined) { defs = new Map(); d.constLambdas.set(sc, defs); }
+          defs.set(e.name, {id: e.val, free: true});
+        }
         break;
+      }
       case "dlet":
         for (const fd of e.fields) sc.map.set(fd.name, sc.frame.slots++);
         break;
@@ -320,7 +328,32 @@ export function discover(prog: Program): Discovery {
   for (const it of prog.items) {
     if ("e" in it) rec(it.e, d.globalScope);
   }
+  for (const defs of d.constLambdas.values())
+    for (const info of defs.values())
+      info.free = lambdaCapturesFree(prog, d, info.id);
   return d;
+}
+
+function lambdaCapturesFree(prog: Program, d: Discovery, id: ExprID): boolean {
+  const lam = prog.nodes[id];
+  if (lam.t !== "lambda") throw new WasmError("internal: const value is not a lambda");
+  let free = false;
+  const walk = (wid: ExprID, sc: Scope): void => {
+    const e = prog.nodes[wid];
+    const ws = d.scopes.get(wid) ?? sc;
+    if (e.t === "sym") {
+      const r = resolve(ws, e.v);
+      if (r !== null && r.d > 0) free = true;
+      return;
+    }
+    if (e.t === "assign") {
+      const r = resolve(ws, e.name);
+      if (r !== null && r.d > 0) free = true;
+    }
+    for (const k of exprChildren(e)) walk(k, ws);
+  };
+  walk(lam.body, d.scopes.get(id)!);
+  return free;
 }
 
 export function optimize(prog: Program): Opt {
