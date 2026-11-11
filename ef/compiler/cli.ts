@@ -16,7 +16,7 @@ import {styleText} from "util";
 import {run} from "./eval.ts";
 import {compile} from "./wasm.ts";
 import {runWasm} from "./wasm_host.ts";
-import {type Type, showT, checkProgram} from "./types.ts";
+import {type Type, showT, showErr, checkProgram} from "./types.ts";
 import {lint} from "./lint.ts";
 import {repl} from "./repl.ts";
 import {startLsp} from "./lsp.ts";
@@ -119,4 +119,14 @@ function main(cmd: string, args: string[]) {
 }
 
 const [, , cmd, ...rest] = process.argv;
-main(cmd, rest);
+// One-line errors on stderr with exit 1 (what the uncaught default printed,
+// minus the stack), quoting the offending source line when the file is
+// readable — checker/parse errors arrive located.
+try { main(cmd, rest); }
+catch (e) {
+  let src: string | undefined;
+  const file = rest.at(0);
+  try { if (file !== undefined) src = readFileSync(file).toString(); } catch { /* nothing to quote */ }
+  console.error(showErr(e, src));
+  process.exit(1);
+}

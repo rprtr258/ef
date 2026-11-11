@@ -138,7 +138,7 @@ describe("ef language server", () => {
     expect(p.diagnostics).toHaveLength(1);
     const d = p.diagnostics[0];
     expect(d.source).toBe("ef");
-    // Checker stamps `at line 1, col 6: ` (1-based, the lambda) — 0-based (0, 5).
+    // The lambda is stamped at line 1, col 6 (1-based) — 0-based (0, 5).
     expect(d.range.start).toEqual({line: 0, character: 5});
     expect(d.message.startsWith("Type mismatch:")).toBe(true);
   });

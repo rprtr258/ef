@@ -1,11 +1,11 @@
 // ef language server: LSP over stdio wrapping the ef parser + checker.
 //
 // Diagnostics are fail-fast: `checkProgram` throws on the first error, so each
-// publish carries at most one diagnostic. Parse errors carry the offending
-// token's 1-based extent and underline it; type errors arrive located via the
-// checker's `at line L, col C: ` message prefix (1-based) — only whole-program
-// failures the checker can't locate (e.g. a recursive type alias) anchor at
-// 0:0. Hover shows the
+// publish carries at most one diagnostic. Errors carry a 1-based source pos
+// as data — parse errors via ParseError's token extent (underlined), checker
+// errors via TypeError_.pos (zero-width marker). Only whole-program failures
+// with no single blame site (e.g. a recursive type alias) anchor at 0:0. Hover
+// shows the
 // innermost checked subexpression under the cursor (binder sites show the
 // bound value's type); a document that doesn't check has no types to show.
 //
@@ -20,40 +20,27 @@ import {
   DiagnosticSeverity,
   MarkupKind,
   type Diagnostic,
-  type Range,
   type Hover,
   type InitializeResult,
   type SemanticTokens,
   type SemanticTokensParams,
 } from "vscode-languageserver/node";
 import {Parser, type ExprID, type Program, type TypeTok} from "./parser.ts";
-import {checkProgram, showT, TANY, type Checked, type EffectSig, type Unifier} from "./types.ts";
+import {checkProgram, showT, TANY, TypeError_, type Checked, type EffectSig, type Unifier} from "./types.ts";
 import {ParseError, type Pos} from "./lexer.ts";
 
-// `at line L, col C: ` — the located-prefix format stamped onto type errors.
-const LOC = /^at line (\d+), col (\d+): /;
-
 // Parse errors carry the offending token's 1-based extent — underlined.
-// Checker errors carry `at line L, col C: ` (1-based) with no token extent;
-// ones the checker can't locate (whole-program failures) stay zero-width at
-// 0:0, the anchor for "somewhere in this document".
+// Checker errors carry a bare 1-based pos with no token extent — a zero-width
+// marker. Position-less errors (whole-program failures) anchor at 0:0, the
+// anchor for "somewhere in this document".
 function diagnosticOf(err: unknown): Diagnostic {
   const msg = err instanceof Error ? err.message : String(err);
-  let range: Range;
-  let text = msg;
-  if (err instanceof ParseError) {
-    range = {
-      start: {line: err.pos.line - 1, character: err.pos.col - 1},
-      end: {line: err.end.line - 1, character: err.end.col - 1},
-    };
-  } else {
-    const m = LOC.exec(msg);
-    const line = m !== null ? Number(m[1]) - 1 : 0;
-    const col = m !== null ? Number(m[2]) - 1 : 0;
-    range = {start: {line, character: col}, end: {line, character: col}};
-    if (m !== null) text = msg.slice(m[0].length);
-  }
-  return {severity: DiagnosticSeverity.Error, range, message: text, source: "ef"};
+  const p = err instanceof ParseError ? err.pos : err instanceof TypeError_ ? err.pos : undefined;
+  const start = {line: (p?.line ?? 1) - 1, character: (p?.col ?? 1) - 1};
+  const end = err instanceof ParseError
+    ? {line: err.end.line - 1, character: err.end.col - 1}
+    : start;
+  return {severity: DiagnosticSeverity.Error, range: {start, end}, message: msg, source: "ef"};
 }
 
 // Semantic token kinds: one constant feeds both the capability legend and

@@ -1,4 +1,5 @@
 import type {Expr, ExprID, Program, TypeTok} from "./parser";
+import {ParseError, type Pos} from "./lexer.ts";
 import {BUILTINS} from "./analysis.ts";
 import {builtins} from "./builtins.ts";
 import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TNULL, TSTR, TTYPE} from "./prims.ts";
@@ -394,20 +395,41 @@ export function showT(t: Type): string {
   return go(t);
 }
 
-class TypeError_ extends Error {
-  // Non-enumerable so it doesn't leak into error stringification. On the base
-  // so infer's wrapper can locate every checker error (not just mismatches)
-  // at the innermost expression being checked.
-  located = false;
-  constructor(msg?: string) {
-    super(msg);
-    Object.defineProperty(this, "located", {value: false, enumerable: false, writable: true});
-  }
+export class TypeError_ extends Error {
+  // 1-based source position of the innermost expression being checked when
+  // the error was thrown (set by infer's wrapper; undefined for whole-program
+  // failures with no single blame site). Display sites read it directly: the
+  // LSP anchors its diagnostic there; showErr prefixes it for the REPL.
+  pos?: Pos;
 }
-// A unification failure reported as "Type mismatch". Subclassed so `infer`
-// can attach the source position of the innermost expression being checked
-// when the mismatch surfaced.
+// A unification failure — kept distinct so the app-call catch can rethrow it
+// annotated with the callee's name (typeMismatch).
 class TypeMismatch extends TypeError_ {}
+
+// Render an error for the line-oriented frontends (REPL, CLI): ef errors
+// carry a structured 1-based pos (ParseError's token start, TypeError_'s
+// located expression) — when the source text is supplied the offending line
+// is quoted with a caret under the error column, followed by the located
+// message. The LSP reads `pos` directly and must not scrape this format back
+// out.
+export function showErr(err: unknown, src?: string): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  const pos = err instanceof ParseError ? err.pos : err instanceof TypeError_ ? err.pos : undefined;
+  if (pos === undefined) return msg;
+  const head = `at line ${pos.line}, col ${pos.col}: ${msg}`;
+  if (src === undefined) return head;
+  return srcLine(src, pos) + "\n" + head;
+}
+
+// The offending source line, then a caret pointing at the column:
+//   2 | y :: 2;
+//     | ^
+function srcLine(src: string, pos: Pos): string {
+  const text = (src.split("\n").at(pos.line - 1) ?? "").replace(/\r$/, "");
+  const ln = String(pos.line);
+  const gut = " ".repeat(ln.length);
+  return `${ln} | ${text}\n${gut} | ${" ".repeat(pos.col - 1)}^`;
+}
 
 type Scheme = () => Type; // polymorphic type scheme, instantiated fresh per use
 
@@ -1107,11 +1129,9 @@ function inferNode(
   } catch (err) {
     // Locate the innermost checker error at the position of the expression
     // being inferred when it was thrown. The first (deepest) frame to catch
-    // wins; outer frames see `located` set and skip.
-    if (err instanceof TypeError_ && !err.located && e.pos !== undefined) {
-      err.located = true;
-      err.message = `at line ${e.pos.line}, col ${e.pos.col}: ` + err.message;
-    }
+    // wins; outer frames see `pos` set and skip.
+    if (err instanceof TypeError_ && err.pos === undefined && e.pos !== undefined)
+      err.pos = e.pos;
     throw err;
   }
 }

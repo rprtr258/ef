@@ -81,9 +81,10 @@ export type Expr =
       // during body inference.
       unannParams?: {name: string, id: number}[], numTouched?: Set<number>, }
   | { t: "let", name: string, typ: Type | null, val: ExprID, mut: boolean, pos?: Pos } // `name := e;` / `name :: e;` / `name: T = e;` / `name: T :: e;`
+  | { t: "dlet", fields: { name: string, typ: Type | null }[], val: ExprID, mut: boolean, pos?: Pos } // `[a, b] := val;` / `[a, b] :: val;` destructuring bind.
+  | { t: "assign", name: string, val: ExprID, pos?: Pos }
   | { t: "if", c: ExprID, a: ExprID, b: ExprID, pos?: Pos }
   | { t: "while", c: ExprID, body: ExprID, pos?: Pos }
-  | { t: "assign", name: string, val: ExprID, pos?: Pos }
   | { t: "block", stmts: ExprID[], pos?: Pos }
   | { t: "perform", op: string, args: ExprID[], pos?: Pos }
   | { t: "handle", body: ExprID, cases: HandlerCase[], pos?: Pos }
@@ -91,7 +92,7 @@ export type Expr =
   | { t: "as", e: ExprID, typ: Type, asKind?: "trunc" | "boolnum", pos?: Pos } // `@as(expr, T)` numeric cast; asKind stamped by the checker.
   | { t: "arr", elems: ExprID[], pos?: Pos } // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous.
   | { t: "field", obj: ExprID, name: string, idx?: number, pos?: Pos } // `obj.x` / `obj.0` field access; `idx` is resolved by the checker.
-  | { t: "dlet", fields: { name: string, typ: Type | null }[], val: ExprID, mut: boolean, pos?: Pos }; // `[a, b] := val;` / `[a, b] :: val;` destructuring bind.
+;
 
 // Unescape a string literal token (with surrounding quotes).
 function parseStr(t: string): string {

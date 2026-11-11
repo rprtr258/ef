@@ -1,7 +1,7 @@
 import * as readline from "node:readline";
 import {newCtx, exec} from "./eval.ts";
 import {show} from "./env.ts";
-import {checkProgram, showT} from "./types.ts";
+import {checkProgram, showErr, showT} from "./types.ts";
 import {Parser} from "./parser.ts";
 
 // repl: an interactive read-eval-print loop. Pipeline state (Ctx: runtime env
@@ -36,7 +36,7 @@ export function repl(): void {
     }
     const src = /[;{}]$/.test(s) ? s : s + ";";
     try { evalLine(src); }
-    catch (e) { console.log(String((e as {message?: string}).message ?? e)); }
+    catch (e) { console.log(showErr(e, src)); }
     rl.prompt();
   });
   rl.on("close", () => { process.stdout.write("\n"); process.exit(0); });

@@ -115,14 +115,36 @@ describe("cli", () => {
     expect(r.stderr.length).toBeGreaterThan(0);
   });
 
-  test("run: a type error exits 1 without stdout", () => {
+  test("run: a type error exits 1 without stdout, located on stderr", () => {
     const file = join(tmpdir(), `ef-cli-test-${process.pid}-typeerr.ef`);
     writeFileSync(file, "1 + true\n");
     try {
       const r = cli("run", file);
       expect(r.code).toBe(1);
       expect(r.stdout).toBe("");
-      expect(r.stderr.length).toBeGreaterThan(0);
+      // The `+` app starts at its left operand — line 1, col 1; the line
+      // is quoted with a caret under the column, then the located message.
+      expect(r.stderr).toBe(
+        "1 | 1 + true\n" +
+        "  | ^\n" +
+        "at line 1, col 1: +: i64 and bool are not both numeric or both string\n");
+    } finally {
+      rmSync(file, {force: true});
+    }
+  });
+
+  test("run: a parse error exits 1 with the offending token's position", () => {
+    const file = join(tmpdir(), `ef-cli-test-${process.pid}-parseerr.ef`);
+    writeFileSync(file, "x :: 1\ny :: 2;\n");
+    try {
+      const r = cli("run", file);
+      expect(r.code).toBe(1);
+      expect(r.stdout).toBe("");
+      // The missing `;` is discovered at `y` — line 2, col 1.
+      expect(r.stderr).toBe(
+        `2 | y :: 2;\n` +
+        `  | ^\n` +
+        `at line 2, col 1: Expected ";", got "y"\n`);
     } finally {
       rmSync(file, {force: true});
     }
