@@ -257,7 +257,7 @@ describe("wasm backend", () => {
     // Strict same-width ops (D6): a mixed-width compare is a static type
     // error in both backends — the messages must match exactly.
     expect(parity("@as(-1, i32) < @as(4294967295, u32)")).toBe(
-      "ERR: <: i32 and u32 are different numeric widths (use @as to convert)");
+      "ERR: at line 1, col 1: <: i32 and u32 are different numeric widths (use @as to convert)");
     // @as wrap: i64 -> i32 truncates mod 2^32 (asIntN), i64 -> u32 via asUintN.
     expect(parity("@as(4294967297, i32)")).toBe("1");
     expect(parity("@as(4294967297, u32)")).toBe("1");
@@ -301,7 +301,7 @@ describe("wasm backend", () => {
     expect(parity("@as(9223372036854775808, u64) > 0")).toBe("true");
     // Strict same-width ops (D6) on the wide widths too.
     expect(parity("@as(1, i64) < @as(2, u64)")).toBe(
-      "ERR: <: i64 and u64 are different numeric widths (use @as to convert)");
+      "ERR: at line 1, col 1: <: i64 and u64 are different numeric widths (use @as to convert)");
     // @as wrap: i64 -> i32 truncates mod 2^32 (asIntN), u64 -> u32 via asUintN.
     expect(parity("@as(4294967297, i64)")).toBe("4294967297"); // no truncation i64 -> i64
     expect(parity("@as(4294967297, i32)")).toBe("1");
@@ -324,7 +324,7 @@ describe("wasm backend", () => {
     expect(() => compile("len :: fn(xs: [i64]): i64 { 42 }; len([1, 2, 3])"))
       .toThrow("cannot shadow builtin 'len'");
     expect(parity("len :: fn(xs: [i64]): i64 { 42 }; len([1, 2, 3])"))
-      .toBe("ERR: cannot shadow builtin 'len'");
+      .toBe("ERR: at line 1, col 1: cannot shadow builtin 'len'");
     // Parameter shadowing a builtin name.
     expect(() => compile("f :: fn(len: i64): i64 { len * 2 }; f(21)"))
       .toThrow("cannot shadow builtin 'len'");
@@ -561,7 +561,7 @@ describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () =>
   test("shadowing a served builtin is rejected before codegen", () => {
     const src = "char :: fn(x: i64): i64 { x }; char(97)";
     expect(() => importsOf(src)).toThrow("cannot shadow builtin 'char'");
-    expect(parity(src)).toBe("ERR: cannot shadow builtin 'char'");
+    expect(parity(src)).toBe("ERR: at line 1, col 1: cannot shadow builtin 'char'");
   });
 
   test("a program using everything keeps all 7 imports in original order", () => {

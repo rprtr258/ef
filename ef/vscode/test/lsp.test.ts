@@ -10,7 +10,7 @@ import {buildServer} from "../scripts/build.ts";
 const URI = "file:///test.ef";
 
 type Msg = {id?: number, method?: string, params?: unknown, result?: unknown, error?: unknown};
-type Diag = {range: {start: {line: number, character: number}}, message: string, source?: string};
+type Diag = {range: {start: {line: number, character: number}, end: {line: number, character: number}}, message: string, source?: string};
 type DiagParams = {uri: string, diagnostics: Diag[]};
 
 class Server {
@@ -143,11 +143,12 @@ describe("ef language server", () => {
     expect(d.message.startsWith("Type mismatch:")).toBe(true);
   });
 
-  test("unlocated type error anchors at 0:0", async () => {
+  test("type error anchors at the offending expression", async () => {
     const p = await s.change("x :: 1;\nx + \"a\";\n");
     expect(p.diagnostics).toHaveLength(1);
     const d = p.diagnostics[0];
-    expect(d.range.start).toEqual({line: 0, character: 0});
+    // The `+` app starts at its left operand, line 2 col 1 — 0-based (1, 0).
+    expect(d.range.start).toEqual({line: 1, character: 0});
     expect(d.message).toBe("+: i64 and string are not both numeric or both string");
   });
 
@@ -156,11 +157,22 @@ describe("ef language server", () => {
     expect(p.diagnostics).toHaveLength(0);
   });
 
-  test("parse error anchors at 0:0 with the parser message", async () => {
+  test("parse error underlines the offending token", async () => {
+    const p = await s.change("x :: 1\ny :: 2;\n");
+    expect(p.diagnostics).toHaveLength(1);
+    const d = p.diagnostics[0];
+    // The missing `;` is discovered at `y`, line 2 col 1 — 0-based (1, 0).
+    expect(d.range.start).toEqual({line: 1, character: 0});
+    expect(d.range.end).toEqual({line: 1, character: 1});
+    expect(d.message).toBe(`Expected ";", got "y"`);
+  });
+
+  test("parse error at EOF anchors at the last token's end", async () => {
     const p = await s.change("fn\n");
     expect(p.diagnostics).toHaveLength(1);
     const d = p.diagnostics[0];
-    expect(d.range.start).toEqual({line: 0, character: 0});
+    // `fn` spans 1:1–1:3; input ran out after it — 0-based (0, 2).
+    expect(d.range.start).toEqual({line: 0, character: 2});
     expect(d.message.length).toBeGreaterThan(0);
   });
 

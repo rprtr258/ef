@@ -1,9 +1,11 @@
 // ef language server: LSP over stdio wrapping the ef parser + checker.
 //
 // Diagnostics are fail-fast: `checkProgram` throws on the first error, so each
-// publish carries at most one diagnostic. Type errors arrive located — the
-// checker's infer wrapper prefixes messages with `at line L, col C: `
-// (1-based); parse errors carry no position and anchor at 0:0. Hover shows the
+// publish carries at most one diagnostic. Parse errors carry the offending
+// token's 1-based extent and underline it; type errors arrive located via the
+// checker's `at line L, col C: ` message prefix (1-based) — only whole-program
+// failures the checker can't locate (e.g. a recursive type alias) anchor at
+// 0:0. Hover shows the
 // innermost checked subexpression under the cursor (binder sites show the
 // bound value's type); a document that doesn't check has no types to show.
 //
@@ -18,6 +20,7 @@ import {
   DiagnosticSeverity,
   MarkupKind,
   type Diagnostic,
+  type Range,
   type Hover,
   type InitializeResult,
   type SemanticTokens,
@@ -25,24 +28,32 @@ import {
 } from "vscode-languageserver/node";
 import {Parser, type ExprID, type Program, type TypeTok} from "./parser.ts";
 import {checkProgram, showT, TANY, type Checked, type EffectSig, type Unifier} from "./types.ts";
-import type {Pos} from "./lexer.ts";
+import {ParseError, type Pos} from "./lexer.ts";
 
 // `at line L, col C: ` — the located-prefix format stamped onto type errors.
 const LOC = /^at line (\d+), col (\d+): /;
 
-// Zero-width diagnostic: VS Code renders a marker at the position; the
-// checker gives no token extent to underline.
+// Parse errors carry the offending token's 1-based extent — underlined.
+// Checker errors carry `at line L, col C: ` (1-based) with no token extent;
+// ones the checker can't locate (whole-program failures) stay zero-width at
+// 0:0, the anchor for "somewhere in this document".
 function diagnosticOf(err: unknown): Diagnostic {
   const msg = err instanceof Error ? err.message : String(err);
-  const m = LOC.exec(msg);
-  const line = m !== null ? Number(m[1]) - 1 : 0;
-  const col = m !== null ? Number(m[2]) - 1 : 0;
-  return {
-    severity: DiagnosticSeverity.Error,
-    range: {start: {line, character: col}, end: {line, character: col}},
-    message: m !== null ? msg.slice(m[0].length) : msg,
-    source: "ef",
-  };
+  let range: Range;
+  let text = msg;
+  if (err instanceof ParseError) {
+    range = {
+      start: {line: err.pos.line - 1, character: err.pos.col - 1},
+      end: {line: err.end.line - 1, character: err.end.col - 1},
+    };
+  } else {
+    const m = LOC.exec(msg);
+    const line = m !== null ? Number(m[1]) - 1 : 0;
+    const col = m !== null ? Number(m[2]) - 1 : 0;
+    range = {start: {line, character: col}, end: {line, character: col}};
+    if (m !== null) text = msg.slice(m[0].length);
+  }
+  return {severity: DiagnosticSeverity.Error, range, message: text, source: "ef"};
 }
 
 // Semantic token kinds: one constant feeds both the capability legend and

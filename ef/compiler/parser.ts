@@ -3,7 +3,7 @@ import {
   TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TNULL, TANY, TTYPE,
   tArr, tTup, tFun,
 } from "./types.ts";
-import {KEYWORDS, lex, type Pos, type Tok} from "./lexer.ts";
+import {KEYWORDS, lex, ParseError, type Pos, type Tok} from "./lexer.ts";
 import {assertNever} from "./assert.ts";
 
 // Type variables allocated by the parser: alias type parameters, and
@@ -147,8 +147,17 @@ export class Parser {
     return this.toks[this.i + o]?.pos;
   }
   eat(s: string): void {
-    if (this.peek() !== s) throw new Error(`Expected "${s}", got "${this.peek()}"`);
+    if (this.peek() !== s) this.fail(`Expected "${s}", got "${this.peek()}"`);
     this.i++;
+  }
+  // Throw a ParseError anchored at the token `o` offsets from the cursor
+  // (negative = an already-consumed token). Past EOF the error is zero-width
+  // at the last token's end — where input ran out.
+  fail(msg: string, o = 0): never {
+    const t = this.toks.at(this.i + o);
+    if (t !== undefined) throw new ParseError(msg, t.pos, t.end);
+    const end = this.toks.at(-1)?.end ?? {line: 1, col: 1};
+    throw new ParseError(msg, end, end);
   }
   is(s: string): boolean {
     return this.peek() === s;
@@ -426,7 +435,7 @@ export class Parser {
       }
       this.eat("]");
       if (first.name !== null)
-        throw new Error("array type cannot have a named element");
+        this.fail("array type cannot have a named element", -1); // the `]`
       return tArr(first.type);
     }
     if (this.is("(")) {
@@ -482,7 +491,7 @@ export class Parser {
       case "unit": return TNULL;
       case "any": return TANY;
       case "type": return TTYPE;
-      default: throw new Error("Unknown type: " + name);
+      default: this.fail("Unknown type: " + name, -1); // the name token
     }
   }
 
@@ -553,13 +562,13 @@ export class Parser {
 
   parsePrimary(): ExprID {
     const t = this.peek();
-    if (t === undefined) throw new Error("Unexpected EOF");
+    if (t === undefined) this.fail("Unexpected EOF");
     const p = this.pos();
     if (t === "@") {
       // `@as(expr, T)` — the one explicit numeric cast.
       this.next();
       const name = this.next();
-      if (name !== "as") throw new Error(`Unknown @-form: @${name}`);
+      if (name !== "as") this.fail(`Unknown @-form: @${name}`, -1); // the form name
       this.eat("(");
       const e = this.parseExpr();
       this.eat(",");

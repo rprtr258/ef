@@ -14,6 +14,13 @@ export type Pos = { line: number, col: number };
 // char) — parser node extents for the LSP's subexpression hover stamp from it.
 export type Tok = { v: string, pos: Pos, end: Pos };
 
+// A failed parse: carries the 1-based extent of the offending token so the
+// LSP anchors its diagnostic where the error happened (a plain Error would
+// fall back to 0:0).
+export class ParseError extends Error {
+  constructor(msg: string, public pos: Pos, public end: Pos) { super(msg); }
+}
+
 export function lex(src: string): Tok[] {
   const toks: Tok[] = [];
   // Indices where each line begins (line 1 at 0); lets us map a char index to
@@ -74,7 +81,7 @@ export function lex(src: string): Tok[] {
       i = j;
       continue;
     }
-    throw new Error("Bad char: " + c);
+    throw new ParseError("Bad char: " + c, posAt(i), posAt(i + 1));
   }
   return toks;
 }

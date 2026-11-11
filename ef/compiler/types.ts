@@ -394,18 +394,20 @@ export function showT(t: Type): string {
   return go(t);
 }
 
-class TypeError_ extends Error {}
-// A unification failure reported as "Type mismatch". Subclassed so `infer`
-// can attach the source position of the innermost expression being checked
-// when the mismatch surfaced.
-class TypeMismatch extends TypeError_ {
-  // Non-enumerable so it doesn't leak into error stringification.
+class TypeError_ extends Error {
+  // Non-enumerable so it doesn't leak into error stringification. On the base
+  // so infer's wrapper can locate every checker error (not just mismatches)
+  // at the innermost expression being checked.
   located = false;
-  constructor(msg: string) {
+  constructor(msg?: string) {
     super(msg);
     Object.defineProperty(this, "located", {value: false, enumerable: false, writable: true});
   }
 }
+// A unification failure reported as "Type mismatch". Subclassed so `infer`
+// can attach the source position of the innermost expression being checked
+// when the mismatch surfaced.
+class TypeMismatch extends TypeError_ {}
 
 type Scheme = () => Type; // polymorphic type scheme, instantiated fresh per use
 
@@ -1103,10 +1105,10 @@ function inferNode(
       return assertNever(e);
   }
   } catch (err) {
-    // Annotate the innermost type mismatch with the position of the
-    // expression being inferred when unification failed. The first (deepest)
-    // frame to catch wins; outer frames see `located` set and skip.
-    if (err instanceof TypeMismatch && !err.located && e.pos !== undefined) {
+    // Locate the innermost checker error at the position of the expression
+    // being inferred when it was thrown. The first (deepest) frame to catch
+    // wins; outer frames see `located` set and skip.
+    if (err instanceof TypeError_ && !err.located && e.pos !== undefined) {
       err.located = true;
       err.message = `at line ${e.pos.line}, col ${e.pos.col}: ` + err.message;
     }
