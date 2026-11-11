@@ -218,6 +218,15 @@ describe("Tuples, aliases, and field access", () => {
   test("named tuple via annotation", () => {
     expect(typeOf(`p: [x: f64, y: f64] :: [1.0, 2.0]; p`)).toBe("[x: f64, y: f64]");
   });
+  // `[x: 1, y: 2]` used to parse as six elements (the stray `:` became a `sym`
+  // node) and fail later with a baffling "literal arity 6 ≠ tuple 2"; field
+  // names are type-position-only, so the literal must fail at parse time.
+  test("named-field expression literal is rejected at parse time", () => {
+    expect(() => run(`p: [x: i64, y: i64] :: [x: 1, y: 2]; p`)).toThrow("Unexpected token \":\"");
+  });
+  test("stray punctuation in expression position fails as a parse error, not a sym node", () => {
+    expect(() => run(`f(:)`)).toThrow("Unexpected token \":\"");
+  });
   test("dot access on a tuple by name", () => {
     expect(show(run(`p: [x: f64, y: f64] :: [1.0, 2.0]; p.x`))).toBe("1");
   });

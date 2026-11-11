@@ -664,6 +664,12 @@ export class Parser {
       }
       return this.add({t: "handle", body, cases, pos: p});
     }
+    // Fallthrough is ident-shaped tokens only (mirrors the lexer's ident
+    // rule): every other token kind has a branch above. A stray punctuation
+    // token must fail here as a parse error — as a `sym` node it surfaced
+    // later as a baffling type error ("literal arity 6 ≠ tuple 2" for
+    // `[x: 1, y: 2]`).
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(t)) this.fail(`Unexpected token "${t}"`);
     this.next();
     return this.add({t: "sym", v: t, pos: p});
   }
