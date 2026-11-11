@@ -206,7 +206,7 @@ export class Parser {
     this.eat(":");
     const ret = this.parseType();
     this.eat(";");
-    return {effect: name, sig: {params: params.map(p => p.typ), ret}, pos: p};
+    return {effect: name, sig: {params: params.map(p => p.typ), ret, names: params.map(p => p.name)}, pos: p};
   }
 
   // Top-level type aliases, keyword-free (`type` is now the type-of-types

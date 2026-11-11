@@ -46,6 +46,10 @@ export function tFun(params: Type[], ret: Type, effs: Effs): FunT {
 export type EffectSig = {
   params: (Type | null)[],
   ret: Type,
+  // Display-only param names (LSP hover): parser sigs keep the source names,
+  // builtin sigs name theirs. Rendered as `name: type` per position; absent
+  // names render the bare type as before.
+  names?: string[],
 };
 
 // The unifier: ALL mutable unification state in one object — the type-variable
@@ -363,9 +367,13 @@ type Snapshot = {
 // `Unifier.deepRes`): any variable shown is a genuinely unbound one.
 // Type variables display as letters (a, b, ..., z, a1, b1, ...) in order of
 // first appearance, so the same variable always prints the same letter.
-export function showT(t: Type): string {
-  const names = new Map<number, string>();
-  const go = (t: Type): string => {
+// `pnames` optionally names the top-level fun's params (`x: T`); nested fun
+// types stay anonymous (names exist only for the hovered signature).
+// `varNames` pre-assigns variable ids to names before the first-appearance
+// letters (alias tparams print under their declared names).
+export function showT(t: Type, pnames?: (string | null)[], varNames?: Map<number, string>): string {
+  const names = varNames ?? new Map<number, string>();
+  const go = (t: Type, pns?: (string | null)[]): string => {
     switch (t.tag) {
       case "prim": return t.name === "int" ? "i64" : t.name === "float" ? "f64" : t.name;
       case "arr": return "[" + go(t.elem) + "]";
@@ -384,7 +392,10 @@ export function showT(t: Type): string {
         return n;
       }
       case "fun": {
-        const ps = t.params.map(go).join(", ");
+        const ps = t.params.map((p, i) => {
+          const n = pns !== undefined && i < pns.length ? pns[i] : null;
+          return (n !== null && n !== "_" ? n + ": " : "") + go(p);
+        }).join(", ");
         const e = t.effs instanceof Set
           ? (t.effs.size > 0 ? " ! { " + [...t.effs].join(", ") + " }" : "")
           : ` ! { e${t.effs.id} }`;
@@ -392,7 +403,7 @@ export function showT(t: Type): string {
       }
     }
   };
-  return go(t);
+  return go(t, pnames);
 }
 
 export class TypeError_ extends Error {
@@ -1290,7 +1301,7 @@ export function checkProgram(
   }
 
   for (const it of prog.items.filter(it => "effect" in it))
-    effects.set(it.effect, {params: it.sig.params.map(t => t ?? uni.fresh()), ret: it.sig.ret});
+    effects.set(it.effect, {params: it.sig.params.map(t => t ?? uni.fresh()), ret: it.sig.ret, names: it.sig.names});
 
   let lastType: Type = TUNIT;
   // One shared sink for all items: infer only ever ADDS residuals to the

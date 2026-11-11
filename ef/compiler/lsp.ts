@@ -30,8 +30,9 @@ import {
   type SemanticTokens,
   type SemanticTokensParams,
 } from "vscode-languageserver/node";
-import {Parser, type ExprID, type Program, type TypeTok} from "./parser.ts";
-import {checkProgram, showT, TANY, TypeError_, type Checked, type EffectSig, type Unifier} from "./types.ts";
+import {Parser, type Alias, type ExprID, type Program, type TypeTok} from "./parser.ts";
+import {checkProgram, showT, tFun, TANY, TypeError_, type Checked, type EffectSig, type Unifier} from "./types.ts";
+import {builtinParamNames} from "./builtins.ts";
 import {ParseError, type Pos} from "./lexer.ts";
 
 // Parse errors carry the offending token's 1-based extent — underlined.
@@ -95,26 +96,57 @@ function posLT(a: Pos, b: Pos): boolean {
   return a.line < b.line || (a.line === b.line && a.col < b.col);
 }
 
-// Effect sigs render function-style, like fns: `Choose : () -> bool`. The
-// sig's params/ret are deep-resolved so a use site's unifications (args
+// Effect sigs render function-style, like fns: `Choose : () -> bool`, with
+// the op's declared param names when present (`Read : (path: string) -> string`).
+// The sig's params/ret are deep-resolved so a use site's unifications (args
 // unified against the sig during checking) show concretely.
 function effSigText(uni: Unifier, sig: EffectSig): string {
-  return `(${sig.params.map(p => showT(uni.deepRes(p ?? TANY))).join(", ")}) -> ${showT(uni.deepRes(sig.ret))}`;
+  return showT(uni.deepRes(tFun(sig.params.map(p => p ?? TANY), sig.ret, new Set())), sig.names);
+}
+
+// Alias definition: `Pair(a, b) = [fst: a, snd: b]` — tuple fields render
+// with their names, and the body's parser-level tparam Vars print under
+// their declared names via showT's var-name seed.
+function aliasText(al: Alias): string {
+  const varNames = new Map<number, string>();
+  for (const [n, v] of al.tparams) varNames.set(v.id, n);
+  const ps = [...al.tparams.keys()];
+  return `${al.name}${ps.length > 0 ? `(${ps.join(", ")})` : ""} = ${showT(al.body, undefined, varNames)}`;
+}
+
+// Param names for a function-typed name: its unique `:: fn(…)` binder (the
+// no-shadowing rule keeps value bindings unique), else the builtin's
+// declared names. Display-only — absent names render bare types.
+function fnPNames(prog: Program, name: string): string[] | undefined {
+  for (const b of prog.nodes) {
+    if (b.t !== "let" || b.name !== name) continue;
+    const lam = prog.nodes[b.val];
+    if (lam.t === "lambda") return lam.params.map(p => p.name);
+  }
+  return builtinParamNames(name);
+}
+
+// Hover payload: markdown in an `ef` code fence, so it's syntax-highlighted
+// with the same grammar as the editor.
+function hoverMd(text: string): Hover {
+  return {contents: {kind: MarkupKind.Markdown, value: "```ef\n" + text + "\n```"}};
 }
 
 // Display text for one candidate node, or null to fall through to the next
 // containing node. Typed syms show `name : Type` (instantiated for
-// polymorphic uses); binder nodes record unit, so they display the bound
+// polymorphic uses), with the fn's param names when known (binder lambda or
+// builtin table); binder nodes record unit, so they display the bound
 // value's type (annotated/wildcard vals are pinned to the binding's resolved
 // width by the checker) as `name : Type`; everything else the bare type.
 function hoverText(prog: Program, checked: Checked, id: ExprID, c: Pos): string | null {
   const e = prog.nodes[id], uni = checked.uni;
   if (e.t === "sym") {
+    const names = fnPNames(prog, e.v);
     const nt = uni.nodeTypes.get(id);
-    if (nt !== undefined) return `${e.v} : ${showT(uni.deepRes(nt))}`;
+    if (nt !== undefined) return `${e.v} : ${showT(uni.deepRes(nt), names)}`;
     // Callee syms the checker never infers (list's app case): env lookup.
     return checked.env.lookup(e.v) === undefined
-      ? null : `${e.v} : ${showT(checked.env.lookupResolved(e.v))}`;
+      ? null : `${e.v} : ${showT(checked.env.lookupResolved(e.v), names)}`;
   }
   const nt = uni.nodeTypes.get(id);
   if (nt === undefined) return null;
@@ -140,10 +172,11 @@ function hoverText(prog: Program, checked: Checked, id: ExprID, c: Pos): string 
   if (e.t === "let" || e.t === "assign" || e.t === "dlet") {
     const vt = uni.nodeTypes.get(e.val);
     if (vt === undefined) return null;
-    const s = showT(uni.deepRes(vt));
+    const lam = prog.nodes[e.val];
+    const s = showT(uni.deepRes(vt), lam.t === "lambda" ? lam.params.map(p => p.name) : undefined);
     return e.t === "dlet" ? s : `${e.name} : ${s}`;
   }
-  return showT(uni.deepRes(nt));
+  return showT(uni.deepRes(nt), e.t === "lambda" ? e.params.map(p => p.name) : undefined);
 }
 
 // Hover: the innermost checked subexpression whose source extent covers the
@@ -160,18 +193,23 @@ function hoverAt(src: string, line: number, col: number): Hover | null {
   }
   // 1-based cursor, matching Pos.
   const c = {line: line + 1, col: col + 1};
-  // Effect-name occurrences (decls, `! { … }` rows, performs, case labels)
-  // are recorded as macro typeToks; hovering one shows the op's signature.
-  // This safely preempts the node search: no expression node lies inside an
-  // identifier, and value references are never recorded as typeToks. Every
-  // macro occurrence in a checked program names a declared effect, so the
-  // sig lookup succeeds.
+  // Type/effect name occurrences (recorded as typeToks) hover their target:
+  // effect names (decls, `! { … }` rows, performs, case labels) → the op's
+  // signature; alias names (decls, type uses) → the definition. This safely
+  // preempts the node search: no expression node lies inside an identifier,
+  // and value references are never recorded as typeToks. Every macro
+  // occurrence in a checked program names a declared effect, and parseType
+  // rejects unknown alias names, so both lookups succeed.
   for (const t of prog.typeToks) {
-    if (t.kind !== "macro" || t.pos.line !== c.line ||
+    if ((t.kind !== "macro" && t.kind !== "type") || t.pos.line !== c.line ||
         c.col < t.pos.col || t.pos.col + t.len <= c.col) continue;
-    const sig = checked.effects.get(t.name);
-    if (sig !== undefined)
-      return {contents: {kind: MarkupKind.Markdown, value: "```ef\n" + `${t.name} : ${effSigText(checked.uni, sig)}` + "\n```"}};
+    if (t.kind === "macro") {
+      const sig = checked.effects.get(t.name);
+      if (sig !== undefined) return hoverMd(`${t.name} : ${effSigText(checked.uni, sig)}`);
+    } else {
+      const item = prog.items.find(it => "alias" in it && it.alias.name === t.name);
+      if (item !== undefined && "alias" in item) return hoverMd(aliasText(item.alias));
+    }
   }
   const cands: ExprID[] = [];
   for (let id = 0; id < prog.nodes.length; id++) {
@@ -190,8 +228,7 @@ function hoverAt(src: string, line: number, col: number): Hover | null {
   });
   for (const id of cands) {
     const text = hoverText(prog, checked, id, c);
-    if (text !== null)
-      return {contents: {kind: MarkupKind.Markdown, value: "```ef\n" + text + "\n```"}};
+    if (text !== null) return hoverMd(text);
   }
   return null;
 }

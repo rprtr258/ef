@@ -216,9 +216,9 @@ describe("ef language server", () => {
     await s.change("id :: fn(x) { x };\nm :: id(42);\n");
     const h1 = await s.hover(1, 5); // the call site
     expect(h1).not.toBeNull();
-    expect(h1!.contents.value).toBe("```ef\nid : (i64) -> i64\n```");
+    expect(h1!.contents.value).toBe("```ef\nid : (x: i64) -> i64\n```");
     const h2 = await s.hover(0, 6); // the lambda itself
-    expect(h2!.contents.value).toBe("```ef\n(a) -> a\n```");
+    expect(h2!.contents.value).toBe("```ef\n(x: a) -> a\n```");
   });
 
   test("hover on an effect op shows its signature like a function", async () => {
@@ -234,14 +234,48 @@ describe("ef language server", () => {
     await s.change("effect Get(v: i64): i64;\nm :: Get!(42);\n");
     const h = await s.hover(1, 5); // over `Get`
     expect(h).not.toBeNull();
-    expect(h!.contents.value).toBe("```ef\nGet : (i64) -> i64\n```");
+    expect(h!.contents.value).toBe("```ef\nGet : (v: i64) -> i64\n```");
   });
 
   test("hover on a builtin effect op shows its signature", async () => {
     await s.change("n :: Read!(\"x.txt\");\n");
     const h = await s.hover(0, 5); // over `Read`
     expect(h).not.toBeNull();
-    expect(h!.contents.value).toBe("```ef\nRead : (string) -> string\n```");
+    expect(h!.contents.value).toBe("```ef\nRead : (path: string) -> string\n```");
+  });
+
+  test("hover on a fn shows its param names", async () => {
+    await s.change("f :: fn(x: i64, y: i64): i64 { x + y };\n");
+    const h1 = await s.hover(0, 0); // the binder name
+    expect(h1).not.toBeNull();
+    expect(h1!.contents.value).toBe("```ef\nf : (x: i64, y: i64) -> i64\n```");
+    const h2 = await s.hover(0, 6); // the lambda itself, over `fn`
+    expect(h2!.contents.value).toBe("```ef\n(x: i64, y: i64) -> i64\n```");
+  });
+
+  test("hover on a builtin fn shows its param names", async () => {
+    await s.change("xs :: [1, 2, 3];\nn :: get(xs, 0);\n");
+    const h = await s.hover(1, 5); // over `get`
+    expect(h).not.toBeNull();
+    expect(h!.contents.value).toBe("```ef\nget : (xs: [i64], i: i64) -> i64\n```");
+  });
+
+  test("hover on an alias name shows its definition", async () => {
+    await s.change("Point :: [x: i64, y: i64];\np: Point :: [1, 2];\n");
+    const h1 = await s.hover(0, 0); // the decl name
+    expect(h1).not.toBeNull();
+    expect(h1!.contents.value).toBe("```ef\nPoint = [x: i64, y: i64]\n```");
+    const h2 = await s.hover(1, 3); // a type use
+    expect(h2!.contents.value).toBe("```ef\nPoint = [x: i64, y: i64]\n```");
+  });
+
+  test("hover on a parametric alias shows its tparams", async () => {
+    await s.change("Pair :: fn(a: type, b: type): type { [fst: a, snd: b] };\nq: Pair(i64, string) :: [1, \"s\"];\n");
+    const h1 = await s.hover(0, 0); // the decl name
+    expect(h1).not.toBeNull();
+    expect(h1!.contents.value).toBe("```ef\nPair(a, b) = [fst: a, snd: b]\n```");
+    const h2 = await s.hover(1, 3); // a type use
+    expect(h2!.contents.value).toBe("```ef\nPair(a, b) = [fst: a, snd: b]\n```");
   });
 
   test("hover on a handler case label shows the op's signature", async () => {
