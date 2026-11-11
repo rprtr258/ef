@@ -8,7 +8,7 @@
 // the playground's palette with no manual sync. site.css supplies the
 // docs-specific layout and prose styles on top of those tokens.
 
-import {mkdirSync, rmSync, writeFileSync} from "node:fs";
+import {existsSync, mkdirSync, readdirSync, rmSync, writeFileSync} from "node:fs";
 import {readFile} from "node:fs/promises";
 import {join, dirname} from "node:path";
 import {marked} from "marked";
@@ -16,43 +16,45 @@ import {marked} from "marked";
 const here = (...p: string[]) => join(import.meta.dir, ...p);
 const dist = here("dist");
 
-// --- nav (single source: sidebar structure = build order) --------------------
+// --- nav (single source: the content/ tree itself) ---------------------------
 
-type Page = {file: string, label: string, sub?: boolean};
-const OVERVIEW: Page = {file: "index.md", label: "Overview"};
-const SECTIONS: {title: string, pages: Page[]}[] = [
-  {
-    title: "Spec",
-    pages: [
-      {file: "spec.md", label: "Language spec"},
-      {file: "cli.md", label: "CLI & REPL"},
-      {file: "lint.md", label: "Linter"},
-      {file: "vscode.md", label: "VS Code extension"},
-    ],
-  },
-  {
-    title: "Dev",
-    pages: [
-      {file: "dev/pipeline.md", label: "Compiler pipeline"},
-      {file: "dev/lexer.md", label: "Lexer"},
-      {file: "dev/parser.md", label: "Parser"},
-      {file: "dev/types.md", label: "Type checker"},
-      {file: "dev/analysis.md", label: "Analysis"},
-      {file: "dev/builtins.md", label: "Builtins"},
-      {file: "dev/eval.md", label: "Interpreter (CPS)"},
-      {file: "dev/wasm.md", label: "Wasm backend"},
-      {file: "dev/wasm-discover.md", label: "Discover", sub: true},
-      {file: "dev/wasm-optimize.md", label: "Optimize", sub: true},
-      {file: "dev/wasm-indices.md", label: "Index assignment", sub: true},
-      {file: "dev/wasm-layout.md", label: "Statics layout", sub: true},
-      {file: "dev/wasm-emit.md", label: "Emit", sub: true},
-      {file: "dev/wasm-module.md", label: "Module & host", sub: true},
-      {file: "dev/lint.md", label: "Linter internals"},
-    ],
-  },
-];
-const ALL_PAGES: Page[] = [OVERVIEW, ...SECTIONS.flatMap(s => s.pages)];
-export {ALL_PAGES};
+// The sidebar mirrors the markdown directory structure: a directory's
+// index.md is its page — the site root (index.md), a section root (spec/,
+// dev/) or a subtree root (dev/wasm/) — and every other *.md beside it is a
+// child page; subdirectories recurse. Labels and section titles are each
+// file's first `#` heading; children sort by filename (the parent pages'
+// pipeline tables carry the reading order). Each file is read exactly once
+// per build: label and md body both come from that single read.
+type Page = {file: string, label: string, md: string, children?: Page[]};
+
+async function loadFile(file: string): Promise<Page> {
+  const md = await readFile(here("content", file), "utf8");
+  const m = md.match(/^# (.+)$/m);
+  if (m === null)
+    throw new Error(`docs/content/${file}: no top-level '#' heading for the nav label`);
+  return {file, label: m[1], md};
+}
+
+// Page for a directory: its index.md, with its *.md files and subdirectories
+// (each index.md-rooted) as name-sorted children.
+async function loadDir(relDir: string): Promise<Page> {
+  if (!existsSync(here("content", relDir, "index.md")))
+    throw new Error(`docs/content/${relDir}: every directory needs an index.md root page`);
+  const file = relDir === "" ? "index.md" : `${relDir}/index.md`;
+  const children: Page[] = [];
+  const entries = readdirSync(here("content", relDir), {withFileTypes: true})
+    .filter(e => e.isDirectory() || e.name.endsWith(".md"))
+    .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  for (const e of entries) {
+    if (e.name === "index.md") continue;
+    const rel = relDir === "" ? e.name : `${relDir}/${e.name}`;
+    children.push(e.isDirectory() ? await loadDir(rel) : await loadFile(rel));
+  }
+  return {...await loadFile(file), children: children.length > 0 ? children : undefined};
+}
+
+// Sidebar tree flattened in build order (children after their parent).
+const flat = (p: Page): Page[] => [p, ...(p.children ?? []).flatMap(flat)];
 
 const outPath = (page: Page): string => page.file.replace(/\.md$/, ".html");
 
@@ -129,20 +131,29 @@ function rewriteLinks(html: string): string {
 
 // --- page shell --------------------------------------------------------------
 
-function renderNav(current: Page, root: string): string {
-  const item = (p: Page): string => {
-    const cls = [p.file === current.file ? "active" : "", p.sub === true ? "sub" : ""]
-      .filter((c) => c !== "").join(" ");
-    const attr = cls === "" ? "" : ` class="${cls}"`;
-    return `    <a${attr} href="${root}${outPath(p)}">${p.label}</a>`;
+function renderNav(current: Page, root: string, overview: Page, sections: Page[]): string {
+  const attrOf = (p: Page, base = ""): string => {
+    const cls = `${base}${p.file === current.file ? " active" : ""}`.trim();
+    return cls === "" ? "" : ` class="${cls}"`;
   };
-  const groups = [`  <div class="nav-group">\n${item(OVERVIEW)}\n  </div>`];
-  for (const s of SECTIONS)
-    groups.push(`  <div class="nav-group">\n    <div class="nav-title">${s.title}</div>\n${s.pages.map(item).join("\n")}\n  </div>`);
+  const link = (p: Page, base = ""): string =>
+    `    <a${attrOf(p, base)} href="${root}${outPath(p)}">${p.label}</a>`;
+  const item = (p: Page): string => {
+    if (p.children === undefined) return link(p);
+    return `${link(p)}\n    <div class="nav-children">\n${p.children.map(item).join("\n")}\n    </div>`;
+  };
+  // Overview's children are the sections — rendered as groups, not as its nav subtree.
+  const groups = [
+    `  <div class="nav-group">\n${link(overview)}\n  </div>`,
+    ...sections.map(s => 
+      // The section title is its root page's link (index.md).
+      `  <div class="nav-group">\n${link(s, "nav-title")}\n${(s.children ?? []).map(item).join("\n")}\n  </div>`,
+    ),
+  ];
   return `<nav id="sidebar">\n${groups.join("\n")}\n</nav>`;
 }
 
-function renderPage(page: Page, body: string): string {
+function renderPage(page: Page, body: string, overview: Page, sections: Page[]): string {
   const root = "../".repeat(page.file.split("/").length - 1);
   return `<!doctype html>
 <html lang="en">
@@ -161,7 +172,7 @@ function renderPage(page: Page, body: string): string {
   <a id="src-link" href="https://github.com/rprtr258/lish" title="source repository" aria-label="source repository"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
 </header>
 <div id="page">
-${renderNav(page, root)}
+${renderNav(page, root, overview, sections)}
 <main id="content">
 ${body}
 </main>
@@ -173,7 +184,11 @@ ${body}
 
 // --- build -------------------------------------------------------------------
 
-export async function build(): Promise<Map<string, string>> {
+export async function build(): Promise<{pages: Page[], html: Map<string, string>}> {
+  const overview = await loadDir("");       // content/index.md — the site root
+  const sections = overview.children ?? []; // top-level directories; their label titles the nav group
+  const all = flat(overview);
+
   const tokens = await studioTokens();
   const siteCss = `${tokens}\n\n${await readFile(here("site.css"), "utf8")}`;
 
@@ -182,18 +197,17 @@ export async function build(): Promise<Map<string, string>> {
   writeFileSync(join(dist, "site.css"), siteCss);
 
   const out = new Map<string, string>();
-  for (const page of ALL_PAGES) {
-    const md = await readFile(here("content", page.file), "utf8");
+  for (const page of all) {
     slugCounts.clear();
-    const body = rewriteLinks(await marked.parse(md));
-    const html = renderPage(page, body);
+    const body = rewriteLinks(await marked.parse(page.md));
+    const html = renderPage(page, body, overview, sections);
     // Bun.write used to create parent dirs implicitly (createPath); writeFileSync needs them explicit
     mkdirSync(dirname(join(dist, outPath(page))), {recursive: true});
     writeFileSync(join(dist, outPath(page)), html);
     out.set(page.file, html);
   }
-  console.log(`built docs → ${dist} (${ALL_PAGES.length} pages)`);
-  return out;
+  console.log(`built docs → ${dist} (${all.length} pages)`);
+  return {pages: all, html: out};
 }
 
 if (import.meta.main) {

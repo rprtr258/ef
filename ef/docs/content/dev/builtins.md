@@ -18,7 +18,7 @@ interpreter (runtime bindings), and the wasm host (effect interpretation).
 special-cases them structurally, because no honest type signature exists for
 them — `+` is overloaded per numeric width *and* string, and numeric ops are
 width-strict. The full operator/builtin surface is in the
-[spec](../spec.md#4-builtins); the `{name, params}` ABI both backends agree on
+[spec](../spec/index.md#4-builtins); the `{name, params}` ABI both backends agree on
 lives in [Analysis](analysis.md).
 
 ## Builtin effects and their default interpretations
@@ -30,7 +30,7 @@ views of the same table:
 | View | Shape | Consumer |
 |------|-------|----------|
 | `builtinInterps` | CPS: `(args, k) => Outcome` | `runTop` — interpreter side ([Interpreter](eval.md)) |
-| `builtinEffectHosts` | direct-style: `(args) => Value` (unwraps the single synchronous `k` call) | the wasm host boundary ([Module & host](wasm-module.md)) |
+| `builtinEffectHosts` | direct-style: `(args) => Value` (unwraps the single synchronous `k` call) | the wasm host boundary ([Module & host](wasm/module.md)) |
 
 | Effect | Default behaviour | Knob |
 |--------|-------------------|------|

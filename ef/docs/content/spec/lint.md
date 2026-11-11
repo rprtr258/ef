@@ -19,4 +19,4 @@ lambdas as `anonymous function`. Every finding carries a source position.
 The playground runs the same passes and shows findings in its problems pane.
 
 How passes work internally and how to add one:
-[Linter internals](dev/lint.md).
+[Linter internals](../dev/lint.md).

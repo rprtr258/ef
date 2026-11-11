@@ -125,4 +125,4 @@ The evaluator and the builtin table reference each other only at runtime
 default interpretations) — safe from any entry point because the defaults
 are derived together with the table itself.
 
-Next: [Wasm backend](wasm.md).
+Next: [Wasm backend](wasm/index.md).

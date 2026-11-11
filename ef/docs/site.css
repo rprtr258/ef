@@ -78,7 +78,18 @@ html[data-theme="dark"] #theme-btn .i-moon { display: none; }
 }
 #sidebar a:hover { background: var(--sel); }
 #sidebar a.active { color: var(--accent); border-left-color: var(--accent); }
-#sidebar a.sub { padding-left: 24px; }
+
+/* Section titles are links to the section's index.md root page. */
+#sidebar a.nav-title { color: var(--faint); }
+#sidebar a.nav-title:hover { background: none; color: var(--ink); }
+#sidebar a.nav-title.active { color: var(--accent); border-left-color: var(--accent); }
+
+#sidebar .nav-children {
+  margin: 2px 0 4px 12px;
+  padding-left: 8px;
+  border-left: 1px solid var(--hair);
+}
+#sidebar .nav-children a { padding: 3px 10px; font-size: 12.5px; }
 
 #content { padding: 34px 44px 80px; min-width: 0; }
 

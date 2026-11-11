@@ -1,6 +1,6 @@
-# Wasm phase: discover
+# Discover
 
-First phase of the [backend pipeline](wasm.md#pipeline). One walk over the
+First phase of the [backend pipeline](index.md#pipeline). One walk over the
 checked program that produces the discovery record every later phase builds
 on. The caller (`compileWithOps`) runs `checkProgram` before the pipeline —
 rejecting ill-typed programs and stamping the runtime markers discovery
@@ -16,7 +16,7 @@ reads — so discovery consumes the stamps as-is.
    The final op list is handed to the host so both sides agree on op
    numbering when an effect crosses the boundary. Discovery is *syntactic* —
    "which op names does the text mention", handled ops included (see
-   [Analysis](analysis.md#two-kinds-of-which-ops) for the semantic
+   [Analysis](../analysis.md#two-kinds-of-which-ops) for the semantic
    counterpart).
 3. **Handler presence.** A pre-scan records whether the program has handlers
    at all: handler-free programs get continuation chains with no case-table
@@ -29,6 +29,6 @@ reads — so discovery consumes the stamps as-is.
    and every string literal.
 6. **Split sites.** Every perform/handle site and every non-builtin call
    site — the places where emission must suspend (see
-   [emit](wasm-emit.md#the-split-protocol)).
+   [emit](emit.md#the-split-protocol)).
 
-Next: [Optimize](wasm-optimize.md).
+Next: [Optimize](optimize.md).

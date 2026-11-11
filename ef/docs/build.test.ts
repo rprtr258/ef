@@ -3,20 +3,20 @@
 // what keeps cross-page deep links (`types.md#effects`) honest as pages
 // evolve. Runs under the root `bun test` like the compiler suites.
 import {describe, expect, test} from "bun:test";
-import {ALL_PAGES, build} from "./build.ts";
+import {build} from "./build.ts";
 
-const pages = await build();
+const {pages, html: built} = await build();
 
 const outPath = (file: string): string => file.replace(/\.md$/, ".html");
 
 describe("docs build", () => {
   test("emits a page per nav entry", () => {
-    expect(pages.size).toBe(ALL_PAGES.length);
+    expect(built.size).toBe(pages.length);
   });
 
   // Anchor ids present on each emitted page.
   const ids = new Map<string, Set<string>>();
-  for (const [file, html] of pages)
+  for (const [file, html] of built)
     ids.set(outPath(file), new Set([...html.matchAll(/id="([^"]+)"/g)].map(m => m[1])));
 
   const dirOf = (f: string): string => (f.includes("/") ? f.slice(0, f.lastIndexOf("/")) : "");
@@ -32,7 +32,7 @@ describe("docs build", () => {
 
   test("every internal link resolves to a page and anchor", () => {
     const broken: string[] = [];
-    for (const [file, html] of pages) {
+    for (const [file, html] of built) {
       for (const m of html.matchAll(/href="([^"]+)"/g)) {
         const href = m[1];
         const hash = href.indexOf("#");

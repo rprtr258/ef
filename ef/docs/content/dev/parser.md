@@ -3,7 +3,7 @@
 `new Parser(src).parseProgram(): Program` where
 `Program = {nodes: Expr[], items: Item[], typeToks: TypeTok[]}` — `typeToks`
 records every type/effect name token consumed while parsing, the LSP
-semantic-tokens source ([VS Code extension](../vscode.md)); both backends
+semantic-tokens source ([VS Code extension](../spec/vscode.md)); both backends
 ignore it. Recursive descent for structure,
 **Pratt parsing for infix** (precedence table below).
 

@@ -1,6 +1,6 @@
 # CLI & REPL
 
-Thin frontends over the [compiler pipeline](dev/pipeline.md) — none contains
+Thin frontends over the [compiler pipeline](../dev/index.md) — none contains
 language logic. Run from the repository root:
 
 ```sh
@@ -41,7 +41,7 @@ the host and is interpreted by the same builtin host table `ef run` uses
 
 Not supported: a perform or handle site inside an `if` branch or `while`
 body — suspension across those control-flow blocks is rejected at compile
-time (see [the wasm backend](dev/wasm.md#continuations-and-effects)).
+time (see [the wasm backend](../dev/wasm/index.md#continuations-and-effects)).
 
 ## Type info
 
@@ -49,7 +49,7 @@ time (see [the wasm backend](dev/wasm.md#continuations-and-effects)).
 final `_ : T ! { ops }` line is the whole program's residual effect row —
 exactly the ops that would reach the runner unhandled; a run rejects on
 precisely this set when nothing interprets it. See
-[Analysis](dev/analysis.md#two-kinds-of-which-ops) for how that differs from
+[Analysis](../dev/analysis.md#two-kinds-of-which-ops) for how that differs from
 syntactic op discovery.
 
 ## Language server

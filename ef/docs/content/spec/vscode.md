@@ -53,5 +53,5 @@ cd vscode && bun run build     # emits dist/extension.cjs + dist/server.cjs
 
 ## Where to go
 
-- [Language spec](spec.md) — what the types and diagnostics mean.
+- [Language spec](index.md) — what the types and diagnostics mean.
 - [CLI & REPL](cli.md) — `ef lsp`, plus every other subcommand.

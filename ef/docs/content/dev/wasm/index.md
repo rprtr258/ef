@@ -1,6 +1,6 @@
 # Wasm backend
 
-Same frontend as the interpreter — parse → typecheck → [analysis](analysis.md)
+Same frontend as the interpreter — parse → typecheck → [analysis](../analysis.md)
 — different codegen: the program's CPS structure is compiled **explicitly**
 into WasmGC. There is no linear memory: every wasm operand value is an
 `anyref`.
@@ -13,12 +13,12 @@ artifact it did not create:
 
 | Phase | Reads | Produces | Job |
 |-------|-------|----------|-----|
-| [`discover`](wasm-discover.md) | `Program` (pre-checked by `compileWithOps`) | `Discovery` | intern effect ops into the op table (returned to the host so both agree on op numbering); handler-presence pre-scan; the scope/slot/literal/split-site walk over the whole program |
-| [`optimize`](wasm-optimize.md) | `Program` | `Opt` | `OPT_PASSES`: `treeShakeBuiltins` (emit only referenced builtins) and `dropDeadHostImports` (live host-import set — funcref index assignment derives from it) |
-| [`assignIndices`](wasm-indices.md) | `Discovery`, `Opt` | `Indices` | funcref table indices: helpers, lambdas, builtins, case fns, main; perform/handle spill slots |
-| [`layoutStatics`](wasm-layout.md) | `Discovery`, `Indices`, `Opt` | `Layout` | static literal globals — nums, strings, bools, `PI`, per-handle case tables — each initialized by a GC constant expression at instantiation |
-| [`emit`](wasm-emit.md) | all of the above | `Fn[]` | one local `Emit` context; `expr()` + the statement/effect emitters; order: helpers → lambdas → case fns → builtin trampolines → main (+ thunks) |
-| [`buildModule`](wasm-module.md) | all of the above | bytes | assemble the module incl. `run` + accessor init fns; in-process binaryen shrink (level 2 — matches `-Oz` size at ~⅓ the cost) |
+| [`discover`](discover.md) | `Program` (pre-checked by `compileWithOps`) | `Discovery` | intern effect ops into the op table (returned to the host so both agree on op numbering); handler-presence pre-scan; the scope/slot/literal/split-site walk over the whole program |
+| [`optimize`](optimize.md) | `Program` | `Opt` | `OPT_PASSES`: `treeShakeBuiltins` (emit only referenced builtins) and `dropDeadHostImports` (live host-import set — funcref index assignment derives from it) |
+| [`assignIndices`](indices.md) | `Discovery`, `Opt` | `Indices` | funcref table indices: helpers, lambdas, builtins, case fns, main; perform/handle spill slots |
+| [`layoutStatics`](layout.md) | `Discovery`, `Indices`, `Opt` | `Layout` | static literal globals — nums, strings, bools, `PI`, per-handle case tables — each initialized by a GC constant expression at instantiation |
+| [`emit`](emit.md) | all of the above | `Fn[]` | one local `Emit` context; `expr()` + the statement/effect emitters; order: helpers → lambdas → case fns → builtin trampolines → main (+ thunks) |
+| [`buildModule`](module.md) | all of the above | bytes | assemble the module incl. `run` + accessor init fns; in-process binaryen shrink (level 2 — matches `-Oz` size at ~⅓ the cost) |
 
 Each phase has its own page under this one in the sidebar.
 
@@ -131,4 +131,4 @@ Known and pinned by tests — degenerate programs only:
 | Stack overflow is a wasm `RuntimeError`, not a JS `RangeError` | |
 | Heap reclamation is the host GC's job | recursion depth no longer costs O(N) unreclaimed bytes |
 
-Next: [Discover](wasm-discover.md).
+Next: [Discover](discover.md).

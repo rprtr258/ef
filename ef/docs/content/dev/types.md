@@ -19,7 +19,7 @@ performed without a matching handler surface in the program's residual row.
 | `env` | checker `Env`; values are `Scheme` thunks (polymorphism); `lookupResolved` gives fully-resolved types | REPL continuation, `ef types` |
 | `lastType` | the last expression's type, fully resolved | value printing, `ef types` |
 | `unhandled` | residual top-level effect rows: performed ops with no matching handler in their subtree | `exec`'s fail-fast check ([Interpreter](eval.md)), the `_ : T ! { ops }` line of `ef types` |
-| node stamps | `nodeTypes` (type per `ExprID`), `numKind` (width per numeric node), `div` (int/float division), `idx` (tuple field), `asKind` (conversion kind), `semToks` (value-identifier semantic tokens: `function` for fn-typed identifiers, `variable` otherwise — recorded at sym uses and binder sites for the [VS Code extension](../vscode.md)) | the evaluator's width normalization, the wasm emitter's per-node codegen |
+| node stamps | `nodeTypes` (type per `ExprID`), `numKind` (width per numeric node), `div` (int/float division), `idx` (tuple field), `asKind` (conversion kind), `semToks` (value-identifier semantic tokens: `function` for fn-typed identifiers, `variable` otherwise — recorded at sym uses and binder sites for the [VS Code extension](../spec/vscode.md)) | the evaluator's width normalization, the wasm emitter's per-node codegen |
 
 ## The type universe
 

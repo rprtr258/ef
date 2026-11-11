@@ -1,4 +1,4 @@
-# ef
+# Overview
 
 ef is a tiny statically-typed language with **algebraic effects and effect
 handlers**, C/Go-flavoured syntax, and a Hindley-Milner-flavoured type system
@@ -27,12 +27,12 @@ ordinary multi-shot resumption.
 
 | If you want to… | Read |
 |---|---|
-| Learn the language or look something up | [Language spec](spec.md) |
-| Run the compiler | [CLI & REPL](cli.md) — commands, the wasm target, the REPL, [linting](lint.md) |
-| Use ef in an editor | [VS Code extension](vscode.md) — highlighting, diagnostics, hover types |
-| Understand how the compiler works | [Compiler pipeline](dev/pipeline.md), then the per-phase pages in the sidebar (wasm phases sit under [Wasm backend](dev/wasm.md)) |
+| Learn the language or look something up | [Language spec](spec/index.md) |
+| Run the compiler | [CLI & REPL](spec/cli.md) — commands, the wasm target, the REPL, [linting](spec/lint.md) |
+| Use ef in an editor | [VS Code extension](spec/vscode.md) — highlighting, diagnostics, hover types |
+| Understand how the compiler works | [Compiler pipeline](dev/index.md), then the per-phase pages in the sidebar (wasm phases sit under [Wasm backend](dev/wasm/index.md)) |
 | Add a builtin | [Builtins](dev/builtins.md) |
-| Hack on the compiler | the page for the phase you are touching, starting from [Compiler pipeline](dev/pipeline.md) |
+| Hack on the compiler | the page for the phase you are touching, starting from [Compiler pipeline](dev/index.md) |
 
 ## The shape of the project
 
@@ -40,7 +40,7 @@ ordinary multi-shot resumption.
   **WebAssembly backend** (`ef buildwasm` / `ef runwasm`), sharing the same
   frontend — lexer, parser, checker, analysis.
 - The test suite is the executable form of the spec.
-- [playground](cli.md) — a browser studio for ef; this site reuses its theme.
+- [playground](spec/cli.md) — a browser studio for ef; this site reuses its theme.
 
 Run ef from the repository root:
 

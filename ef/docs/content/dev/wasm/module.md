@@ -1,12 +1,12 @@
-# Wasm phase: module & host
+# Module & host
 
-Last stage of the [backend pipeline](wasm.md#pipeline): assemble the bytes,
+Last stage of the [backend pipeline](index.md#pipeline): assemble the bytes,
 shrink them, and run them.
 
 ## Module assembly
 
-All artifacts — op table, [indices](wasm-indices.md), [statics](wasm-layout.md),
-function bodies from [emit](wasm-emit.md) — are assembled into the module
+All artifacts — op table, [indices](indices.md), [statics](layout.md),
+function bodies from [emit](emit.md) — are assembled into the module
 through the binaryen API: type, global, table and element sections, the
 exported `run` entry point, and the accessor functions the host needs. The
 same build runs the in-process binaryen shrink pass (optimization level 2 —
@@ -40,7 +40,7 @@ past 2⁵³; ef's 64-bit ints are exact).
 ### Host imports
 
 `ef_perform`, `ef_char`, `ef_number`, `ef_args`, `ef_cos`, `ef_sin`,
-`ef_fail` — tree-shaken to the live set by [optimize](wasm-optimize.md);
+`ef_fail` — tree-shaken to the live set by [optimize](optimize.md);
 `ef_fail` always stays.
 
 Effects with no matching handler in the chain flow back through `ef_perform`

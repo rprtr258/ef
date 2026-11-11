@@ -26,4 +26,4 @@ its issues.
 4. `bun run ci` — add a test pinning the new finding.
 
 The user-facing description of the current rules lives in the
-[spec section](../lint.md).
+[spec section](../spec/lint.md).

@@ -63,6 +63,6 @@ stay in sync with the builtin table.
 
 The residual rows surface via `ef types` — the final `_ : T ! { ops }` line
 shows exactly what the runner must interpret (or the run fails on).
-See [CLI & REPL](../cli.md#type-info).
+See [CLI & REPL](../spec/cli.md#type-info).
 
 Next: [Builtins](builtins.md).

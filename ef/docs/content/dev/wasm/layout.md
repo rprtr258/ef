@@ -1,6 +1,6 @@
-# Wasm phase: statics layout
+# Statics layout
 
-Fourth phase of the [backend pipeline](wasm.md#pipeline): give every static
+Fourth phase of the [backend pipeline](index.md#pipeline): give every static
 value a module global, deduplicated by kind and value.
 
 | Static | Dedup key |
@@ -16,4 +16,4 @@ Every global is immutable and initialized by a GC constant expression at
 instantiation — no runtime initialization code for statics. Emitted code
 references statics through the descriptors recorded here.
 
-Next: [Emit](wasm-emit.md).
+Next: [Emit](emit.md).

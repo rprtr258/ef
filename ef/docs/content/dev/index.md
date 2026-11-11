@@ -131,7 +131,7 @@ table (or an injected override — tests inject fake fs/time/randomness there).
 
 ## Backend: WebAssembly
 
-[Wasm backend →](wasm.md)
+[Wasm backend →](wasm/index.md)
 
 `compileWithOps` runs the same frontend, then a five-phase pipeline
 (discover → optimize → assignIndices → layoutStatics → emit) over plain
@@ -139,7 +139,7 @@ artifact records, assembles the module (`buildModule`, including an in-process
 binaryen shrink pass), and hands the bytes to the host runtime, which
 instantiates the module and rebuilds JS values across the WasmGC boundary.
 CPS is compiled explicitly: frames, continuation cells, and
-resume-as-value. Each phase has its own page under [Wasm backend](wasm.md)
+resume-as-value. Each phase has its own page under [Wasm backend](wasm/index.md)
 in the sidebar.
 
 ## The REPL protocol
@@ -179,5 +179,5 @@ REPL lines never alias), [Type checker](types.md) (one `Unifier` carried inside
 
 ## Usage
 
-Commands, REPL behaviour, and the wasm target: [CLI & REPL](../cli.md).
-Lint rules: [Linter](../lint.md).
+Commands, REPL behaviour, and the wasm target: [CLI & REPL](../spec/cli.md).
+Lint rules: [Linter](../spec/lint.md).
