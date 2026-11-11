@@ -1,0 +1,52 @@
+{
+  "name": "vscode",
+  "displayName": "ef Language Support",
+  "description": "ef language support: syntax highlighting, diagnostics from the ef checker, hover types",
+  "version": "0.1.0",
+  "publisher": "ef",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rprtr258/lish.git",
+    "directory": "ef/vscode"
+  },
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./dist/extension.cjs",
+  "contributes": {
+    "languages": [
+      {
+        "id": "ef",
+        "aliases": [
+          "ef"
+        ],
+        "extensions": [
+          ".ef"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ef",
+        "scopeName": "source.ef",
+        "path": "./syntaxes/ef.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "bun run scripts/build.ts"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.91.0",
+    "esbuild": "latest"
+  }
+}

@@ -1,7 +1,7 @@
 # CLI & REPL
 
-Two thin frontends over the [compiler pipeline](dev/pipeline.md) — neither
-contains language logic. Run from the repository root:
+Thin frontends over the [compiler pipeline](dev/pipeline.md) — none contains
+language logic. Run from the repository root:
 
 ```sh
 bun compiler/cli.ts run examples/star.ef
@@ -16,6 +16,7 @@ bun compiler/cli.ts run examples/star.ef
 | `ef runwasm <file>` | Compile and run on the embedded wasm host — same observable output as `ef run`. |
 | `ef types <file>` | Print every top-level symbol with its inferred type, then the program's result type with its **residual effect row** (below). |
 | `ef lint <file>` | Run the [linter](lint.md); exit 1 on findings. |
+| `ef lsp` | Start the [language server](vscode.md) over stdio for LSP-speaking editors (VS Code and others). |
 | `ef repl` | Interactive REPL. |
 
 ## Interpreter
@@ -50,6 +51,14 @@ exactly the ops that would reach the runner unhandled; a run rejects on
 precisely this set when nothing interprets it. See
 [Analysis](dev/analysis.md#two-kinds-of-which-ops) for how that differs from
 syntactic op discovery.
+
+## Language server
+
+`ef lsp` runs the language server: syntax highlighting lives in the
+[VS Code extension](vscode.md), while the server supplies its diagnostics
+(the fail-fast checker, one error per change) and hover types. It is the same
+process the extension bundles; running it from the CLI makes it available to
+any LSP-speaking editor.
 
 ## REPL
 

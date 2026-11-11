@@ -29,6 +29,7 @@ ordinary multi-shot resumption.
 |---|---|
 | Learn the language or look something up | [Language spec](spec.md) |
 | Run the compiler | [CLI & REPL](cli.md) — commands, the wasm target, the REPL, [linting](lint.md) |
+| Use ef in an editor | [VS Code extension](vscode.md) — highlighting, diagnostics, hover types |
 | Understand how the compiler works | [Compiler pipeline](dev/pipeline.md), then the per-phase pages in the sidebar (wasm phases sit under [Wasm backend](dev/wasm.md)) |
 | Add a builtin | [Builtins](dev/builtins.md) |
 | Hack on the compiler | the page for the phase you are touching, starting from [Compiler pipeline](dev/pipeline.md) |

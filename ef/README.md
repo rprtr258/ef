@@ -17,6 +17,9 @@ unhandled-effect program before it runs.
   backend — no external toolchain — with identical observable output.
 - **Browser playground.** A multi-file ef studio: live parse/check/lint as
   you type, runs the wasm build in the browser's WebAssembly engine.
+- **VS Code extension.** Syntax highlighting, checker diagnostics, and hover
+  types for `.ef` files (`vscode/` workspace; the language server also runs
+  standalone via `ef lsp`).
 
 ```ef
 effect Choose(opts: [i64]): i64;    # Choose yields an i64

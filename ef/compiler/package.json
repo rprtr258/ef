@@ -4,6 +4,7 @@
   "type": "module",
   "private": true,
   "dependencies": {
-    "binaryen": "^132.0.0"
+    "binaryen": "^132.0.0",
+    "vscode-languageserver": "^11.0.0"
   }
 }

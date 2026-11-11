@@ -21,7 +21,7 @@ Hindley-Milner-flavoured type system with effect tracking.
 - Tests (under `compiler/`): `index.test.ts` + `lint.test.ts` + `wasm.test.ts` +
   `analysis.test.ts` + `examples.test.ts` (`bun:test`).
 - Run a file: `bun compiler/cli.ts run <file>` (subcommands: `run`, `buildwasm`,
-  `runwasm`, `types`, `lint`, `repl`).
+  `runwasm`, `types`, `lint`, `repl`, `lsp`).
 - Gates: `bun run ci` = typecheck + eslint + runtime-deps check + tests; all must stay clean.
 - `playground/` workspace: browser studio (multi-file ef IDE). Bundles the
   compiler frontend for the browser; `cd playground && bun
@@ -33,6 +33,14 @@ Hindley-Milner-flavoured type system with effect tracking.
   with live reload; `docs/build.test.ts` (link integrity) runs under the root
   suite. Published to the `gh-pages` branch by the monorepo's
   `.github/workflows/docs.yml` on pushes to master.
+- `vscode/` workspace: VS Code extension for ef — TextMate grammar for `.ef`,
+  and a language client that spawns the LSP server from `compiler/lsp.ts`
+  (bundled by `vscode/scripts/build.ts` into `vscode/dist/`; esbuild with a
+  stub for builtins.ts's `sleepSync` since the server never evaluates). The
+  server speaks full-text sync diagnostics (fail-fast, one per change) and
+  hover types for top-level bindings/builtins; also runnable standalone as
+  `ef lsp`. `vscode/test/lsp.test.ts` spawns the built bundle and speaks raw
+  LSP over stdio.
 
 ## Architecture (top to bottom, dependency order)
 
@@ -111,7 +119,7 @@ Hindley-Milner-flavoured type system with effect tracking.
 9. **`lint.ts`** — lint passes over a parsed program (`LINT_PASSES`);
    currently one rule (`unused-arg`).
 10. **Frontends** — `cli.ts` (`ef run|buildwasm|runwasm|types|lint <file>`,
-    `ef repl`) and `repl.ts`
+    `ef repl`, `ef lsp`) and `repl.ts`
    (line loop over `newCtx`/`exec`; bindings accumulate across lines).
 ## Working rules
 

@@ -26,6 +26,7 @@ const SECTIONS: {title: string, pages: Page[]}[] = [
       {file: "spec.md", label: "Language spec"},
       {file: "cli.md", label: "CLI & REPL"},
       {file: "lint.md", label: "Linter"},
+      {file: "vscode.md", label: "VS Code extension"},
     ],
   },
   {

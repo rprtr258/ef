@@ -8,6 +8,9 @@
 // ops that reach the top level — unhandled builtin effects included,
 // internally-handled ops excluded).
 // `ef repl` starts an interactive REPL with persistent bindings.
+// `ef lint <file>` runs the lint passes over a source file.
+// `ef lsp` starts the language server (stdio; also serves ipc when spawned by
+// the VS Code client).
 import {readFileSync, writeFileSync} from "fs";
 import {styleText} from "util";
 import {run} from "./eval.ts";
@@ -16,6 +19,7 @@ import {runWasm} from "./wasm_host.ts";
 import {type Type, showT, checkProgram} from "./types.ts";
 import {lint} from "./lint.ts";
 import {repl} from "./repl.ts";
+import {startLsp} from "./lsp.ts";
 import {show} from "./env.ts";
 import {Parser, type ExprID} from "./parser.ts";
 
@@ -42,6 +46,9 @@ function main(cmd: string, args: string[]) {
   switch (cmd) {
   case "repl":
     repl();
+    return;
+  case "lsp":
+    startLsp();
     return;
   case "run": {
     if (args.length === 0) {
@@ -107,7 +114,7 @@ function main(cmd: string, args: string[]) {
     process.exit(1);
   }
   }
-  console.error("Usage: ef run <file> [args...] | ef buildwasm <file> [out] | ef runwasm <file> | ef types <file> | ef lint <file> | ef repl");
+  console.error("Usage: ef run <file> [args...] | ef buildwasm <file> [out] | ef runwasm <file> | ef types <file> | ef lint <file> | ef repl | ef lsp");
   process.exit(2);
 }
 

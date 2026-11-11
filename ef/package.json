@@ -5,12 +5,14 @@
   "workspaces": [
     "compiler",
     "playground",
-    "docs"
+    "docs",
+    "vscode"
   ],
   "scripts": {
     "lint": "eslint '**/*.{ts,json}' && knip",
-    "typecheck": "bun check && bun check --cwd playground && bun check --cwd docs",
+    "typecheck": "bun check && bun check --cwd playground && bun check --cwd docs && bun check --cwd vscode",
     "check:deps": "bun compiler/scripts/check-runtime-deps.ts",
+    "install:vscode": "bun run --filter=vscode build && (cd vscode && bunx @vscode/vsce package) && code --install-extension vscode/vscode-0.1.0.vsix",
     "playground": "bun run --filter=playground dev",
     "docs": "bun run --filter=docs dev",
     "ci": "bun run typecheck && bun run lint && bun run check:deps && bun test --parallel"

@@ -1,0 +1,13 @@
+# Only the built extension ships: dist/ (bundled client + server),
+# syntaxes/, language-configuration.json, package.json, README, LICENSE.
+# Everything else — sources, tests, config — stays out of the .vsix.
+.vscode/**
+src/**
+scripts/**
+test/**
+node_modules/**
+tsconfig.json
+**/*.ts
+**/*.map
+.gitignore
+../**
