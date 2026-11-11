@@ -12,7 +12,7 @@ quote :: fn (n: i64) { "n=" + char(48 + n) }; # '0'+n as a 1-char string
 
 a :: apply(inc, 41);                            # (i64  )->i64    applied to i64   => i64
 b :: apply(quote, 7);                           # (i64  )->string applied to i64   => string
-c :: apply(fn (xs: [i64]) { head(xs) }, [99]);  # ([i64])->i64    applied to [i64] => i64
+c :: apply(fn (xs: [i64]) { get(xs, 0) }, [99]); # ([i64])->i64    applied to [i64] => i64
 
 Println!(a);                       # 42
 Println!(b);                       # n=7

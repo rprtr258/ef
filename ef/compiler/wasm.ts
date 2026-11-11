@@ -30,10 +30,10 @@
 // Representation (WasmGC — every wasm operand value is an anyref):
 // - unit = ref.null any; bool = i31ref 0/1; number = $NUM {f64} (immutable
 //   struct); string = $STR (mut i16 array, UTF-16 code units, matches JS
-//   strlen/char/Out); array/tuple/list = $ARR wrapper {mut (ref null
-//   $ELEMS)} over a backing $ELEMS array (growth repoints the wrapper's
-//   backing, so aliases share the wrapper and see growth); closure =
-//   immutable $CLO {i31 fnIdx, (ref null $FRAME) env, i31 fsize}.
+//   strlen/char/Out); array/list = $ARR slice fat pointer {(ref null
+//   $ELEMS) data, i32 off, i32 len} (immutable — views share the backing,
+//   only elements mutate); tuple = immutable $TUP {(ref null $ELEMS)};
+//   closure = immutable $CLO {i31 fnIdx, (ref null $FRAME) env, i31 fsize}.
 // - Every call frame is a $FRAME {mut (ref null $FRAME) parent, mut (ref
 //   null $ELEMS) slots} with slot array length max(fsize, argc); closures
 //   capture their defining frame, so escaping/mutable capture works exactly
@@ -69,7 +69,6 @@
 //   of producing a garbage number — frozen decision, pinned by a
 //   wasm.test.ts test; the checker rejects non-num arithmetic statically,
 //   so well-typed programs never hit it.
-// - `set` growing an array fills holes with unit (interpreter: undefined).
 // - Closures always display as [fn] (interpreter may show an inferred type).
 // - Stack overflow surfaces as a wasm RuntimeError, not a JS RangeError.
 // - Heap reclamation is the host GC's job (the old bump heap was never

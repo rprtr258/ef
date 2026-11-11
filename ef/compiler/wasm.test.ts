@@ -184,9 +184,15 @@ describe("wasm backend", () => {
     expect(parity("f :: fn() { a :: 2; b :: 3; a * b }; f()")).toBe("6");
   });
 
-  test("arrays: get/set, grow, flat, concat, map", () => {
+  test("arrays: get/set/sub views, strict set, flat, concat, map", () => {
     expect(parity("get([10,20,30], 1)")).toBe("20");
-    expect(parity("a :: [1]; set(a, 3, 9); len(a)")).toBe("4");
+    // set is strictly in-window: no growth past the end, identical error.
+    expect(parity("a :: [1]; set(a, 3, 9)")).toBe("ERR: set: index 3 out of bounds [0, 1)");
+    // sub returns a zero-copy view: writes through the original show up.
+    expect(parity("s :: [1, 2, 3, 4]; v :: sub(s, 1, 3); set(s, 1, 99); v")).toBe("[99, 3]");
+    expect(parity("s :: [1, 2, 3]; sub(s, 5, 6)")).toBe("ERR: sub: range [5, 6) out of bounds [0, 3)");
+    // A huge i64 index must not wrap to a small in-bounds i32 (wasm parity).
+    expect(parity("get([1, 2, 3], 4294967296)")).toBe("ERR: get: index 4294967296 out of bounds [0, 3)");
     expect(parity("len(flat([[1,2],[3]]))")).toBe("3");
     expect(parity("concat([1], [2,3])")).toBe("[1, 2, 3]");
     expect(parity("map(fn(x) { x * x }, range(0, 4, 1))")).toBe("[0, 1, 4, 9]");
@@ -536,10 +542,10 @@ describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () =>
   });
 
   test("ef_fail stays live when a trapping builtin is used", () => {
-    // head/get trap through ef_fail; len/tail only ref.cast (native traps)
-    // and set on a fresh array literal is in-bounds-eliminable — none of
-    // those reference ef_fail, so binaryen may drop the import.
-    expect(importsOf("head([1])")).toContain("ef_fail");
+    // get/set/sub trap through ef_fail; len only reads a struct field and
+    // set on a fresh array literal is in-bounds-eliminable — none of those
+    // reference ef_fail, so binaryen may drop the import.
+    expect(importsOf("sub([1], 0, 9)")).toContain("ef_fail");
     expect(importsOf("get([1], 0)")).toContain("ef_fail");
   });
 

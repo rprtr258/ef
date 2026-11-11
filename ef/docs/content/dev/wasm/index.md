@@ -38,8 +38,8 @@ Each phase has its own page under this one in the sidebar.
   <text x="464" y="40" text-anchor="middle">string</text>
   <text x="464" y="58" text-anchor="middle" class="faint">$STR mut i16[] UTF-16</text>
   <rect class="box" x="544" y="20" width="164" height="56" rx="8"/>
-  <text x="626" y="40" text-anchor="middle">array / tuple</text>
-  <text x="626" y="58" text-anchor="middle" class="faint">$ARR → backing $ELEMS</text>
+  <text x="626" y="40" text-anchor="middle">array / list · tuple</text>
+  <text x="626" y="58" text-anchor="middle" class="faint">$ARR slice {data, off, len} · $TUP</text>
 </svg>
 
 | ef value | WasmGC representation |
@@ -48,7 +48,8 @@ Each phase has its own page under this one in the sidebar.
 | bool | i31ref `0`/`1` |
 | number | `$NUM {f64}` immutable struct — one box shape per width (`$F64 $F32 $I32 $U32 $I64 $U64`) |
 | string | `$STR` — mutable i16 array, UTF-16 code units (matches JS `strlen`/`char`/`Out`) |
-| array / tuple / list | `$ARR` wrapper `{mut (ref null $ELEMS)}` over a backing `$ELEMS` array — growth repoints the wrapper's backing, so **aliases share the wrapper and see growth** |
+| array / list | `$ARR` slice fat pointer `{(ref null $ELEMS) data, i32 off, i32 len}` — immutable; **views (`sub`) share the backing with a shifted window**, only backing elements mutate |
+| tuple | `$TUP {(ref null $ELEMS)}` — immutable, struct-like: no offset/length, distinct from slices |
 | closure | `$CLO {i31 fnIdx, (ref null $FRAME) env, i31 fsize}` — immutable |
 
 ## Frames, variables, calls
@@ -126,7 +127,6 @@ Known and pinned by tests — degenerate programs only:
 | Deviation | Note |
 |-----------|------|
 | Arithmetic on non-numbers traps (`ref.cast` failure) instead of producing a garbage number | the checker rejects non-numeric arithmetic statically, so well-typed programs never hit it |
-| `set` growing an array fills holes with `unit` | interpreter: `undefined` |
 | Closures always display as `[fn]` | interpreter may show an inferred type |
 | Stack overflow is a wasm `RuntimeError`, not a JS `RangeError` | |
 | Heap reclamation is the host GC's job | recursion depth no longer costs O(N) unreclaimed bytes |

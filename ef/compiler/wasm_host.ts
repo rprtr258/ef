@@ -5,7 +5,7 @@
 // implements the host imports, including effects that reach the host with
 // no matching handler (builtins.ts's builtinEffectHosts, optionally
 // overridden per-op through the `interp` argument).
-import {type Value, show} from "./env.ts";
+import {type Value, show, asSlice, mkSlice, mkTup, sliceElems} from "./env.ts";
 import {builtinEffectHosts} from "./builtins.ts";
 import {compileWithOps} from "./wasm.ts";
 
@@ -35,6 +35,10 @@ type Accessors = {
   __str_set(v: unknown, i: number, u: number): void,
   __arr_new(n: number): unknown,
   __arr_set(v: unknown, i: number, x: unknown): void,
+  __tup_len(v: unknown): number,
+  __tup_get(v: unknown, i: number): unknown,
+  __tup_new(n: number): unknown,
+  __tup_set(v: unknown, i: number, x: unknown): void,
 };
 
 const accessorsOf = (inst: WebAssembly.Instance): Accessors =>
@@ -58,10 +62,18 @@ function hostBox(ex: Accessors, v: Value): unknown {
       ex.__str_set(s, i, v.charCodeAt(i));
     return s;
   }
-  if (Array.isArray(v)) {
-    const a = ex.__arr_new(v.length);
-    for (let i = 0; i < v.length; i++)
-      ex.__arr_set(a, i, hostBox(ex, v[i]));
+  if (v.tag === "slice") {
+    // Boundary copies the view's window — the wasm side never sees the
+    // interpreter's backing, matching the unbox direction.
+    const a = ex.__arr_new(v.len);
+    for (let i = 0; i < v.len; i++)
+      ex.__arr_set(a, i, hostBox(ex, v.data[v.off + i]));
+    return a;
+  }
+  if (v.tag === "tup") {
+    const a = ex.__tup_new(v.elems.length);
+    for (let i = 0; i < v.elems.length; i++)
+      ex.__tup_set(a, i, hostBox(ex, v.elems[i]));
     return a;
   }
   throw new Error("wasm host: cannot box value " + show(v));
@@ -81,7 +93,14 @@ function hostUnbox(ex: Accessors, v: unknown): Value {
       const out: Value[] = [];
       for (let i = 0; i < n; i++)
         out.push(hostUnbox(ex, ex.__arr_get(v, i)));
-      return out;
+      return mkSlice(out);
+    }
+    case 11: {
+      const n = ex.__tup_len(v);
+      const elems: Value[] = [];
+      for (let i = 0; i < n; i++)
+        elems.push(hostUnbox(ex, ex.__tup_get(v, i)));
+      return mkTup(elems);
     }
     case 5: return {tag: "fn"} as Value; // closures display as [fn]
     case 10: return ex.__f32(v); // $F32 box (typed-widths step 2)
@@ -121,7 +140,7 @@ export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[]
     ef_perform: (opid: number, args: unknown) => {
       const op = (ops as (string | undefined)[])[opid];
       if (op === undefined) throw new Error(`wasm host: unknown effect opid ${opid}`);
-      const argv = hostUnbox(ex(), args) as Value[];
+      const argv = sliceElems(asSlice(hostUnbox(ex(), args)));
       const custom = interp?.[op];
       if (custom !== undefined) return hostBox(ex(), custom(argv));
       const bi = (builtinEffectHosts as Record<string, ((args: Value[]) => Value) | undefined>)[op];
@@ -130,15 +149,19 @@ export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[]
     },
     ef_char: (v: unknown) => hostBox(ex(), String.fromCodePoint(ex().__num(v) | 0)),
     ef_number: (v: unknown) => hostBox(ex(), parseFloat(hostStr(ex(), v))),
-    ef_args: () => hostBox(ex(), process.argv.slice(2)),
+    ef_args: () => hostBox(ex(), mkSlice(process.argv.slice(2))),
     ef_cos: (v: unknown) => hostBox(ex(), Math.cos(ex().__num(v))),
     ef_sin: (v: unknown) => hostBox(ex(), Math.sin(ex().__num(v))),
-    ef_fail: (code: number, name: unknown, a: number, b: number) => {
-      if (code === 0) throw new Error("head of empty array");
+    ef_fail: (code: number, name: unknown, a: number, b: number, c: number) => {
+      // Codes carry the interpreter's exact error messages for parity; c is
+      // the third number sub's message needs (from, to, len).
       if (code === 1) throw new Error(`get: index ${a} out of bounds [0, ${b})`);
+      if (code === 5) throw new Error(`sub: range [${a}, ${b}) out of bounds [0, ${c})`);
+      if (code === 6) throw new Error(`set: index ${a} out of bounds [0, ${b})`);
       // Typed-widths step 3: the i32/u32 division guards (emitFail at the
       // / and % sites) reuse this channel; codes 3/4 carry the interpreter's
-      // exact trap messages (eval.ts widthOp) for parity.
+      // exact trap messages (eval.ts widthOp) for parity. Code 2 is the
+      // named field-access OOB (falls to the default template).
       if (code === 3) throw new Error("integer divide by zero");
       if (code === 4) throw new Error("integer overflow");
       throw new Error(`.${hostStr(ex(), name)}: index ${a} out of bounds [0, ${b})`);

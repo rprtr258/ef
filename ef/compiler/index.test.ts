@@ -5,7 +5,7 @@ import {readFileSync, unlinkSync, existsSync, writeFileSync} from "node:fs";
 import {execSync} from "node:child_process";
 import {run, newCtx, exec} from "./eval.ts";
 import {checkProgram, showT} from "./types.ts";
-import {show, type Value} from "./env.ts";
+import {show, sliceElems, type Slice, type Value} from "./env.ts";
 import {Parser} from "./parser.ts";
 
 // typeOf: return the inferred type of the last expression, as a string.
@@ -505,14 +505,39 @@ test("division is type-preserving: i64/i64 -> i64, f64/f64 -> f64", () => {
   expect(show(run(`-7 / 2`))).toBe("-3");
 });
 
-test("head/get fail loudly on empty/out-of-bounds", () => {
-  // No silent null: empty array and OOB index raise instead of returning unit.
-  expect(() => run(`head([])`)).toThrow(/head of empty array/);
+test("get/sub/set fail loudly on empty/out-of-bounds", () => {
+  // No silent null: OOB index and inverted sub range raise instead of
+  // returning unit; set is strictly in-window (no growth past the end).
+  expect(() => run(`get([], 0)`)).toThrow(/get: index 0 out of bounds \[0, 0\)/);
   expect(() => run(`get([1, 2], 5)`)).toThrow(/out of bounds/);
   expect(() => run(`get([1, 2], -1)`)).toThrow(/out of bounds/);
+  expect(() => run(`set([1, 2], 2, 9)`)).toThrow(/set: index 2 out of bounds \[0, 2\)/);
+  expect(() => run(`sub([1, 2, 3], 1, 4)`)).toThrow(/sub: range \[1, 4\) out of bounds \[0, 3\)/);
+  expect(() => run(`sub([1, 2, 3], 2, 1)`)).toThrow(/sub: range/);
   // In-bounds still works.
-  expect(show(run(`head([1, 2, 3])`))).toBe("1");
   expect(show(run(`get([1, 2, 3], 2)`))).toBe("3");
+  expect(show(run(`sub([1, 2, 3], 1, 3)`))).toBe("[2, 3]");
+});
+
+test("slices: views share the backing; concat never aliases", () => {
+  // sub is zero-copy: a write through the original is visible in the view.
+  expect(show(run(`s: [i64] = [1, 2, 3, 4]; v :: sub(s, 1, 3); set(s, 1, 99); v`))).toBe("[99, 3]");
+  // ...and a write through the view is visible in the original.
+  expect(show(run(`s: [i64] = [1, 2, 3]; v :: sub(s, 0, 2); set(v, 0, 42); s`))).toBe("[42, 2, 3]");
+  // concat allocates a fresh backing: later writes don't leak either way.
+  expect(show(run(`s: [i64] = [1, 2]; t :: concat(s, [3]); set(s, 0, 9); t`))).toBe("[1, 2, 3]");
+  // Views compose: sub of a sub is a window of a window.
+  expect(show(run(`s :: [0, 1, 2, 3, 4]; sub(sub(s, 1, 5), 1, 4)`))).toBe("[2, 3, 4]");
+  // Equality stays reference identity.
+  expect(run(`s :: [1, 2]; s == s`)).toBe(true);
+  expect(run(`[1, 2] == [1, 2]`)).toBe(false);
+  // Tuples are struct-like records, not slices: heterogeneous literal,
+  // positional/named access, destructuring all still work.
+  expect(show(run(`p: [i64, string] = [1, "a"]; p.0`))).toBe("1");
+  expect(show(run(`p: [x: i64, y: i64] = [1, 2]; p.x + p.y`))).toBe("3");
+  expect(run(`[a, b] := [1, "x"]; a`)).toBe(1n);
+  // Array destructuring reads through the view's window.
+  expect(run(`s :: [7, 8, 9]; [a, b] :: sub(s, 1, 3); a + b`)).toBe(17n);
 });
 
 test("string escapes: \\xHH and \\n", () => {
@@ -598,7 +623,7 @@ test("show prints function arity and type, natives stay [fn]", () => {
   expect(show(run(`add :: fn(a: i64, b: i64): i64 { a + b };\nadd`))).toBe("[fn: (i64, i64) -> i64]");
   expect(show(run(`id :: fn(x: i64): i64 { x };\nid`))).toBe("[fn: (i64) -> i64]");
   // Builtins (natives) carry no inferred type here: stay [fn].
-  expect(show(run(`head`))).toBe("[fn]");
+  expect(show(run(`len`))).toBe("[fn]");
 });
 
 test("nested tuple field access chains (m.0.0)", () => {
@@ -799,7 +824,7 @@ describe("numeric widths", () => {
     // Annotating fixes it; directly-passed lambdas are exempt (their param
     // types come from the instantiation); numeric-free bodies stay polymorphic.
     expect(run(`inc :: fn(n: i64) { n + 1 }; inc(41)`)).toBe(42n);
-    expect(run(`map(fn(x) { x * x }, range(0, 4, 1))`)).toEqual([0n, 1n, 4n, 9n]);
+    expect(sliceElems(run(`map(fn(x) { x * x }, range(0, 4, 1))`) as Slice)).toEqual([0n, 1n, 4n, 9n]);
     expect(showT(checkProgram(new Parser(`id :: fn(x) { x }; id`).parseProgram()).lastType)).toBe("(a) -> a");
   });
 

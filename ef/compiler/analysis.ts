@@ -62,8 +62,7 @@ export const BUILTINS: {name: string, params: number}[] = [
   {name: "!=", params: 2},
   {name: "not", params: 1},
   {name: "list", params: 0}, // variadic
-  {name: "head", params: 1},
-  {name: "tail", params: 1},
+  {name: "sub", params: 3},
   {name: "concat", params: 2},
   {name: "flat", params: 1},
   {name: "len", params: 1},

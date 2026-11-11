@@ -19,15 +19,40 @@ export type Native = {
   fn: (args: Value[], k: Cont) => Outcome,
 };
 
+// Slice: the runtime form of every `[T]` value — a fat pointer over a shared
+// backing array. Views (sub) share the backing with different off/len; only
+// the backing's elements mutate. Slices themselves are immutable records.
+export type Slice = {
+  tag: "slice",
+  data: Value[],
+  off: number,
+  len: number,
+};
+
+// Tuple: struct-like record with named/positional fields — deliberately not
+// a slice (no offset/length), never exposed as a plain array.
+export type Tup = {
+  tag: "tup",
+  elems: Value[],
+};
+
 export type Value =
   | null
   | number
   | bigint
   | string
   | boolean
-  | Value[]
+  | Slice
+  | Tup
   | Closure
   | Native;
+
+export const mkSlice = (data: Value[], off = 0, len = data.length - off): Slice =>
+  ({tag: "slice", data, off, len});
+export const mkTup = (elems: Value[]): Tup => ({tag: "tup", elems});
+// Downcast for `[T]`-typed sites (builtins, destructuring) — the checker
+// guarantees the value is a slice.
+export const asSlice = (v: Value): Slice => v as Slice;
 
 function lift(fn: (...a: Value[]) => Value): Native {
   return {tag: "native", fn: (args, k) => k(fn(...args))};
@@ -61,11 +86,20 @@ export function show(v: Value): string {
   if (typeof v === "bigint") return String(v);
   if (typeof v === "number") return String(v);
   if (typeof v === "string") return "\"" + v + "\"";
-  if (Array.isArray(v))
-    return "[" + v.map(show).join(", ") + "]";
-  if (typeof v === "object" && !Array.isArray(v) && v.tag === "fn")
-    return v.typ !== undefined ? "[fn: " + showT(v.typ) + "]" : "[fn]";
+  if (typeof v === "object") {
+    if (v.tag === "slice")
+      return "[" + sliceElems(v).map(show).join(", ") + "]";
+    if (v.tag === "tup")
+      return "[" + v.elems.map(show).join(", ") + "]";
+    if (v.tag === "fn")
+      return v.typ !== undefined ? "[fn: " + showT(v.typ) + "]" : "[fn]";
+  }
   return "[fn]";
+}
+
+// The view's window as a fresh JS array (reads only; never written back).
+export function sliceElems(s: Slice): Value[] {
+  return s.data.slice(s.off, s.off + s.len);
 }
 
 export type Outcome =

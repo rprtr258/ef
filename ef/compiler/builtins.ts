@@ -3,7 +3,7 @@
 import {readFileSync, writeFileSync} from "node:fs";
 import {sleepSync} from "bun";
 import {apply} from "./eval.ts";
-import {num, show, type Cont, type Outcome, type Value} from "./env.ts";
+import {num, show, asSlice, mkSlice, sliceElems, type Cont, type Outcome, type Value} from "./env.ts";
 import {
   type Unifier,
   tArr, tFun,
@@ -49,29 +49,43 @@ export type Builtin =
 // so entries are immutable and safe to share across programs.
 export const builtins: Builtin[] = [
     {kind: "fn", name: "not", t: tFun([TBOOL], TBOOL, new Set()), fn: a => (a === false || a === null ? true : false)},
-    {kind: "fn", name: "list", t: tFun([TANY], tArr(TANY), new Set()), fn: (...xs) => xs},
-    {kind: "fn", name: "head", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a)], a, new Set()); }, fn: xs => {
-      const a = xs as Value[];
-      if (a.length === 0)
-        throw new Error("head of empty array");
-      return a[0]!;
+    {kind: "fn", name: "list", t: tFun([TANY], tArr(TANY), new Set()), fn: (...xs) => mkSlice(xs)},
+    {kind: "fn", name: "sub", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64, TI64], tArr(a), new Set()); }, fn: (xs, fv, tv) => {
+      // Zero-copy view of [from, to): shares the backing, offset shifts.
+      const s = asSlice(xs);
+      const from = num(fv), to = num(tv);
+      if (from < 0 || to < from || to > s.len)
+        throw new Error(`sub: range [${from}, ${to}) out of bounds [0, ${s.len})`);
+      return mkSlice(s.data, s.off + from, to - from);
     }},
-    {kind: "fn", name: "tail", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a)], tArr(a), new Set()); }, fn: xs => (xs as Value[]).slice(1)},
-    {kind: "fn", name: "concat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), tArr(a)], tArr(a), new Set()); }, fn: (a, b) => (a as Value[]).concat(b as Value[])},
-    {kind: "fn", name: "flat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(tArr(a))], tArr(a), new Set()); }, fn: xs => (xs as Value[]).flat()},
-    {kind: "fn", name: "len", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a)], TI64, new Set()); }, fn: xs => (xs as Value[]).length},
+    {kind: "fn", name: "concat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), tArr(a)], tArr(a), new Set()); }, fn: (a, b) =>
+      // Append: always a fresh backing — the only way a slice grows, and it
+      // never aliases its operands.
+      mkSlice([...sliceElems(asSlice(a)), ...sliceElems(asSlice(b))])},
+    {kind: "fn", name: "flat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(tArr(a))], tArr(a), new Set()); }, fn: xs => {
+      const out: Value[] = [];
+      for (const inner of sliceElems(asSlice(xs))) {
+        // Scalar passthrough (JS flat parity — a resumed scalar can flow
+        // back through a map-like land path); slices contribute their window.
+        if (inner !== null && typeof inner === "object" && inner.tag === "slice")
+          out.push(...sliceElems(inner));
+        else out.push(inner);
+      }
+      return mkSlice(out);
+    }},
+    {kind: "fn", name: "len", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a)], TI64, new Set()); }, fn: xs => asSlice(xs).len},
     {kind: "fn", name: "strlen", t: tFun([TSTR], TI64, new Set()), fn: s => (s as string).length},
     {kind: "native", name: "map", t: (u: Unifier) => {
       const a = u.fresh(), b = u.fresh(), e = u.freshEff();
       return tFun([tFun([a], b, e), tArr(a)], tArr(b), e);
     }, fn: (args, k) => {
       const f = args[0]!;
-      const xs = args[1] as Value[];
-      const out = new Array<Value>(xs.length);
+      const s = asSlice(args[1]);
+      const out = new Array<Value>(s.len);
       function go(i: number): Outcome {
-        if (i >= xs.length)
-          return k(out);
-        return apply(f, [xs[i]!], v => { out[i] = v; return go(i + 1); });
+        if (i >= s.len)
+          return k(mkSlice(out));
+        return apply(f, [s.data[s.off + i]!], v => { out[i] = v; return go(i + 1); });
       }
       return go(0);
     }},
@@ -89,31 +103,37 @@ export const builtins: Builtin[] = [
     {kind: "fn", name: "range", t: tFun([TI64, TI64, TI64], tArr(TI64), new Set()), fn: (a, b, c) => {
       const s = num(a), e = num(b), st = num(c);
       const n = st === 0 ? 0 : Math.max(0, Math.ceil((e - s) / st));
-      return Array.from({length: n}, (_, k) => s + k * st);
+      return mkSlice(Array.from({length: n}, (_, k) => s + k * st));
     }},
     {kind: "fn", name: "char", t: tFun([TINT], TSTR, new Set()), fn: a => String.fromCodePoint(num(a) | 0)},
     {kind: "fn", name: "number", t: tFun([TSTR], TFLOAT, new Set()), fn: a => parseFloat(a as string)},
-    {kind: "fn", name: "args", t: tFun([], tArr(TSTR), new Set()), fn: () => process.argv.slice(2)},
+    {kind: "fn", name: "args", t: tFun([], tArr(TSTR), new Set()), fn: () => mkSlice(process.argv.slice(2))},
     {kind: "fn", name: "get", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64], a, new Set()); }, fn: (xs, i) => {
-      const a = xs as Value[];
+      const s = asSlice(xs);
       const idx = num(i);
-      if (idx < 0 || idx >= a.length || !Number.isInteger(idx))
-        throw new Error(`get: index ${idx} out of bounds [0, ${a.length})`);
-      return a[idx]!;
+      if (idx < 0 || idx >= s.len || !Number.isInteger(idx))
+        throw new Error(`get: index ${idx} out of bounds [0, ${s.len})`);
+      return s.data[s.off + idx]!;
     }},
     {kind: "fn", name: "set", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64, a], TUNIT, new Set()); }, fn: (xs, i, v) => {
-      (xs as Value[])[num(i)] = v;
+      // Strictly in-window write through the view into the shared backing —
+      // growth is concat's job only.
+      const s = asSlice(xs);
+      const idx = num(i);
+      if (idx < 0 || idx >= s.len || !Number.isInteger(idx))
+        throw new Error(`set: index ${idx} out of bounds [0, ${s.len})`);
+      s.data[s.off + idx] = v;
       return null;
     }},
     {kind: "native", name: "each", t: (u: Unifier) => {
       const a = u.fresh(), b = u.fresh(), e = u.freshEff();
       return tFun([tFun([a, TI64], b, e), tArr(a)], TUNIT, e);
     }, fn: (args, k) => {
-      const f = args[0]!, xs = args[1] as Value[];
+      const f = args[0]!, s = asSlice(args[1]);
       function go(i: number): Outcome {
-        if (i >= xs.length)
+        if (i >= s.len)
           return k(null);
-        return apply(f, [xs[i]!, i], () => go(i + 1));
+        return apply(f, [s.data[s.off + i]!, i], () => go(i + 1));
       }
       return go(0);
     }},
@@ -121,13 +141,13 @@ export const builtins: Builtin[] = [
       const a = u.fresh(), b = u.fresh(), e = u.freshEff();
       return tFun([tFun([a, TI64], tArr(b), e), tArr(a)], tArr(b), e);
     }, fn: (args, k) => {
-      const f = args[0]!, xs = args[1] as Value[];
+      const f = args[0]!, s = asSlice(args[1]);
       const acc: Value[] = [];
       function go(i: number): Outcome {
-        if (i >= xs.length)
-          return k(acc);
-        return apply(f, [xs[i]!, i], v => {
-          acc.push(...(v as Value[]));
+        if (i >= s.len)
+          return k(mkSlice(acc));
+        return apply(f, [s.data[s.off + i]!, i], v => {
+          acc.push(...sliceElems(asSlice(v)));
           return go(i + 1);
         });
       }

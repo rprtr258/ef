@@ -9,26 +9,32 @@ export type Scope = {
 
 export class WasmError extends Error {}
 
-// WasmGC types (§1): one rec group of 12 struct/array shapes. binaryen types
+// WasmGC types (§1): one rec group of 13 struct/array shapes. binaryen types
 // are process-global interned ids, so they build once and are reused by every
 // compiled module. HT[i] = bare heap type (the immediate GC instruction
 // builders take); RF[i] = (ref null $i) (params, fields, ref.null);
 // RN[i] = (ref $i) (non-null casts). $STR packs i16 over an i32 element type.
 // Shapes 0–6 are the original plane ($F64 was "$NUM" — one f64-backed number
 // box); 7–11 are the per-width number boxes appended by the typed-widths plan
-// (append-only: existing indices 0–6 untouched).
+// (append-only: existing indices 0–6 untouched); 12 is $TUP (slices plan).
 export const _T: {
   HT: binaryen.HeapType[],
   RF: binaryen.Type[],
   RN: binaryen.Type[],
 } = (() => {
-  const tb = new binaryen.TypeBuilder(12);
-  tb.createRecGroup(0, 12);
+  const tb = new binaryen.TypeBuilder(13);
+  tb.createRecGroup(0, 13);
   const fld = (ty: binaryen.Type, mutable: boolean) => ({type: ty, packedType: binaryen.notPacked, mutable});
   tb.setStructType(0, [fld(binaryen.f64, false)]);                       // 0 $F64 (f64 plane)
   tb.setArrayType(1, binaryen.anyref, binaryen.notPacked, true);         // 1 $ELEMS
   tb.setArrayType(2, binaryen.i32, binaryen.i16, true);                  // 2 $STR
-  tb.setStructType(3, [fld(tb.getTempRefType(tb.getTempHeapType(1), true), true)]); // 3 $ARR
+  tb.setStructType(3, [                                                  // 3 $ARR — the slice
+    // fat pointer {data, off, len}: immutable fields, views (sub) share the
+    // backing; only the backing's elements mutate.
+    fld(tb.getTempRefType(tb.getTempHeapType(1), true), false),
+    fld(binaryen.i32, false),
+    fld(binaryen.i32, false),
+  ]);
   tb.setStructType(4, [                                                  // 4 $FRAME
     fld(tb.getTempRefType(tb.getTempHeapType(4), true), true),
     fld(tb.getTempRefType(tb.getTempHeapType(1), true), true),
@@ -48,6 +54,7 @@ export const _T: {
   tb.setStructType(9, [fld(binaryen.i64, false)]);                       // 9 $I64
   tb.setStructType(10, [fld(binaryen.i64, false)]);                      // 10 $U64
   tb.setStructType(11, [fld(binaryen.f32, false)]);                      // 11 $F32
+  tb.setStructType(12, [fld(tb.getTempRefType(tb.getTempHeapType(1), true), false)]); // 12 $TUP
   const HT = tb.buildAndDispose();
   return {
     HT,

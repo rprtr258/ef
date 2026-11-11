@@ -9,7 +9,7 @@ interpreter (runtime bindings), and the wasm host (effect interpretation).
 
 | Kind | Checking | Runtime binding | Examples |
 |------|----------|-----------------|----------|
-| `fn` | `t: Type \| thunk` — a thunk gives fresh vars per use (polymorphic) | lifted to a native: `k(fn(...args))` | `len`, `head`, `sqrt`, `range` |
+| `fn` | `t: Type \| thunk` — a thunk gives fresh vars per use (polymorphic) | lifted to a native: `k(fn(...args))` | `len`, `sub`, `sqrt`, `range` |
 | `value` | `t` | bound as the value itself (`fn()`), not a native fn | `PI` |
 | `native` | `t` | CPS fn: `(args, k) => Outcome` — calls ef closures mid-flight | `map`, `each`, `flatmap` |
 | `effect` | `sig` (declared to the checker like a user effect) | default host interpretation | `Read`, `Write`, `Println`, `Out`, `Exit`, `Wait`, `Random` |

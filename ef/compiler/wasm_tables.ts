@@ -41,11 +41,11 @@ export const DBGEMIT = process.env["DBGEMIT"] === "1";
 export const SIGS: Record<number, {p: (number | number[])[], r: number | number[] | null}> = {
   [w.T_RUN]: {p: [], r: w.ANYREF},                    // run, ef_args
   [w.T_PERFORM]: {p: [0x7f, w.ANYREF], r: w.ANYREF},    // ef_perform
-  [w.T_FAIL]: {p: [0x7f, w.ANYREF, 0x7c, 0x7c], r: null}, // ef_fail
+  [w.T_FAIL]: {p: [0x7f, w.ANYREF, 0x7c, 0x7c, 0x7c], r: null}, // ef_fail
   [w.T_STRNUM]: {p: [w.ANYREF], r: w.ANYREF},           // ef_char/number/cos/sin
-  [12]: {p: [0x7f], r: w.ANYREF},                   // __mk_bool/__str_new/__arr_new
+  [12]: {p: [0x7f], r: w.ANYREF},                   // __mk_bool/__str_new/__arr_new/__tup_new
   [w.T_BOX]: {p: [0x7c], r: w.ANYREF},                // fBox, __mk_num
-  [w.T_TRUTHY]: {p: [w.ANYREF], r: 0x7f},             // fTruthy, __tag/__str_len/__arr_len
+  [w.T_TRUTHY]: {p: [w.ANYREF], r: 0x7f},             // fTruthy, __tag/__str_len/__arr_len/__tup_len
   [w.T_EQ]: {p: [w.ANYREF, w.ANYREF], r: w.ANYREF},       // fEq
   [w.T_CAPTURE]: {p: [[0x63, 5], [0x63, 5]], r: [0x63, 5]}, // fCapture
   [w.T_KABI]: {p: [[0x63, 4], [0x63, 5]], r: w.ANYREF},       // (frame, k) program fns
@@ -92,7 +92,7 @@ export function bindMOD(m: binaryen.Module): void { MOD = m; }
 // declaration order — the last field pushed is the first popped).
 export const STRUCT_FIELDS: Record<number, (number | number[])[]> = {
   [0]: [0x7c],                       // $F64: f64
-  [3]: [[0x63, 1]],                  // $ARR: (ref null $ELEMS)
+  [3]: [[0x63, 1], 0x7f, 0x7f],      // $ARR slice: (ref null $ELEMS), i32 off, i32 len
   [4]: [[0x63, 4], [0x63, 1]],       // $FRAME
   [5]: [w.I31REF, w.ANYREF, w.ANYREF, [0x63, 5]], // $K
   [6]: [w.I31REF, [0x63, 4], w.I31REF],  // $CLO
@@ -101,4 +101,5 @@ export const STRUCT_FIELDS: Record<number, (number | number[])[]> = {
   [9]: [0x7e],                       // $I64: i64
   [10]: [0x7e],                      // $U64: i64
   [11]: [0x7d],                      // $F32: f32
+  [12]: [[0x63, 1]],                 // $TUP: (ref null $ELEMS)
 };

@@ -78,8 +78,8 @@ describe("builtinValueUses (pool-closure / operator-trampoline split)", () => {
   });
 
   test("argument and binding positions are value uses", () => {
-    expect(vals("map(len, [[1]]); f :: head;"))
-      .toEqual(new Set(["len", "head"]));
+    expect(vals("map(len, [[1]]); f :: concat;"))
+      .toEqual(new Set(["len", "concat"]));
   });
 
   test("both positions mark value use", () => {

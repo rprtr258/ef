@@ -503,6 +503,7 @@ function inferArr(
   if (expected !== null) {
     if (e.elems.length !== expected.fields.length)
       throw new TypeError_(`literal arity ${e.elems.length} ≠ tuple ${expected.fields.length}`);
+    stampArrKind(e, "tup");
     for (let i = 0; i < e.elems.length; i++) {
       const ft = expected.fields[i].type;
       const el = e.elems[i];
@@ -521,11 +522,19 @@ function inferArr(
     const elem = env.uni.fresh();
     for (const et of elemTs)
       env.uni.unify(elem, et);
+    stampArrKind(e, "arr");
     return tArr(env.uni.res(elem));
   } catch (_) {
     env.uni.restore(snap);
+    stampArrKind(e, "tup");
     return tTup(elemTs.map(t => ({name: null, type: env.uni.res(t)})));
   }
+}
+
+// Runtime shape stamp (mirrors numKind): the evaluator builds a slice for
+// homogeneous literals and a tuple record otherwise.
+function stampArrKind(e: Expr & {t: "arr"}, kind: "arr" | "tup"): void {
+  e.arrKind = kind;
 }
 
 // Infer `e` expecting a tuple type. Propagates the expectation into array
@@ -857,9 +866,11 @@ function inferNode(
         if (idx === null)
           throw new TypeError_(`arrays use .N indexing, not .${e.name}`);
         e.idx = idx;
+        e.shape = "arr";
         return ot.elem;
       }
       if (ot.tag === "tup") {
+        e.shape = "tup";
         let idx: number | null = null;
         if (/^[0-9]+$/.test(e.name)) {
           idx = Number(e.name);
@@ -879,6 +890,7 @@ function inferNode(
     case "dlet": {
       const vt = env.uni.res(infer(e.val, nodes, env, effs, effects));
       if (vt.tag === "tup") {
+        e.shape = "tup";
         if (vt.fields.length !== e.fields.length)
           throw new TypeError_(`destructure arity ${e.fields.length} ≠ tuple ${vt.fields.length}`);
         for (let i = 0; i < e.fields.length; i++) {
@@ -889,6 +901,7 @@ function inferNode(
           env.vars.set(e.fields[i].name, ft ?? vt.fields[i].type);
         }
       } else if (vt.tag === "arr") {
+        e.shape = "arr";
         for (const f of e.fields) {
           if (f.typ !== null)
             env.uni.unify(f.typ, vt.elem);

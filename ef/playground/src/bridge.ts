@@ -151,7 +151,7 @@ export async function buildWasm(src: string): Promise<{bytes: Uint8Array, ops: s
 // Unlike the CPS interpreter — which leans on JSC tail calls and overflows
 // the V8 stack on deep continuation chains (e.g. naive fib) — wasm tail
 // calls are O(1) stack in every WasmGC engine. Throws on parse/type errors;
-// ExitSignal unwinds `Exit!`; wasm traps (head/index OOB) surface as plain
+// ExitSignal unwinds `Exit!`; wasm traps (index OOB) surface as plain
 // Errors. The extra parse is the ops/typecheck byproduct source;
 // compileWithOps parses and checks its own fresh copy.
 export function runWasmProgram(src: string, out: (s: string) => void): RunResult {

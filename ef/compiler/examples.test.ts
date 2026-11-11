@@ -284,8 +284,8 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     body: res => expect(res.stdout).toBe("20\n"),
   }],
   "extended_access.ef": [{
-    label: "element store and sub-range",
-    body: res => expect(res.stdout).toBe("0\n"),
+    label: "element store through a variable index",
+    body: res => expect(res.stdout).toBe("43\n"),
   }],
   "external_function.ef": [{
     label: "Println! then a discarded value",

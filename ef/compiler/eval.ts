@@ -4,17 +4,17 @@
 // is a plain JS function — giving true multi-shot `resume`.
 
 import {checkProgram, type Checked, type Type} from "./types.ts";
-import {Env, show, type Cont, type Native, type Outcome, type Value, num, globalEnv, seedBuiltins, type Closure} from "./env.ts";
+import {Env, show, asSlice, mkSlice, mkTup, sliceElems, type Cont, type Native, type Outcome, type Value, num, globalEnv, seedBuiltins, type Closure} from "./env.ts";
 import {builtinRefs} from "./analysis.ts";
 import {Parser, type Expr, type ExprID, type HandlerCase, type Program} from "./parser.ts";
 import {assertNever} from "./assert.ts";
 import {builtinInterps} from "./builtins.ts";
 
 function isNative(v: Value): v is Native {
-  return v !== null && typeof v === "object" && !Array.isArray(v) && v.tag === "native";
+  return v !== null && typeof v === "object" && v.tag === "native";
 }
 function isClosure(v: Value): v is Closure {
-  return v !== null && typeof v === "object" && !Array.isArray(v) && v.tag === "fn";
+  return v !== null && typeof v === "object" && v.tag === "fn";
 }
 
 export function apply(f: Value, args: Value[], k: Cont): Outcome {
@@ -187,18 +187,29 @@ function evalEInner(id: ExprID, nodes: Expr[], env: Env, k: Cont): Outcome {
         return k(v);
       });
     case "arr":
-      return evalArgs(e.elems, nodes, env, [], (vals) => k(vals));
+      // Runtime shape comes from the checker's arrKind stamp: homogeneous
+      // literals build slices, heterogeneous ones build tuple records.
+      return evalArgs(e.elems, nodes, env, [], (vals) =>
+        k(e.arrKind === "tup" ? mkTup(vals) : mkSlice(vals)));
     case "field":
       return evalE(e.obj, nodes, env, (o) => {
-        const a = o as Value[];
         const idx = e.idx!;
-        if (idx < 0 || idx >= a.length || !Number.isInteger(idx))
-          throw new Error(`.${e.name}: index ${idx} out of bounds [0, ${a.length})`);
-        return k(a[idx]);
+        // Tuples index their fields; arrays index through the view's window.
+        if (o !== null && typeof o === "object" && o.tag === "tup") {
+          if (idx < 0 || idx >= o.elems.length || !Number.isInteger(idx))
+            throw new Error(`.${e.name}: index ${idx} out of bounds [0, ${o.elems.length})`);
+          return k(o.elems[idx]);
+        }
+        const s = asSlice(o);
+        if (idx < 0 || idx >= s.len || !Number.isInteger(idx))
+          throw new Error(`.${e.name}: index ${idx} out of bounds [0, ${s.len})`);
+        return k(s.data[s.off + idx]);
       });
     case "dlet":
       return evalE(e.val, nodes, env, (v) => {
-        const a = v as Value[];
+        // Tuples carry their fields directly; arrays destructure through the
+        // view's window (the checker statically picks which shape `v` has).
+        const a = v !== null && typeof v === "object" && v.tag === "tup" ? v.elems : sliceElems(asSlice(v));
         for (let i = 0; i < e.fields.length; i++) env.vars.set(e.fields[i].name, a[i]);
         return k(null);
       });

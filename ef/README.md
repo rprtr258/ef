@@ -53,7 +53,7 @@ browser: `cd playground && bun run dev`.
 
 ## Documentation
 
-- [Language spec](docs/content/spec.md) — the complete spec: syntax, typing
+- [Language spec](docs/content/spec/index.md) — the complete spec: syntax, typing
   rules, builtins, semantics, examples on disk. **The source of truth.**
 - [CLI & REPL](docs/content/cli.md) · [Linter](docs/content/lint.md)
 - [Compiler internals](docs/content/dev/pipeline.md) — per-phase walkthrough:

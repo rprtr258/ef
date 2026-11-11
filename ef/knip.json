@@ -8,7 +8,7 @@
     },
     "vscode": {
       "entry": ["src/extension.ts", "scripts/server.ts"],
-      "ignore": ["dist/**", "scripts/bun-shim.ts"],
+      "ignore": ["scripts/bun-shim.ts"],
       "ignoreDependencies": ["@types/vscode"]
     }
   }

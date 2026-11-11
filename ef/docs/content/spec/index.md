@@ -222,7 +222,9 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
     width would flex per call site while the body fixed one. Directly-passed
     lambdas are exempt — their parameter types come from the instantiation
     (`map(fn(x) { x * x }, range(0, 4, 1))` needs no annotation).
-- `[T]` — array of `T` (homogeneous).
+- `[T]` — array of `T` (homogeneous). At runtime a `[T]` value is a **slice**
+  — a fat pointer `{backing, offset, length}` over a shared backing array
+  (§4.2); `sub` carves zero-copy views out of it.
 - `[T1, ..., Tn]` — **tuple**: fixed arity, positional field types. Fields
   may be named (`[x: f64, y: f64]`) or unnamed (`[i64, string]`); names
   are for access only and ignored by unification, which compares arity and
@@ -324,7 +326,7 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
   could flow into).
 - Bindings with an explicit `: type` annotation are monomorphic (the
   annotation fixes the type).
-- Builtins `map`, `head`, `tail`, `concat`, `flat`, `len` are polymorphic via
+- Builtins `map`, `sub`, `concat`, `flat`, `len` are polymorphic via
   **scheme thunks** in the type environment: each lookup produces a fresh copy
   with fresh type variables.
 
@@ -349,15 +351,28 @@ The type checker stamps each `/` node as integer or float division at check time
 | Name | Type (schematic) | Notes |
 |------|------------------|-------|
 | `list` | `(any) -> [any]` | Variadic array constructor. Explicit `list(1,2,3)` is `[i64]`; bracket literals `[1,2,3]` are typed directly (array if homogeneous, else tuple). |
-| `head` | `([A]) -> A` | First element. |
-| `tail` | `([A]) -> [A]` | All but first. |
-| `concat` | `([A], [A]) -> [A]` | Append; both arrays share element type `A`. |
+| `sub` | `([A], i64, i64) -> [A]` | Zero-copy view of `[from, to)`: shares the operand's backing. Errors (`sub: range [from, to) out of bounds [0, len)`) unless `0 ≤ from ≤ to ≤ len`. |
+| `concat` | `([A], [A]) -> [A]` | Append; allocates a fresh backing, never aliases its operands — the only way a slice grows. |
 | `flat` | `([[A]]) -> [A]` | Flatten one level. |
 | `len` | `([A]) -> i64` | Array length. |
 | `strlen` | `(string) -> i64` | String length. |
 | `map` | `((A) -> B, [A]) -> [B]` | Apply; fresh `A`/`B` per use. |
-| `get` | `([A], i64) -> A` | Array index; indices are `i64` (untyped int literals flex). |
-| `set` | `([A], i64, A) -> unit` | Array index assignment (mutates). |
+| `get` | `([A], i64) -> A` | Array index through the view's window; indices are `i64` (untyped int literals flex). Out of bounds → `get: index i out of bounds [0, len)` (reported against the view's length). |
+| `set` | `([A], i64, A) -> unit` | Index assignment: writes through the view into the shared backing — every view over the same window (and the original) sees it. Strictly in-window: it never grows (`set: index i out of bounds [0, len)` otherwise); growth is `concat`'s job only. |
+
+**Slices.** A `[T]` value is a fat pointer `{backing array, offset, length}`
+— not a plain array. Literals, `list`, `range`, `concat`, and `map`-like
+builtins allocate a fresh backing (offset 0); `sub` returns a **view**
+sharing the operand's backing with a shifted offset and shorter length
+(zero-copy). Reads and writes go through the view's window; `==`/`!=` on
+slices is reference identity. Aliasing example:
+
+```ef
+s :: [1, 2, 3, 4];
+v :: sub(s, 1, 3);   # [2, 3] — shares s's backing
+set(s, 1, 99);       # writes through to the shared backing
+v                    # [99, 3] — the view sees the write
+```
 | `each` | `((A, i64) -> B, [A]) -> unit` | Iterate with index; result discarded. |
 | `flatmap` | `((A, i64) -> [B], [A]) -> [B]` | Map-then-concat. |
 

@@ -95,6 +95,6 @@ export function heapTypes(ht: number): {h: binaryen.HeapType, n: binaryen.Type} 
   if (ht === ANYREF) return {h: binaryen.getHeapType(binaryen.anyref), n: binaryen.anyref};
   if (ht === EQREF) return {h: binaryen.getHeapType(binaryen.eqref), n: binaryen.eqref};
   if (ht === I31REF) return {h: binaryen.getHeapType(binaryen.i31ref), n: binaryen.i31ref};
-  if (ht >= 0 && ht <= 11) return {h: _T.HT[ht], n: _T.RF[ht]};
+  if (ht >= 0 && ht <= 12) return {h: _T.HT[ht], n: _T.RF[ht]};
   throw new WasmError(`internal: bad heaptype byte ${ht}`);
 }

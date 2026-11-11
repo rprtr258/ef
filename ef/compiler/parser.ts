@@ -81,7 +81,7 @@ export type Expr =
       // during body inference.
       unannParams?: {name: string, id: number}[], numTouched?: Set<number>, }
   | { t: "let", name: string, typ: Type | null, val: ExprID, mut: boolean, pos?: Pos } // `name := e;` / `name :: e;` / `name: T = e;` / `name: T :: e;`
-  | { t: "dlet", fields: { name: string, typ: Type | null }[], val: ExprID, mut: boolean, pos?: Pos } // `[a, b] := val;` / `[a, b] :: val;` destructuring bind.
+  | { t: "dlet", fields: { name: string, typ: Type | null }[], val: ExprID, mut: boolean, pos?: Pos, shape?: "tup" | "arr" } // `[a, b] := val;` / `[a, b] :: val;` destructuring bind. The checker stamps `shape` (tuple fields vs array window) for the evaluators.
   | { t: "assign", name: string, val: ExprID, pos?: Pos }
   | { t: "if", c: ExprID, a: ExprID, b: ExprID, pos?: Pos }
   | { t: "while", c: ExprID, body: ExprID, pos?: Pos }
@@ -90,8 +90,8 @@ export type Expr =
   | { t: "handle", body: ExprID, cases: HandlerCase[], pos?: Pos }
   | { t: "app", fn: ExprID, args: ExprID[], div?: NumName, numKind?: string, pos?: Pos }
   | { t: "as", e: ExprID, typ: Type, asKind?: "trunc" | "boolnum", pos?: Pos } // `@as(expr, T)` numeric cast; asKind stamped by the checker.
-  | { t: "arr", elems: ExprID[], pos?: Pos } // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous.
-  | { t: "field", obj: ExprID, name: string, idx?: number, pos?: Pos } // `obj.x` / `obj.0` field access; `idx` is resolved by the checker.
+  | { t: "arr", elems: ExprID[], pos?: Pos, arrKind?: "arr" | "tup" } // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous. The checker stamps `arrKind` so the evaluator picks the runtime shape.
+  | { t: "field", obj: ExprID, name: string, idx?: number, pos?: Pos, shape?: "tup" | "arr" } // `obj.x` / `obj.0` field access; `idx` is resolved by the checker, `shape` stamped by it too.
 ;
 
 // Unescape a string literal token (with surrounding quotes).

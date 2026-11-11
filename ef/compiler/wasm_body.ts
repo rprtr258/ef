@@ -639,15 +639,40 @@ export class Fn {
     return l;
   }
 
-  // Unbox the $ARR wrapper on the stack → backing $ELEMS in local `into`
-  // (shared prologue of the array builtins and the emitters' array paths;
-  // pushRef(...)/slot(i) precedes for the wrapper's source).
+  // Unbox the slice wrapper's backing field — $ELEMS in local `into`
+  // (pushRef(...)/slot(i) precedes for the wrapper's source). For the full
+  // fat-pointer read use unboxSlice.
   unboxArr(into: number): void {
     this.body.refCast(3, true);
     this.body.structGet(3, 0);
     this.body.localSet(into);
   }
 
+  // Full triple read of the wrapper on the stack: data → `data`, off →
+  // `off`, len → `len` (the fat pointer {data, off, len}). The wrapper is
+  // popped once into a temp local; each field re-reads from it.
+  unboxSlice(data: number, off: number, len: number): void {
+    const w = this.anyref();
+    this.body.localSet(w);
+    const g = (): void => { this.body.localGet(w); this.body.refCast(3, true); };
+    g();
+    this.body.structGet(3, 0);
+    this.body.localSet(data);
+    g();
+    this.body.structGet(3, 1);
+    this.body.localSet(off);
+    g();
+    this.body.structGet(3, 2);
+    this.body.localSet(len);
+  }
+
+
+  // Unbox the $TUP wrapper on the stack → its fields array in `into`.
+  unboxTup(into: number): void {
+    this.body.refCast(12, true);
+    this.body.structGet(12, 0);
+    this.body.localSet(into);
+  }
 
   // String concatenation of $STR locals a, b → new $STR on the stack.
   emitStrCat(a: number, b: number): void {
@@ -718,6 +743,16 @@ export class Fn {
     b.u8(w.END);
   }
 
+  // Viewland pointer: pushes (arrayref, off + i) of element i (local) of
+  // the $ELEMS local `blk` viewed at offset local `off`.
+  elemAddrOff(blk: number, i: number, off: number): void {
+    this.body.localGet(blk);
+    this.body.refCast(1, true);
+    this.body.localGet(i);
+    this.body.localGet(off);
+    this.body.u8(w.ADD);
+  }
+
   // Pushes (arrayref, index) of element i (local) of raw $ELEMS local
   // `blk`; callers finish with aget (read) or push the value + aset (write).
   elemAddr(blk: number, i: number): void {
@@ -735,29 +770,18 @@ export class Fn {
     return blk;
   }
 
-  // Wraps the raw $ELEMS local `blk` → new $ARR wrapper on the stack.
-  // Growth (`set`) repoints the wrapper's backing array, so every alias
-  // sharing the wrapper sees the growth (§7.1).
+  // Wraps the raw $ELEMS local `blk` → fresh slice wrapper {blk, 0, n} on
+  // the stack. Producers of fresh backings only — views are built by `sub`
+  // sharing an existing wrapper's fields.
   boxArr(blk: number): void {
-    this.body.localGet(blk);
-    this.body.refCast(1, true);
-    this.body.structNew(3);
-  }
-
-  // Copies n (local) elements from srcBlk's elements starting at srcOff into
-  // a fresh array; leaves the boxed $ARR wrapper on the stack.
-  emitArrCopy(srcBlk: number, srcOff: number, n: number): void {
     const b = this.body;
-    const blk = this.allocArrBlk(n);
     b.localGet(blk);
     b.refCast(1, true);
     b.i32Const(0);
-    b.localGet(srcBlk);
+    b.localGet(blk);
     b.refCast(1, true);
-    b.i32Const(srcOff);
-    b.localGet(n);
-    b.arrayCopy(1, 1);
-    this.boxArr(blk);
+    b.arrayLen();
+    b.structNew(3);
   }
 
   // Materialize a ValueRef onto the operand stack, at its consume point.

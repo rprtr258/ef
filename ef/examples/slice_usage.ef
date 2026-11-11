@@ -1,15 +1,7 @@
-# Arrays: build by appending with concat; len reports the length, get
-# reads an element, and sub rebuilds the range [from, to) with a loop.
-
-sub :: fn(xs: [i64], from: i64, to: i64): [i64] {
-  out: [i64] = [];
-  i := from;
-  while (i < to) {
-    out = concat(out, [get(xs, i)]);
-    i = i + 1;
-  };
-  out
-};
+# Slices: `[T]` is a fat pointer {backing, offset, length}. Build by
+# appending with concat (fresh backing); sub returns a zero-copy view
+# sharing the backing; len reads the view length, get reads through the
+# view's window.
 
 slice: [i64] = [];
 slice = concat(slice, [1]);  # append 1
@@ -18,5 +10,5 @@ slice = concat(slice, [3]);  # append 3
 
 len_ :: len(slice);
 elem :: get(slice, 0);
-s :: sub(slice, 1, 2);
+s :: sub(slice, 1, 2);       # view of [1, 2): shares the backing, no copy
 elem + len_ + len(s)

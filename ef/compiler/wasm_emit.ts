@@ -516,10 +516,9 @@ export function emitHelpers(em: Emit): Fn[] {
     b.u8(w.END);
   }
   // $eq(a: anyref, b: anyref) -> anyref bool: JS === — nums by f64
-  // payload, bools by i31 payload, strings by i16 content, arrays/
-  // tuples/closures by identity (ref.cast (ref null eq) + ref.eq;
-  // identity survives `set` growth because growth repoints the wrapper's
-  // backing, not the wrapper), unit (null) equal only to unit.
+  // payload, bools by i31 payload, strings by i16 content, slices/tuples/
+  // closures by identity (ref.cast (ref null eq) + ref.eq; a slice's
+  // identity is its immutable wrapper), unit (null) equal only to unit.
   const eq = new Fn(2, em);
   eq.typeIdx = w.T_EQ;
   em.ix.funcRefTypes.set(em.ix.fEq, w.T_EQ);
@@ -1083,15 +1082,18 @@ function dispatchUnit(em: Emit, f: Fn, k: number): void {
   emitDispatch(em, f, u, k);
 }
 
-// Calls ef_fail(code, name, a, b); the import throws, so unreachable.
-// `name` is a $STR static global index (field-access failures) or null.
-export function emitFail(em: Emit, f: Fn, code: number, nameG: number | null, pushA: () => void, pushB: () => void): void {
+// Calls ef_fail(code, name, a, b, c); the import throws, so unreachable.
+// `name` is a $STR static global index (field-access failures) or null; a/b/c
+// carry f64 payloads (indices converted from i64/i32; sub's message needs
+// all three: from, to, len).
+export function emitFail(em: Emit, f: Fn, code: number, nameG: number | null, pushA: () => void, pushB: () => void, pushC: () => void): void {
   const b = f.body;
   b.i32Const(code);
   if (nameG === null) b.refNull(w.ANYREF);
   else b.globalGet(nameG);
   pushA();
   pushB();
+  pushC();
   b.callFn(em.o.impIdx.get("ef_fail")!);
   b.u8(0x00); // unreachable
 }
@@ -1245,7 +1247,7 @@ function emitOperatorInline(em: Emit, f: Fn, name: string, e: Expr & {t: "app"},
           b.localGet(y);
           b.u8(isWide ? w.I64_EQZ : w.EQZ);
           b.if();
-          emitFail(em, f, 3, null, f.constF64(0), f.constF64(0));
+          emitFail(em, f, 3, null, f.constF64(0), f.constF64(0), f.constF64(0));
           b.u8(w.END);
           b.localGet(x); b.localGet(y);
           b.u8(isI32 ? w.REMS : isU32 ? w.REMU : isI64 ? w.I64_REMS : w.I64_REMU);
@@ -1454,14 +1456,26 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
       const blk = f.anyref();
       const vr = expr(em, e.val, f, s, false, chainCtx(ctx));
       f.pushRef(vr);
-      f.unboxArr(blk);
+      // Tuples expose their fields array; arrays read through the view's
+      // window (off + k) — shapes stamped by the checker.
+      let off: number | null = null;
+      if (e.shape === "tup") f.unboxTup(blk);
+      else {
+        off = f.i32();
+        const len = f.i32();
+        f.unboxSlice(blk, off, len);
+      }
       for (let k = 0; k < e.fields.length; k++) {
         const slot = s.map.get(e.fields[k].name)!;
         // tuple element k → frame slot (balances its stack in place)
         f.storeSlot(slot, () => {
           b.localGet(blk);
           b.refCast(1, true);
-          b.i32Const(k);
+          if (off !== null) {
+            b.localGet(off);
+            b.i32Const(k);
+            b.u8(w.ADD);
+          } else b.i32Const(k);
           b.arrayGet(1);
         });
       }
@@ -1561,7 +1575,13 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
       }
       b.localGet(blk);
       b.refCast(1, true);
-      b.structNew(3); // $ARR wrapper
+      if (e.arrKind === "tup") {
+        b.structNew(12); // $TUP record
+      } else {
+        b.i32Const(0);
+        b.i32Const(e.elems.length);
+        b.structNew(3); // slice wrapper {data, 0, n}
+      }
       return boxLocal(f);
     }
     case "as": {
@@ -1713,24 +1733,44 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
     case "field": {
       const blk = f.anyref();
       f.pushRef(expr(em, e.obj, f, s, false, chainCtx(ctx)));
-      f.unboxArr(blk);
-      // len <= idx → out of bounds
-      b.localGet(blk);
-      b.refCast(1, true);
-      b.arrayLen();
-      b.i32Const(e.idx!);
-      b.u8(w.LEU);
-      b.if();
-      emitFail(em, 
-        f, 2, em.lay.strStatics.get(e.name)!,
-        f.constF64(e.idx!),
-        f.constF64(-1),
-      );
-      b.u8(w.END);
-      b.localGet(blk);
-      b.refCast(1, true);
-      b.i32Const(e.idx!);
-      b.arrayGet(1);
+      if (e.shape === "tup") {
+        f.unboxTup(blk);
+        // len <= idx → out of bounds
+        b.localGet(blk);
+        b.refCast(1, true);
+        b.arrayLen();
+        b.i32Const(e.idx!);
+        b.u8(w.LEU);
+        b.if();
+        emitFail(em, f, 2, em.lay.strStatics.get(e.name)!,
+          f.constF64(e.idx!),
+          () => { b.localGet(blk); b.refCast(1, true); b.arrayLen(); b.u8(w.CONV_I32); },
+          f.constF64(0));
+        b.u8(w.END);
+        b.localGet(blk);
+        b.refCast(1, true);
+        b.i32Const(e.idx!);
+        b.arrayGet(1);
+      } else {
+        // array .N access through the view's window (off + idx)
+        const d = f.anyref(), off = f.i32(), len = f.i32();
+        f.unboxSlice(d, off, len);
+        b.localGet(len);
+        b.i32Const(e.idx!);
+        b.u8(w.LEU);
+        b.if();
+        emitFail(em, f, 2, em.lay.strStatics.get(e.name)!,
+          f.constF64(e.idx!),
+          () => { b.localGet(len); b.u8(w.CONV_I32); },
+          f.constF64(0));
+        b.u8(w.END);
+        b.localGet(d);
+        b.refCast(1, true);
+        b.localGet(off);
+        b.i32Const(e.idx!);
+        b.u8(w.ADD);
+        b.arrayGet(1);
+      }
       return boxLocal(f);
     }
     case "perform":
@@ -1833,7 +1873,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
               b.u8(w.EQ);
             }
             b.if();
-            emitFail(em, f, 3, null, f.constF64(0), f.constF64(0));
+            emitFail(em, f, 3, null, f.constF64(0), f.constF64(0), f.constF64(0));
             b.u8(w.END);
             if (isI32 || isI64) {
               b.localGet(dividend);
@@ -1846,7 +1886,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
               b.u8(isI64 ? w.I64_EQ : w.EQ);
               b.u8(w.AND);
               b.if();
-              emitFail(em, f, 4, null, f.constF64(0), f.constF64(0));
+              emitFail(em, f, 4, null, f.constF64(0), f.constF64(0), f.constF64(0));
               b.u8(w.END);
             }
           }
@@ -1941,7 +1981,9 @@ function emitPerform(em: Emit, id: ExprID, e: Expr & {t: "perform"}, f: Fn, s: S
   }
   b.localGet(blk);
   b.refCast(1, true);
-  b.structNew(3); // $ARR wrapper
+  b.i32Const(0);
+  b.i32Const(e.args.length);
+  b.structNew(3); // op-args carrier: fresh window [0, n)
   b.localSet(cell);
   const spillSlot = em.ix.spillOf.get(id)!;
   f.storeSlot(spillSlot, () => b.localGet(cell));

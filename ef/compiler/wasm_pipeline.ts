@@ -667,11 +667,12 @@ export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]
   m.addActiveElementSegment("t0", "e0",
     Array.from({length: total}, (_, i) => `f${i}`), m.i32.const(0));
   if (process.env["DBGEMIT"] === "1") console.error(m.emitText());
-  // exports: run + the 13 accessors (§4) — the last 15 functions (main + these)
+  // exports: run + the 17 accessors (§4) — the last 19 functions (main + these)
   const expNames = ["run", "__tag", "__num", "__str_len", "__str_get",
     "__arr_len", "__arr_get", "__mk_num", "__mk_f32", "__f32", "__mk_i32",
     "__mk_u32", "__i32", "__u32", "__mk_i64", "__mk_u64", "__i64", "__u64",
-    "__mk_bool", "__str_new", "__str_set", "__arr_new", "__arr_set"];
+    "__mk_bool", "__str_new", "__str_set", "__arr_new", "__arr_set",
+    "__tup_new", "__tup_len", "__tup_get", "__tup_set"];
   for (let i = 0; i < expNames.length; i++)
     m.addFunctionExport(`f${total - expNames.length + i}`, expNames[i]);
   // shrink pass (wasm-opt in-process; shrink level 2 alone matches -Oz

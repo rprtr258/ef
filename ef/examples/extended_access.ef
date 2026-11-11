@@ -1,16 +1,6 @@
-# Element store and sub-ranges: set(xs, i, v) writes an element in place;
-# ef has no built-in sub-range primitive, so sub rebuilds the range
-# [from, to) with a loop, clamped to the array's length.
-
-sub :: fn(xs: [i64], from: i64, to: i64): [i64] {
-  out: [i64] = [];
-  i := from;
-  while (i < to && i < len(xs)) {  # clamped on short arrays
-    out = concat(out, [get(xs, i)]);
-    i = i + 1;
-  };
-  out
-};
+# Element store and sub-views: set(xs, i, v) writes through the view into
+# the shared backing (strictly in-window: it never grows the slice);
+# sub(xs, from, to) returns a zero-copy view of the range [from, to).
 
 slice: [i64] = [];
 slice = concat(slice, [42]);  # append 42
@@ -18,5 +8,5 @@ slice = concat(slice, [42]);  # append 42
 i := 0;
 set(slice, i, get(slice, 0) + 1);  # store through the variable index
 
-sub(slice, 1, 2);                  # sub-range [1, 2) of a one-element array
-0
+sub(slice, 1, 1);                  # empty view past the last element
+get(slice, 0)
