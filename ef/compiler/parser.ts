@@ -60,7 +60,12 @@ export type Item =
 // Flat node slice: expressions reference their children by `ExprID` (an index
 // into `Program.nodes`), not by embedding child nodes.
 export type ExprID = number;
-export type Program = { nodes: Expr[], items: Item[] };
+export type Program = { nodes: Expr[], items: Item[], typeToks: TypeTok[] };
+
+// TypeTok: a type/effect name occurrence recorded while parsing — consumed by
+// the LSP's semantic-tokens provider (type/effect highlighting); both
+// backends ignore it. `len` is the token's source length; pos is 1-based.
+export type TypeTok = {pos: Pos, len: number, kind: "type" | "typeParameter" | "macro" | "function" | "variable"};
 export type Expr =
   | { t: "num", v: number, isFloat: boolean, raw?: string, numKind?: string, pos?: Pos }
   | { t: "str", v: string, pos?: Pos }
@@ -118,8 +123,14 @@ export class Parser {
   // variables (e.g. `type Pair(a, b) = [a, b]`).
   aliases = new Map<string, Alias>();
   typeParamStack: Map<string, Var>[] = [];
+  // Type/effect name occurrences, pushed in source order while parsing.
+  typeToks: TypeTok[] = [];
   constructor(src: string) {
     this.toks = lex(src);
+  }
+  // Record the token just consumed (name = its text, for the extent).
+  recordTypeTok(kind: TypeTok["kind"], name: string): void {
+    this.typeToks.push({pos: this.toks[this.i - 1].pos, len: name.length, kind});
   }
   peek(o = 0): string | undefined {
     return this.toks[this.i + o]?.v;
@@ -162,11 +173,12 @@ export class Parser {
         items.push(al ?? {e: this.parseStmt()});
       }
     }
-    return {nodes: this.nodes, items};
+    return {nodes: this.nodes, items, typeToks: this.typeToks};
   }
   parseEffect(): Item {
     this.next(); // effect
     const name = this.next();
+    this.recordTypeTok("macro", name);
     const params = this.parseParams();
     this.eat(":");
     const ret = this.parseType();
@@ -190,9 +202,12 @@ export class Parser {
     const name = this.peek();
     if (name === undefined || KEYWORDS.has(name)) return null;
     const save = this.i;
+    const toksLen = this.typeToks.length;
     this.next(); // name
+    this.recordTypeTok("type", name);
     if (!this.is("::")) {
       this.i = save;
+      this.typeToks.length = toksLen;
       return null;
     }
     this.next(); // ::
@@ -205,6 +220,7 @@ export class Parser {
         while (!this.is(")")) {
           const p = this.next();
           if (KEYWORDS.has(p)) throw Error("not a type fn");
+          this.recordTypeTok("typeParameter", p);
           this.eat(":");
           if (!this.isKw("type")) throw Error("not a type fn");
           this.next(); // type
@@ -239,6 +255,7 @@ export class Parser {
     } catch {
       if (pushed) this.typeParamStack.pop();
       this.i = save;
+      this.typeToks.length = toksLen;
       return null;
     }
   }
@@ -360,7 +377,9 @@ export class Parser {
     this.eat("{");
     const effs = new Set<string>();
     while (!this.is("}")) {
-      effs.add(this.next());
+      const eff = this.next();
+      this.recordTypeTok("macro", eff);
+      effs.add(eff);
       if (this.is(",")) this.i++;
     }
     this.eat("}");
@@ -413,7 +432,16 @@ export class Parser {
     }
     const name = this.next();
     // type parameter of an enclosing alias body → a type variable.
-    for (const m of this.typeParamStack) if (m.has(name)) return m.get(name)!;
+    for (const m of this.typeParamStack)
+      if (m.has(name)) {
+        this.recordTypeTok("typeParameter", name);
+        return m.get(name)!;
+      }
+    // Every other name consumed in type position — prims (incl. `unit`,
+    // `any`, the `type`-of-types keyword), alias uses, and names that turn
+    // out unknown (thrown below; the LSP discards tokens when a program
+    // fails to check).
+    this.recordTypeTok("type", name);
     // alias instantiation: `Name(T1, T2)` (or nullary `Name`). In a type
     // position `Name(...)` has no other reading, so the call-like form is
     // unambiguous.
@@ -491,6 +519,7 @@ export class Parser {
     const prim = this.nodes[e];
     if (prim.t === "sym" && this.is("!") && this.peek(1) === "(") {
       const op = prim.v;
+      this.recordTypeTok("macro", op);
       this.next(); // !
       const args = this.parseArgs();
       e = this.add({t: "perform", op, args, pos: prim.pos});
@@ -600,6 +629,7 @@ export class Parser {
       while (this.isKw("case")) {
         this.next();
         const op = this.next();
+        this.recordTypeTok("macro", op);
         const params = this.parseParams();
         this.eat("=>");
         const resume = this.next();

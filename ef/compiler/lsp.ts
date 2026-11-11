@@ -20,8 +20,10 @@ import {
   type Diagnostic,
   type Hover,
   type InitializeResult,
+  type SemanticTokens,
+  type SemanticTokensParams,
 } from "vscode-languageserver/node";
-import {Parser} from "./parser.ts";
+import {Parser, type TypeTok} from "./parser.ts";
 import {checkProgram, showT} from "./types.ts";
 
 // `at line L, col C: ` — the located-prefix format stamped onto type errors.
@@ -40,6 +42,36 @@ function diagnosticOf(err: unknown): Diagnostic {
     message: m !== null ? msg.slice(m[0].length) : msg,
     source: "ef",
   };
+}
+
+// Semantic token kinds: one constant feeds both the capability legend and
+// the emitted tokenType indices (they must match byte-for-byte).
+const TOKEN_KINDS = ["type", "typeParameter", "macro", "function", "variable"] as const;
+const KIND_INDEX: Record<TypeTok["kind"], number> = {type: 0, typeParameter: 1, macro: 2, function: 3, variable: 4};
+
+// LSP delta-encoded semantic tokens for the document. Empty when the document
+// fails to parse or check (consistent with the fail-fast diagnostics — no
+// highlights on top of an error).
+function semanticTokens(src: string): SemanticTokens {
+  try {
+    const prog = new Parser(src).parseProgram();
+    const checked = checkProgram(prog);
+    // Parser typeToks (type/effect surface) + checker semToks (value
+    // identifiers), one position-sorted delta-encoded stream.
+    const toks = [...prog.typeToks, ...checked.semToks].sort((a, b) =>
+      a.pos.line !== b.pos.line ? a.pos.line - b.pos.line : a.pos.col - b.pos.col);
+    const data: number[] = [];
+    let pl = 0, pc = 0;
+    for (const t of toks) {
+      const line = t.pos.line - 1, col = t.pos.col - 1; // 1-based → 0-based
+      data.push(line - pl, pl === line ? col - pc : col, t.len, KIND_INDEX[t.kind], 0);
+      pl = line;
+      pc = col;
+    }
+    return {data};
+  } catch {
+    return {data: []};
+  }
 }
 
 function checkDoc(src: string): Diagnostic[] {
@@ -91,6 +123,10 @@ export function startLsp(): void {
     capabilities: {
       textDocumentSync: TextDocumentSyncKind.Full,
       hoverProvider: true,
+      semanticTokensProvider: {
+        legend: {tokenTypes: [...TOKEN_KINDS], tokenModifiers: []},
+        full: true,
+      },
     },
   }));
   connection.onDidOpenTextDocument(p => {
@@ -110,6 +146,10 @@ export function startLsp(): void {
   connection.onHover(p => {
     const src = docs.get(p.textDocument.uri);
     return src === undefined ? null : hoverAt(src, p.position.line, p.position.character);
+  });
+  connection.languages.semanticTokens.on((p: SemanticTokensParams): SemanticTokens => {
+    const src = docs.get(p.textDocument.uri);
+    return src === undefined ? {data: []} : semanticTokens(src);
   });
   connection.listen();
 }

@@ -1,4 +1,4 @@
-import type {Expr, ExprID, Program} from "./parser";
+import type {Expr, ExprID, Program, TypeTok} from "./parser";
 import {BUILTINS} from "./analysis.ts";
 import {builtins} from "./builtins.ts";
 import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TNULL, TSTR, TTYPE} from "./prims.ts";
@@ -70,6 +70,12 @@ export class Unifier {
   // REPL lines share the unifier but not the node slice, so per-line types
   // must not leak across lines' ExprID spaces.
   nodeTypes = new Map<ExprID, Type>();
+  // Value-identifier tokens (kind function/variable) recorded at sym uses and
+  // binder sites during the CURRENT checkProgram call — the LSP merges them
+  // with the parser's typeToks. Reassigned per call like nodeTypes: REPL
+  // lines share the unifier, and a previous line's Checked keeps the old
+  // array alive via its own reference.
+  semToks: TypeTok[] = [];
   // Fresh per-literal wildcard prims (newWild) and the concrete width each
   // flexed to at unify time — a literal's numKind stamp is its flex, not the
   // i64/f64 default. Keyed by instance identity; the shared TINT/TFLOAT
@@ -662,7 +668,15 @@ function inferNode(
       const s = env.lookup(e.v);
       if (s === undefined)
         throw new TypeError_("Unbound: " + e.v);
-      return typeof s === "function" ? s() : s;
+      const t = typeof s === "function" ? s() : s;
+      // Value-identifier highlighting: a resolved fn type → `function`,
+      // anything else → `variable`. Operator desugar syms never reach here
+      // (the app case handles them without inferring the callee node).
+      if (e.pos !== undefined) {
+        const rt = env.uni.res(t);
+        env.uni.semToks.push({pos: e.pos, len: e.v.length, kind: rt.tag === "fun" ? "function" : "variable"});
+      }
+      return t;
     }
     case "lambda": {
       const n = env.extend();
@@ -731,6 +745,14 @@ function inferNode(
       }
       const ft = tFun(ps, e.retTyp ?? ret, e.retEffs ?? innerEffs);
       e.typ = ft;
+      // Param binders classified here, after the body has unified — an
+      // unannotated param used as a callee resolves to a FunT by now.
+      for (let i = 0; i < e.params.length; i++) {
+        const p = e.params[i];
+        if (p.pos === undefined) continue;
+        const pt = env.uni.res(ps[i]);
+        env.uni.semToks.push({pos: p.pos, len: p.name.length, kind: pt.tag === "fun" ? "function" : "variable"});
+      }
       return ft;
     }
     case "let": {
@@ -751,6 +773,8 @@ function inferNode(
         : infer(e.val, nodes, env, effs, effects);
       env.uni.unify(declared, vt);
       const rt = env.uni.res(declared);
+      if (e.pos !== undefined)
+        env.uni.semToks.push({pos: e.pos, len: e.name.length, kind: rt.tag === "fun" ? "function" : "variable"});
       // Pin a wildcard-typed value literal to the binding's concrete width:
       // `x: i32 = 2147483647` boxes the literal as $I32 (wrapping at its
       // own node, matching the interpreter's per-node normalization).
@@ -913,11 +937,20 @@ function inferNode(
           throw new TypeError_(`Handler for unknown effect: ${c.op}`);
         if (c.op === "Return") {
           checkBind(n, c.params[0].name);
-          n.vars.set(c.params[0].name, env.uni.res(bodyT));
+          const bt = env.uni.res(bodyT);
+          n.vars.set(c.params[0].name, bt);
+          if (c.params[0].pos !== undefined)
+            env.uni.semToks.push({pos: c.params[0].pos, len: c.params[0].name.length, kind: bt.tag === "fun" ? "function" : "variable"});
         } else {
           for (let i = 0; i < c.params.length; i++) {
-            checkBind(n, c.params[i].name);
-            n.vars.set(c.params[i].name, sig!.params[i] ?? TANY);
+            const cp = c.params[i];
+            checkBind(n, cp.name);
+            const pt = sig!.params[i] ?? TANY;
+            n.vars.set(cp.name, pt);
+            if (cp.pos !== undefined) {
+              const rpt = env.uni.res(pt);
+              env.uni.semToks.push({pos: cp.pos, len: cp.name.length, kind: rpt.tag === "fun" ? "function" : "variable"});
+            }
           }
         }
         // resume: (sig.ret) -> resultT ; Return's resume is identity over bodyT
@@ -1188,6 +1221,9 @@ export type Checked = {
   // an interp override, instead of letting runTop throw mid-run after side
   // effects. Fresh per checkProgram call (not accumulated from acc).
   unhandled: Set<string>,
+  // Value-identifier semantic tokens recorded during this call (kind
+  // function/variable) — the LSP merges them with the parser's typeToks.
+  semToks: TypeTok[],
 };
 
 // checkProgram: typecheck `prog`. `acc` is the previous result — the REPL
@@ -1199,6 +1235,7 @@ export function checkProgram(
 ): Checked {
   const uni = acc?.uni ?? new Unifier();
   uni.nodeTypes = new Map();
+  uni.semToks = [];
   PIN_NODES.current = prog.nodes;
   let env: Env;
   let effects: Map<string, EffectSig>;
@@ -1230,5 +1267,5 @@ export function checkProgram(
 
   stampNumKinds(prog.nodes, uni);
 
-  return {env, effects, uni, lastType: uni.deepRes(lastType), unhandled};
+  return {env, effects, uni, lastType: uni.deepRes(lastType), unhandled, semToks: uni.semToks};
 }

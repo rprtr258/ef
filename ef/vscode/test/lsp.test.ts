@@ -97,6 +97,11 @@ class Server {
     return r.result;
   }
 
+  async semanticTokens(): Promise<{data: number[]}> {
+    const r = await this.request("textDocument/semanticTokens/full", {textDocument: {uri: URI}}) as {result: {data: number[]} | null};
+    return r.result ?? {data: []};
+  }
+
   private waitDiagnostics(): Promise<DiagParams> {
     return new Promise((resolve, reject) => {
       const t = setTimeout(() => reject(new Error("timeout waiting for publishDiagnostics")), 4000);
@@ -177,6 +182,77 @@ describe("ef language server", () => {
     await s.change("f :: fn(): i64 {1};\n");
     const h = await s.hover(0, 6); // over `fn`
     expect(h).toBeNull();
+  });
+
+  test("semantic tokens: legend is a single constant shared with encoding (spec AC-007)", async () => {
+    const r = await s.request("initialize", {processId: null, rootUri: null, capabilities: {}}) as {result: {capabilities: {semanticTokensProvider: {legend: {tokenTypes: string[], tokenModifiers: string[]}, full: boolean}}}};
+    expect(r.result.capabilities.semanticTokensProvider.legend.tokenTypes).toEqual(["type", "typeParameter", "macro", "function", "variable"]);
+    expect(r.result.capabilities.semanticTokensProvider.legend.tokenModifiers).toEqual([]);
+    expect(r.result.capabilities.semanticTokensProvider.full).toBe(true);
+  });
+
+  // Decode LSP delta-encoded tokens back to absolute positions and the source
+  // text they cover — asserts extent + kind without hand-counted columns.
+  const decode = (src: string, data: number[]): {text: string, kind: number}[] => {
+    const lines = src.split("\n");
+    const out: {text: string, kind: number}[] = [];
+    let line = 0, col = 0;
+    for (let i = 0; i < data.length; i += 5) {
+      line += data[i];
+      col = data[i] === 0 ? col + data[i + 1] : data[i + 1];
+      out.push({text: (lines[line] ?? "").slice(col, col + data[i + 2]), kind: data[i + 3]});
+    }
+    return out;
+  };
+
+  test("semantic tokens cover alias decls, uses, and prims (spec AC-002)", async () => {
+    const src = "Pair :: [i32, i32]; p :: Pair;\n";
+    await s.change(src);
+    expect(decode(src, (await s.semanticTokens()).data)).toEqual([
+      {text: "Pair", kind: 0}, // type
+      {text: "i32", kind: 0},
+      {text: "i32", kind: 0},
+      {text: "p", kind: 0},
+      {text: "Pair", kind: 0},
+    ]);
+  });
+
+  test("semantic tokens cover effect decls, rows, performs, and case labels (spec AC-004)", async () => {
+    const src = "effect Read(): i32;\nf :: fn(): i32 ! { Read } { Read!() };\nh :: fn(): i32 ! { Read } { handle { Read!() } case Read(x) => k { x } };\n";
+    await s.change(src);
+    expect(decode(src, (await s.semanticTokens()).data)).toEqual([
+      {text: "Read", kind: 2}, // macro
+      {text: "i32", kind: 0},
+      {text: "f", kind: 3}, // function binder
+      {text: "i32", kind: 0},
+      {text: "Read", kind: 2},
+      {text: "Read", kind: 2},
+      {text: "h", kind: 3}, // function binder
+      {text: "i32", kind: 0},
+      {text: "Read", kind: 2},
+      {text: "Read", kind: 2},
+      {text: "Read", kind: 2}, // case label
+      {text: "x", kind: 4}, // case-param binder
+      {text: "x", kind: 4}, // resumed value
+    ]);
+  });
+
+  test("semantic tokens cover value identifiers by inferred type (spec AC-008)", async () => {
+    const src = "collect :: fn(x: i64): [[i64]] { [[x]] };\ncollect(1);\n";
+    await s.change(src);
+    expect(decode(src, (await s.semanticTokens()).data)).toEqual([
+      {text: "collect", kind: 3}, // function
+      {text: "x", kind: 4}, // variable (binder)
+      {text: "i64", kind: 0},
+      {text: "i64", kind: 0},
+      {text: "x", kind: 4}, // use
+      {text: "collect", kind: 3}, // use
+    ]);
+  });
+
+  test("document that fails the check yields empty tokens (spec AC-005)", async () => {
+    await s.change("x :: Foo;\n");
+    expect((await s.semanticTokens()).data).toEqual([]);
   });
 
   test("shutdown then exit terminates with code 0", async () => {

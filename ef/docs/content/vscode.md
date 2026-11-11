@@ -29,7 +29,7 @@ cd vscode && bun run build     # emits dist/extension.cjs + dist/server.cjs
 
 | Feature | Behaviour |
 |---------|-----------|
-| Highlighting | TextMate grammar: keywords, `::`/`:=` bindings, numeric widths (`i32`…`f64`), `#` comments, strings, numbers, effect ops (`Op!`) |
+| Highlighting | TextMate grammar (keywords, `::`/`:=` bindings, `#` comments, strings, numbers) plus **semantic tokens** from the language server: user-defined type names (`Pair :: …`), type parameters, builtin prims, effect names (decls, `! { … }` rows, `Op!` performs, case labels), and **value identifiers coloured by their inferred type** — `collect` in function colour, variables in variable colour |
 | Diagnostics | the whole document is re-parsed and typechecked on every change; a type error shows at its position with the checker's message |
 | Hover | the inferred type of the word under the cursor as `name : Type`, including `! { … }` effect rows on function types |
 

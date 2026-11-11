@@ -814,3 +814,146 @@ describe("numeric widths", () => {
     expect(run(`a: any :: 1; a == 1`)).toBe(true);
   });
 });
+
+describe("Semantic tokens (typeToks feed the LSP's type/effect highlighting)", () => {
+  // Kind + source text at (pos, len) — asserts each token points at the right
+  // characters without hand-counted columns. Position-sorted: push order is
+  // checker traversal order, only the sorted result is contract (FR-008).
+  const toks = (src: string): {kind: string, text: string}[] => {
+    const lines = src.split("\n");
+    const prog = new Parser(src).parseProgram();
+    return [...prog.typeToks]
+      .sort((a, b) => a.pos.line !== b.pos.line ? a.pos.line - b.pos.line : a.pos.col - b.pos.col)
+      .map(t => ({
+        kind: t.kind,
+        text: (lines[t.pos.line - 1] ?? "").slice(t.pos.col - 1, t.pos.col - 1 + t.len),
+      }));
+  };
+
+  // Same for the checker's value-identifier tokens (semToks).
+  const vt = (src: string): {kind: string, text: string}[] => {
+    const lines = src.split("\n");
+    const prog = new Parser(src).parseProgram();
+    return [...checkProgram(prog).semToks]
+      .sort((a, b) => a.pos.line !== b.pos.line ? a.pos.line - b.pos.line : a.pos.col - b.pos.col)
+      .map(t => ({
+        kind: t.kind,
+        text: (lines[t.pos.line - 1] ?? "").slice(t.pos.col - 1, t.pos.col - 1 + t.len),
+      }));
+  };
+
+  test("builtin prims record as `type` at their 1-based position", () => {
+    const p = new Parser("x :: i32;").parseProgram();
+    // `x :: i32;` declares an alias, so the decl name records too (FR-002).
+    expect(p.typeToks).toEqual([
+      {pos: {line: 1, col: 1}, len: 1, kind: "type"},
+      {pos: {line: 1, col: 6}, len: 3, kind: "type"},
+    ]);
+  });
+
+  test("alias decl + use (spec AC-002); a nullary alias decl name records too", () => {
+    expect(toks("Pair :: [i32, i32]; p :: Pair;")).toEqual([
+      {kind: "type", text: "Pair"},
+      {kind: "type", text: "i32"},
+      {kind: "type", text: "i32"},
+      {kind: "type", text: "p"},
+      {kind: "type", text: "Pair"},
+    ]);
+  });
+
+  test("type parameters record at binding and body uses; field labels skipped (spec AC-003)", () => {
+    expect(toks("Box :: fn(a: type): type { [v: a, w: a] }; b :: Box(i32);")).toEqual([
+      {kind: "type", text: "Box"},
+      {kind: "typeParameter", text: "a"},
+      {kind: "typeParameter", text: "a"},
+      {kind: "typeParameter", text: "a"},
+      {kind: "type", text: "b"},
+      {kind: "type", text: "Box"},
+      {kind: "type", text: "i32"},
+    ]);
+  });
+
+  test("effect names record as macro: decl, rows, performs, case labels (spec AC-004)", () => {
+    expect(toks(`effect Read(): i32;
+f :: fn(): i32 ! { Read } { Read!() };
+g :: (unit) -> i32 ! { Read };
+h :: fn(): i32 ! { Read } { handle { Read!() } case Read(x) => k { x } case Return(v) => k { v } };`)).toEqual([
+      {kind: "macro", text: "Read"},
+      {kind: "type", text: "i32"},
+      {kind: "type", text: "i32"},
+      {kind: "macro", text: "Read"},
+      {kind: "macro", text: "Read"},
+      {kind: "type", text: "g"},
+      {kind: "type", text: "unit"},
+      {kind: "type", text: "i32"},
+      {kind: "macro", text: "Read"},
+      {kind: "type", text: "i32"},
+      {kind: "macro", text: "Read"},
+      {kind: "macro", text: "Read"},
+      {kind: "macro", text: "Read"},
+      {kind: "macro", text: "Return"},
+    ]);
+  });
+
+  test("value identifiers: function vs variable, binder + use (spec AC-008)", () => {
+    expect(vt(`collect :: fn(x: i64): [[i64]] { [[x]] };
+collect(1);`)).toEqual([
+      {kind: "function", text: "collect"}, // binder (let)
+      {kind: "variable", text: "x"}, // binder (lambda param)
+      {kind: "variable", text: "x"}, // use in body
+      {kind: "function", text: "collect"}, // use (app)
+    ]);
+  });
+
+  test("builtins: len function, PI variable (spec AC-009)", () => {
+    expect(vt(`len([1, 2, 3]);\nPI;`)).toEqual([
+      {kind: "function", text: "len"},
+      {kind: "variable", text: "PI"},
+    ]);
+  });
+
+  test("operator desugars record nothing (spec AC-010)", () => {
+    expect(vt(`a: i64 :: 1;\nb: i64 :: 2;\np: bool :: true;\nq: bool :: false;\na + b;\n-a;\np && q;`)).toEqual([
+      {kind: "variable", text: "a"}, // binder
+      {kind: "variable", text: "b"}, // binder
+      {kind: "variable", text: "p"}, // binder
+      {kind: "variable", text: "q"}, // binder
+      {kind: "variable", text: "a"}, // + lhs
+      {kind: "variable", text: "b"}, // + rhs
+      {kind: "variable", text: "a"}, // neg arg
+      {kind: "variable", text: "p"}, // && cond
+      {kind: "variable", text: "q"}, // && then
+    ]);
+  });
+
+  test("handler case params bind with their effect-sig types (spec FR-007)", () => {
+    // `k { v }` is resume-with syntax — k is never an expression identifier,
+    // so only the case param (binder + use) and the handler binder record.
+    expect(vt(`effect Read(): i64;\nh :: fn(): i64 ! { Read } { handle { Read!() } case Read(v) => k { v } };`)).toEqual([
+      {kind: "function", text: "h"}, // binder
+      {kind: "variable", text: "v"}, // case-param binder
+      {kind: "variable", text: "v"}, // use (resumed value)
+    ]);
+  });
+
+  test("rewound alias attempts truncate — no phantom tokens (spec AC-005/006)", () => {
+    // `x :: Foo;` rewinds into a value binding; the failed attempt's tokens
+    // (x, Foo) must not leak. The binding then fails the check.
+    expect(toks("x :: Foo;")).toEqual([]);
+    expect(() => checkProgram(new Parser("x :: Foo;").parseProgram())).toThrow(/Unbound: Foo/);
+    expect(toks("Pair :: [i32, i32]; counter :: 0;")).toEqual([
+      {kind: "type", text: "Pair"},
+      {kind: "type", text: "i32"},
+      {kind: "type", text: "i32"},
+    ]);
+  });
+
+  test("`any` and the type-of-types keyword record in type position", () => {
+    expect(toks("x :: any; y :: type;")).toEqual([
+      {kind: "type", text: "x"},
+      {kind: "type", text: "any"},
+      {kind: "type", text: "y"},
+      {kind: "type", text: "type"},
+    ]);
+  });
+});

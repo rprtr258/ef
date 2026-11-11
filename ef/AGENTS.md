@@ -35,7 +35,8 @@ Hindley-Milner-flavoured type system with effect tracking.
   `.github/workflows/docs.yml` on pushes to master.
 - `vscode/` workspace: VS Code extension for ef — TextMate grammar for `.ef`,
   and a language client that spawns the LSP server from `compiler/lsp.ts`
-  (bundled by `vscode/scripts/build.ts` into `vscode/dist/`; esbuild with a
+  (diagnostics, hover types, semantic tokens for type/effect highlighting;
+  bundled by `vscode/scripts/build.ts` into `vscode/dist/`; esbuild with a
   stub for builtins.ts's `sleepSync` since the server never evaluates). The
   server speaks full-text sync diagnostics (fail-fast, one per change) and
   hover types for top-level bindings/builtins; also runnable standalone as
@@ -50,9 +51,14 @@ Hindley-Milner-flavoured type system with effect tracking.
    recursive descent for the rest. `&&`/`||` desugar to `if` (free
    short-circuit). The AST is a flat node slice: expressions reference
    children by `ExprID` (an index into `Program.nodes`), not by embedding
-   child nodes.
+   child nodes. Parsing also records `Program.typeToks` — every type/effect
+   name occurrence (alias decls/uses, type params, effect decls, `! { … }`
+   rows, `Op!` performs, case labels) — the LSP's semantic-tokens source;
+   failed alias attempts truncate their recordings on rewind.
 3. **`types.ts`** — the checker. `Type` union, the `Unifier` class (one instance per check: all
-   union-find/binding state lives there, carried in `Checked`),
+   union-find/binding state lives there, carried in `Checked`; also records
+   `semToks` — value-identifier semantic tokens for the LSP, kind `function`/
+   `variable` by resolved type),
    `unify`, `infer`, `infer`, and a checker `Env` whose values may be `Scheme` thunks
    (polymorphism). `checkProgram(prog, acc?): Checked` — `acc` is the
    previous result passed back to accumulate bindings (the REPL protocol);

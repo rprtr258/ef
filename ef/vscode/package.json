@@ -37,7 +37,20 @@
         "scopeName": "source.ef",
         "path": "./syntaxes/ef.tmLanguage.json"
       }
-    ]
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "ef",
+        "scopes": {
+          "type": ["support.type", "entity.name.type", "entity.name"],
+          "typeParameter": ["support.type", "entity.name.type", "variable.typeParameter"],
+          "macro": ["entity.name.function.preprocessor", "entity.name.function", "support.function"]
+        }
+      }
+    ],
+    "configurationDefaults": {
+      "editor.semanticHighlighting.enabled": true
+    }
   },
   "scripts": {
     "build": "bun run scripts/build.ts"
