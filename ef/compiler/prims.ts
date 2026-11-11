@@ -18,7 +18,7 @@ export const TINT: Prim = {tag: "prim", name: "int"};
 export const TFLOAT: Prim = {tag: "prim", name: "float"};
 export const TSTR: Prim = {tag: "prim", name: "string"};
 export const TBOOL: Prim = {tag: "prim", name: "bool"};
-export const TNULL: Prim = {tag: "prim", name: "unit"};
+export const TUNIT: Prim = {tag: "prim", name: "unit"};
 // The type of type-parameters: annotation-only (alias definitions like
 // `Pair :: fn(a: type, b: type): type {...}`). Nothing at term level
 // produces it, so it never reaches the evaluator or the wasm backend.

@@ -2,7 +2,7 @@ import type {Expr, ExprID, Program, TypeTok} from "./parser";
 import {ParseError, type Pos} from "./lexer.ts";
 import {BUILTINS} from "./analysis.ts";
 import {builtins} from "./builtins.ts";
-import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TNULL, TSTR, TTYPE} from "./prims.ts";
+import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, TTYPE} from "./prims.ts";
 import {assertNever} from "./assert.ts";
 
 export type Type = Prim | ArrT | TupT | FunT | Var | AnyT;
@@ -31,7 +31,7 @@ export type FunT = { tag: "fun", params: Type[], ret: Type, effs: Effs };
 export type Var = { tag: "var", id: number };
 export type AnyT = { tag: "any" };
 
-export {TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TNULL, TANY, TTYPE};
+export {TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TUNIT, TANY, TTYPE};
 
 export function tArr(elem: Type): ArrT { return {tag: "arr", elem}; }
 export function tTup(fields: TupField[]): TupT { return {tag: "tup", fields}; }
@@ -541,7 +541,7 @@ function inferWith(id: ExprID, nodes: Expr[], expected: Type, env: Env, effs: Se
     return inferArr(id, nodes, rt, env, effs, effects);
   if (e.t === "block") {
     const n = env.extend();
-    let last: Type = TNULL;
+    let last: Type = TUNIT;
     for (let i = 0; i < e.stmts.length; i++)
       last = i === e.stmts.length - 1
         ? inferWith(e.stmts[i], nodes, rt, n, effs, effects)
@@ -687,7 +687,7 @@ function inferNode(
     case "num": return env.uni.newWild(e.isFloat ? "float" : "int");
     case "str": return TSTR;
     case "bool": return TBOOL;
-    case "unit": return TNULL;
+    case "unit": return TUNIT;
     case "sym": {
       const s = env.lookup(e.v);
       if (s === undefined)
@@ -753,7 +753,7 @@ function inferNode(
           (rt2.name === "int" || rt2.name === "float")) {
           const bodyE = nodes[e.body];
           const tail = bodyE.t === "block" ? bodyE.stmts[bodyE.stmts.length - 1] : e.body;
-          const tailT = env.uni.res(env.uni.nodeTypes.get(tail) ?? TNULL);
+          const tailT = env.uni.res(env.uni.nodeTypes.get(tail) ?? TUNIT);
           if (tailT.tag === "prim" && tailT.name === rt2.name && selfBoxedWidth(nodes, tail))
             env.uni.nodeTypes.set(tail, dt);
         }
@@ -804,7 +804,7 @@ function inferNode(
       // own node, matching the interpreter's per-node normalization).
       const rw = widthOf(rt);
       if (rw !== null && rw.concrete && nodes[e.val].t === "num") {
-        const vt2 = env.uni.res(env.uni.nodeTypes.get(e.val) ?? TNULL);
+        const vt2 = env.uni.res(env.uni.nodeTypes.get(e.val) ?? TUNIT);
         if (vt2.tag === "prim" && (vt2.name === "int" || vt2.name === "float"))
           env.uni.nodeTypes.set(e.val, rt);
       }
@@ -825,7 +825,7 @@ function inferNode(
       env.vars.set(e.name, e.typ !== null ? rt : (nodes[e.val].t === "lambda" ? env.uni.generalize(env, rt) : rt));
       if (e.typ === null && env.uni.containsAny(rt))
         env.uni.warnInferredAny(e.name, rt);
-      return TNULL;
+      return TUNIT;
     }
     case "arr":
       return inferArr(id, nodes, null, env, effs, effects);
@@ -902,7 +902,7 @@ function inferNode(
         for (const f of e.fields) env.muts.add(f.name);
       else
         for (const f of e.fields) env.muts.delete(f.name);
-      return TNULL;
+      return TUNIT;
     }
     case "if": {
       const c = infer(e.c, nodes, env, effs, effects);
@@ -916,7 +916,7 @@ function inferNode(
       const c = infer(e.c, nodes, env, effs, effects);
       env.uni.unify(c, TBOOL);
       infer(e.body, nodes, env, effs, effects);
-      return TNULL;
+      return TUNIT;
     }
     case "assign": {
       // Find the innermost frame binding the name; assignment mutates that
@@ -931,11 +931,11 @@ function inferNode(
       const vt = infer(e.val, nodes, env, effs, effects);
       // Unify against the declared type so `guess: float` keeps its type.
       env.uni.unify(typeof cur === "function" ? cur() : cur, vt);
-      return TNULL;
+      return TUNIT;
     }
     case "block": {
       const n = env.extend();
-      let last: Type = TNULL;
+      let last: Type = TUNIT;
       for (const s of e.stmts) last = infer(s, nodes, n, effs, effects);
       return last;
     }
@@ -996,7 +996,7 @@ function inferNode(
       }
       for (const c of e.cases) bodyEffs.delete(c.op);
       for (const op of bodyEffs) effs.add(op);
-      return resultT ?? TNULL;
+      return resultT ?? TUNIT;
     }
     case "app": {
       const fn = nodes[e.fn];
@@ -1279,7 +1279,7 @@ export function checkProgram(
   for (const it of prog.items.filter(it => "effect" in it))
     effects.set(it.effect, {params: it.sig.params.map(t => t ?? uni.fresh()), ret: it.sig.ret});
 
-  let lastType: Type = TNULL;
+  let lastType: Type = TUNIT;
   // One shared sink for all items: infer only ever ADDS residuals to the
   // ambient set (handler matching happens in each handle's local bodyEffs
   // before forwarding), so a program-wide unhandled-op set falls out.

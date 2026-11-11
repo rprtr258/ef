@@ -9,7 +9,7 @@ import {
   tArr, tFun,
   type EffectSig, type Type,
 } from "./types.ts";
-import {TI64, TANY, TBOOL, TF64, TFLOAT, TINT, TNULL, TSTR} from "./prims.ts";
+import {TI64, TANY, TBOOL, TF64, TFLOAT, TINT, TUNIT, TSTR} from "./prims.ts";
 
 export type Builtin =
   // A plain builtin: lifted to a runtime native as `k(fn(...args))`. `t` is its
@@ -101,13 +101,13 @@ export const builtins: Builtin[] = [
         throw new Error(`get: index ${idx} out of bounds [0, ${a.length})`);
       return a[idx]!;
     }},
-    {kind: "fn", name: "set", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64, a], TNULL, new Set()); }, fn: (xs, i, v) => {
+    {kind: "fn", name: "set", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64, a], TUNIT, new Set()); }, fn: (xs, i, v) => {
       (xs as Value[])[num(i)] = v;
       return null;
     }},
     {kind: "native", name: "each", t: (u: Unifier) => {
       const a = u.fresh(), b = u.fresh(), e = u.freshEff();
-      return tFun([tFun([a, TI64], b, e), tArr(a)], TNULL, e);
+      return tFun([tFun([a, TI64], b, e), tArr(a)], TUNIT, e);
     }, fn: (args, k) => {
       const f = args[0]!, xs = args[1] as Value[];
       function go(i: number): Outcome {
@@ -139,23 +139,23 @@ export const builtins: Builtin[] = [
     // `Println(v: any): null` and `Out(s: string): null` are the console effects.
     // User `effect` decls may add or override these.
     {kind: "effect", name: "Read", sig: {params: [TSTR], ret: TSTR}, interp: (args, k) => k(readFileSync(args[0] as string, "utf8"))},
-    {kind: "effect", name: "Write", sig: {params: [TSTR, TSTR], ret: TNULL}, interp: (args, k) => {
+    {kind: "effect", name: "Write", sig: {params: [TSTR, TSTR], ret: TUNIT}, interp: (args, k) => {
       writeFileSync(args[0] as string, args[1] as string);
       return k(null);
     }},
-    {kind: "effect", name: "Println", sig: {params: [TANY], ret: TNULL}, interp: (args, k) => {
+    {kind: "effect", name: "Println", sig: {params: [TANY], ret: TUNIT}, interp: (args, k) => {
       console.log(show(args[0] ?? null));
       return k(null);
     }},
-    {kind: "effect", name: "Out", sig: {params: [TSTR], ret: TNULL}, interp: (args, k) => {
+    {kind: "effect", name: "Out", sig: {params: [TSTR], ret: TUNIT}, interp: (args, k) => {
       process.stdout.write(args[0] as string);
       return k(null);
     }},
     // `Exit(code: int): unit` terminates the process by default (never resumes);
     // `Wait(secs: int): unit` blocks for `secs` seconds then resumes with unit.
     // Both are effects so a handler can intercept them.
-    {kind: "effect", name: "Exit", sig: {params: [TINT], ret: TNULL}, interp: args => process.exit(num(args[0]))},
-    {kind: "effect", name: "Wait", sig: {params: [TINT], ret: TNULL}, interp: (args, k) => {
+    {kind: "effect", name: "Exit", sig: {params: [TINT], ret: TUNIT}, interp: args => process.exit(num(args[0]))},
+    {kind: "effect", name: "Wait", sig: {params: [TINT], ret: TUNIT}, interp: (args, k) => {
       sleepSync(num(args[0]) * 1000);
       return k(null);
     }},

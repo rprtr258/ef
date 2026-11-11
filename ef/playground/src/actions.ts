@@ -26,13 +26,13 @@ function recompute(): void {
   refreshActions();
 }
 
-// Run/Build act on the open file as the entry; a file without top-level
-// expressions (definitions only) is not an entry — disable the actions.
+// Run/Build act on the open file as the entry; the last top-level expression
+// must be unit-typed (effects don't matter) — disable the actions otherwise.
 function refreshActions(): void {
   const entry = isEntryFile(activeFile().code);
   els.runBtn.disabled = !entry;
   els.buildBtn.disabled = !entry;
-  const why = entry ? "" : " — file has no top-level expressions";
+  const why = entry ? "" : " — last expression must have type unit";
   els.runBtn.title = `Ctrl+↩${why}`;
   els.buildBtn.title = `Ctrl+B${why}`;
 }
@@ -67,7 +67,7 @@ function onEditNow(): void {
 }
 
 export function run(): void {
-  if (!isEntryFile(activeFile().code)) return; // no top-level expressions to run
+  if (!isEntryFile(activeFile().code)) return; // last expression isn't unit — nothing to run
   onEditNow();
   clearOutput();
   setTab("output");
@@ -103,7 +103,7 @@ export function run(): void {
 }
 
 export async function build(): Promise<void> {
-  if (!isEntryFile(activeFile().code)) return; // no top-level expressions to run
+  if (!isEntryFile(activeFile().code)) return; // last expression isn't unit — nothing to build
   onEditNow();
   clearOutput();
   setTab("output");

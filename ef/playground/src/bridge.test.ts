@@ -84,8 +84,13 @@ describe("bridge", () => {
     expect(ol[2]?.typ).toBe("(i64) -> i64 ! { Tick }");
     // a type error elsewhere leaves typs null — the outline still lists names
     expect(outline("x :: 1;\nx(2)").map((o) => o.typ)).toEqual([null]);
-    expect(isEntryFile(src)).toBe(true);
+    // entry needs the last top-level expression's type to be unit — f(1) : i64
+    expect(isEntryFile(src)).toBe(false);
+    // effects don't matter: a unit-typed effectful expression is an entry
+    expect(isEntryFile(`${src}; Println!(f(1))`)).toBe(true);
+    // lets aren't; a check failure means the type can't be known
     expect(isEntryFile("x :: 1;")).toBe(false);
+    expect(isEntryFile("1 + true")).toBe(false);
   });
 
   test("browser interp works standalone", () => {

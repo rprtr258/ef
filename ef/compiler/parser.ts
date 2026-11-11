@@ -1,6 +1,6 @@
 import {
   type FunT, type Type, type EffectSig, type Var, type TupField, type NumName,
-  TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TNULL, TANY, TTYPE,
+  TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TUNIT, TANY, TTYPE,
   tArr, tTup, tFun,
 } from "./types.ts";
 import {KEYWORDS, lex, ParseError, type Pos, type Tok} from "./lexer.ts";
@@ -489,7 +489,7 @@ export class Parser {
       case "f64": return TF64;
       case "string": return TSTR;
       case "bool": return TBOOL;
-      case "unit": return TNULL;
+      case "unit": return TUNIT;
       case "any": return TANY;
       case "type": return TTYPE;
       default: this.fail("Unknown type: " + name, -1); // the name token

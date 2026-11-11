@@ -6,7 +6,8 @@
 // <file>`): Run/Build compile only the open file — ef has no import mechanism
 // yet, so files cannot see each other's bindings. ef has no `fun main()`
 // either — the program value is the file's last top-level expression, and a
-// file without top-level expressions isn't an entry (Run/Build disabled).
+// file whose last top-level expression isn't unit-typed isn't an entry
+// (Run/Build disabled).
 //
 // Run compiles the open file through the wasm backend and executes it in the
 // browser's WebAssembly (streaming Out!/Println! into the output pane) —
