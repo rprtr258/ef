@@ -674,7 +674,7 @@ function inferNode(
       // (the app case handles them without inferring the callee node).
       if (e.pos !== undefined) {
         const rt = env.uni.res(t);
-        env.uni.semToks.push({pos: e.pos, len: e.v.length, kind: rt.tag === "fun" ? "function" : "variable"});
+        env.uni.semToks.push({pos: e.pos, len: e.v.length, name: e.v, kind: rt.tag === "fun" ? "function" : "variable"});
       }
       return t;
     }
@@ -751,7 +751,7 @@ function inferNode(
         const p = e.params[i];
         if (p.pos === undefined) continue;
         const pt = env.uni.res(ps[i]);
-        env.uni.semToks.push({pos: p.pos, len: p.name.length, kind: pt.tag === "fun" ? "function" : "variable"});
+        env.uni.semToks.push({pos: p.pos, len: p.name.length, name: p.name, kind: pt.tag === "fun" ? "function" : "variable"});
       }
       return ft;
     }
@@ -774,7 +774,7 @@ function inferNode(
       env.uni.unify(declared, vt);
       const rt = env.uni.res(declared);
       if (e.pos !== undefined)
-        env.uni.semToks.push({pos: e.pos, len: e.name.length, kind: rt.tag === "fun" ? "function" : "variable"});
+        env.uni.semToks.push({pos: e.pos, len: e.name.length, name: e.name, kind: rt.tag === "fun" ? "function" : "variable"});
       // Pin a wildcard-typed value literal to the binding's concrete width:
       // `x: i32 = 2147483647` boxes the literal as $I32 (wrapping at its
       // own node, matching the interpreter's per-node normalization).
@@ -940,7 +940,7 @@ function inferNode(
           const bt = env.uni.res(bodyT);
           n.vars.set(c.params[0].name, bt);
           if (c.params[0].pos !== undefined)
-            env.uni.semToks.push({pos: c.params[0].pos, len: c.params[0].name.length, kind: bt.tag === "fun" ? "function" : "variable"});
+            env.uni.semToks.push({pos: c.params[0].pos, len: c.params[0].name.length, name: c.params[0].name, kind: bt.tag === "fun" ? "function" : "variable"});
         } else {
           for (let i = 0; i < c.params.length; i++) {
             const cp = c.params[i];
@@ -949,7 +949,7 @@ function inferNode(
             n.vars.set(cp.name, pt);
             if (cp.pos !== undefined) {
               const rpt = env.uni.res(pt);
-              env.uni.semToks.push({pos: cp.pos, len: cp.name.length, kind: rpt.tag === "fun" ? "function" : "variable"});
+              env.uni.semToks.push({pos: cp.pos, len: cp.name.length, name: cp.name, kind: rpt.tag === "fun" ? "function" : "variable"});
             }
           }
         }

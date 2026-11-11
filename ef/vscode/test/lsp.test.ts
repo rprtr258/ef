@@ -168,19 +168,99 @@ describe("ef language server", () => {
     await s.change("n :: 42;\n");
     const h = await s.hover(0, 0);
     expect(h).not.toBeNull();
-    expect(h!.contents.value).toBe("n : i64");
+    expect(h!.contents.value).toBe("```ef\nn : i64\n```");
   });
 
   test("hover on a builtin shows its type", async () => {
     await s.change("list(1);\n");
     const h = await s.hover(0, 1);
     expect(h).not.toBeNull();
-    expect(h!.contents.value.startsWith("list : ")).toBe(true);
+    expect(h!.contents.value.startsWith("```ef\nlist : ")).toBe(true);
   });
 
-  test("hover on a non-binding word returns nothing", async () => {
+  test("hover on a subexpression shows its type", async () => {
+    await s.change("n :: 1 + 2 * 3;\n");
+    const h1 = await s.hover(0, 9); // over `2`
+    expect(h1).not.toBeNull();
+    expect(h1!.contents.value).toBe("```ef\ni64\n```");
+    const h2 = await s.hover(0, 11); // over `*`
+    expect(h2!.contents.value).toBe("```ef\ni64\n```");
+  });
+
+  test("hover on a lambda shows its function type", async () => {
     await s.change("f :: fn(): i64 {1};\n");
     const h = await s.hover(0, 6); // over `fn`
+    expect(h).not.toBeNull();
+    expect(h!.contents.value).toBe("```ef\n() -> i64\n```");
+  });
+
+  test("hover on a sym use shows the instantiated polymorphic type", async () => {
+    await s.change("id :: fn(x) { x };\nm :: id(42);\n");
+    const h1 = await s.hover(1, 5); // the call site
+    expect(h1).not.toBeNull();
+    expect(h1!.contents.value).toBe("```ef\nid : (i64) -> i64\n```");
+    const h2 = await s.hover(0, 6); // the lambda itself
+    expect(h2!.contents.value).toBe("```ef\n(a) -> a\n```");
+  });
+
+  test("hover on an effect op shows its signature like a function", async () => {
+    await s.change("effect Choose(): bool;\nn :: Choose!();\n");
+    const h1 = await s.hover(1, 5); // over `Choose` in the perform
+    expect(h1).not.toBeNull();
+    expect(h1!.contents.value).toBe("```ef\nChoose : () -> bool\n```");
+    const h2 = await s.hover(1, 11); // over `!`
+    expect(h2!.contents.value).toBe("```ef\nChoose : () -> bool\n```");
+  });
+
+  test("hover on an effect op with params shows them resolved", async () => {
+    await s.change("effect Get(v: i64): i64;\nm :: Get!(42);\n");
+    const h = await s.hover(1, 5); // over `Get`
+    expect(h).not.toBeNull();
+    expect(h!.contents.value).toBe("```ef\nGet : (i64) -> i64\n```");
+  });
+
+  test("hover on a builtin effect op shows its signature", async () => {
+    await s.change("n :: Read!(\"x.txt\");\n");
+    const h = await s.hover(0, 5); // over `Read`
+    expect(h).not.toBeNull();
+    expect(h!.contents.value).toBe("```ef\nRead : (string) -> string\n```");
+  });
+
+  test("hover on a handler case label shows the op's signature", async () => {
+    await s.change("effect Get(): i64;\nn :: handle { Get!(); } case Get() => k { k(42) };\n");
+    const h = await s.hover(1, 29); // over `Get` in the case label
+    expect(h).not.toBeNull();
+    expect(h!.contents.value).toBe("```ef\nGet : () -> i64\n```");
+  });
+
+  test("hover on an effect decl or row name shows the op's signature", async () => {
+    await s.change("effect Get(): i64;\nf :: fn(): i64 ! { Get } { Get!() };\n");
+    const h1 = await s.hover(0, 7); // the decl name
+    expect(h1).not.toBeNull();
+    expect(h1!.contents.value).toBe("```ef\nGet : () -> i64\n```");
+    const h2 = await s.hover(1, 19); // the `! { … }` row name
+    expect(h2!.contents.value).toBe("```ef\nGet : () -> i64\n```");
+  });
+
+  test("hover on a handler resume binder shows the resume type", async () => {
+    await s.change("effect Get(): i64;\nn :: handle { Get!(); } case Get() => k { k(42) };\n");
+    const h = await s.hover(1, 38); // the resume binder `k` after `=>`
+    expect(h).not.toBeNull();
+    expect(h!.contents.value).toBe("```ef\nk : (i64) -> a\n```");
+  });
+
+  test("hover on a resume binder shows the resolved result type", async () => {
+    await s.change("effect Get(): i64;\nm :: handle { Get!(); } case Get() => k { k(42); unit } case Return(v) => k { unit };\n");
+    const h1 = await s.hover(1, 38); // Get's resume
+    expect(h1).not.toBeNull();
+    expect(h1!.contents.value).toBe("```ef\nk : (i64) -> unit\n```");
+    const h2 = await s.hover(1, 74); // Return's resume: (body type) -> result
+    expect(h2!.contents.value).toBe("```ef\nk : (i64) -> unit\n```");
+  });
+
+  test("hover outside any expression returns nothing", async () => {
+    await s.change("f :: fn(): i64 {1};\n");
+    const h = await s.hover(0, 18); // over the trailing `;`
     expect(h).toBeNull();
   });
 

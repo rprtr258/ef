@@ -846,8 +846,8 @@ describe("Semantic tokens (typeToks feed the LSP's type/effect highlighting)", (
     const p = new Parser("x :: i32;").parseProgram();
     // `x :: i32;` declares an alias, so the decl name records too (FR-002).
     expect(p.typeToks).toEqual([
-      {pos: {line: 1, col: 1}, len: 1, kind: "type"},
-      {pos: {line: 1, col: 6}, len: 3, kind: "type"},
+      {pos: {line: 1, col: 1}, len: 1, kind: "type", name: "x"},
+      {pos: {line: 1, col: 6}, len: 3, kind: "type", name: "i32"},
     ]);
   });
 

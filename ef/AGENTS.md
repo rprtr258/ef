@@ -39,7 +39,7 @@ Hindley-Milner-flavoured type system with effect tracking.
   bundled by `vscode/scripts/build.ts` into `vscode/dist/`; esbuild with a
   stub for builtins.ts's `sleepSync` since the server never evaluates). The
   server speaks full-text sync diagnostics (fail-fast, one per change) and
-  hover types for top-level bindings/builtins; also runnable standalone as
+  hover types for every checked subexpression; also runnable standalone as
   `ef lsp`. `vscode/test/lsp.test.ts` spawns the built bundle and speaks raw
   LSP over stdio.
 

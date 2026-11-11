@@ -10,7 +10,9 @@ export const ONE = "()[]{},;<>+-*/!=:%.@";
 
 // A source position: 1-indexed line and column.
 export type Pos = { line: number, col: number };
-export type Tok = { v: string, pos: Pos };
+// `end` is the exclusive end position (one past the token's last source
+// char) — parser node extents for the LSP's subexpression hover stamp from it.
+export type Tok = { v: string, pos: Pos, end: Pos };
 
 export function lex(src: string): Tok[] {
   const toks: Tok[] = [];
@@ -41,18 +43,18 @@ export function lex(src: string): Tok[] {
         if (src[j] === "\\") j++;
         j++;
       }
-      toks.push({v: src.slice(start, j + 1), pos: posAt(start)});
+      toks.push({v: src.slice(start, j + 1), pos: posAt(start), end: posAt(j + 1)});
       i = j + 1;
       continue;
     }
     const two = src.slice(i, i + 2);
     if (TWO.includes(two)) {
-      toks.push({v: two, pos: posAt(i)});
+      toks.push({v: two, pos: posAt(i), end: posAt(i + 2)});
       i += 2;
       continue;
     }
     if (ONE.includes(c)) {
-      toks.push({v: c, pos: posAt(i)});
+      toks.push({v: c, pos: posAt(i), end: posAt(i + 1)});
       i++;
       continue;
     }
@@ -60,7 +62,7 @@ export function lex(src: string): Tok[] {
       const start = i;
       let j = i;
       while (j < src.length && /[0-9.]/.test(src[j])) j++;
-      toks.push({v: src.slice(start, j), pos: posAt(start)});
+      toks.push({v: src.slice(start, j), pos: posAt(start), end: posAt(j)});
       i = j;
       continue;
     }
@@ -68,7 +70,7 @@ export function lex(src: string): Tok[] {
       const start = i;
       let j = i;
       while (j < src.length && /[A-Za-z0-9_]/.test(src[j])) j++;
-      toks.push({v: src.slice(start, j), pos: posAt(start)});
+      toks.push({v: src.slice(start, j), pos: posAt(start), end: posAt(j)});
       i = j;
       continue;
     }

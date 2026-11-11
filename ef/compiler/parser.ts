@@ -48,6 +48,7 @@ export type HandlerCase = {
   op: string,
   params: Param[],
   resume: string,
+  resumePos: Pos, // the resume binder token's start — not an Expr node; the LSP hovers it with the checker's resume type
   body: ExprID,
 };
 
@@ -60,12 +61,14 @@ export type Item =
 // Flat node slice: expressions reference their children by `ExprID` (an index
 // into `Program.nodes`), not by embedding child nodes.
 export type ExprID = number;
-export type Program = { nodes: Expr[], items: Item[], typeToks: TypeTok[] };
+export type Program = { nodes: Expr[], items: Item[], typeToks: TypeTok[], ends: Pos[] };
 
 // TypeTok: a type/effect name occurrence recorded while parsing — consumed by
-// the LSP's semantic-tokens provider (type/effect highlighting); both
-// backends ignore it. `len` is the token's source length; pos is 1-based.
-export type TypeTok = {pos: Pos, len: number, kind: "type" | "typeParameter" | "macro" | "function" | "variable"};
+// the LSP's semantic-tokens provider (type/effect highlighting) and, for the
+// `macro` kind (effect decls, `! { … }` rows, performs, case labels), by the
+// effect-signature hover. Both backends ignore it. `len` is the token's
+// source length; pos is 1-based.
+export type TypeTok = {pos: Pos, len: number, kind: "type" | "typeParameter" | "macro" | "function" | "variable", name: string};
 export type Expr =
   | { t: "num", v: number, isFloat: boolean, raw?: string, numKind?: string, pos?: Pos }
   | { t: "str", v: string, pos?: Pos }
@@ -128,9 +131,10 @@ export class Parser {
   constructor(src: string) {
     this.toks = lex(src);
   }
-  // Record the token just consumed (name = its text, for the extent).
+  // Record the token just consumed (name = its text: the extent and the
+  // effect-sig hover lookup).
   recordTypeTok(kind: TypeTok["kind"], name: string): void {
-    this.typeToks.push({pos: this.toks[this.i - 1].pos, len: name.length, kind});
+    this.typeToks.push({pos: this.toks[this.i - 1].pos, len: name.length, kind, name});
   }
   peek(o = 0): string | undefined {
     return this.toks[this.i + o]?.v;
@@ -159,8 +163,16 @@ export class Parser {
   // Flat node arena: every parsed expression is pushed here once and referred
   // to by `ExprID` (its index) from parents, items, and closures.
   nodes: Expr[] = [];
+  // Node source extents, parallel to `nodes`: exclusive end position of each
+  // expression. Together with `pos` this brackets every subexpression for the
+  // LSP's hover containment test. Backends ignore it.
+  ends: Pos[] = [];
   add(e: Expr): ExprID {
     this.nodes.push(e);
+    // Every add site consumes the node's final token before adding (parents
+    // are added after their children; statement binders add before eating
+    // the trailing `;`), so the last consumed token's end is the node's end.
+    this.ends.push(this.toks[this.i - 1].end);
     return this.nodes.length - 1;
   }
 
@@ -173,7 +185,7 @@ export class Parser {
         items.push(al ?? {e: this.parseStmt()});
       }
     }
-    return {nodes: this.nodes, items, typeToks: this.typeToks};
+    return {nodes: this.nodes, items, typeToks: this.typeToks, ends: this.ends};
   }
   parseEffect(): Item {
     this.next(); // effect
@@ -269,15 +281,15 @@ export class Parser {
       const name = this.next();
       this.next(); // :=
       const val = this.parseExpr();
-      this.eat(";");
       e = this.add({t: "let", name, typ: null, val, mut: true, pos: p});
+      this.eat(";");
     } else if (nonKw && this.peek(1) === "::") {
       // `name :: val;` — const, inferred type.
       const name = this.next();
       this.next(); // ::
       const val = this.parseExpr();
-      this.eat(";");
       e = this.add({t: "let", name, typ: null, val, mut: false, pos: p});
+      this.eat(";");
     } else if (nonKw && this.peek(1) === ":") {
       // `name: T = val;` — mutable, annotated; `name: T :: val;` — const, annotated.
       const name = this.next();
@@ -287,8 +299,8 @@ export class Parser {
       if (isConst) this.next();
       else this.eat("=");
       const val = this.parseExpr();
-      this.eat(";");
       e = this.add({t: "let", name, typ, val, mut: !isConst, pos: p});
+      this.eat(";");
     } else if (this.is("[")) {
       // Destructuring bind (`[a: T, b] := val;` / `[a: T, b] :: val;`) or an
       // array literal as an expression statement (`[x, y]` as a block tail).
@@ -309,8 +321,8 @@ export class Parser {
         if (isConst) this.next();
         else this.eat(":=");
         const val = this.parseExpr();
-        this.eat(";");
         e = this.add({t: "dlet", fields, val, mut: !isConst, pos: p});
+        this.eat(";");
       } catch {
         this.i = save;
         e = this.parseExpr();
@@ -323,9 +335,9 @@ export class Parser {
       const name = this.next();
       this.next(); // =
       const val = this.parseExpr();
+      e = this.add({t: "assign", name, val, pos: p});
       if (this.is(";"))
         this.i++;
-      e = this.add({t: "assign", name, val, pos: p});
     } else {
       e = this.parseExpr();
       if (this.is(";"))
@@ -633,8 +645,9 @@ export class Parser {
         const params = this.parseParams();
         this.eat("=>");
         const resume = this.next();
+        const resumePos = this.toks[this.i - 1].pos;
         const cbody = this.parseBlock();
-        cases.push({op, params, resume, body: cbody});
+        cases.push({op, params, resume, resumePos, body: cbody});
       }
       return this.add({t: "handle", body, cases, pos: p});
     }

@@ -75,7 +75,7 @@ Why flat instead of embedded:
 | `assign` | `x = e;` | mutation of an existing mutable binding |
 | `if` · `while` · `block` | control flow | `&&`/`\|\|` desugar into `if` |
 | `perform` | `Op!(args)` | name + arg nodes |
-| `handle` | `handle { … } case …` | body + `HandlerCase[]` (`op`, `params`, `resume`, `body`) |
+| `handle` | `handle { … } case …` | body + `HandlerCase[]` (`op`, `params`, `resume`, `resumePos`, `body`) |
 | `app` | `f(x)` | checker stamps `div`/`numKind` on operator applications |
 | `as` | `@as(e, T)` | checker stamps `asKind` (`trunc` vs `boolnum`) |
 | `arr` | `[a, b, c]` | array if homogeneous, tuple if heterogeneous — decided by the *checker* |

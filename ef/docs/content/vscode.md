@@ -31,7 +31,7 @@ cd vscode && bun run build     # emits dist/extension.cjs + dist/server.cjs
 |---------|-----------|
 | Highlighting | TextMate grammar (keywords, `::`/`:=` bindings, `#` comments, strings, numbers) plus **semantic tokens** from the language server: user-defined type names (`Pair :: …`), type parameters, builtin prims, effect names (decls, `! { … }` rows, `Op!` performs, case labels), and **value identifiers coloured by their inferred type** — `collect` in function colour, variables in variable colour |
 | Diagnostics | the whole document is re-parsed and typechecked on every change; a type error shows at its position with the checker's message |
-| Hover | the inferred type of the word under the cursor as `name : Type`, including `! { … }` effect rows on function types |
+| Hover | the inferred type of the innermost checked subexpression under the cursor — sym references as `name : Type` at their instantiated type, effect names anywhere (decls, `! { … }` rows, performs, handler case labels) as the op's declared signature function-style (`Choose : () -> bool`), binder sites as the bound value's type, everything else (literals, operators, calls, lambdas, `handle` blocks) as the bare type, including `! { … }` effect rows on function types — rendered as markdown in an `ef` code fence, so it's syntax-highlighted with the same grammar as the editor (user-defined type names stay uncoloured there: semantic tokens don't apply inside hover markdown) |
 
 ## Behaviour and limits
 
@@ -40,9 +40,9 @@ cd vscode && bun run build     # emits dist/extension.cjs + dist/server.cjs
 - **Not every error lands on its position.** Unification mismatches anchor at
   the offending expression; operator/width errors and parse errors carry no
   position and anchor at the document start.
-- **Hover resolves top-level bindings and builtins only.** Local bindings,
-  effect names, and keywords have no type to show — the checker doesn't expose
-  those.
+- **Hover needs a clean check.** `checkProgram` throws on the first error, so
+  a document with a parse or type error has no hover types at all. Keywords
+  aren't expressions and have no type to show.
 - **Unhandled top-level effects are not errors.** A program may leave effects
   for the runner to interpret; diagnostics only cover parse and type errors.
 

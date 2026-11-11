@@ -317,7 +317,7 @@ export function newCtx(interp?: EffectInterp): Ctx {
     // Seeded empty: exec binds exactly the builtins each program references
     // (builtinRefs), matching the wasm module's tree-shaken builtin table.
     env: globalEnv(new Set()),
-    checked: checkProgram({nodes: [], items: [], typeToks: []}),
+    checked: checkProgram({nodes: [], items: [], typeToks: [], ends: []}),
     interp,
   };
 }
