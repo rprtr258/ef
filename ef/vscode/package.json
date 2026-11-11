@@ -1,7 +1,7 @@
 {
   "name": "vscode",
   "displayName": "ef Language Support",
-  "description": "ef language support: syntax highlighting, diagnostics from the ef checker, hover types",
+  "description": "ef language support: syntax highlighting, diagnostics from the ef checker, hover types, go-to-definition",
   "version": "0.1.0",
   "publisher": "ef",
   "private": true,

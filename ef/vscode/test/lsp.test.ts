@@ -97,6 +97,11 @@ class Server {
     return r.result;
   }
 
+  async definition(line: number, character: number): Promise<{uri: string, range: {start: {line: number, character: number}, end: {line: number, character: number}}} | null> {
+    const r = await this.request("textDocument/definition", {textDocument: {uri: URI}, position: {line, character}}) as {result: {uri: string, range: {start: {line: number, character: number}, end: {line: number, character: number}}} | null};
+    return r.result;
+  }
+
   async semanticTokens(): Promise<{data: number[]}> {
     const r = await this.request("textDocument/semanticTokens/full", {textDocument: {uri: URI}}) as {result: {data: number[]} | null};
     return r.result ?? {data: []};
@@ -123,9 +128,10 @@ describe("ef language server", () => {
   beforeAll(async () => {
     await buildServer();
     s = new Server();
-    const r = await s.request("initialize", {processId: null, rootUri: null, capabilities: {}}) as {result: {capabilities: {textDocumentSync: number, hoverProvider: boolean}}};
+    const r = await s.request("initialize", {processId: null, rootUri: null, capabilities: {}}) as {result: {capabilities: {textDocumentSync: number, hoverProvider: boolean, definitionProvider: boolean}}};
     expect(r.result.capabilities.textDocumentSync).toBe(1); // Full
     expect(r.result.capabilities.hoverProvider).toBe(true);
+    expect(r.result.capabilities.definitionProvider).toBe(true);
     s.notify("initialized", {});
   });
 
@@ -345,6 +351,62 @@ describe("ef language server", () => {
   test("document that fails the check yields empty tokens (spec AC-005)", async () => {
     await s.change("x :: Foo;\n");
     expect((await s.semanticTokens()).data).toEqual([]);
+  });
+
+  test("definition on a sym use jumps to its binding", async () => {
+    await s.change("n :: 42;\nm :: n + n;\n");
+    expect(await s.definition(1, 5)).toEqual({uri: URI, range: {start: {line: 0, character: 0}, end: {line: 0, character: 1}}});
+  });
+
+  test("definition on a lambda param use jumps to the param", async () => {
+    await s.change("f :: fn(x: i64): i64 { x };\n");
+    expect(await s.definition(0, 23)).toEqual({uri: URI, range: {start: {line: 0, character: 8}, end: {line: 0, character: 9}}});
+  });
+
+  test("definition on an effect row and perform jumps to the decl", async () => {
+    await s.change("effect Get(): i64;\nf :: fn(): i64 ! { Get } { Get!() };\n");
+    const want = {uri: URI, range: {start: {line: 0, character: 7}, end: {line: 0, character: 10}}};
+    expect(await s.definition(1, 19)).toEqual(want); // the `! { … }` row name
+    expect(await s.definition(1, 27)).toEqual(want); // the perform
+  });
+
+  test("definition works from an effect use above its hoisted decl", async () => {
+    await s.change("f :: fn(): i64 ! { Get } { Get!() };\neffect Get(): i64;\n");
+    expect(await s.definition(0, 19)).toEqual({uri: URI, range: {start: {line: 1, character: 7}, end: {line: 1, character: 10}}});
+  });
+
+  test("definition on handler case param and resume binder is self-targeted", async () => {
+    await s.change("effect Get(): i64;\nn :: handle { Get!(); } case Get(x) => k { x };\n");
+    const want = {uri: URI, range: {start: {line: 1, character: 33}, end: {line: 1, character: 34}}};
+    expect(await s.definition(1, 33)).toEqual(want); // the case param binder
+    expect(await s.definition(1, 43)).toEqual(want); // the use in the body
+  });
+
+  test("definition on an assign target jumps to the binding", async () => {
+    await s.change("n := 1;\nn = n + 1;\n");
+    expect(await s.definition(1, 0)).toEqual({uri: URI, range: {start: {line: 0, character: 0}, end: {line: 0, character: 1}}});
+  });
+
+  test("definition on a destructured field jumps to the field binder", async () => {
+    await s.change("[a, b] := [1, 2];\nc :: a + b;\n");
+    expect(await s.definition(1, 5)).toEqual({uri: URI, range: {start: {line: 0, character: 1}, end: {line: 0, character: 2}}});
+  });
+
+  test("definition on an alias use jumps to the alias decl", async () => {
+    await s.change("Pair :: [i32, i32];\np: Pair = [1, 2];\n");
+    expect(await s.definition(1, 3)).toEqual({uri: URI, range: {start: {line: 0, character: 0}, end: {line: 0, character: 4}}});
+    expect(await s.definition(0, 1)).toEqual({uri: URI, range: {start: {line: 0, character: 0}, end: {line: 0, character: 4}}});
+  });
+
+  test("definition on a builtin value and a builtin effect returns nothing", async () => {
+    await s.change("n :: Read!(\"x.txt\");\nm :: list(n);\n");
+    expect(await s.definition(0, 5)).toBeNull();
+    expect(await s.definition(1, 5)).toBeNull();
+  });
+
+  test("definition on a document that fails to parse returns nothing", async () => {
+    await s.change("n :: ;\n");
+    expect(await s.definition(0, 0)).toBeNull();
   });
 
   test("shutdown then exit terminates with code 0", async () => {

@@ -54,8 +54,8 @@ export type HandlerCase = {
 
 export type Item =
   | { e: ExprID }
-  | { effect: string, sig: EffectSig }
-  | { alias: Alias };
+  | { effect: string, sig: EffectSig, pos?: Pos } // pos: the effect name token — go-to-definition's target for effect-name occurrences
+  | { alias: Alias, pos?: Pos }; // pos: the alias name token — go-to-definition's target for alias-name occurrences
 
 // --- AST ---
 // Flat node slice: expressions reference their children by `ExprID` (an index
@@ -81,7 +81,7 @@ export type Expr =
       // during body inference.
       unannParams?: {name: string, id: number}[], numTouched?: Set<number>, }
   | { t: "let", name: string, typ: Type | null, val: ExprID, mut: boolean, pos?: Pos } // `name := e;` / `name :: e;` / `name: T = e;` / `name: T :: e;`
-  | { t: "dlet", fields: { name: string, typ: Type | null }[], val: ExprID, mut: boolean, pos?: Pos, shape?: "tup" | "arr" } // `[a, b] := val;` / `[a, b] :: val;` destructuring bind. The checker stamps `shape` (tuple fields vs array window) for the evaluators.
+  | { t: "dlet", fields: { name: string, typ: Type | null, pos?: Pos }[], val: ExprID, mut: boolean, pos?: Pos, shape?: "tup" | "arr" } // `[a, b] := val;` / `[a, b] :: val;` destructuring bind; field pos: the field name token (go-to-definition target). The checker stamps `shape` (tuple fields vs array window) for the evaluators.
   | { t: "assign", name: string, val: ExprID, pos?: Pos }
   | { t: "if", c: ExprID, a: ExprID, b: ExprID, pos?: Pos }
   | { t: "while", c: ExprID, body: ExprID, pos?: Pos }
@@ -199,13 +199,14 @@ export class Parser {
   }
   parseEffect(): Item {
     this.next(); // effect
+    const p = this.pos();
     const name = this.next();
     this.recordTypeTok("macro", name);
     const params = this.parseParams();
     this.eat(":");
     const ret = this.parseType();
     this.eat(";");
-    return {effect: name, sig: {params: params.map(p => p.typ), ret}};
+    return {effect: name, sig: {params: params.map(p => p.typ), ret}, pos: p};
   }
 
   // Top-level type aliases, keyword-free (`type` is now the type-of-types
@@ -225,6 +226,7 @@ export class Parser {
     if (name === undefined || KEYWORDS.has(name)) return null;
     const save = this.i;
     const toksLen = this.typeToks.length;
+    const p = this.pos();
     this.next(); // name
     this.recordTypeTok("type", name);
     if (!this.is("::")) {
@@ -263,7 +265,7 @@ export class Parser {
         this.eat(";");
         const alias = {name, tparams, body};
         this.aliases.set(name, alias);
-        return {alias};
+        return {alias, pos: p};
       }
       // Nullary: the RHS is any type shape — bracket/paren/fn-type forms,
       // plus bare names (`s32 :: i32`) and alias applications (`t :: V2[i64]`)
@@ -273,7 +275,7 @@ export class Parser {
       this.eat(";");
       const alias = {name, tparams: new Map<string, Var>(), body};
       this.aliases.set(name, alias);
-      return {alias};
+      return {alias, pos: p};
     } catch {
       if (pushed) this.typeParamStack.pop();
       this.i = save;
@@ -319,11 +321,12 @@ export class Parser {
       const save = this.i;
       try {
         this.next();
-        const fields: { name: string, typ: Type | null }[] = [];
+        const fields: { name: string, typ: Type | null, pos?: Pos }[] = [];
         while (!this.is("]")) {
+          const pos = this.pos();
           const name = this.next();
           const typ = this.is(":") ? (this.next(), this.parseType()) : null;
-          fields.push({name, typ});
+          fields.push({name, typ, pos});
           if (this.is(",")) this.i++;
         }
         this.eat("]");

@@ -1,10 +1,10 @@
 # VS Code extension
 
-Syntax highlighting, checker diagnostics, and hover types for `.ef` files,
-from the `vscode/` workspace. The extension bundles the language server —
-built from the compiler's `lsp.ts`, the same server `ef lsp` serves — so there
-is nothing to install beyond VS Code itself (≥ 1.91, matching the bundled
-client/server pair).
+Syntax highlighting, checker diagnostics, hover types, and go-to-definition
+for `.ef` files, from the `vscode/` workspace. The extension bundles the
+language server — built from the compiler's `lsp.ts`, the same server `ef lsp`
+serves — so there is nothing to install beyond VS Code itself (≥ 1.91,
+matching the bundled client/server pair).
 
 The checker is fail-fast: diagnostics show **one error at a time**. Fix it and
 the next one, if any, appears on the next edit.
@@ -32,6 +32,7 @@ cd vscode && bun run build     # emits dist/extension.cjs + dist/server.cjs
 | Highlighting | TextMate grammar (keywords, `::`/`:=` bindings, `#` comments, strings, numbers) plus **semantic tokens** from the language server: user-defined type names (`Pair :: …`), type parameters, builtin prims, effect names (decls, `! { … }` rows, `Op!` performs, case labels), and **value identifiers coloured by their inferred type** — `collect` in function colour, variables in variable colour |
 | Diagnostics | the whole document is re-parsed and typechecked on every change; a type error shows at its position with the checker's message |
 | Hover | the inferred type of the innermost checked subexpression under the cursor — sym references as `name : Type` at their instantiated type, effect names anywhere (decls, `! { … }` rows, performs, handler case labels) as the op's declared signature function-style (`Choose : () -> bool`), binder sites as the bound value's type, everything else (literals, operators, calls, lambdas, `handle` blocks) as the bare type, including `! { … }` effect rows on function types — rendered as markdown in an `ef` code fence, so it's syntax-highlighted with the same grammar as the editor (user-defined type names stay uncoloured there: semantic tokens don't apply inside hover markdown) |
+| Definition | the identifier under the cursor resolves per namespace: value names (sym uses, assign targets — and binder sites, which jump to themselves) to the unique binding (let name, destructuring field, lambda or handler-case param, resume binder); effect names (decls, `! { … }` rows, `Op!` performs, case labels) to their `effect` decl; alias names to their alias item |
 
 ## Behaviour and limits
 
@@ -43,6 +44,10 @@ cd vscode && bun run build     # emits dist/extension.cjs + dist/server.cjs
 - **Hover needs a clean check.** `checkProgram` throws on the first error, so
   a document with a parse or type error has no hover types at all. Keywords
   aren't expressions and have no type to show.
+- **Definition is parse-only.** Unlike hover, go-to-definition works on
+  documents that don't check: resolution is syntactic, leaning on the
+  checker's no-shadowing rule (a non-`_` name has one binder document-wide).
+  Builtins, operator names, and unknown identifiers resolve to nothing.
 - **Unhandled top-level effects are not errors.** A program may leave effects
   for the runner to interpret; diagnostics only cover parse and type errors.
 

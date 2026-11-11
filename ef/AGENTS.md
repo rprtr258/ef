@@ -37,7 +37,8 @@ Hindley-Milner-flavoured type system with effect tracking.
   `.github/workflows/docs.yml` on pushes to master.
 - `vscode/` workspace: VS Code extension for ef — TextMate grammar for `.ef`,
   and a language client that spawns the LSP server from `compiler/lsp.ts`
-  (diagnostics, hover types, semantic tokens for type/effect highlighting;
+  (diagnostics, hover types, go-to-definition, semantic tokens for type/effect
+  highlighting;
   bundled by `vscode/scripts/build.ts` into `vscode/dist/`; esbuild with a
   stub for builtins.ts's `sleepSync` since the server never evaluates). The
   server speaks full-text sync diagnostics (fail-fast, one per change) and

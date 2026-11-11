@@ -8,6 +8,10 @@
 // shows the
 // innermost checked subexpression under the cursor (binder sites show the
 // bound value's type); a document that doesn't check has no types to show.
+// Go-to-definition is parse-only (navigation works on documents that fail
+// the check): effect names jump to their `effect` item, alias names to their
+// alias item, value names to the unique binding site — the checker's
+// no-shadowing rule makes a non-`_` name's binder unambiguous.
 //
 // Transport: explicit stdin/stdout — one code path for `ef lsp`, the test
 // harness, and the VS Code client (which spawns the server with
@@ -22,6 +26,7 @@ import {
   type Diagnostic,
   type Hover,
   type InitializeResult,
+  type Location,
   type SemanticTokens,
   type SemanticTokensParams,
 } from "vscode-languageserver/node";
@@ -191,6 +196,90 @@ function hoverAt(src: string, line: number, col: number): Hover | null {
   return null;
 }
 
+// One value binding site: the binder name token's 1-based extent.
+type Binder = {name: string, pos: Pos, len: number};
+
+// All value binding sites — let names, destructuring fields, lambda params,
+// handler case params, and resume binders. The flat node slice is scanned
+// directly; no child traversal needed.
+function binders(prog: Program): Binder[] {
+  const out: Binder[] = [];
+  for (const e of prog.nodes) {
+    if (e.t === "let" && e.pos !== undefined) {
+      out.push({name: e.name, pos: e.pos, len: e.name.length});
+    } else if (e.t === "dlet") {
+      for (const f of e.fields)
+        if (f.pos !== undefined) out.push({name: f.name, pos: f.pos, len: f.name.length});
+    } else if (e.t === "lambda") {
+      for (const p of e.params)
+        if (p.pos !== undefined) out.push({name: p.name, pos: p.pos, len: p.name.length});
+    } else if (e.t === "handle") {
+      for (const cse of e.cases) {
+        for (const p of cse.params)
+          if (p.pos !== undefined) out.push({name: p.name, pos: p.pos, len: p.name.length});
+        out.push({name: cse.resume, pos: cse.resumePos, len: cse.resume.length});
+      }
+    }
+  }
+  return out;
+}
+
+// A name token's LSP location (1-based Pos → 0-based single-line range).
+function nameLoc(uri: string, pos: Pos, len: number): Location {
+  const start = {line: pos.line - 1, character: pos.col - 1};
+  return {uri, range: {start, end: {line: start.line, character: start.character + len}}};
+}
+
+// Definition of the identifier under the cursor, per namespace: effect names
+// (macro typeToks — decls, `! { … }` rows, performs, case labels) jump to
+// their `effect` item, alias names (type toks) to their alias item, value
+// names to the unique binder — a use (`sym`, assign target) or the binder
+// itself. Builtin effects/values and unknown names have no site → null.
+function definitionAt(uri: string, src: string, line: number, col: number): Location | null {
+  let prog: Program;
+  try {
+    prog = new Parser(src).parseProgram();
+  } catch {
+    return null;
+  }
+  // 1-based cursor, matching Pos.
+  const c = {line: line + 1, col: col + 1};
+  // Decl-site name positions per namespace — effects are hoisted (usable
+  // before their item in source order) and alias tparams repeat across
+  // aliases, so neither "first matching tok" nor source-order guessing can
+  // locate a decl; the parser records the name token's pos on the item.
+  const effectDecls = new Map<string, Pos>();
+  const aliasDecls = new Map<string, Pos>();
+  for (const it of prog.items) {
+    if ("effect" in it && it.pos !== undefined) effectDecls.set(it.effect, it.pos);
+    if ("alias" in it && it.pos !== undefined) aliasDecls.set(it.alias.name, it.pos);
+  }
+  const inTok = (pos: Pos, len: number): boolean =>
+    pos.line === c.line && pos.col <= c.col && c.col < pos.col + len;
+  for (const t of prog.typeToks) {
+    if (!inTok(t.pos, t.len)) continue;
+    if (t.kind === "macro") {
+      const pos = effectDecls.get(t.name);
+      return pos === undefined ? null : nameLoc(uri, pos, t.name.length);
+    }
+    if (t.kind === "type") {
+      const pos = aliasDecls.get(t.name);
+      return pos === undefined ? null : nameLoc(uri, pos, t.name.length);
+    }
+  }
+  const bs = binders(prog);
+  for (const b of bs)
+    if (inTok(b.pos, b.len)) return nameLoc(uri, b.pos, b.len);
+  let ref: string | undefined;
+  for (const e of prog.nodes) {
+    if (e.t === "sym" && e.pos !== undefined && inTok(e.pos, e.v.length)) { ref = e.v; break; }
+    if (e.t === "assign" && e.pos !== undefined && inTok(e.pos, e.name.length)) { ref = e.name; break; }
+  }
+  if (ref === undefined || ref === "_") return null;
+  const b = bs.find(b => b.name === ref);
+  return b === undefined ? null : nameLoc(uri, b.pos, b.len);
+}
+
 export function startLsp(): void {
   const connection = createConnection(ProposedFeatures.all, process.stdin, process.stdout);
   const docs = new Map<string, string>();
@@ -203,6 +292,7 @@ export function startLsp(): void {
     capabilities: {
       textDocumentSync: TextDocumentSyncKind.Full,
       hoverProvider: true,
+      definitionProvider: true,
       semanticTokensProvider: {
         legend: {tokenTypes: [...TOKEN_KINDS], tokenModifiers: []},
         full: true,
@@ -226,6 +316,10 @@ export function startLsp(): void {
   connection.onHover(p => {
     const src = docs.get(p.textDocument.uri);
     return src === undefined ? null : hoverAt(src, p.position.line, p.position.character);
+  });
+  connection.onDefinition(p => {
+    const src = docs.get(p.textDocument.uri);
+    return src === undefined ? null : definitionAt(p.textDocument.uri, src, p.position.line, p.position.character);
   });
   connection.languages.semanticTokens.on((p: SemanticTokensParams): SemanticTokens => {
     const src = docs.get(p.textDocument.uri);

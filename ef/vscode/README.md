@@ -1,6 +1,6 @@
 # ef Language Support
 
-Syntax highlighting, checker diagnostics, and hover types for
+Syntax highlighting, checker diagnostics, hover types, and go-to-definition for
 [ef](https://github.com/rprtr258/lish/tree/master/ef) — a tiny statically-typed
 language with algebraic effects and effect handlers.
 
@@ -9,6 +9,8 @@ language with algebraic effects and effect handlers.
 - **Diagnostics** — the document is parsed and typechecked on every change;
   the checker is fail-fast, so at most one error shows at a time.
 - **Hover types** — inferred types of top-level bindings and builtins.
+- **Go-to-definition** — value names jump to their unique binding, effect
+  names to their `effect` declaration, alias names to their alias item.
 
 The language server is bundled (built from the compiler's `lsp.ts`); nothing
 else to install. The same server also runs standalone as `ef lsp` for other
