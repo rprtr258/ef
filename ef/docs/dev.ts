@@ -3,12 +3,23 @@
 // inside docs/): open tabs long-poll /__reload and reload themselves after
 // each successful rebuild.
 import {watch} from "node:fs";
+import {readFile} from "node:fs/promises";
 import {build} from "./build.ts";
 
 await build();
 
 const port = 8918;
 const root = new URL("./dist", import.meta.url).pathname;
+
+// Bun.file responses set content-type from the extension; readFile responses
+// don't, and browsers refuse stylesheets/module scripts served as a binary
+// type — so name the types for the dist/ assets actually served here.
+const MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".map": "application/json",
+};
 
 let version = 0;
 const waiters: Array<() => void> = [];
@@ -33,15 +44,17 @@ Bun.serve({
     }
     const rel = p === "/" ? "/index.html" : p;
     if (rel === "/index.html") {
-      const html = await Bun.file(root + rel).text();
+      const html = await readFile(root + rel, "utf8");
       return new Response(html.replace("</body>", `${reloadScript(version)}</body>`), {
         headers: {"content-type": "text/html; charset=utf-8", "cache-control": "no-store"},
       });
     }
-    const file = Bun.file(root + rel);
-    if (await file.exists())
-      return new Response(file);
-    return new Response("not found", {status: 404});
+    try {
+      const type = MIME[rel.slice(rel.lastIndexOf("."))] ?? "application/octet-stream";
+      return new Response(await readFile(root + rel), {headers: {"content-type": type}});
+    } catch {
+      return new Response("not found", {status: 404});
+    }
   },
 });
 

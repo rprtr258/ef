@@ -2,12 +2,23 @@
 // `bun run dev` inside playground/. Open tabs reload themselves after each
 // successful rebuild (long-poll on /__reload).
 import {watch} from "node:fs";
+import {readFile} from "node:fs/promises";
 import {build} from "./scripts/build.ts";
 
 if (!await build()) process.exit(1);
 
 const port = 8917;
 const root = new URL("./dist", import.meta.url).pathname;
+
+// Bun.file responses set content-type from the extension; readFile responses
+// don't, and browsers refuse stylesheets/module scripts served as a binary
+// type — so name the types for the dist/ assets actually served here.
+const MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".map": "application/json",
+};
 
 // Live-reload: the served index.html polls /__reload?v=<version>; the request
 // hangs until the next successful rebuild bumps the version, then the page
@@ -37,15 +48,17 @@ Bun.serve({
     if (rel === "/index.html") {
       // Injected per request (dev only — dist/index.html stays clean) and sent
       // uncached, so a reload always re-bakes the current version.
-      const html = await Bun.file(root + rel).text();
+      const html = await readFile(root + rel, "utf8");
       return new Response(html.replace("</body>", `${reloadScript(version)}</body>`), {
         headers: {"content-type": "text/html; charset=utf-8", "cache-control": "no-store"},
       });
     }
-    const file = Bun.file(root + rel);
-    if (await file.exists())
-      return new Response(file);
-    return new Response("not found", {status: 404});
+    try {
+      const type = MIME[rel.slice(rel.lastIndexOf("."))] ?? "application/octet-stream";
+      return new Response(await readFile(root + rel), {headers: {"content-type": type}});
+    } catch {
+      return new Response("not found", {status: 404});
+    }
   },
 });
 

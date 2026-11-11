@@ -5,6 +5,7 @@
 // imports); node:/bun: builtins are skipped, dynamic import() counts too.
 import {builtinModules} from "node:module";
 import {existsSync, statSync} from "node:fs";
+import {readFile} from "node:fs/promises";
 import {dirname, join, relative, resolve} from "node:path";
 import pkgJson from "../package.json";
 
@@ -44,7 +45,7 @@ async function walk(abs: string, from: string): Promise<void> {
   if (!existsSync(abs) || !statSync(abs).isFile()) {
     throw new Error(`unresolved import "${abs}" (from ${relative(process.cwd(), from)})`);
   }
-  for (const {path: spec} of transpiler.scanImports(await Bun.file(abs).text())) {
+  for (const {path: spec} of transpiler.scanImports(await readFile(abs, "utf8"))) {
     if (spec.startsWith(".") || spec.startsWith("/")) {
       await walk(resolveRel(abs, spec), abs);
     } else if (!spec.startsWith("node:") && !builtins.has(spec)) {

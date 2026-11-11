@@ -8,8 +8,9 @@
 // the playground's palette with no manual sync. site.css supplies the
 // docs-specific layout and prose styles on top of those tokens.
 
-import {mkdirSync, rmSync} from "node:fs";
-import {join} from "node:path";
+import {mkdirSync, rmSync, writeFileSync} from "node:fs";
+import {readFile} from "node:fs/promises";
+import {join, dirname} from "node:path";
 import {marked} from "marked";
 
 const here = (...p: string[]) => join(import.meta.dir, ...p);
@@ -87,7 +88,7 @@ const THEME_BTN = `<button id="theme-btn" class="tb-btn icon" title="toggle them
 // docs must not inherit, e.g. body{overflow:hidden}). Throws when the file's
 // shape changes: a failed build beats silently unstyled docs.
 async function studioTokens(): Promise<string> {
-  const css = await Bun.file(here("../playground/studio.css")).text();
+  const css = await readFile(here("../playground/studio.css"), "utf8");
   const blocks = css.match(/^(?::root|\[data-theme="dark"\]) \{[\s\S]*?\n\}/gm);
   if (blocks === null || blocks.length !== 2)
     throw new Error("could not extract :root / [data-theme] token blocks from playground/studio.css");
@@ -174,19 +175,21 @@ ${body}
 
 export async function build(): Promise<Map<string, string>> {
   const tokens = await studioTokens();
-  const siteCss = `${tokens}\n\n${await Bun.file(here("site.css")).text()}`;
+  const siteCss = `${tokens}\n\n${await readFile(here("site.css"), "utf8")}`;
 
   rmSync(dist, {recursive: true, force: true});
   mkdirSync(dist, {recursive: true});
-  await Bun.write(join(dist, "site.css"), siteCss);
+  writeFileSync(join(dist, "site.css"), siteCss);
 
   const out = new Map<string, string>();
   for (const page of ALL_PAGES) {
-    const md = await Bun.file(here("content", page.file)).text();
+    const md = await readFile(here("content", page.file), "utf8");
     slugCounts.clear();
     const body = rewriteLinks(await marked.parse(md));
     const html = renderPage(page, body);
-    await Bun.write(join(dist, outPath(page)), html);
+    // Bun.write used to create parent dirs implicitly (createPath); writeFileSync needs them explicit
+    mkdirSync(dirname(join(dist, outPath(page))), {recursive: true});
+    writeFileSync(join(dist, outPath(page)), html);
     out.set(page.file, html);
   }
   console.log(`built docs → ${dist} (${ALL_PAGES.length} pages)`);

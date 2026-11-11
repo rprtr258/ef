@@ -42,6 +42,15 @@ export default defineConfig([
         selector: "TSInterfaceDeclaration",
         message: "interface is prohibited; use a type alias.",
       }],
+      "no-restricted-properties": ["error", {
+        object: "Bun",
+        property: "write",
+        message: "Bun.write is prohibited; use writeFileSync from node:fs.",
+      }, {
+        object: "Bun",
+        property: "file",
+        message: "Bun.file is prohibited; use readFile/readFileSync from node:fs.",
+      }],
       "@stylistic/semi": ["error", "always"],
       "@stylistic/member-delimiter-style": ["error", {
         "multiline": {delimiter: "comma", requireLast: true},

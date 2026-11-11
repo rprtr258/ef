@@ -4,6 +4,7 @@
 // are reachable only through unhandled-effect default paths the playground
 // preempts (see src/shim.ts + src/bridge.ts).
 import {copyFileSync, mkdirSync} from "node:fs";
+import {readFile} from "node:fs/promises";
 import {join} from "node:path";
 const here = (p: string) => join(import.meta.dir, p);
 const dist = here("../dist");
@@ -61,7 +62,7 @@ copyFileSync(here("../studio.css"), join(dist, "studio.css"));
 // the entry one or the editor renders without its stylesheet (unclipped,
 // overlapping the shell). Shared-chunk css (chunk-*) duplicates the entry css
 // and loads with its lazy chunk, so only entry-level css is checked.
-const html = await Bun.file(join(dist, "index.html")).text();
+const html = await readFile(join(dist, "index.html"), "utf8");
 for (const f of await Array.fromAsync(new Bun.Glob("*.css").scan({cwd: dist})))
   if (!f.startsWith("chunk-") && !html.includes(f))
     console.warn(`WARNING: ${f} emitted but not referenced by index.html`);
