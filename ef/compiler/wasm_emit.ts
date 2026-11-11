@@ -325,11 +325,16 @@ function emitTypedPair(em: Emit, id: ExprID): void {
     const cuf = cplane === "i32" ? 13 : cplane === "i64" ? 14 : cplane === "f32" ? 15 : 16;
     const carr = cuf + 4;
     const uf = f.typed(_T.RF[cuf]);
-    b.refNull(4);
-    b.i32Const(frameSizeOf(em.ix, cs));
-    b.arrayNew(carr);
-    b.structNew(cuf);
-    b.localSet(uf);
+    const cfsz = frameSizeOf(em.ix, cs);
+    const allocUf = (): void => {
+      b.refNull(4);
+      b.i32Const(cfsz);
+      b.arrayNew(carr);
+      b.structNew(cuf);
+      b.localSet(uf);
+    };
+    if (tail) allocUf();
+    else poolCheckout(em, f, cuf, cfsz, uf, allocUf);
     const args = e2.args.map(a => tValue(a, s2));
     for (let k = 0; k < args.length; k++) {
       b.localGet(uf);
@@ -348,14 +353,16 @@ function emitTypedPair(em: Emit, id: ExprID): void {
     b.localGet(uf);
     b.refNull(5);
     b.callFn(em.ix.lambdaIdx.get(calleeId)!);
+    const t = f.anyref();
+    b.localSet(t);
+    poolReturn(em, f, cuf, cfsz, uf);
     if (e2.numKind === undefined || !SIX.has(e2.numKind)) {
-      const t = f.anyref();
-      b.localSet(t);
       return {l: t, w: "any"};
     }
+    b.localGet(t);
     return unboxAny(e2.numKind);
   };
-  const callBoxed = (e2: Expr & {t: "app"}, direct: {idx: number, fsize: number}, s2: Scope, tail: boolean): Raw => {
+  const callBoxed = (e2: Expr & {t: "app"}, direct: {idx: number, fsize: number}, s2: Scope, tail: boolean, pool = false): Raw => {
     emitCallClosure(em, f, 0, e2.args.length, (k, ffp) => {
       const r = tValue(e2.args[k], s2);
       b.localGet(ffp);
@@ -364,7 +371,7 @@ function emitTypedPair(em: Emit, id: ExprID): void {
       b.i32Const(k);
       boxRaw(r);
       b.arraySet();
-    }, {tail, land: false, kL: 1, direct});
+    }, {tail, land: false, kL: 1, direct, pool});
     if (tail) return {l: 0, w: "tail"};
     const t = f.anyref();
     b.localSet(t);
@@ -431,7 +438,7 @@ function emitTypedPair(em: Emit, id: ExprID): void {
     return callBoxed(e2, {
       idx: em.ix.builtinFnIdx.get(fne.v)!,
       fsize: bi.params + mapLikeFrameWords(fne.v),
-    }, s2, tail);
+    }, s2, tail, true);
   };
   const tBool = (wid: ExprID, s2: Scope): number => {
     const e2 = em.nodes[wid];
@@ -1411,6 +1418,7 @@ type CallOpts = {
   kL?: number,         // the ambient continuation local (default 1)
   landA?: number,      // explicit per-iteration land cell (map/each/flatmap)
   direct?: {idx: number, fsize: number, envClo?: boolean}, // direct builtin: static funcref + fsize
+  pool?: boolean,      // pool the call frame (direct builtin sites only)
 };
 
 function constLambdaOf(d: Discovery, s: Scope, name: string): {id: ExprID, free: boolean} | undefined {
@@ -1420,8 +1428,84 @@ function constLambdaOf(d: Discovery, s: Scope, name: string): {id: ExprID, free:
   return undefined;
 }
 
+// Frame pooling seam. WHAT: free lists keyed by (frame shape, EXACT
+// slot-array length), one mutable module-global pair per bucket (a $ELEMS
+// list lazily allocated on first return + an i32 count, growth capped at
+// POOL_CAP — surplus frames are dropped to the GC). POOLED: the typed $UF_*
+// call frames of callTyped (returned the moment the k=null call's value
+// lands) and the boxed $FRAME call frames of direct builtin calls (returned
+// right after the k=0 call returns — builtin trampolines never capture,
+// perform, or read their frame's parent). Sound: a frame is pooled only when
+// its function provably allocates no closure over it (no lambdas reach these
+// frames) and the whole computation containing it has returned — typed calls
+// are statically op-free so nothing walks the k chain through them — and
+// captures copy frames rather than aliasing them (snapWrap's array.copy), so
+// no live reference survives. The length key must be exact because argc
+// readers use array.len (the `list` builtin has fsize 0) and operand slot
+// offsets are positional; pooled frames hold stale slot values instead of
+// arrayNew's zeros, which is safe because every read of these frames follows
+// a write (the checker's params-before-call / lets-before-read discipline).
+const POOL_CAP = 64;
+
+function poolBucket(em: Emit, shape: number, len: number): {list: number, cnt: number} {
+  const key = `${shape}:${len}`;
+  let g = em.lay.poolGlobals.get(key);
+  if (g === undefined) {
+    const base = em.lay.statics.length + em.lay.poolGlobals.size * 2;
+    g = {list: base, cnt: base + 1};
+    em.lay.poolGlobals.set(key, g);
+  }
+  return g;
+}
+
+function poolCheckout(em: Emit, f: Fn, shape: number, len: number, into: number, fresh: () => void): void {
+  const b = f.body;
+  const {list, cnt} = poolBucket(em, shape, len);
+  b.globalGet(cnt, binaryen.i32);
+  b.i32Const(0);
+  b.u8(w.GTS);
+  b.if();
+  b.globalGet(cnt, binaryen.i32);
+  b.i32Const(1);
+  b.u8(w.SUB);
+  b.globalSet(cnt);
+  b.globalGet(list, _T.RF[1]);
+  b.globalGet(cnt, binaryen.i32);
+  b.arrayGet(1);
+  b.refCast(shape, true);
+  b.localSet(into);
+  b.u8(w.ELSE);
+  fresh();
+  b.u8(w.END);
+}
+
+function poolReturn(em: Emit, f: Fn, shape: number, len: number, from: number): void {
+  const b = f.body;
+  const {list, cnt} = poolBucket(em, shape, len);
+  b.globalGet(list, _T.RF[1]);
+  b.u8(0xd1);
+  b.if();
+  b.i32Const(POOL_CAP);
+  b.arrayNew(1);
+  b.globalSet(list);
+  b.u8(w.END);
+  b.globalGet(cnt, binaryen.i32);
+  b.i32Const(POOL_CAP);
+  b.u8(w.LTU);
+  b.if();
+  b.globalGet(list, _T.RF[1]);
+  b.globalGet(cnt, binaryen.i32);
+  b.localGet(from);
+  b.arraySet();
+  b.globalGet(cnt, binaryen.i32);
+  b.i32Const(1);
+  b.u8(w.ADD);
+  b.globalSet(cnt);
+  b.u8(w.END);
+}
+
 export function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, opts: CallOpts = {}): void {
-  const {tail = false, land = false, kL = 1, landA, direct} = opts;
+  const {tail = false, land = false, kL = 1, landA, direct, pool} = opts;
   const b = f.body;
   const clob = f.anyref(), idx = f.i32(), cf = f.anyref(), fs = f.i32(),
     maxL = f.i32(), slots = f.anyref(), ffp = f.anyref();
@@ -1453,22 +1537,28 @@ export function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEm
   // body's lets (fs) or all the args, whichever is longer. (argc readers
   // use array.len instead of a stored argc field — valid only because the
   // sole argc reader is `list`, whose fsize is 0.)
-  b.localGet(fs);
-  b.i32Const(argc);
-  b.localGet(fs);
-  b.i32Const(argc);
-  b.u8(w.GTU);
-  b.u8(w.SELECT);
-  b.localSet(maxL);
-  b.localGet(maxL);
-  b.arrayNew(1);
-  b.localSet(slots);
-  b.localGet(cf);
-  b.refCast(4, true);
-  b.localGet(slots);
-  b.refCast(1, true);
-  b.structNew(4); // {parent, slots}
-  b.localSet(ffp);
+  const allocFrame = (): void => {
+    b.localGet(fs);
+    b.i32Const(argc);
+    b.localGet(fs);
+    b.i32Const(argc);
+    b.u8(w.GTU);
+    b.u8(w.SELECT);
+    b.localSet(maxL);
+    b.localGet(maxL);
+    b.arrayNew(1);
+    b.localSet(slots);
+    b.localGet(cf);
+    b.refCast(4, true);
+    b.localGet(slots);
+    b.refCast(1, true);
+    b.structNew(4); // {parent, slots}
+    b.localSet(ffp);
+  };
+  const poolLen = pool === true && direct !== undefined && !tail && !land
+    ? Math.max(direct.fsize, argc) : -1;
+  if (poolLen >= 0) poolCheckout(em, f, 4, poolLen, ffp, allocFrame);
+  else allocFrame();
   for (let k = 0; k < argc; k++) argEmit(k, ffp);
   b.localGet(ffp);
   b.refCast(4, true); // the call's frame param (ffp is an anyref local)
@@ -1531,6 +1621,12 @@ export function emitCallClosure(em: Emit, f: Fn, fc: number, argc: number, argEm
   } else {
     b.u8(tail || land ? w.RETURN_CALL : w.CALL); // direct: fn index is static, not a stack operand
     b.lebU(direct.idx);
+  }
+  if (poolLen >= 0) {
+    const res = f.anyref();
+    b.localSet(res);
+    poolReturn(em, f, 4, poolLen, ffp);
+    b.localGet(res);
   }
   if (splitAt !== null) {
     // Fill the rest-of-site fragment directly at the land call site.
@@ -2487,6 +2583,7 @@ export function expr(em: Emit, id: ExprID, f: Fn, sc?: Scope, tail = false, ctx:
           land: em.d.landCalls.has(id),
           kL: ctx.kL,
           direct: {idx: em.ix.builtinFnIdx.get(bname)!, fsize: bi.params + mapLikeFrameWords(bname)},
+          pool: true,
         });
       } else {
         // Direct user call: a callee sym bound by a `::` const whose value

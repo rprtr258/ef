@@ -451,7 +451,8 @@ export class Buf {
   readBoxPayload(ht: number): void { this.refCast(ht, false); this.structGet(ht, 0); }
   localGet(i: number): void { this.push(MOD.local.get(i, this.localType(i))); }
   localSet(i: number): void { this.stmt(MOD.local.set(i, this.pop())); }
-  globalGet(gi: number): void { this.push(MOD.global.get(`g${gi}`, binaryen.anyref)); }
+  globalGet(gi: number, t: binaryen.Type = binaryen.anyref): void { this.push(MOD.global.get(`g${gi}`, t)); }
+  globalSet(gi: number): void { this.stmt(MOD.global.set(`g${gi}`, this.pop())); }
   // Control-scope openers: opcode + blocktype immediate in one call
   // (0x40 void, 0x7f i32, 0x7e i64, 0x6e anyref).
   block(bt = 0x40): void { this.u8(w.BLOCK); this.u8(bt); }

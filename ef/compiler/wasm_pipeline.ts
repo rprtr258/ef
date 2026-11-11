@@ -179,6 +179,7 @@ export type Layout = {
   strStatics: Map<string, number>,   // literal value → static global idx
   cloOffsets: Map<string, number>,   // builtin name → static $CLO global idx
   hdlTableOff: Map<ExprID, number>,  // handle → case-table static global idx
+  poolGlobals: Map<string, {list: number, cnt: number}>,
 };
 
 // --- phase functions ---------------------------------------------------------
@@ -845,6 +846,7 @@ export function layoutStatics(d: Discovery, ix: Indices, o: Opt): Layout {
     strStatics: new Map(),
     cloOffsets: new Map(),
     hdlTableOff: new Map(),
+    poolGlobals: new Map(),
   };
   // Number literals (deduped by width + value; the Discovery keys carry both).
   for (const [k, w] of d.numLits) {
@@ -978,6 +980,10 @@ export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]
   // expression (§5) — instantiation builds the value, no runtime fill.
   for (let i = 0; i < lay.statics.length; i++)
     m.addGlobal(`g${i}`, binaryen.anyref, false, staticInit(m, lay.statics[i]));
+  for (const g of lay.poolGlobals.values()) {
+    m.addGlobal(`g${g.list}`, _T.RF[1], true, m.ref.null(w.heapTypes(1).n));
+    m.addGlobal(`g${g.cnt}`, binaryen.i32, true, m.i32.const(0));
+  }
   // table + functions + identity element segment (slot i → func i).
   const total = o.liveImports.length + funcs.length;
   m.addTable("t0", total, total);
