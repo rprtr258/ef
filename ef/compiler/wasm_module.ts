@@ -5,8 +5,8 @@
 import {BUILTINS} from "./analysis.ts";
 import {WasmError} from "./wasm_types.ts";
 import {Buf, Fn} from "./wasm_body.ts";
-import {type Emit, emitCallClosure, emitDispatch, emitFail, i31of, ladderBody, makeRestThunk, selectBool, NUM64_ARMS} from "./wasm_emit.ts";
-import {mainFrameSize} from "./wasm_term.ts";
+import {type Emit, emitCallClosure, emitDirectEntryCall, emitDispatch, emitFail, i31of, ladderBody, makeRestThunk, selectBool, NUM64_ARMS} from "./wasm_emit.ts";
+import {mainFrameSize, rebox} from "./wasm_term.ts";
 import * as w from "./wasm_consts.ts";
 
 // Σ over the n per-element cells in backing `src` (viewed at offset `off`):
@@ -770,7 +770,12 @@ function emitMapLike(em: Emit, f: Fn, name: string): void {
     tb.callFn(em.ix.fBox);
     tb.arraySet();
     tb.localGet(0);
-    t.pushRef(em.lay.unitRef);
+    // The unit arg must ride the $I64 box: the loopEntry thunk's frame
+    // build reads its param as a stamped i64 (pushAtom's lit path). The
+    // unitRef static is an $F64 box — wrong shape here (and an anyref
+    // under the f64-param fBox misvalidates).
+    tb.i64Const(0n);
+    rebox(em, t, "i64");
     tb.localGet(2);
     tb.u8(w.RETURN_CALL);
     tb.lebU(loopEntry.idx);
@@ -778,6 +783,9 @@ function emitMapLike(em: Emit, f: Fn, name: string): void {
 
   // Loop entry: done → finalize (box the result / flatmap copy) and
   // dispatch through this thunk's k; else call the callback on element i.
+  // The back-edge's unit arg rides the $I64 box: the letk-thunk's frame
+  // build reads its param as a stamped i64 (pushAtom's lit path), so the
+  // raw null (a frame parent) would misvalidate struct.new.
   {
     const t = loopEntry, tb = t.body;
     const xd = t.anyref(), xo = t.i32(), n = t.i32(), iL = t.i32(), fc = t.anyref();
@@ -821,14 +829,16 @@ function emitMapLike(em: Emit, f: Fn, name: string): void {
     tb.u8(w.ELSE);
     // Iteration: elem = xs[i] (through the view's window); the callback's
     // RET cell lands in iterLand (landA) over this thunk's frame, with
-    // next = this thunk's k.
+    // next = this thunk's k. The callback closure's flag picks the entry
+    // ABI: direct entries return their value — land it in iterLand here;
+    // CPS entries take the generic land-cell call.
     t.slot(0);
     tb.localSet(fc);
     const elem = t.anyref();
     t.elemAddrOff(xd, iL, xo);
     tb.arrayGet(1);
     tb.localSet(elem);
-    emitCallClosure(t, fc, name === "map" ? 1 : 2, (k, ffp) => {
+    const cbArgs = (k: number, ffp: number): void => {
       // Suspension-safe as-is: elem/iL are locals set before the call, and
       // fBox cannot suspend, so no operand spans a suspension point.
       tb.localGet(ffp); tb.refCast(4, true); tb.structGet(4, 1);
@@ -840,10 +850,22 @@ function emitMapLike(em: Emit, f: Fn, name: string): void {
         tb.callFn(em.ix.fBox);
       }
       tb.arraySet();
-    }, {land: true, kL: 2, landA: iterLand.idx});
+    };
+    const argc = name === "map" ? 1 : 2;
+    const cbFlag = t.i32();
+    tb.localGet(fc); tb.refCast(6, true); tb.structGet(6, 3); tb.i31Get();
+    tb.localSet(cbFlag);
+    tb.localGet(cbFlag);
+    tb.if();
+    emitDirectEntryCall(em, t, fc, argc, cbArgs, {kind: "land", landA: iterLand.idx, kL: 2});
+    tb.u8(w.UNREACHABLE); // the land dispatch always tails
+    tb.u8(w.ELSE);
+    emitCallClosure(t, fc, argc, cbArgs, {land: true, kL: 2, landA: iterLand.idx});
     tb.u8(w.UNREACHABLE); // the callback always tails into iterLand
     tb.u8(w.END);
-    tb.u8(w.UNREACHABLE); // both if arms diverge; keep the implicit end typed
+    tb.u8(w.UNREACHABLE); // both flag arms diverge
+    tb.u8(w.END);
+    tb.u8(w.UNREACHABLE); // both iteration arms diverge; keep the implicit end typed
   }
   // Entry (this builtin Fn): allocate the result array, init the counter,
   // tail-call the loop entry. n comes from the wrapper's len field (the
@@ -868,7 +890,9 @@ function emitMapLike(em: Emit, f: Fn, name: string): void {
   b.callFn(em.ix.fBox);
   b.arraySet();
   b.localGet(0);
-  f.pushRef(em.lay.unitRef);
+  // See loopEntry: the unit arg rides the $I64 box, not the unitRef static.
+  b.i64Const(0n);
+  rebox(em, f, "i64");
   b.localGet(1);
   b.u8(w.RETURN_CALL);
   b.lebU(loopEntry.idx);

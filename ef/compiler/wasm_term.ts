@@ -45,8 +45,8 @@ import {WasmError, _T, type ValueRef} from "./wasm_types.ts";
 import {BUILTINS} from "./analysis.ts";
 import {DBGTRACE} from "./wasm_tables.ts";
 import {type CIr, type CTerm, type CAtom, type CPrim} from "./cps_ir.ts";
-import {Fn} from "./wasm_body.ts";
-import {type Emit, emitDispatch, emitCaseScan, selectBool, emitFail, i31of, makeRestThunk, cellGet, CMP_OPS, emitCallClosure, tracePoint} from "./wasm_emit.ts";
+import {type Buf, Fn} from "./wasm_body.ts";
+import {type Emit, emitDispatch, emitCaseScan, selectBool, emitFail, i31of, makeRestThunk, cellGet, CMP_OPS, emitCallClosure, emitDirectEntryCall, tracePoint} from "./wasm_emit.ts";
 
 // ---------------------------------------------------------------------------
 // Static scope: frame-slot resolution mirroring the interpreter's Env chain.
@@ -129,7 +129,7 @@ type AScope = CTerm & {t: "scope"} & {__p?: ScopeP};
 type DcallP = {
   entryScope?: TScope,       // thunk rest base: [entry, F_n, ...site]
   bodyEsc?: Set<string>,     // the rest's own escape set
-  fnLvl?: TLevel,            // the cell's frame (zero slots; a chain link)
+  fnLvl?: TLevel,            // the cell's frame (F_n)
   thunk?: Fn,                // created at emission
 };
 type ADcall = CTerm & {t: "dcall"} & {__p?: DcallP};
@@ -158,7 +158,9 @@ function numberLetks(t: CTerm, opKs: Set<string>, at: Map<string, {enter: number
       break;
     case "dcall":
       // The rest runs inside a thunk: its k operands must materialize their
-      // targets like any other cross-unit reference.
+      // targets like any other cross-unit reference. Register the rest's
+      // letks BEFORE the operand scan — the rest's spine shares the site's
+      // numbering scope (its letk ranges stay inside this range).
       numberLetks(t.rest, opKs, at, st);
       break;
     case "call": case "perform":
@@ -334,9 +336,10 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
         break;
       case "dcall": {
         const ad = t as ADcall;
-        // The rest runs inside a thunk over its own activation frame: entry
-        // holds the result slot (slot 0); fl is the cell's frame — a
-        // zero-slot chain link in the materialized letk's F_n role.
+        // The rest runs in the cell's activation frame: entry holds the
+        // result slot, fl is the cell's frame (F_n) — the CPS-entry thunk
+        // allocates the activation over the captured F_n; the direct-entry
+        // path dispatches its result through the same cell.
         const fl = lvl();
         const entry = lvl();
         addSlot(entry, t.name);
@@ -392,6 +395,9 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
 
 export type TermPlan = {
   cfnBase: Map<number, TScope>,
+  // per-CFn direct classification (mkfn emission stamps the $CLO flag; the
+  // emitCfns split picks the entry ABI)
+  cfnDirect: boolean[],
   hdlOrder: AHandle[],
   caseCount: number,
   idRetCount: number,
@@ -423,7 +429,7 @@ export function planIr(ir: CIr): TermPlan {
       throw new WasmError(`internal: lambda ${[...pending][0]} has no mkfn site`);
   }
   return {
-    cfnBase: cx.cfnBase, hdlOrder: cx.hdlOrder,
+    cfnBase: cx.cfnBase, cfnDirect: ir.funcs.map(fn => fn.direct === true), hdlOrder: cx.hdlOrder,
     caseCount: cx.caseCount, idRetCount: cx.idRetCount, retResCount: cx.retResCount,
     globalLvl,
   };
@@ -449,10 +455,44 @@ type Walk = {
   // (the cell's next = the fresh-HDL chain → k2), never the frozen frame
   // slot (which still holds the original handle's HDL cell).
   retName?: string,
+  // Direct-ABI function body (T_DABI, no k): dret returns the boxed value
+  // directly; the kL local is a never-set (null) $K ref so the generic
+  // land-cell paths terminate in a plain return.
+  directFn?: true,
+  // Thunks created inside a direct fn: their thunks' cells chain to a
+  // terminal return-cell instead of the raw null kL (a null next would
+  // fire emitDispatch's null-k inside void arms — see emitDcallThunk).
+  kTerminal?: true,
 };
 
+// The next-pointer operand for a dcall's synthesized cell: the ambient
+// chain head — but inside a DIRECT fn that is the never-set null local, and
+// a null next makes the completion's dret fire emitDispatch's null-k inside
+// void arms (a while's condition). Chain to the per-compile terminal cell
+// instead: a K_RET whose fragment just returns its param — the completion's
+// value unwinds as each fragment's result.
+function cellNextE(wk: Walk, b: Buf): void {
+  if (wk.kTerminal === true) {
+    b.globalGet(wk.em.lay.terminalCellG, binaryen.anyref);
+    return;
+  }
+  b.localGet(wk.kL);
+}
+
 function pushAtom(wk: Walk, a: CAtom): void {
-  const f = wk.f;
+  const f = wk.f;  // A stamped UNIT literal must BOX: its raw JS null pushes as ref.null any
+  // (a frame parent — poison for a frame slot). Box a zero payload at the
+  // stamp's shape directly — unit carries no payload, so zero bits are
+  // fine (and the unitRef global would type-mismatch structNew's pop).
+  if (a.t === "lit" && a.v === null && a.stamp !== undefined) {
+    if (a.stamp === "f64") f.body.f64Const(0);
+    else if (a.stamp === "i64" || a.stamp === "u64") f.body.i64Const(0n);
+    else f.body.i32Const(0); // f32's $F32 box is never a unit carrier —
+    // unit stamps only ride i64 (the while chains) — the i32 const covers
+    // the remaining int shapes' structNew pops
+    rebox(wk.em, f, a.stamp);
+    return;
+  }
   if (a.t === "var" && a.stamp !== undefined) pushStampedVar(wk, a);
   else f.pushRef(atomRef(wk, a));
 }
@@ -535,7 +575,7 @@ function boxShapeOf(wkn: string): number {
 }
 
 // Box the width-typed value on the stack (the f64 plane rides $box).
-function rebox(em: Emit, f: Fn, wkn: string): void {
+export function rebox(em: Emit, f: Fn, wkn: string): void {
   if (wkn === "f64") f.body.callFn(em.ix.fBox);
   else f.body.structNew(boxShapeOf(wkn));
 }
@@ -557,6 +597,7 @@ function storeAt(wk: Walk, d: number, i: number, v: number): void {
   b.localGet(v);
   b.arraySet();
 }
+
 
 // Fresh child frame with `size` slots (parent = the current frame). The
 // local is $FRAME-typed (struct.get on an anyref-typed expression fails
@@ -1017,8 +1058,9 @@ function resolveK(wk: Walk, a: CAtom): KRef {
 function emitTerm(wk: Walk, t: CTerm): void {
   const em = wk.em, f = wk.f, b = f.body;
   // One host call per term-node entry (EFTRACE=1); the host prints the
-  // ring buffer when a trap escapes.
-  tracePoint(wk.em, f, `f${f.fid}(idx${f.idx}) ${t.t}`);
+  // ring buffer when a trap escapes. A direct body's dret marks the
+  // boundary completion (a leaked dret there traps — label it).
+  tracePoint(wk.em, f, `f${f.fid}(idx${f.idx}) ${t.t}${t.t === "dret" && wk.directFn ? ":direct" : ""}`);
   switch (t.t) {
     case "letk": {
       const al = t as ALetk;
@@ -1053,7 +1095,8 @@ function emitTerm(wk: Walk, t: CTerm): void {
         b.i32Const(thunk.idx);
         b.refI31();
         b.localGet(fpN);
-        b.localGet(wk.kL);
+        cellNextE(wk, b); // the terminal cell inside a direct fn: a raw
+        // null next fires the null-k yield inside void arms on completion
         b.refCast(5, true); // $K.next is $K-typed
         b.structNew(5);
         b.localSet(cell);
@@ -1134,6 +1177,10 @@ function emitTerm(wk: Walk, t: CTerm): void {
       b.localGet(0); // the captured frame
       b.i32Const(baseScope[0].size);
       b.refI31();
+      // direct flag: the closure's entry ABI (T_DABI when the function
+      // classified direct)
+      b.i32Const(wk.em.plan.cfnDirect[t.fun] === true ? 1 : 0);
+      b.refI31();
       b.structNew(6);
       b.localSet(clo);
       storeAt(wk, 0, wk.ts[0].slots.get(t.name)!, clo);
@@ -1151,7 +1198,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
       }
       const kref = resolveK(wk, t.k);
       if (kref.kind === "label") throw new WasmError("internal: call k must be materialized");
-      emitCallClosure(f, fc, t.args.length, (k, ffp) => {
+      const argEmit = (k: number, ffp: number): void => {
         const r = f.anyref();
         pushAtom(wk, t.args[k]);
         b.localSet(r);
@@ -1161,7 +1208,34 @@ function emitTerm(wk: Walk, t: CTerm): void {
         b.i32Const(k);
         b.localGet(r);
         b.arraySet();
-      }, {tail: true, kL: kref.local, direct});
+      };
+      if (direct !== undefined) {
+        emitCallClosure(f, fc, t.args.length, argEmit, {tail: true, kL: kref.local, direct});
+        break;
+      }
+      // Unknown callee kind: the $CLO flag picks the entry ABI. A direct
+      // entry returns its value — dispatch it through the site's continuation
+      // here; a CPS entry takes the generic tail call.
+      const flag = f.i32();
+      b.localGet(fc);
+      b.refCast(6, true);
+      b.structGet(6, 3);
+      b.i31Get();
+      b.localSet(flag);
+      b.localGet(flag);
+      // Void arms: both diverge (the direct arm's dispatch yield is
+      // dynamically dead — its null-k path returns the value; leftovers the
+      // Buf drops are unreachable code). The scope counts in br-depth
+      // arithmetic: track it for jumps inside the arms.
+      b.if();
+      wk.depth++;
+      emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "k", kL: kref.local});
+      b.u8(w.RETURN); // the dispatch's null-k yield: the site's value
+      b.u8(w.ELSE);
+      emitCallClosure(f, fc, t.args.length, argEmit, {tail: true, kL: kref.local});
+      b.u8(w.END);
+      wk.depth--;
+      b.u8(w.UNREACHABLE); // both arms diverge (tail call / the dispatch's return)
       break;
     }
     case "perform":
@@ -1237,51 +1311,42 @@ function emitTerm(wk: Walk, t: CTerm): void {
     }
     case "halt": {
       // The program boundary: run() called main (the only non-tail call in
-      // the chain), so a plain return lands the program result there.
+      // the chain), so a plain return lands the program result there. A
+      // unit-literal result rides the canonical null box (the tagged-null
+      // unit the interpreter echoes) — pushAtom's stamped path would
+      // surface a $I64 0 that hostUnbox shows as "0".
       const v = f.anyref();
-      pushAtom(wk, t.v);
+      if (t.v.t === "lit" && t.v.v === null) f.pushRef(em.lay.unitRef);
+      else pushAtom(wk, t.v);
       b.localSet(v);
       b.localGet(v);
       b.u8(w.RETURN);
       break;
     }
     case "dret": {
-      // Direct-function boundary: deliver through the ambient chain head —
-      // the same dispatch a `jump $ret` resolves to (local 1 in fn bodies,
-      // kNext in thunks).
+      // Direct-function boundary: the boxed value IS the return. In a direct
+      // body the kL local is never set (null), so dispatch would immediately
+      // take its null-k branch — return straight away. Everywhere else
+      // (thunks over CPS regions) the ambient chain head is real.
       const v = f.anyref();
       pushAtom(wk, t.v);
       b.localSet(v);
-      emitDispatch(em, f, v, wk.kL);
+      if (wk.directFn === true) {
+        b.localGet(v);
+        b.u8(w.RETURN);
+      } else {
+        emitDispatch(em, f, v, wk.kL);
+      }
       break;
     }
     case "dcall": {
       const p = (t as ADcall).__p!;
-      const direct = directBuiltin(wk, t.fn);
-      const fc = f.anyref();
-      if (direct === undefined) {
-        pushAtom(wk, t.fn);
-        b.localSet(fc);
-      }
-      // Synthesized continuation: a rest thunk + RET cell (the materialized
-      // letk's shape; no freeze — dcall never suspends). The call tails into
-      // the callee with this cell as its continuation; the callee's
-      // completion (its dret, or a CPS body's $ret dispatch) stores the
-      // result and runs rest.
-      const thunk = makeRestThunk(em, "dcall:" + t.name);
-      p.thunk = thunk;
-      emitDcallThunk(wk, thunk, t, p);
-      const fpN = extendFrame(wk, p.fnLvl!.size);
-      const cell = f.anyref();
-      b.i31Const(w.K_RET);
-      b.i32Const(thunk.idx);
-      b.refI31();
-      b.localGet(fpN);
-      b.localGet(wk.kL);
-      b.refCast(5, true); // $K.next is $K-typed
-      b.structNew(5);
-      b.localSet(cell);
-      emitCallClosure(f, fc, t.args.length, (k, ffp) => {
+      // Tail shape: the rest delivers the dcall's own result to the boundary
+      // (dret in a direct body, halt in main) — the direct path can
+      // return_call, keeping tail recursion O(1) on the wasm stack.
+      const tailDret = (t.rest.t === "dret" || t.rest.t === "halt") &&
+        t.rest.v.t === "var" && t.rest.v.name === t.name;
+      const argEmit = (k: number, ffp: number): void => {
         const r = f.anyref();
         pushAtom(wk, t.args[k]);
         b.localSet(r);
@@ -1291,7 +1356,85 @@ function emitTerm(wk: Walk, t: CTerm): void {
         b.i32Const(k);
         b.localGet(r);
         b.arraySet();
-      }, {tail: true, kL: cell, direct});
+      };
+      const direct = directBuiltin(wk, t.fn);
+      const fcb = direct === undefined ? f.anyref() : -1;
+      if (direct === undefined) {
+        pushAtom(wk, t.fn);
+        b.localSet(fcb);
+      }
+      if (direct !== undefined) {
+        // Builtin trampolines are T_KABI (no dual entries): the generic
+        // land-cell path — builtin closures carry flag 0.
+        const fpN2 = extendFrame(wk, p.fnLvl!.size);
+        const thunk = makeRestThunk(em, "dcall:" + t.name);
+        p.thunk = thunk;
+        emitDcallThunk(wk, thunk, t, p);
+        const cell = f.retCell(thunk.idx, () => cellNextE(wk, b), fpN2);
+        emitCallClosure(f, fcb, t.args.length, argEmit, {tail: true, kL: cell, direct});
+        break;
+      }
+      // Unknown callee value: the $CLO flag picks the entry ABI. Static
+      // knowledge is only a hint, never a bypass — a pure-typed slot can
+      // hold a resume binder or an any-smuggled suspending closure.
+      const fc = f.anyref();
+      pushAtom(wk, t.fn);
+      b.localSet(fc);
+      const flag = f.i32();
+      b.localGet(fc);
+      b.refCast(6, true);
+      b.structGet(6, 3);
+      b.i31Get();
+      b.localSet(flag);
+      b.localGet(flag);
+      // Void arms: the direct arm ends in a return_call (tail) or in a
+      // dispatch (non-tail — the rest runs in the cell's thunk, so the
+      // site always diverges); the CPS arm always tail-calls. The scope
+      // counts in br-depth arithmetic (the arms may br outer labels).
+      b.if();
+      wk.depth++;
+      if (tailDret) {
+        // Tail: a native return_call — tail recursion stays O(1) on the
+        // wasm stack. Norm is skipped: the callee rounds at its own
+        // producing nodes and the caller's stamp is the same width.
+        emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "tail"});
+      } else {
+        // Direct entry: frame over the closure's env; the result is
+        // dispatched into the rest cell so the rest runs in its thunk —
+        // the same layout the CPS arm uses, minus the generic callee
+        // trampoline (the saving: one continuation operand + one T_KABI
+        // indirection per call).
+        const r = emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "raw"});
+        const fpN2 = extendFrame(wk, p.fnLvl!.size);
+        const thunk = makeRestThunk(em, "dcall:" + t.name);
+        p.thunk = thunk;
+        emitDcallThunk(wk, thunk, t, p);
+        const cell = f.retCell(thunk.idx, () => cellNextE(wk, b), fpN2);
+        if (t.norm !== undefined) {
+          const nrm = f.anyref();
+          b.localGet(r);
+          if (t.norm !== "f64") b.callFn(widthHelper(em, t.norm));
+          else b.callFn(em.ix.fNum64);
+          rebox(em, f, t.norm);
+          b.localSet(nrm);
+          emitDispatch(em, f, nrm, cell);
+        } else {
+          emitDispatch(em, f, r, cell);
+        }
+      }
+      b.u8(w.ELSE);
+      // CPS entry (resume binder, any-smuggled closure): the land-cell path —
+      // the cell's frame is F_n (allocated here), next the ambient chain
+      // (null in a direct body: the completion's dret returns the value).
+      const fpN2 = extendFrame(wk, p.fnLvl!.size);
+      const thunk = makeRestThunk(em, "dcall:" + t.name);
+      p.thunk = thunk;
+      emitDcallThunk(wk, thunk, t, p);
+      const cell = f.retCell(thunk.idx, () => cellNextE(wk, b), fpN2);
+      emitCallClosure(f, fc, t.args.length, argEmit, {tail: true, kL: cell});
+      b.u8(w.END);
+      wk.depth--;
+      b.u8(w.UNREACHABLE); // both arms diverge (tail call / the rest's own tail)
       break;
     }
     default:
@@ -1299,22 +1442,33 @@ function emitTerm(wk: Walk, t: CTerm): void {
   }
 }
 
-// The dcall rest thunk (T_III_I: frame = the cell's frame, v = the call's
-// result, kNext = the cell's next = the ambient at the site). Allocates the
+// The dcall rest thunk (T_III_I: frame = F_n, v = the call's result,
+// kNext = the cell's next = the ambient at the site). Allocates the fresh
 // activation frame (the result slot + the rest's top-level binds), writes
-// the normalized result, and runs the rest with kNext as the ambient.
+// the normalized result, and runs the rest with kNext as the ambient — the
+// same frame layout the direct-entry inline path installs.
 function emitDcallThunk(wk: Walk, thunk: Fn, t: CTerm & {t: "dcall"}, p: DcallP): void {
   const em = wk.em;
   const entry = p.entryScope![0];
-  const tw: Walk = {em, f: thunk, ts: thunkBase(p.entryScope!), kL: 2, esc: p.bodyEsc!, labels: [], depth: 0, exitName: wk.exitName, retName: wk.retName};
+  // directFn must NOT leak into thunks: they are CPS fragments over the
+  // materialized chain — their dret dispatches through kNext (the cell's
+  // next), it never returns the fragment's value. A direct fn's ambient kL
+  // is the never-set null: thunks created inside one get a TERMINAL return
+  // cell below (kTerminal, inherited) instead of the raw null, so a dret
+  // inside a void arm dispatches to a K_RET whose fragment just returns its
+  // param — the value unwinds as each fragment's result instead of yielding
+  // inside a void arm (whose trailing unreachable would execute).
+  const tw: Walk = {em, f: thunk, ts: thunkBase(p.entryScope!), kL: 2, esc: p.bodyEsc!, labels: [], depth: 0, exitName: wk.exitName, retName: wk.retName, kTerminal: wk.kTerminal};
   addLocal(tw.ts[0], "$ret", 2);
   if (wk.exitName !== undefined) addLocal(tw.ts[0], wk.exitName, 2);
   if (wk.retName !== undefined) addLocal(tw.ts[0], wk.retName, 2);
   const nb = extendFrame(tw, entry.size);
   thunk.body.localGet(nb);
   thunk.body.localSet(0);
+  const si = entry.slots.get(t.name);
+  if (si === undefined) throw new WasmError(`internal: no slot for ${t.name}`);
   // The result (local 1), normalized by the dcall's norm, into the result
-  // slot — the same box-normalization the letk thunk applies to its param.
+  // slot — the same box-normalization the inline path applies.
   if (t.norm !== undefined) {
     const nrm = thunk.anyref();
     thunk.body.localGet(1);
@@ -1322,9 +1476,9 @@ function emitDcallThunk(wk: Walk, thunk: Fn, t: CTerm & {t: "dcall"}, p: DcallP)
     else thunk.body.callFn(em.ix.fNum64);
     rebox(em, thunk, t.norm);
     thunk.body.localSet(nrm);
-    thunk.storeSlot(0, () => thunk.body.localGet(nrm));
+    thunk.storeSlot(si, () => thunk.body.localGet(nrm));
   } else {
-    thunk.storeSlot(0, () => thunk.body.localGet(1));
+    thunk.storeSlot(si, () => thunk.body.localGet(1));
   }
   emitTerm(tw, t.rest);
 }
@@ -1336,7 +1490,10 @@ function emitDcallThunk(wk: Walk, thunk: Fn, t: CTerm & {t: "dcall"}, p: DcallP)
 function emitLetkThunk(wk: Walk, thunk: Fn, t: CTerm & {t: "letk"}, p: LetkP): void {
   const em = wk.em;
   const entry = p.entryScope![0];
-  const tw: Walk = {em, f: thunk, ts: thunkBase(p.entryScope!), kL: 2, esc: p.bodyEsc!, labels: [], depth: 0, exitName: wk.exitName, retName: wk.retName};
+  // directFn must NOT leak into thunks: they are CPS fragments over the
+  // materialized chain — their dret dispatches through kNext (the cell's
+  // next), it never returns the fragment's value.
+  const tw: Walk = {em, f: thunk, ts: thunkBase(p.entryScope!), kL: 2, esc: p.bodyEsc!, labels: [], depth: 0, exitName: wk.exitName, retName: wk.retName, kTerminal: wk.kTerminal};
   // $ret (the enclosing case's exit binder, the enclosing handle's ret
   // binder) denote the kNext param in a thunk: the cell's next = the ambient
   // at installation = the value those bindings held at the perform/call
@@ -1552,6 +1709,8 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   b.localGet(rec);
   b.i32Const(1);
   b.refI31();
+  b.i32Const(0); // CPS entry (T_KABI): the resume fn drives the chain
+  b.refI31();
   b.structNew(6); // the resume binder: $CLO over $resumeCapture
   const rclo = f.anyref();
   b.localSet(rclo);
@@ -1763,6 +1922,8 @@ function emitCaseBody(em: Emit, f: Fn, body: CTerm, base: TScope, esc: Set<strin
     bb.localGet(0);
     bb.i32Const(0);
     bb.refI31();
+    bb.i32Const(0); // CPS entry (T_KABI)
+    bb.refI31();
     bb.structNew(6);
     bb.localSet(clo);
     f.storeSlot(npMax, () => bb.localGet(clo));
@@ -1772,6 +1933,16 @@ function emitCaseBody(em: Emit, f: Fn, body: CTerm, base: TScope, esc: Set<strin
 }
 
 // Identity ret fn (no explicit Return case): deliver hf[slot] through k.
+// The terminal-return fragment: (frame, v, kNext) -> v — the direct-fn
+// dcall fallbacks' terminal chain link (see cellNextE). A plain return:
+// the dispatcher's return_call chain unwinds the value to the direct fn's
+// return.
+export function emitTerminalRet(em: Emit, f: Fn): void {
+  f.em = em;
+  f.body.localGet(1);
+  em.funcs.push(f);
+}
+
 function emitIdRetFn(em: Emit, f: Fn, slot: number): void {
   const b = f.body;
   const v = f.anyref();
@@ -2010,13 +2181,32 @@ export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
   (em as Emit & {plan?: TermPlan}).plan = plan;
   for (let i = 0; i < ir.funcs.length; i++) {
     const fn = ir.funcs[i];
+    const base = plan.cfnBase.get(i)!;
+    const paramsL = lvl();
+    for (const p of fn.params) addSlot(paramsL, p);
+    if (fn.direct === true) {
+      // Direct ABI: (frame) -> anyref — no continuation operand. The kL
+      // local is never set (null): generic land-cell paths inside (a dcall's
+      // CPS-entry branch) build cells whose next is null, so their completions
+      // return instead of walking a chain. dret returns the boxed value.
+      const f = new Fn(1, em);
+      f.typeIdx = w.T_DABI;
+      f.idx = em.ix.lambda0 + i;
+      em.ix.funcRefTypes.set(f.idx, w.T_DABI);
+      const knull = f.typed(_T.RF[5]);
+      const wk: Walk = {
+        em, f, ts: [paramsL, ...base], kL: knull,
+        esc: analyzeEscapes(fn.body), labels: [], depth: 0, directFn: true, kTerminal: true,
+      };
+      addLocal(wk.ts[0], "$ret", knull); // never referenced (dret boundary)
+      emitTerm(wk, fn.body);
+      em.funcs.push(f);
+      continue;
+    }
     const f = new Fn(2, em);
     f.typeIdx = w.T_KABI;
     f.idx = em.ix.lambda0 + i;
     em.ix.funcRefTypes.set(f.idx, w.T_KABI);
-    const base = plan.cfnBase.get(i)!;
-    const paramsL = lvl();
-    for (const p of fn.params) addSlot(paramsL, p);
     const wk: Walk = {
       em, f, ts: [paramsL, ...base], kL: 1,
       esc: analyzeEscapes(fn.body), labels: [], depth: 0,

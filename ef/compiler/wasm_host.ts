@@ -175,7 +175,7 @@ export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[]
       // Ring buffer of the last entered emission sites (EFTRACE=1 only;
       // the import is dead code otherwise). val carries a runtime value.
       traceBuf.push(site * 100000 + (val | 0));
-      if (traceBuf.length > 64) traceBuf.shift();
+      if (traceBuf.length > 4096) traceBuf.shift();
     },
   };
   const inst = new WebAssembly.Instance(mod, {env: imports});
@@ -186,7 +186,8 @@ export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[]
       const site = Math.floor(s / 100000), val = s % 100000;
       return (TRACE_SITES[site] ?? `#${site}`) + (val !== 0 ? `=${val}` : "");
     });
-    console.error(`[EFTRACE] last sites: ${sites.join(" -> ")}`);
+    if (process.env["EFTRACE_ALL"] === "1") console.error(`[EFTRACE] all sites: ${sites.join(" -> ")}`);
+    else console.error(`[EFTRACE] last sites: ${sites.slice(-16).join(" -> ")}`);
   };
   try {
     const result = (inst.exports["run"] as () => unknown)();

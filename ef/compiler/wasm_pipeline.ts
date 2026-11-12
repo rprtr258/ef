@@ -1,3 +1,4 @@
+import {writeFileSync} from "node:fs";
 // The compile pipeline of the wasm backend: discovery, optimization
 // passes, funcref index assignment, static layout and module assembly —
 // free functions over plain artifact records, composed by compileWithOps
@@ -99,6 +100,9 @@ export type Indices = {
   // Shared resume-closure fn: the T_KABI fn every perform site's
   // boxed resume binder points at.
   resumeFn: Fn,
+  // Terminal-return fragment: a T_III_I thunk returning its param — the
+  // direct-fn dcall fallbacks' terminal chain link.
+  terminalRet: Fn,
   // Builtin trampolines: funcref index of the first builtin / first land
   // thunk, and trampoline funcref index per emitted builtin (direct builtin
   // call sites target these instead of loading a $CLO and dispatching
@@ -126,6 +130,9 @@ export type Layout = {
   strStatics: Map<string, number>,   // literal value → static global idx
   cloOffsets: Map<string, number>,   // builtin name → static $CLO global idx
   hdlTableOff: Map<number, number>,  // handle plan index → case-table static global idx
+  // Terminal K_RET cell (direct-fn dcall fallbacks chain here; its fragment
+  // returns the param the dispatcher delivered).
+  terminalCellG: number,
 };
 
 // --- phase functions ---------------------------------------------------------
@@ -267,6 +274,7 @@ export function assignIndices(ir: CIr, plan: TermPlan, o: Opt): Indices {
     idRet0: 0,
     retRes0: 0,
     resumeFn: undefined!,
+    terminalRet: undefined!,
     builtin0: 0,
     thunk0: 0,
     builtinFnIdx: new Map(),
@@ -300,6 +308,14 @@ export function assignIndices(ir: CIr, plan: TermPlan, o: Opt): Indices {
   rf.idx = next++;
   ix.funcRefTypes.set(rf.idx, w.T_KABI);
   ix.resumeFn = rf;
+  // The terminal-return fragment (direct-fn dcall fallbacks chain here):
+  // a T_III_I thunk that just returns its param (local 1) — the completion's
+  // value unwinds as each fragment's result.
+  const tf = new Fn(3);
+  tf.idx = next++;
+  tf.typeIdx = w.T_III_I;
+  ix.funcRefTypes.set(tf.idx, w.T_III_I);
+  ix.terminalRet = tf;
   // Builtin trampolines (must match emitBuiltins' emission order: BUILTINS
   // filtered by usedBuiltins); land thunks follow them, main is last.
   const builtins = BUILTINS.filter(b => o.usedBuiltins.has(b.name));
@@ -326,6 +342,7 @@ export function layoutStatics(d: Discovery, ix: Indices, o: Opt, plan: TermPlan)
     strStatics: new Map(),
     cloOffsets: new Map(),
     hdlTableOff: new Map(),
+    terminalCellG: -1,
   };
   // Number literals (deduped by width + value; the Discovery keys carry both).
   for (const [k, w] of d.numLits) {
@@ -388,6 +405,10 @@ export function layoutStatics(d: Discovery, ix: Indices, o: Opt, plan: TermPlan)
       words.push(en.opid, en.fn, en.fsize, en.nparams);
     lay.hdlTableOff.set(hp.hdlIdx, newStatic({t: "elems", ws: words}));
   }
+  // The terminal return-cell (direct-fn dcall fallbacks chain here): a K_RET
+  // cell whose fragment is the terminal-return thunk — (frame, v, k) returns
+  // the param the dispatcher delivered as v.
+  lay.terminalCellG = newStatic({t: "kret", fni: ix.terminalRet.idx});
   return lay;
 }
 
@@ -420,9 +441,20 @@ function staticInit(m: binaryen.Module, d: StaticDesc): binaryen.ExpressionRef {
         m.ref.i31(m.i32.const(d.fni)),
         m.ref.null(w.heapTypes(4).n), // env: builtins run over the call frame itself
         m.ref.i31(m.i32.const(d.fsize)),
+        m.ref.i31(m.i32.const(d.direct === 1 ? 1 : 0)),
       ], HT[6]);
     case "elems":
       return m.array.new_fixed(HT[1], d.ws.map((w) => m.ref.i31(m.i32.const(w))));
+    case "kret":
+      // {K_RET, fragIdx, frame = null, next = null}: the frame/next are dead —
+      // the identityRet fragment reads only the param (hframe slot 1) that
+      // the dispatcher delivered as v.
+      return m.struct.new([
+        m.ref.i31(m.i32.const(0)),
+        m.ref.i31(m.i32.const(d.fni)),
+        m.ref.null(w.heapTypes(4).n),
+        m.ref.null(w.heapTypes(5).n),
+      ], HT[5]);
   }
 }
 
@@ -476,8 +508,12 @@ export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]
   }
   if (m.validate() === 0) {
     if (DBGEMIT) console.error(m.emitText());
-    if (process.env["EF_DUMP_INVALID"] === "1") {
-      console.error(m.emitText()); // debug: dump invalid module instead of failing
+    const dumpPath = process.env["EF_DUMP_INVALID"];
+    if (dumpPath !== undefined && dumpPath !== "") {
+      // emitText aborts on invalid modules (binaryen asserts); emit the
+      // binary so wasm-tools print can render it for post-mortem.
+      if (dumpPath !== "1") writeFileSync(dumpPath, m.emitBinary());
+      console.error(`EF_DUMP_INVALID: wrote ${dumpPath}`);
     } else {
       throw new WasmError("binaryen: compiled module failed validation");
     }

@@ -41,6 +41,12 @@ export const _T: {
     fld(binaryen.i31ref, false),
     fld(tb.getTempRefType(tb.getTempHeapType(4), true), false),
     fld(binaryen.i31ref, false),
+    // direct flag (i31 1/0): 1 = the entry has the direct ABI ((frame) ->
+    // anyref); 0 = T_KABI (CPS closures, builtin trampolines, resume
+    // binders). Call sites of unknown callee kind check this at runtime —
+    // static type knowledge is only a hint, never a bypass (a pure-typed
+    // slot can hold a resume binder or an any-smuggled closure).
+    fld(binaryen.i31ref, false),
   ]);
   tb.setStructType(7, [fld(binaryen.i32, false)]);                       // 7 $I32
   tb.setStructType(8, [fld(binaryen.i32, false)]);                       // 8 $U32
@@ -95,5 +101,7 @@ export type StaticDesc =
                                       // big carries the exact lexeme for
                                       // i64/u64, which exceed f64 precision)
   | {t: "str", s: string}             // $STR code-unit array
-  | {t: "clo", fni: number, fsize: number} // builtin $CLO
-  | {t: "elems", ws: number[]};       // handler case table ($ELEMS i31s)
+  | {t: "clo", fni: number, fsize: number, direct?: 1} // builtin $CLO (direct
+                                      // is unset: builtin trampolines are T_KABI)
+  | {t: "elems", ws: number[]}        // handler case table ($ELEMS i31s)
+  | {t: "kret", fni: number};         // terminal K_RET cell {0, fni, null, null}

@@ -94,7 +94,7 @@ import {checkProgram} from "./types.ts";
 import {toCps} from "./cps.ts";
 import {bindMOD} from "./wasm_tables.ts";
 import {buildModule, discover, layoutStatics, optimize, assignIndices, type Discovery, type Indices, type Layout, type Opt} from "./wasm_pipeline.ts";
-import {planIr, emitCfns, emitCaseFns, emitRetResumes, emitResumeFn, emitMain as emitMainTerm} from "./wasm_term.ts";
+import {planIr, emitCfns, emitCaseFns, emitRetResumes, emitResumeFn, emitTerminalRet, emitMain as emitMainTerm} from "./wasm_term.ts";
 import {Fn} from "./wasm_body.ts";
 import {type Emit, emitHelpers} from "./wasm_emit.ts";
 import {emitBuiltins, emitInits} from "./wasm_module.ts";
@@ -196,6 +196,7 @@ function emit(ir: CIr, d: Discovery, o: Opt, ix: Indices, lay: Layout, plan: Ter
   emitCaseFns(em, plan);
   emitRetResumes(em, plan);
   emitResumeFn(em, ix.resumeFn);
+  emitTerminalRet(em, ix.terminalRet);
   em.funcs.push(...emitBuiltins(em, ix.builtin0));
   emitMainTerm(em, ir, plan);
   em.funcs.push(...em.thunks);

@@ -505,9 +505,13 @@ type CallOpts = {
   kL?: number,         // the ambient continuation local (default 1)
   landA?: number,      // explicit per-iteration land cell (map/each/flatmap)
   direct?: {idx: number, fsize: number, envClo?: boolean}, // direct builtin: static funcref + fsize
+  dabi?: true,         // the callee entry is ((ref null $FRAME)) -> anyref:
+                       // no continuation operand; tail keeps the result as
+                       // this fn's return, non-tail leaves it on the stack
+                       // (the returned local) for the caller to store
 };
 
-export function emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, opts: CallOpts = {}): void {
+export function emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, opts: CallOpts = {}): number | undefined {
   const {tail = false, land = false, kL = 1, landA, direct} = opts;
   const b = f.body;
   const clob = f.anyref(), idx = f.i32(), cf = f.anyref(), fs = f.i32(),
@@ -562,6 +566,23 @@ export function emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: nu
   for (let k = 0; k < argc; k++) argEmit(k, ffp);
   b.localGet(ffp);
   b.refCast(4, true); // the call's frame param (ffp is an anyref local)
+  if (opts.dabi === true) {
+    // Direct ABI: no continuation operand. The frame alloc + arg stores
+    // above are shared with the generic path.
+    if (direct === undefined) {
+      b.localGet(idx);
+      b.u8(tail ? w.RETURN_CALL_INDIRECT : w.CALL_INDIRECT);
+      b.lebU(w.T_DABI);
+      b.lebU(0);
+    } else {
+      b.u8(tail ? w.RETURN_CALL : w.CALL);
+      b.lebU(direct.idx);
+    }
+    if (tail) return undefined;
+    const r = f.anyref();
+    b.localSet(r);
+    return r;
+  }
   // Continuation selection: tail calls pass the ambient/resolved k through
   // (the IR's only shape — the term has nothing after a call); map-like
   // loop-entry thunks land the callback's completion in their per-iteration
@@ -587,6 +608,70 @@ export function emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: nu
     b.u8(tail || land ? w.RETURN_CALL : w.CALL); // direct: fn index is static, not a stack operand
     b.lebU(direct.idx);
   }
+  return undefined;
+}
+
+// The direct-ABI branch shared by every unknown-kind call site: the
+// closure's flag said direct — build the callee frame over its env (the
+// same alloc the generic path makes), call the T_DABI entry, and deliver
+// the result the way the site's continuation would: through the ambient
+// chain head, through an explicit land cell, or — at a tail — as this fn's
+// own return.
+export function emitDirectEntryCall(
+  em: Emit, f: Fn, clob: number, argc: number, argEmit: (k: number, ffp: number) => void,
+  deliver: {kind: "k", kL: number} | {kind: "land", landA: number, kL: number} | {kind: "tail"} | {kind: "raw"},
+): number {
+  const b = f.body;
+  const idx = f.i32(), cf = f.anyref(), fs = f.i32(),
+    maxL = f.i32(), slots = f.anyref(), ffp = f.anyref();
+  // The callee's frame parent = the closure's captured env: a direct body's
+  // scopes chain from its own (caller-allocated) frame up through the
+  // frames live at its mkfn site — exactly the $CLO's env. The caller's
+  // current local 0 would be wrong (deeper scopes since the mkfn ran).
+  b.localGet(clob); b.refCast(6, true); b.structGet(6, 1); b.localSet(cf);
+  b.localGet(clob); b.refCast(6, true); b.structGet(6, 0); b.i31Get();
+  b.localSet(idx);
+  b.localGet(clob); b.refCast(6, true); b.structGet(6, 2); b.i31Get();
+  b.localSet(fs);
+  b.localGet(fs); b.i32Const(argc);
+  b.localGet(fs); b.i32Const(argc);
+  b.u8(w.GTU);
+  b.u8(w.SELECT);
+  b.localSet(maxL);
+  b.localGet(maxL);
+  b.arrayNew(1);
+  b.localSet(slots);
+  b.localGet(cf);
+  b.refCast(4, true);
+  b.localGet(slots);
+  b.refCast(1, true);
+  b.structNew(4);
+  b.localSet(ffp);
+  for (let k = 0; k < argc; k++) argEmit(k, ffp);
+  b.localGet(ffp);
+  b.refCast(4, true);
+  if (deliver.kind === "tail") {
+    b.localGet(idx);
+    b.u8(w.RETURN_CALL_INDIRECT);
+    b.lebU(w.T_DABI);
+    b.lebU(0);
+    return -1;
+  }
+  b.localGet(idx);
+  b.u8(w.CALL_INDIRECT);
+  b.lebU(w.T_DABI);
+  b.lebU(0);
+  const v = f.anyref();
+  b.localSet(v);
+  if (deliver.kind === "k") {
+    emitDispatch(em, f, v, deliver.kL);
+  } else if (deliver.kind === "raw") {
+    return v; // the caller owns the result local
+  } else {
+    const cell = f.retCell(deliver.landA, () => b.localGet(deliver.kL));
+    emitDispatch(em, f, v, cell);
+  }
+  return v;
 }
 
 // One rest-of-site fragment: a T_III_I function (frame, v, kNext) -> anyref
@@ -628,13 +713,13 @@ export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
   b.loop();
   b.localIsNull(k); // ref.is_null: final return → the value itself
   b.if();
-  tracePoint(em, f, `d f${f.fid} null-k`);
+  tracePoint(em, f, `d f${f.fid}(idx${f.idx}) null-k`);
   b.localGet(v);
   b.u8(w.BR); b.lebU(2); // leave the block with v
   b.u8(w.END);
   kind(); b.i32Const(w.K_RET); b.u8(w.EQ);
   b.if();
-  tracePoint(em, f, `d f${f.fid} K_RET`);
+  tracePoint(em, f, `d f${f.fid}(idx${f.idx}) K_RET`);
   cellFrame(b, k);
   b.localGet(v);
   cellGet(b, k, 3);
@@ -653,7 +738,7 @@ export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
   if (em.d.hasHandle) {
     kind(); b.i32Const(w.K_HDL); b.u8(w.EQ);
     b.if();
-    tracePoint(em, f, `d f${f.fid} K_HDL`);
+    tracePoint(em, f, `d f${f.fid}(idx${f.idx}) K_HDL`);
     const tbl = f.anyref();
     cellGet(b, k, 1);
     b.localSet(tbl);

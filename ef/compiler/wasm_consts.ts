@@ -73,6 +73,10 @@ export const T_RUN = 7, T_PERFORM = 9, T_FAIL = 10, T_STRNUM = 11,
   T_BOX = 13, T_TRUTHY = 14, T_EQ = 15, T_CAPTURE = 16, T_KABI = 17,
   T_III_I = 18, T_MKF32 = 24, T_F32 = 25, T_MKI32 = 26, T_GETI32 = 27,
   T_MKI64 = 28, T_GETI64 = 29;
+// Direct ABI (selective CPS): ((ref null $FRAME)) -> anyref — direct
+// functions take their activation frame (params + body binds over the
+// captured env) and RETURN the boxed result; no continuation operand.
+export const T_DABI = 30;
 export const T_TRACE = 34; // (i32) -> () — the EFTRACE runtime-trace import
 
 export function impType(n: string): number {

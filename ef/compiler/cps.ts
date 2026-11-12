@@ -36,7 +36,10 @@ const NUM_OPS = new Set(["+", "-", "*", "<", ">", "<=", ">=", "==", "!=", "neg"]
 
 type K = {t: "fn", f: (v: CAtom) => CTerm} | {t: "tail", name: string, dret?: true};
 
-const UNIT: CAtom = {t: "lit", v: null};
+// The unit atom: its raw JS null must ride an i64 stamp so the wasm push
+// boxes it (a stampless literal pushes raw — ref.null any — and unit-typed
+// params become null frames).
+const UNIT: CAtom = {t: "lit", v: null, stamp: "i64"};
 
 function kap(k: K, v: CAtom): CTerm {
   if (k.t === "tail")

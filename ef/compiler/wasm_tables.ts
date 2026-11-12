@@ -60,6 +60,7 @@ export const SIGS: Record<number, {p: (number | number[])[], r: number | number[
   [w.T_CAPTURE]: {p: [[0x63, 5], w.ANYREF], r: [0x63, 5]}, // fCapture(k, n: i31)
   [w.T_KABI]: {p: [[0x63, 4], [0x63, 5]], r: w.ANYREF},       // (frame, k) program fns
   [w.T_III_I]: {p: [[0x63, 4], w.ANYREF, [0x63, 5]], r: w.ANYREF}, // land thunks
+  [w.T_DABI]: {p: [[0x63, 4]], r: w.ANYREF},                   // (frame) direct fns
   [19]: {p: [w.ANYREF], r: 0x7c},                   // __num/fNum64
   [20]: {p: [w.ANYREF, 0x7f], r: 0x7f},             // __str_get
   [21]: {p: [w.ANYREF, 0x7f, 0x7f], r: null},       // __str_set
@@ -106,7 +107,7 @@ export const STRUCT_FIELDS: Record<number, (number | number[])[]> = {
   [3]: [[0x63, 1], 0x7f, 0x7f],      // $ARR slice: (ref null $ELEMS), i32 off, i32 len
   [4]: [[0x63, 4], [0x63, 1]],       // $FRAME
   [5]: [w.I31REF, w.ANYREF, w.ANYREF, [0x63, 5]], // $K
-  [6]: [w.I31REF, [0x63, 4], w.I31REF],  // $CLO
+  [6]: [w.I31REF, [0x63, 4], w.I31REF, w.I31REF], // $CLO {idx, env, fsize, direct}
   [7]: [0x7f],                       // $I32: i32
   [8]: [0x7f],                       // $U32: i32
   [9]: [0x7e],                       // $I64: i64

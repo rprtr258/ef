@@ -805,12 +805,12 @@ export class Fn {
   // A RET cell {K_RET, fragIdx, $fp, next}: the continuation cell that
   // tail-calls the thunk `fragIdx` (T_III_I) over the caller's frame (local
   // 0). `nextE` pushes the cell's next-pointer operand. Returns the cell.
-  retCell(fragIdx: number, nextE: () => void): number {
+  retCell(fragIdx: number, nextE: () => void, frameLocal = 0): number {
     const b = this.body;
     const cell = this.anyref();
     b.i31Const(w.K_RET);
     b.i31Const(fragIdx);
-    b.localGet(0); // b = the frame the fragment runs over
+    b.localGet(frameLocal); // b = the frame the fragment runs over
     nextE();
     b.refCast(5, true);
     b.structNew(5);
