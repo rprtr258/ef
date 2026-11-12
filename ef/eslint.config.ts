@@ -91,6 +91,7 @@ export default defineConfig([
   },
   {
     files: ["**/*.md"],
+    ignores: ["plans/**"],
     plugins: {local: {rules: {"comment-hygiene": commentHygiene}}},
     languageOptions: {parser: mdParser},
     rules: {"local/comment-hygiene": ["error", {prose: true}]},

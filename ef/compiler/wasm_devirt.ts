@@ -23,7 +23,7 @@ import type {CAtom, CIr, CTerm} from "./cps_ir.ts";
 const NATIVE_BUILTINS: ReadonlySet<string> = new Set(["map", "each", "flatmap"]);
 
 // Facts for one dcall/call site.
-export type SiteInfo = {
+type SiteInfo = {
   // The callee atom resolves to a slot whose only possible value is direct
   // CFn `devirt`'s mkfn closure. The slot always holds a $CLO with that fun
   // index (envs still differ per activation) — the emitter may issue a
