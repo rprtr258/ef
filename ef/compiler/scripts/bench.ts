@@ -1,7 +1,10 @@
-// In-process benchmark for the wasm backend: compile each program once,
-// run the module many times, report min/median wall time and the computed
-// value (values must match across revisions — they pin correctness of the
-// comparison). Usage:
+// In-process benchmark for both backends: the wasm module (compile once, run
+// the module many times) and the CPS interpreter (exec per run in a fresh
+// context). exec re-runs toCps per call, so toCps is timed separately and the
+// reported eval time is exec − cps — the interpreter drive only, matching the
+// wasm side's compile-outside-timing protocol. Reports min/median wall time
+// and the computed value per backend; values must match across revisions AND
+// backends (enforced) — they pin correctness of the comparison. Usage:
 //   bun compiler/scripts/bench.ts [--runs N] [--warmup N] [--dir DIR] [--json]
 //
 // Compare two revisions by running this script in a workspace of each and
@@ -10,6 +13,10 @@ import {readdirSync, readFileSync} from "node:fs";
 import {join} from "node:path";
 import {compileWithOps} from "../wasm.ts";
 import {runModule} from "../wasm_host.ts";
+import {Parser} from "../parser.ts";
+import {checkProgram} from "../types.ts";
+import {toCps} from "../cps.ts";
+import {newCtx, exec} from "../eval.ts";
 import {show} from "../env.ts";
 
 const args = Bun.argv.slice(2);
@@ -26,26 +33,68 @@ const files = readdirSync(DIR).filter(f => f.endsWith(".ef")).sort();
 if (files.length === 0)
   throw new Error(`no .ef programs in ${DIR}`);
 
-const rows: {name: string, min: number, median: number, value: string}[] = [];
+const time = (fn: () => void): number => {
+  const t0 = performance.now();
+  fn();
+  return performance.now() - t0;
+};
+const stats = (samples: number[]): {min: number, median: number} => {
+  samples.sort((a, b) => a - b);
+  return {min: samples[0], median: samples[Math.floor(samples.length / 2)]};
+};
+
+type Row = {
+  name: string,
+  value: string,
+  wasm: {min: number, median: number},
+  interp: {execMin: number, execMedian: number, cpsMedian: number, evalMedian: number},
+};
+const rows: Row[] = [];
 for (const file of files) {
   const src = readFileSync(join(DIR, file), "utf8");
   const {bytes, ops} = compileWithOps(src);
   const value = show(runModule(bytes, ops));
-  for (let i = 0; i < WARMUP; i++)
+  const prog = new Parser(src).parseProgram();
+  const checked = checkProgram(prog);
+  toCps(prog);
+  const interpValue = show(exec(prog, newCtx(), checked).value);
+  if (interpValue !== value)
+    throw new Error(`${file}: backend value mismatch: wasm ${value}, interp ${interpValue}`);
+  for (let i = 0; i < WARMUP; i++) {
     runModule(bytes, ops);
-  const samples: number[] = [];
+    exec(prog, newCtx(), checked);
+    toCps(prog);
+  }
+  const wasmSamples: number[] = [];
+  const execSamples: number[] = [];
+  const cpsSamples: number[] = [];
   for (let i = 0; i < RUNS; i++) {
     Bun.gc(true);
-    const t0 = performance.now();
-    runModule(bytes, ops);
-    samples.push(performance.now() - t0);
+    wasmSamples.push(time(() => runModule(bytes, ops)));
+    Bun.gc(true);
+    execSamples.push(time(() => exec(prog, newCtx(), checked)));
+    Bun.gc(true);
+    cpsSamples.push(time(() => toCps(prog)));
   }
-  samples.sort((a, b) => a - b);
-  const min = samples[0];
-  const median = samples[Math.floor(samples.length / 2)];
-  rows.push({name: file, min, median, value});
-  if (!JSON_OUT)
-    console.log(`${file.padEnd(14)} min ${min.toFixed(1).padStart(8)} ms  median ${median.toFixed(1).padStart(8)} ms  = ${value}`);
+  const wasm = stats(wasmSamples);
+  const execStats = stats(execSamples);
+  const cps = stats(cpsSamples);
+  const row: Row = {
+    name: file,
+    value,
+    wasm: {min: wasm.min, median: wasm.median},
+    interp: {
+      execMin: execStats.min,
+      execMedian: execStats.median,
+      cpsMedian: cps.median,
+      evalMedian: execStats.median - cps.median,
+    },
+  };
+  rows.push(row);
+  if (!JSON_OUT) {
+    console.log(`${file.padEnd(14)} wasm   min ${wasm.min.toFixed(1).padStart(9)} ms  median ${wasm.median.toFixed(1).padStart(9)} ms  = ${value}`);
+    console.log(`${"".padEnd(14)} interp min ${row.interp.execMin.toFixed(1).padStart(9)} ms  median ${row.interp.execMedian.toFixed(1).padStart(9)} ms  eval ${row.interp.evalMedian.toFixed(1).padStart(9)} ms`);
+  }
 }
 if (JSON_OUT)
   console.log(JSON.stringify(rows, null, 2));
