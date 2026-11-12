@@ -3,6 +3,7 @@ import {defineConfig} from "eslint/config";
 import tseslint from "typescript-eslint";
 import stylistic from "@stylistic/eslint-plugin";
 import importPlugin from "eslint-plugin-import";
+import {noUnusedClassMembers} from "./eslint/rules/no-unused-class-members.ts";
 
 export default defineConfig([
   {
@@ -25,8 +26,10 @@ export default defineConfig([
     plugins: {
       "@stylistic": stylistic,
       import: importPlugin,
+      local: {rules: {"no-unused-class-members": noUnusedClassMembers}},
     },
     rules: {
+      "local/no-unused-class-members": "error",
       "eqeqeq": ["error", "always"],
       "object-curly-spacing": ["error", "never"],
       "semi": ["error", "always"],

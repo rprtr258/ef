@@ -26,7 +26,7 @@ import {Parser, type ExprID} from "./parser.ts";
 // types: typecheck a source file; return every top-level symbol (let) with
 // its inferred type, plus the whole program's result type and its residual
 // top-level effect row (Checked.unhandled — the ops that reach the runner).
-export function types(src: string): {syms: {name: string, type: Type}[], result: Type, effs: Set<string>} {
+function types(src: string): {syms: {name: string, type: Type}[], result: Type, effs: Set<string>} {
   const prog = new Parser(src).parseProgram();
   const checked = checkProgram(prog);
   const names: string[] = [];

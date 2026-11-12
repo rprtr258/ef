@@ -7,6 +7,7 @@ import {type ExtensionContext} from "vscode";
 
 let client: LanguageClient | undefined;
 
+/** @public — called by the VS Code extension host, not imported. */
 export function activate(context: ExtensionContext): void {
   const serverModule = context.asAbsolutePath("dist/server.cjs");
   const serverOptions: ServerOptions = {
@@ -23,6 +24,7 @@ export function activate(context: ExtensionContext): void {
   void client.start();
 }
 
+/** @public — called by the VS Code extension host on shutdown. */
 export function deactivate(): Thenable<void> | undefined {
   return client?.stop();
 }

@@ -1,4 +1,29 @@
 {
+  // every rule at "error" except cycles: the compiler's eval⇄builtins and
+  // parser→types→analysis cycles are deliberate (runtime-only, entry-order
+  // safe — see AGENTS.md "Key design decisions")
+  "rules": {
+    "files": "error",
+    "dependencies": "error",
+    "devDependencies": "error",
+    "optionalPeerDependencies": "error",
+    "unlisted": "error",
+    "binaries": "error",
+    "unresolved": "error",
+    "exports": "error",
+    "types": "error",
+    "nsExports": "error",
+    "nsTypes": "error",
+    "enumMembers": "error",
+    "namespaceMembers": "error",
+    "duplicates": "error",
+    "catalog": "error",
+    "catalogReferences": "error",
+    "cycles": "off"
+  },
+  // entry files too (cli.ts, extension.ts, scripts) — exports must be
+  // imported or tagged @public, not just reachable
+  "includeEntryExports": true,
   "workspaces": {
     "compiler": {
       "entry": ["scripts/*.ts"]
