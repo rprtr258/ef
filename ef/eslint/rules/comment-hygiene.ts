@@ -20,6 +20,8 @@ const PATTERNS: Record<string, RegExp> = {
 const ALLOW: Record<string, string[] | undefined> = {
   // lexer rule-table rows, not plan phases
   "docs/content/dev/lexer.md": ["step 4/5"],
+  // plan document's own step headings; a plan's self-indexing is not history narration
+  "plans/2026-11-12-selective-cps-v1.md": ["Step 1", "Step 2", "Step 3", "Steps 1", "step 1", "step 2", "step 3"],
 };
 
 // Repo root: this file lives at <root>/eslint/rules/.
