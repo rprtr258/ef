@@ -17,7 +17,9 @@ Hindley-Milner-flavoured type system with effect tracking.
   `eval.ts` (CPS IR interpreter + pipeline), `wasm.ts` (wasm backend entry:
   CPS IR → wasm codegen, binaryen
   shrink pass; split into `wasm_types.ts`/`wasm_tables.ts`/`wasm_body.ts`/
-  `wasm_pipeline.ts`/`wasm_emit.ts`/`wasm_module.ts` — see item 10),
+  `wasm_pipeline.ts`/`wasm_devirt.ts` (devirtualization analysis: per-slot
+  closure provenance + per-CFn purity fixpoint, leaf over the CPS IR)/
+  `wasm_emit.ts`/`wasm_module.ts` — see item 10),
   `wasm_host.ts` (wasm host runtime: instantiation, GC↔JS boxing,
   effect interpretation), `lint.ts`, `prims.ts`, `assert.ts` (the
   `assertNever` exhaustive-switch guard — every switch over `Expr` ends in

@@ -33,6 +33,10 @@ export type Emit = {
   // and main.
   funcs: Fn[],
   thunks: Fn[],
+  // Per-site tight map/each/flatmap loop fns (wasm_devirt.ts-proven pure
+  // direct callbacks): created by wasm_term.ts at the call site, bodies
+  // filled by emitBuiltins (emitMapLike lives above wasm_term's layer).
+  tightMaps: {f: Fn, name: string, cb: {idx: number, fsize: number}}[],
   // The IR plan (scopes, escapes, handle registry) — set by wasm.ts's emit.
   plan: TermPlan,
   // The program-term function (set by emitMain; run's call target).
@@ -616,10 +620,13 @@ export function emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: nu
 // same alloc the generic path makes), call the T_DABI entry, and deliver
 // the result the way the site's continuation would: through the ambient
 // chain head, through an explicit land cell, or — at a tail — as this fn's
-// own return.
+// own return. `st` (devirt provenance) makes the call static: fun/fsize
+// come from the plan, only the env still reads off the closure value —
+// envs differ per activation even when the fun index is known.
 export function emitDirectEntryCall(
   em: Emit, f: Fn, clob: number, argc: number, argEmit: (k: number, ffp: number) => void,
   deliver: {kind: "k", kL: number} | {kind: "land", landA: number, kL: number} | {kind: "tail"} | {kind: "raw"},
+  st?: {idx: number, fsize: number, noEnv?: true},
 ): number {
   const b = f.body;
   const idx = f.i32(), cf = f.anyref(), fs = f.i32(),
@@ -628,11 +635,25 @@ export function emitDirectEntryCall(
   // scopes chain from its own (caller-allocated) frame up through the
   // frames live at its mkfn site — exactly the $CLO's env. The caller's
   // current local 0 would be wrong (deeper scopes since the mkfn ran).
-  b.localGet(clob); b.refCast(6, true); b.structGet(6, 1); b.localSet(cf);
-  b.localGet(clob); b.refCast(6, true); b.structGet(6, 0); b.i31Get();
-  b.localSet(idx);
-  b.localGet(clob); b.refCast(6, true); b.structGet(6, 2); b.i31Get();
-  b.localSet(fs);
+  // With st.noEnv the callee has no capts — nothing outside its own frame
+  // is ever read — so the parent is a plain null.
+  if (st?.noEnv === true) {
+    b.refNull(4);
+    b.localSet(cf);
+  } else {
+    b.localGet(clob); b.refCast(6, true); b.structGet(6, 1); b.localSet(cf);
+  }
+  if (st === undefined) {
+    b.localGet(clob); b.refCast(6, true); b.structGet(6, 0); b.i31Get();
+    b.localSet(idx);
+    b.localGet(clob); b.refCast(6, true); b.structGet(6, 2); b.i31Get();
+    b.localSet(fs);
+  } else {
+    b.i32Const(st.idx);
+    b.localSet(idx);
+    b.i32Const(st.fsize);
+    b.localSet(fs);
+  }
   b.localGet(fs); b.i32Const(argc);
   b.localGet(fs); b.i32Const(argc);
   b.u8(w.GTU);
@@ -651,16 +672,26 @@ export function emitDirectEntryCall(
   b.localGet(ffp);
   b.refCast(4, true);
   if (deliver.kind === "tail") {
-    b.localGet(idx);
-    b.u8(w.RETURN_CALL_INDIRECT);
-    b.lebU(w.T_DABI);
-    b.lebU(0);
+    if (st === undefined) {
+      b.localGet(idx);
+      b.u8(w.RETURN_CALL_INDIRECT);
+      b.lebU(w.T_DABI);
+      b.lebU(0);
+    } else {
+      b.u8(w.RETURN_CALL);
+      b.lebU(st.idx);
+    }
     return -1;
   }
-  b.localGet(idx);
-  b.u8(w.CALL_INDIRECT);
-  b.lebU(w.T_DABI);
-  b.lebU(0);
+  if (st === undefined) {
+    b.localGet(idx);
+    b.u8(w.CALL_INDIRECT);
+    b.lebU(w.T_DABI);
+    b.lebU(0);
+  } else {
+    b.u8(w.CALL);
+    b.lebU(st.idx);
+  }
   const v = f.anyref();
   b.localSet(v);
   if (deliver.kind === "k") {

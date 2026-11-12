@@ -47,6 +47,7 @@ import {DBGTRACE} from "./wasm_tables.ts";
 import {type CIr, type CTerm, type CAtom, type CPrim} from "./cps_ir.ts";
 import {type Buf, Fn} from "./wasm_body.ts";
 import {type Emit, emitDispatch, emitCaseScan, selectBool, emitFail, i31of, makeRestThunk, cellGet, CMP_OPS, emitCallClosure, emitDirectEntryCall, tracePoint} from "./wasm_emit.ts";
+import {analyzeDevirt, type Devirt} from "./wasm_devirt.ts";
 
 // ---------------------------------------------------------------------------
 // Static scope: frame-slot resolution mirroring the interpreter's Env chain.
@@ -131,8 +132,23 @@ type DcallP = {
   bodyEsc?: Set<string>,     // the rest's own escape set
   fnLvl?: TLevel,            // the cell's frame (F_n)
   thunk?: Fn,                // created at emission
+  // Devirt analysis (wasm_devirt.ts): the callee slot's only value is
+  // direct CFn fun's closure — static T_DABI call, no flag dispatch. With
+  // noEnv the callee has no capts: no closure value is loaded at all (null
+  // frame parent).
+  devirt?: {fun: number, noEnv?: true},
+  // The rest is suspension-free with only-pure callees: it runs inline
+  // after the static call (planned into the site's frame, no rest cell).
+  inlineRest?: true,
+  // Arg positions with singleton clo provenance (map-callback eligibility).
+  argFun?: Map<number, number>,
 };
 type ADcall = CTerm & {t: "dcall"} & {__p?: DcallP};
+type CallP = {
+  devirt?: {fun: number, noEnv?: true},  // the callee slot's only value is direct CFn fun's closure
+  argFun?: Map<number, number>,          // arg positions with singleton clo provenance (map callbacks)
+};
+type ACall = CTerm & {t: "call"} & {__p?: CallP};
 
 // ---------------------------------------------------------------------------
 // Escape analysis.
@@ -281,6 +297,7 @@ type Cx = {
   caseCount: number,
   idRetCount: number,
   retResCount: number,
+  dv: Devirt,
 };
 
 function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
@@ -332,10 +349,39 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
         walk(t.rest, [as.__p, ...ts], esc);
         break;
       }
-      case "call": case "perform":
+      case "call": {
+        // Devirt analysis: a known direct CFn callee — the emitter issues a
+        // static T_DABI call and dispatches through the site's k operand;
+        // argFun feeds the tight map/each/flatmap loop specialization.
+        const dv = cx.dv.sites.get(t);
+        if (dv !== undefined) {
+          (t as ACall).__p = {
+            ...(dv.devirt !== undefined
+              ? {devirt: dv.noEnv === true ? {fun: dv.devirt, noEnv: true} : {fun: dv.devirt}}
+              : {}),
+            ...(dv.argFun.size > 0 ? {argFun: dv.argFun} : {}),
+          };
+        }
+        break;
+      }
+      case "perform":
         break;
       case "dcall": {
         const ad = t as ADcall;
+        const dvi = cx.dv.sites.get(t);
+        if (dvi?.inlineRest === true) {
+          // Inline rest (devirt pass): the result and the rest's binds land
+          // in the site's frame — no phantom cell frames, no rest cell. The
+          // site's own esc keeps letk materialization consistent with the
+          // emitter's inline walk of the rest.
+          addSlot(ts[0], t.name);
+          ad.__p = {
+            inlineRest: true, devirt: dvi.noEnv === true ? {fun: dvi.devirt!, noEnv: true} : {fun: dvi.devirt!},
+            argFun: dvi.argFun,
+          };
+          walk(t.rest, ts, esc);
+          break;
+        }
         // The rest runs in the cell's activation frame: entry holds the
         // result slot, fl is the cell's frame (F_n) — the CPS-entry thunk
         // allocates the activation over the captured F_n; the direct-entry
@@ -344,7 +390,13 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
         const entry = lvl();
         addSlot(entry, t.name);
         const restEsc = analyzeEscapes(t.rest);
-        ad.__p = {entryScope: [entry, fl, ...ts], bodyEsc: restEsc, fnLvl: fl};
+        ad.__p = {
+          entryScope: [entry, fl, ...ts], bodyEsc: restEsc, fnLvl: fl,
+          ...(dvi?.devirt !== undefined
+            ? {devirt: dvi.noEnv === true ? {fun: dvi.devirt, noEnv: true} : {fun: dvi.devirt}}
+            : {}),
+          ...(dvi !== undefined && dvi.argFun.size > 0 ? {argFun: dvi.argFun} : {}),
+        };
         planUnit(cx, t.rest, [entry, fl, ...ts], restEsc);
         break;
       }
@@ -398,6 +450,9 @@ export type TermPlan = {
   // per-CFn direct classification (mkfn emission stamps the $CLO flag; the
   // emitCfns split picks the entry ABI)
   cfnDirect: boolean[],
+  // per-CFn purity (wasm_devirt.ts fixpoint): no call/perform/handle and
+  // only-pure dcall targets — gates the tight map loops and inline rests
+  cfnPure: boolean[],
   hdlOrder: AHandle[],
   caseCount: number,
   idRetCount: number,
@@ -406,7 +461,11 @@ export type TermPlan = {
 };
 
 export function planIr(ir: CIr): TermPlan {
-  const cx: Cx = {cfnBase: new Map(), hdlOrder: [], caseCount: 0, idRetCount: 0, retResCount: 0};
+  // Devirt analysis first: its site facts shape this walk (an inline-rest
+  // dcall plans its rest into the site's frame instead of phantom cell
+  // frames) and ride along onto the __p annotations.
+  const dv = analyzeDevirt(ir);
+  const cx: Cx = {cfnBase: new Map(), hdlOrder: [], caseCount: 0, idRetCount: 0, retResCount: 0, dv};
   const globalLvl = lvl();
   planUnit(cx, ir.term, [globalLvl], analyzeEscapes(ir.term));
   // A lambda's mkfn site may live in a LATER lambda's body (nested lambdas),
@@ -429,7 +488,7 @@ export function planIr(ir: CIr): TermPlan {
       throw new WasmError(`internal: lambda ${[...pending][0]} has no mkfn site`);
   }
   return {
-    cfnBase: cx.cfnBase, cfnDirect: ir.funcs.map(fn => fn.direct === true), hdlOrder: cx.hdlOrder,
+    cfnBase: cx.cfnBase, cfnDirect: ir.funcs.map(fn => fn.direct === true), cfnPure: dv.cfnPure, hdlOrder: cx.hdlOrder,
     caseCount: cx.caseCount, idRetCount: cx.idRetCount, retResCount: cx.retResCount,
     globalLvl,
   };
@@ -1189,10 +1248,12 @@ function emitTerm(wk: Walk, t: CTerm): void {
     }
     case "call": {
       const direct = directBuiltin(wk, t.fn);
+      const cp = (t as ACall).__p;
       const fc = f.anyref();
-      if (direct === undefined) {
+      if (direct === undefined && cp?.devirt?.noEnv !== true) {
         // Closure call: load the callee value (a user $CLO, a builtin $CLO
-        // from the value-builtins pool, or a case-body resume binder).
+        // from the value-builtins pool, or a case-body resume binder). A
+        // noEnv devirt target has no capts — the value is never read.
         pushAtom(wk, t.fn);
         b.localSet(fc);
       }
@@ -1210,7 +1271,23 @@ function emitTerm(wk: Walk, t: CTerm): void {
         b.arraySet();
       };
       if (direct !== undefined) {
-        emitCallClosure(f, fc, t.args.length, argEmit, {tail: true, kL: kref.local, direct});
+        // Tight map/each/flatmap: the callback argument's provenance is a
+        // pure direct CFn — a per-site specialized loop fn (callback's
+        // T_DABI entry baked in; no per-element flag dispatch). Native
+        // builtins always convert to call nodes (they invoke ef closures),
+        // so this is the only tight-loop seam.
+        const callDirect = mapTightDirect(em, t.fn, direct, (t as ACall).__p);
+        emitCallClosure(f, fc, t.args.length, argEmit, {tail: true, kL: kref.local, direct: callDirect});
+        break;
+      }
+      const cp2 = (t as ACall).__p;
+      if (cp2?.devirt !== undefined) {
+        // Provenance (wasm_devirt.ts): the callee slot's only binding is
+        // direct CFn fun's mkfn — static T_DABI call; the result dispatches
+        // through the site's materialized continuation (the k operand).
+        const st = devirtSt(em, cp2.devirt);
+        emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "k", kL: kref.local}, st);
+        b.u8(w.RETURN); // the dispatch's null-k yield: the site's value
         break;
       }
       // Unknown callee kind: the $CLO flag picks the entry ABI. A direct
@@ -1358,20 +1435,80 @@ function emitTerm(wk: Walk, t: CTerm): void {
         b.arraySet();
       };
       const direct = directBuiltin(wk, t.fn);
-      const fcb = direct === undefined ? f.anyref() : -1;
-      if (direct === undefined) {
+      // The closure value is only needed for its env: builtin targets don't
+      // use it, and a noEnv devirt target has no capts to read through it.
+      const skipClo = direct !== undefined || p.devirt?.noEnv === true;
+      const fcb = skipClo ? -1 : f.anyref();
+      if (!skipClo) {
         pushAtom(wk, t.fn);
         b.localSet(fcb);
       }
-      if (direct !== undefined) {
-        // Builtin trampolines are T_KABI (no dual entries): the generic
-        // land-cell path — builtin closures carry flag 0.
+      if (p.devirt !== undefined) {
+        // Provenance (wasm_devirt.ts): the callee slot's only binding is
+        // direct CFn fun's mkfn — the slot always holds that closure (envs
+        // still differ per activation; the env comes from the value, unless
+        // noEnv: the callee has no capts and never dereferences it).
+        const st = devirtSt(em, p.devirt);
+        if (tailDret) {
+          emitDirectEntryCall(em, f, fcb, t.args.length, argEmit, {kind: "tail"}, st);
+          break;
+        }
+        if (p.inlineRest === true) {
+          // Suspension-free rest + pure callee: run the rest inline. The
+          // result binds into the site's slot (planned there), the rest
+          // walks with the ambient scope — no rest cell, no thunk.
+          const r = emitDirectEntryCall(em, f, fcb, t.args.length, argEmit, {kind: "raw"}, st);
+          const si = wk.ts[0].slots.get(t.name);
+          if (si === undefined) throw new WasmError(`internal: no slot for ${t.name}`);
+          if (t.norm !== undefined) {
+            const nrm = f.anyref();
+            b.localGet(r);
+            if (t.norm !== "f64") b.callFn(widthHelper(em, t.norm));
+            else b.callFn(em.ix.fNum64);
+            rebox(em, f, t.norm);
+            b.localSet(nrm);
+            storeAt(wk, 0, si, nrm);
+          } else {
+            storeAt(wk, 0, si, r);
+          }
+          emitTerm(wk, t.rest);
+          break;
+        }
+        // Cell path with the static call: the rest still runs in its own
+        // thunk (the site may sit after a suspension, or the rest holds a
+        // materialized continuation the cell must preserve).
+        const r = emitDirectEntryCall(em, f, fcb, t.args.length, argEmit, {kind: "raw"}, st);
         const fpN2 = extendFrame(wk, p.fnLvl!.size);
         const thunk = makeRestThunk(em, "dcall:" + t.name);
         p.thunk = thunk;
         emitDcallThunk(wk, thunk, t, p);
         const cell = f.retCell(thunk.idx, () => cellNextE(wk, b), fpN2);
-        emitCallClosure(f, fcb, t.args.length, argEmit, {tail: true, kL: cell, direct});
+        if (t.norm !== undefined) {
+          const nrm = f.anyref();
+          b.localGet(r);
+          if (t.norm !== "f64") b.callFn(widthHelper(em, t.norm));
+          else b.callFn(em.ix.fNum64);
+          rebox(em, f, t.norm);
+          b.localSet(nrm);
+          emitDispatch(em, f, nrm, cell);
+        } else {
+          emitDispatch(em, f, r, cell);
+        }
+        break;
+      }
+      if (direct !== undefined) {
+        // Tight map/each/flatmap: the callback argument's provenance is a
+        // pure direct CFn — a per-site specialized loop fn (callback's
+        // T_DABI entry baked in; no per-element flag dispatch). Otherwise
+        // the shared trampoline: T_KABI (no dual entries), the generic
+        // land-cell path — builtin closures carry flag 0.
+        const callDirect = mapTightDirect(em, t.fn, direct, p);
+        const fpN2 = extendFrame(wk, p.fnLvl!.size);
+        const thunk = makeRestThunk(em, "dcall:" + t.name);
+        p.thunk = thunk;
+        emitDcallThunk(wk, thunk, t, p);
+        const cell = f.retCell(thunk.idx, () => cellNextE(wk, b), fpN2);
+        emitCallClosure(f, fcb, t.args.length, argEmit, {tail: true, kL: cell, direct: callDirect});
         break;
       }
       // Unknown callee value: the $CLO flag picks the entry ABI. Static
@@ -1549,6 +1686,42 @@ function directBuiltin(wk: Walk, fnAtom: CAtom): {idx: number, fsize: number} | 
       default: return 0;
     }
   }
+}
+
+// Static direct-entry descriptor for a devirt-annotated callee: funcref
+// lambda0 + fun, base frame size from the planned mkfn-site scope.
+function devirtSt(em: Emit, d: {fun: number, noEnv?: true}): {idx: number, fsize: number, noEnv?: true} {
+  return d.noEnv === true
+    ? {idx: em.ix.lambda0 + d.fun, fsize: em.plan.cfnBase.get(d.fun)![0].size, noEnv: true}
+    : {idx: em.ix.lambda0 + d.fun, fsize: em.plan.cfnBase.get(d.fun)![0].size};
+}
+
+// Tight map/each/flatmap override at a builtin call site: when the callback
+// argument's provenance is a pure direct CFn, call a per-site specialized
+// loop fn instead of the shared trampoline. Everything else keeps the
+// generic path.
+function mapTightDirect(em: Emit, fnAtom: CAtom, direct: {idx: number, fsize: number}, p: CallP | DcallP | undefined): {idx: number, fsize: number} {
+  if (p?.argFun === undefined || fnAtom.t !== "var") return direct;
+  const name = fnAtom.name;
+  if (name !== "map" && name !== "each" && name !== "flatmap") return direct;
+  const cbFun = p.argFun.get(0);
+  if (cbFun === undefined || em.plan.cfnPure[cbFun] !== true || em.plan.cfnDirect[cbFun] !== true) return direct;
+  return {idx: tightMapFn(em, name, devirtSt(em, {fun: cbFun})), fsize: direct.fsize};
+}
+
+// A per-site tight map-like loop fn: created here (funcref index from the
+// thunk pool), body filled later by emitBuiltins — emitMapLike lives above
+// this module's layer. Deduped per (builtin, callback) pair.
+function tightMapFn(em: Emit, name: string, cb: {idx: number, fsize: number}): number {
+  const found = em.tightMaps.find(tm => tm.name === name && tm.cb.idx === cb.idx && tm.cb.fsize === cb.fsize);
+  if (found !== undefined) return found.f.idx;
+  const f = new Fn(2, em);
+  f.typeIdx = w.T_KABI;
+  f.idx = em.ix.thunk0 + em.thunks.length;
+  em.ix.funcRefTypes.set(f.idx, w.T_KABI);
+  em.thunks.push(f);
+  em.tightMaps.push({f, name, cb});
+  return f.idx;
 }
 
 // Destructure a tuple/array-window value into the current frame's field
@@ -2222,6 +2395,12 @@ export function emitResumeFn(em: Emit, rf: Fn): void {
 // sequences: helpers → this → builtins → thunks → main.
 export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
   (em as Emit & {plan?: TermPlan}).plan = plan;
+  // Final entry types for every CFn up front: assignIndices pre-seeds all
+  // lambdas T_KABI, and devirt call sites emit static calls whose Buf-side
+  // sig resolution reads the callee's entry — a forward reference (an early
+  // fn calling a later one) must resolve the direct ABI, not the seed.
+  for (let i = 0; i < ir.funcs.length; i++)
+    em.ix.funcRefTypes.set(em.ix.lambda0 + i, ir.funcs[i].direct === true ? w.T_DABI : w.T_KABI);
   for (let i = 0; i < ir.funcs.length; i++) {
     const fn = ir.funcs[i];
     const base = plan.cfnBase.get(i)!;
@@ -2235,7 +2414,6 @@ export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
       const f = new Fn(1, em);
       f.typeIdx = w.T_DABI;
       f.idx = em.ix.lambda0 + i;
-      em.ix.funcRefTypes.set(f.idx, w.T_DABI);
       const knull = f.typed(_T.RF[5]);
       const wk: Walk = {
         em, f, ts: [paramsL, ...base], kL: knull,
@@ -2249,7 +2427,6 @@ export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
     const f = new Fn(2, em);
     f.typeIdx = w.T_KABI;
     f.idx = em.ix.lambda0 + i;
-    em.ix.funcRefTypes.set(f.idx, w.T_KABI);
     const wk: Walk = {
       em, f, ts: [paramsL, ...base], kL: 1,
       esc: analyzeEscapes(fn.body), labels: [], depth: 0,

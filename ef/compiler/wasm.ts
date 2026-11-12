@@ -3,7 +3,9 @@
 // Pipeline: parse → typecheck (types.ts; stamps the runtime markers the
 // phases read) → frontend analysis
 // (analysis.ts: builtin tree-shaking, op discovery, live imports) → CPS
-// conversion (cps.ts) → IR term emission over the shared value plane
+// conversion (cps.ts) → devirtualization analysis (wasm_devirt.ts: slot
+// provenance + per-CFn purity, consumed by the term emitters) → IR term
+// emission over the shared value plane
 // (wasm_term.ts/wasm_emit.ts: a binary .wasm module, WasmGC value plane,
 // no linear memory) → binaryen shrink pass (optimizeBinary: in-process
 // npm `binaryen`, no external tools) → imports and run. No types needed at
@@ -106,7 +108,7 @@ import {buildModule, discover, layoutStatics, optimize, assignIndices, type Disc
 import {planIr, emitCfns, emitCaseFns, emitRetResumes, emitResumeFn, emitTerminalRet, emitMain as emitMainTerm} from "./wasm_term.ts";
 import {Fn} from "./wasm_body.ts";
 import {type Emit, emitHelpers} from "./wasm_emit.ts";
-import {emitBuiltins, emitInits} from "./wasm_module.ts";
+import {emitBuiltins, emitInits, emitTightMaps} from "./wasm_module.ts";
 import {type CIr} from "./cps_ir.ts";
 import {type TermPlan} from "./wasm_term.ts";
 
@@ -119,6 +121,8 @@ import {type TermPlan} from "./wasm_term.ts";
 // - wasm_body.ts    — Buf + Fn: per-function body emission primitives
 // - cps.ts/cps_ir.ts— the CPS IR conversion (stage 1; shared by both backends)
 // - wasm_pipeline.ts— discover/optimize/assignIndices/layoutStatics/buildModule
+// - wasm_devirt.ts  — devirtualization analysis: slot provenance + per-CFn
+//                     purity fixpoint (leaf, over the CPS IR)
 // - wasm_emit.ts    — shared value plane: helpers, dispatch, call ABI, pooling
 // - wasm_term.ts    — the IR term emitters (CFns, letk thunks, perform/handle,
 //                     case functions, main)
@@ -193,6 +197,7 @@ function emit(ir: CIr, d: Discovery, o: Opt, ix: Indices, lay: Layout, plan: Ter
     d, o, ix, lay, plan,
     funcs: [],
     thunks: [],
+    tightMaps: [],
     mainFn: undefined!,
   };
   // Helpers (right after the live imports), CFns, case fns + ret resumes,
@@ -208,6 +213,7 @@ function emit(ir: CIr, d: Discovery, o: Opt, ix: Indices, lay: Layout, plan: Ter
   emitTerminalRet(em, ix.terminalRet);
   em.funcs.push(...emitBuiltins(em, ix.builtin0));
   emitMainTerm(em, ir, plan);
+  emitTightMaps(em);
   em.funcs.push(...em.thunks);
   em.funcs.push(em.mainFn);
   emitInits(em);

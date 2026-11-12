@@ -725,6 +725,14 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
   return out;
 }
 
+// The devirt pass's per-site tight map/each/flatmap loop fns: registered by
+// the dcall/call emitters (which may run in CFns or the main term — always
+// before this), bodies emitted now that the shared trampolines' helpers
+// exist. Runs after emitMainTerm, before the thunks land in the fn list.
+export function emitTightMaps(em: Emit): void {
+  for (const tm of em.tightMaps) emitMapLike(em, tm.f, tm.name, tm.cb);
+}
+
 // map/each/flatmap CPS: the entry (this builtin Fn) runs with the
 // caller's RET cell as its k and its result dispatches through the
 // caller's continuation. The
@@ -737,7 +745,10 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
 // slots, so the loop survives suspension. The counter slot holds a boxed
 // number (slots are anyref); it is unboxed for comparisons and boxed
 // again when passed to the callback as the iteration index.
-function emitMapLike(em: Emit, f: Fn, name: string): void {
+// `cb` (devirt): when set, this is a per-site tight variant — the callback
+// is a proven pure direct CFn; its T_DABI entry is called statically (env
+// still read off the closure value), no per-element flag dispatch.
+function emitMapLike(em: Emit, f: Fn, name: string, cb?: {idx: number, fsize: number}): void {
   const b = f.body;
   const resSlot = name === "each" ? -1 : 2; // map: res, flatmap: tmp
   const iSlot = name === "each" ? 2 : 3;
@@ -852,18 +863,25 @@ function emitMapLike(em: Emit, f: Fn, name: string): void {
       tb.arraySet();
     };
     const argc = name === "map" ? 1 : 2;
-    const cbFlag = t.i32();
-    tb.localGet(fc); tb.refCast(6, true); tb.structGet(6, 3); tb.i31Get();
-    tb.localSet(cbFlag);
-    tb.localGet(cbFlag);
-    tb.if();
-    emitDirectEntryCall(em, t, fc, argc, cbArgs, {kind: "land", landA: iterLand.idx, kL: 2});
-    tb.u8(w.UNREACHABLE); // the land dispatch always tails
-    tb.u8(w.ELSE);
-    emitCallClosure(t, fc, argc, cbArgs, {land: true, kL: 2, landA: iterLand.idx});
-    tb.u8(w.UNREACHABLE); // the callback always tails into iterLand
-    tb.u8(w.END);
-    tb.u8(w.UNREACHABLE); // both flag arms diverge
+    if (cb !== undefined) {
+      // Tight variant: static T_DABI call over the callback's env, landed
+      // in iterLand — no flag read, no call_indirect, no CPS arm.
+      emitDirectEntryCall(em, t, fc, argc, cbArgs, {kind: "land", landA: iterLand.idx, kL: 2}, cb);
+      tb.u8(w.UNREACHABLE); // the land dispatch always tails
+    } else {
+      const cbFlag = t.i32();
+      tb.localGet(fc); tb.refCast(6, true); tb.structGet(6, 3); tb.i31Get();
+      tb.localSet(cbFlag);
+      tb.localGet(cbFlag);
+      tb.if();
+      emitDirectEntryCall(em, t, fc, argc, cbArgs, {kind: "land", landA: iterLand.idx, kL: 2});
+      tb.u8(w.UNREACHABLE); // the land dispatch always tails
+      tb.u8(w.ELSE);
+      emitCallClosure(t, fc, argc, cbArgs, {land: true, kL: 2, landA: iterLand.idx});
+      tb.u8(w.UNREACHABLE); // the callback always tails into iterLand
+      tb.u8(w.END);
+      tb.u8(w.UNREACHABLE); // both flag arms diverge
+    }
     tb.u8(w.END);
     tb.u8(w.UNREACHABLE); // both iteration arms diverge; keep the implicit end typed
   }

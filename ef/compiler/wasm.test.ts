@@ -732,3 +732,147 @@ Println!(pick(false)(1.5))`;
   });
 
 });
+
+describe("wasm devirtualization (wasm_devirt.ts: static direct calls, inline rests, tight map loops)", () => {
+  // Collect dcall nodes from a term subtree.
+  const dcalls = (t: unknown, out: unknown[] = []): unknown[] => {
+    const n = t as {t: string, [k: string]: unknown};
+    if (n.t === "dcall") out.push(n);
+    for (const k of ["rest", "body", "a", "b"]) {
+      const sub = n[k];
+      if (sub !== undefined && sub !== null && typeof sub === "object") dcalls(sub, out);
+    }
+    if (Array.isArray(n["cases"])) for (const c of n["cases"] as {body: unknown}[]) dcalls(c.body, out);
+    return out;
+  };
+
+  test("purity fixpoint + dcall devirt/inlineRest annotations", () => {
+    // fib: self-recursive, no perform/handle/call — pure; every dcall site
+    // gets a devirt annotation; the non-tail rests (n-1 + n-2 joins) inline.
+    const src = `fib :: fn(n: i64): i64 {
+  if (n < 2) { n } else { fib(n - 1) + fib(n - 2) }
+};
+fib(28)`;
+    const prog = new Parser(src).parseProgram();
+    checkProgram(prog);
+    const ir = toCps(prog);
+    const plan = planIr(ir);
+    expect(plan.cfnPure).toEqual([true]);
+    const sites = dcalls(ir.funcs[0].body) as {__p?: {devirt?: {fun: number}, inlineRest?: true}}[];
+    expect(sites.length).toBe(2);
+    for (const s of sites) {
+      expect(s.__p?.devirt?.fun).toBe(0);
+      expect(s.__p?.inlineRest).toBe(true);
+    }
+  });
+
+  test("mixed fn (row {} with an internal handle) reached by dcall: devirt keeps the cell path", () => {
+    // mixed is direct-classified but impure (its island performs): the dcall
+    // still devirtualizes (static T_DABI call — mixed's entry ABI), but the
+    // rest must NOT inline (an escaped perform would lose it).
+    const src = `effect Op(): i64;
+mixed :: fn(x: i64): i64 { handle { x + Op!() } case Op() => k2 { k2(100) } };
+caller :: fn(x: i64): i64 { mixed(x) + 1 };
+[caller(1), caller(2)]`;
+    const prog = new Parser(src).parseProgram();
+    checkProgram(prog);
+    const ir = toCps(prog);
+    const plan = planIr(ir);
+    expect(plan.cfnPure[0]).toBe(false); // mixed: internal handle
+    expect(plan.cfnPure[1]).toBe(false); // caller: dcall to an impure fn
+    expect(parity(src)).toBe("[102, 103]");
+  });
+
+  test("mutual recursion through nested closures: devirt with capts (env path) + inline rests", () => {
+    // up captures down (capts non-empty): the static call still reads the
+    // closure's env; down/up's rests inline. down(9) recurses 18 levels.
+    const src = `down :: fn(n: i64): i64 {
+  up :: fn(m: i64): i64 { if (m == 0) { 100 } else { 1 + down(m - 1) } };
+  if (n == 0) { 0 } else { up(n) }
+};
+[down(4), down(0), down(9)]`;
+    expect(parity(src)).toBe("[4, 0, 9]");
+  });
+
+  test("inline rest with nesting: while body dcalls, rest jumps back to the loop head", () => {
+    const src = `id :: fn(x: i64): i64 { x + 1 };
+s := 0;
+i := 0;
+while (i < 5) { s = s + id(i); i = i + 1 };
+s`;
+    expect(parity(src)).toBe("15");
+  });
+
+  test("dcall site on a resumed path: inline rest runs after a multi-shot resume", () => {
+    // The dcall sits inside the continuation the handler resumes into; its
+    // rest (`* 2` + boundary) runs inline on that path.
+    const src = `effect Op(): i64;
+id :: fn(x: i64): i64 { x + 1 };
+handle { s := Op!(); id(s) * 2 } case Op() => k { k(1) }`;
+    expect(parity(src)).toBe("4");
+  });
+
+  test("assign to a captured var after a dcalled pure fn returns (env path sees the write)", () => {
+    // g captures k: the static call loads the closure and chains the callee
+    // frame through its env; a later assign to k is visible through it.
+    const src = `id :: fn(x: i64): i64 { x };
+k := 7;
+g :: fn(x: i64): i64 { x + k };
+k = 42;
+[g(1), id(k)]`;
+    expect(parity(src)).toBe("[43, 42]");
+  });
+
+  test("tight map loop: pure direct callback specializes; performing callback stays generic", () => {
+    // inc is pure+direct: map(inc, ...) emits a per-site tight loop fn.
+    expect(parity("inc :: fn(x: i64): i64 { x + 1 }; map(inc, [1, 2, 3])")).toBe("[2, 3, 4]");
+    expect(parity("inc2 :: fn(x: i64, i: i64): i64 { x + 1 }; each(inc2, [1, 2, 3])")).toBe("unit");
+    // flatmap with a pure direct callback takes the tight loop too.
+    expect(parity("dup :: fn(x: i64, i: i64): [i64] { [x, x] }; flatmap(dup, [1, 2])")).toBe("[1, 1, 2, 2]");
+    // A performing callback: generic loop path under a resuming handler.
+    const src = `effect Op(): i64;
+performer :: fn(x: i64, i: i64): i64 { Op!() };
+handle { each(performer, [1, 2, 3]) } case Op() => k { k(0) }`;
+    expect(parity(src)).toBe("unit");
+    // each's multi-shot resume re-enters the same land cell per element.
+    const srcEach = `effect Op(): i64;
+cb :: fn(x: i64, i: i64): i64 { Op!() };
+handle { each(cb, [1, 2, 3]); Op!() } case Op() => k { k(k(0)) }`;
+    expect(parity(srcEach)).toBe("0");
+    // map with a single resume per perform: results collected across them.
+    const src2 = `effect Op(): i64;
+cb :: fn(x: i64): i64 { Op!() };
+handle { map(cb, [1, 2]) } case Op() => k { k(10) }`;
+    expect(parity(src2)).toBe("[10, 10]");
+  });
+
+  test("any-callee impure chain: stays on the generic path (known pre-existing wasm divergence)", () => {
+    // h is direct-classified but impure through the any hole (g's body has a
+    // generic call whose callee performs at runtime). The fixpoint keeps h
+    // and every gate off this chain; the wasm op-discovery miss behind the
+    // any-call is a pre-existing known limitation (see plan Non-goals) —
+    // pinned here as an interp/wasm divergence smoke test.
+    const src = `effect Op(): i64;
+g :: fn(a: any): i64 { a(0) };
+h :: fn(f: any): i64 { g(f) };
+performer :: fn(x: i64): i64 { Op!() };
+handle { h(performer) } case Op() => k { 43 }`;
+    const interp = ((): string => {
+      try {
+        return show(run(src));
+      } catch (e) {
+        return "ERR: " + (e as Error).message;
+      }
+    })();
+    expect(interp).toBe("43");
+    expect(() => compile(src)).not.toThrow();
+    const wasm = ((): string => {
+      try {
+        return show(runWasm(src));
+      } catch (e) {
+        return "ERR: " + (e as Error).message;
+      }
+    })();
+    expect(wasm).not.toBe("43"); // the known divergence: the op never reaches the handler
+  });
+});
