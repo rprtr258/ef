@@ -81,6 +81,20 @@ function evalTerm(t: CTerm, ir: CIr, env: Env, k: Cont): Outcome {
       // binding into the ambient env here matches the let case.
       const f = evalAtom(t.fn, env);
       const args = t.args.map(a => evalAtom(a, env));
+      if (isClosure(f) && f.direct === true) {
+        // Direct boundary: apply the closure here — no apply frame, and the
+        // site's continuation serves as both the ambient k (dret) and $ret
+        // (handle islands resolve their k operand through the env).
+        const n = f.env.extend();
+        for (let i = 0; i < f.params.length; i++)
+          n.vars.set(f.params[i], args[i] ?? null);
+        const adhocK: Cont = (v) => {
+          env.vars.set(t.name, t.norm !== undefined ? normWidth(v, t.norm) : v);
+          return evalTerm(t.rest, ir, env, k);
+        };
+        n.vars.set(RET, {tag: "cont", fn: adhocK});
+        return evalTerm(f.ir.funcs[f.fun].body, f.ir, n, adhocK);
+      }
       return apply(f, args, (v) => {
         env.vars.set(t.name, t.norm !== undefined ? normWidth(v, t.norm) : v);
         return evalTerm(t.rest, ir, env, k);

@@ -110,9 +110,14 @@ Hindley-Milner-flavoured type system with effect tracking.
    binds a fresh `$`-temp before flowing on; the converter's continuation
    K is either a meta function (builds the rest term from the value's
    atom — the administrative reductions) or a tail position naming an
-   existing continuation (no wrapper). Wrapper letks are emitted for
-   call/perform sites whose node carries a numKind stamp: the
-   resumed/returned value must normalize to that width at the site.
+   existing continuation (no wrapper). Selective: a lambda whose resolved
+   effect row is empty and whose body has no suspending call in its tail
+   chain converts direct-style (dret boundary, dcall sites); row {} with
+   an internal handle — a mixed function — keeps the direct boundary, its
+   islands running over the ambient chain like any CPS region. Wrapper
+   letks are emitted for call/perform sites whose node carries a numKind
+   stamp: the resumed/returned value must normalize to that width at the
+   site.
 9. **`cps_opt.ts`** — optimization passes over the CPS IR (`optimizeCps`,
    applied by `toCps` as its final stage — consumers of `toCps` only ever
    see optimized IR). Four
@@ -132,6 +137,9 @@ Hindley-Milner-flavoured type system with effect tracking.
    independently.
 10. **`eval.ts`** — CPS IR interpreter (`evalTerm`; `apply` dispatches
    calls): continuations are plain JS closures, re-invoked on resume.
+   A dcall whose callee is a direct closure applies it inline at the site
+   (frame over the closure's env, the site's continuation serving as both
+   the ambient k and `$ret`) instead of going through `apply`.
    `runTop(out, interp?)`
    interprets unhandled effects; `interp` optionally overrides builtin
    interpretations (tests inject fake fs/time/randomness there). The
@@ -154,12 +162,15 @@ Hindley-Milner-flavoured type system with effect tracking.
 11. **`wasm.ts`** — WebAssembly backend: CPS IR → wasm codegen (defunctionalizing
    the same term eval.ts interprets), OPT_PASSES seam (tree-shaking, dead host-import
    elimination), in-process binaryen shrink pass. Split into strictly-layered
-   sub-modules (no import cycles; §-numbered design doc at the top of
+   sub-modules (no import cycles; design doc at the top of
    `wasm.ts`): **`wasm_types.ts`** (GC shape types, Ctx, ValueRef/StaticDesc
-   leaf), **`wasm_tables.ts`** (signatures, host-import layout, binaryen
-   module binding), **`wasm_body.ts`** (Buf + Fn body-emission primitives),
+   leaf), **`wasm_tables.ts`** (signatures — dual call ABI T_KABI/T_DABI —
+   host-import layout, binaryen module binding),
+   **`wasm_body.ts`** (Buf + Fn body-emission primitives),
    **`wasm_pipeline.ts`** (discover/optimize/assignIndices/layoutStatics/
-   buildModule + OPT_PASSES), **`wasm_emit.ts`** (expr() + statement/effect
+   buildModule + OPT_PASSES), **`wasm_term.ts`** (the IR-term emitters:
+   per-node walks, the resume splice, case fns, direct/dual entries),
+   **`wasm_emit.ts`** (expr() + statement/effect
    emitters, split protocol), **`wasm_module.ts`** (builtin trampolines, main,
    run/accessor init fns); `wasm.ts` itself is the entry: compile/
    compileWithOps + the emit() orchestration. Its host runtime lives in

@@ -14,7 +14,9 @@ unhandled-effect program before it runs.
   (`(i64) -> i64 ! { Emit }`); statically unhandled effects are rejected
   before evaluation starts.
 - **Two backends, one frontend.** A CPS interpreter and a WebAssembly (WasmGC)
-  backend — no external toolchain — with identical observable output.
+  backend — no external toolchain — with identical observable output. Selective
+  CPS conversion: functions with empty effect rows convert direct-style; mixed
+  functions (internal handlers) keep the direct boundary.
 - **Browser playground.** A multi-file ef studio: live parse/check/lint as
   you type, runs the wasm build in the browser's WebAssembly engine.
 - **VS Code extension.** Syntax highlighting, checker diagnostics, hover

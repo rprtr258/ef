@@ -437,6 +437,49 @@ a + b`)).toBe("6");
       case Op() => k { k(3) }`)).toBe("6");
   });
 
+  test("mixed functions: row-{} body with an internal handle (direct boundary)", () => {
+    // Island mid-body, result flows through the dret boundary to a pure call site.
+    expect(parity(`effect Tick(n: i64): i64;
+      mix :: fn(x: i64): i64 {
+        handle { Tick!(x) + 1 } case Tick(n) => k { k(n * 10) }
+      };
+      mix(3) + mix(4)`)).toBe("72");
+    // Tail handle: the HDL's next is the never-set $ret — the emitted cell
+    // chains to the terminal return-cell, the case completion returns.
+    expect(parity(`effect Tick(n: i64): i64;
+      mix :: fn(x: i64): i64 {
+        handle { Tick!(x) } case Tick(n) => k { n * 2 }
+      };
+      mix(21)`)).toBe("42");
+    // Mixed callee inside another handler's island (generic-call context).
+    expect(parity(`effect Tick(n: i64): i64;
+      effect Tock(n: i64): i64;
+      mix :: fn(x: i64): i64 {
+        handle { Tick!(x) } case Tick(n) => k { n + 100 }
+      };
+      handle { mix(1) + Tock!(7) } case Tock(n) => k { k(n) }`)).toBe("108");
+    // Multi-shot resume inside a mixed function (the amb shape): each Choose
+    // resume re-enters the spine through the resume lambda's tail contCall;
+    // propagating performs must reach the Emit island across the boundary.
+    expect(parity(`effect Choose(lo: i64, hi: i64): i64;
+      effect Emit(t: [i64]): unit;
+      inner :: fn(n: i64): unit ! { Choose, Emit } {
+        a :: Choose!(1, n);
+        Emit!([a])
+      };
+      middle :: fn(n: i64): unit ! { Emit } {
+        handle { inner(n) } case Choose(lo, hi) => k {
+          each(fn(x, _) { k(x) }, range(lo, hi + 1, 1))
+        }
+      };
+      outer :: fn(n: i64): [[i64]] {
+        handle { middle(n) } case Emit(t) => k {
+          concat([t], k(unit))
+        } case Return(v) => k { [] }
+      };
+      outer(2)`)).toBe("[[1], [2]]");
+  });
+
   test("interp injection overrides builtin effects (Read mock)", () => {
     const p = join(tmpdir(), `ef-wasm-mock-${process.pid}.txt`);
     const src = `Read!("${p}")`;

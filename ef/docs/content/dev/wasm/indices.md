@@ -11,10 +11,12 @@ order (stable across runs):
 5. builtin trampolines, then land thunks,
 6. main.
 
-All ef functions share one uniform signature, so every table slot has the
-same type and every dynamic call is a `call_indirect` through this table.
-A side map records each index's concrete signature so direct calls resolve
-their signature when emitting (see [emit](emit.md)).
+Call signatures are the dual ABI: `T_KABI = (($FRAME), ($K)) -> anyref` for
+everything that can suspend, `T_DABI = (($FRAME)) -> anyref` for
+classified-pure functions — the side map records each index's concrete
+signature so direct calls resolve it when emitting (see [emit](emit.md));
+every dynamic call is a `call_indirect`/`return_call_indirect` through this
+table.
 
 This phase also assigns the **spill slots** the suspension machinery needs:
 each perform's args cell, each handle's installed continuation cell, and the

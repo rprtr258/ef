@@ -767,7 +767,16 @@ export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
       () => {
         // Skip only THIS handle's splice cells (same case table): a foreign
         // nested handle's HDL on the chain is a legitimate scan target —
-        // skipping it severs the completion's path into that handle.
+        // skipping it severs the completion's path into that handle. A null
+        // next is the tail handle's direct boundary: exit before
+        // dereferencing — the case fn's completion null-k-yields to the
+        // direct entry.
+        b.localGet(kn);
+        b.u8(0xd1); // ref.is_null
+        b.localSet(knx);
+        b.localGet(knx);
+        b.u8(w.EQZ);
+        b.if();
         cellGet(b, kn, 0); b.i31Get();
         b.i32Const(w.K_HDL); b.u8(w.EQ); b.u8(w.EQZ);
         b.localSet(knx); // 1 = exit (not a K_HDL)
@@ -778,6 +787,7 @@ export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
         b.localGet(tbl); b.refCast(w.EQREF, true);
         b.refEq(); b.u8(w.EQZ); // 1 = exit (a foreign handle's HDL)
         b.localSet(knx);
+        b.u8(w.END);
         b.u8(w.END);
         b.localGet(knx);
       },

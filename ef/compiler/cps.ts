@@ -47,28 +47,34 @@ function kap(k: K, v: CAtom): CTerm {
   return k.f(v);
 }
 
-// Direct-vs-CPS classification of a lambda body: its own subtree only —
-// nested lambdas classify themselves. Any perform/handle, or a checker-
-// stamped suspending call, makes the function CPS; a body with no suspension
-// point converts direct-style. Operator apps are dispatched structurally by
-// the converter (they carry no suspension stamp).
-function isDirectBody(prog: Program, id: ExprID): boolean {
+// Direct-boundary classification: the lambda's resolved effect row is empty
+// AND no suspending call sits in the body's tail chain. An empty row means
+// every perform in the body is lexically under a covering handler (a
+// suspending call or uncovered perform would land in the row), so mixed
+// functions — row {} with internal handles — keep the direct boundary and
+// their islands run over the ambient chain like any CPS region. The tail
+// guard closes the row's blind spot: a resume binder's type performs
+// nothing (contCall stamps an empty row) and an `any` callee's row is
+// unread, so a tail call to either would flow the never-set $ret into a
+// callee that can suspend, severing the ambient chain its performs walk.
+// Unstamped or any-absorbed lambdas default to CPS.
+function isDirectFn(prog: Program, e: Expr & {t: "lambda"}): boolean {
+  const typ = e.typ;
+  if (typ === undefined || !(typ.effs instanceof Set) || typ.effs.size !== 0) return false;
+  return !tailSusCall(prog, e.body);
+}
+
+// A checker-stamped suspending app anywhere in the AST tail chain — exactly
+// the call shapes the converter emits as `call {k: $ret}` (non-tail sites
+// become dcall with a materialized land cell).
+function tailSusCall(prog: Program, id: ExprID): boolean {
   const e = prog.nodes[id];
   switch (e.t) {
-    case "num": case "str": case "bool": case "unit": case "sym": return true;
-    case "lambda": return true;
-    case "perform": case "handle": return false;
-    case "app": return e.sus !== true && isDirectBody(prog, e.fn) && e.args.every(a => isDirectBody(prog, a));
-    case "let": return isDirectBody(prog, e.val);
-    case "dlet": return isDirectBody(prog, e.val);
-    case "assign": return isDirectBody(prog, e.val);
-    case "if": return isDirectBody(prog, e.c) && isDirectBody(prog, e.a) && isDirectBody(prog, e.b);
-    case "while": return isDirectBody(prog, e.c) && isDirectBody(prog, e.body);
-    case "block": return e.stmts.every(s => isDirectBody(prog, s));
-    case "arr": return e.elems.every(s => isDirectBody(prog, s));
-    case "as": return isDirectBody(prog, e.e);
-    case "field": return isDirectBody(prog, e.obj);
-    default: return assertNever(e);
+    case "app": return e.sus === true;
+    case "if": return tailSusCall(prog, e.a) || tailSusCall(prog, e.b);
+    case "block": return e.stmts.length > 0 && tailSusCall(prog, e.stmts[e.stmts.length - 1]);
+    case "as": return tailSusCall(prog, e.e);
+    default: return false;
   }
 }
 
@@ -176,7 +182,7 @@ class Converter {
       }
       case "lambda": {
         const params = e.params.map(p => p.name);
-        const direct = isDirectBody(this.prog, e.body);
+        const direct = isDirectFn(this.prog, e);
         const body = this.convert(e.body, direct ? {t: "tail", name: RET, dret: true} : {t: "tail", name: RET});
         const fun = this.funcs.length;
         this.funcs.push({

@@ -462,7 +462,7 @@ type Walk = {
   // Thunks created inside a direct fn: their thunks' cells chain to a
   // terminal return-cell instead of the raw null kL (a null next would
   // fire emitDispatch's null-k inside void arms — see emitDcallThunk).
-  kTerminal?: true,
+  kTerminal?: boolean,
 };
 
 // The next-pointer operand for a dcall's synthesized cell: the ambient
@@ -1816,17 +1816,25 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   // on a resumed perform the found hdl is a chain copy whose next is the
   // fresh splice cell — the case body's completion ($xit = kNext) must
   // reach the resume's k2 directly, exactly like the interpreter's
-  // per-run kOuter, not re-enter the fresh cell's Return scan.
+  // per-run kOuter, not re-enter the fresh cell's Return scan. A null
+  // next is the tail handle's direct boundary: the case completion's
+  // null-k dispatch returns the value to the direct entry, so the walk
+  // exits before dereferencing.
   const ckn = f.typed(_T.RF[5]);
   const ckx = f.i32();
   cellGet(b, hdl, 3);
   b.localSet(ckn);
   f.walkLoop(
     () => {
-      // Skip only the matched handle's splice cells (same case table in
-      // tbl): a foreign nested handle's HDL is a legitimate completion
-      // target — skipping it threaded the case body's $xit past the outer
-      // handle's scan (amb.ef's Emit became unreachable).
+      // ckx = 1 (exit) iff ckn is null (the tail handle's direct boundary —
+      // the case completion's null-k dispatch returns to the entry) or ckn
+      // is not a same-table K_HDL splice cell.
+      b.localGet(ckn);
+      b.u8(0xd1); // ref.is_null
+      b.localSet(ckx);
+      b.localGet(ckx);
+      b.u8(w.EQZ);
+      b.if();
       cellGet(b, ckn, 0); b.i31Get();
       b.i32Const(w.K_HDL); b.u8(w.EQ); b.u8(w.EQZ);
       b.localSet(ckx);
@@ -1838,15 +1846,31 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
       b.refEq(); b.u8(w.EQZ);
       b.localSet(ckx);
       b.u8(w.END);
+      b.u8(w.END);
       b.localGet(ckx);
     },
     () => {
       cellGet(b, ckn, 3);
       b.localSet(ckn);
+      tracePoint(em, f, `f${f.fid} cknhop`, () => {
+        const t1 = f.i32();
+        b.localGet(ckn);
+        b.u8(0xd1);
+        b.localSet(t1);
+        b.localGet(t1);
+      });
     },
   );
   b.localGet(ckn);
   b.localGet(fnIdx);
+  tracePoint(em, f, `f${f.fid} perform:dispatch`, () => {
+    // val = ref.is_null(ckn) — the case completion target's nullness
+    const t1 = f.i32();
+    b.localGet(ckn);
+    b.u8(0xd1); // ref.is_null
+    b.localSet(t1);
+    b.localGet(t1);
+  });
   b.u8(w.RETURN_CALL_INDIRECT);
   b.lebU(w.T_KABI);
   b.lebU(0);
@@ -1878,14 +1902,26 @@ function emitHandleT(wk: Walk, t: AHandle): void {
   b.structNew(4);
   b.localSet(hf);
   // HDL next = the handle's own continuation (the k-operand cell — always
-  // materialized; the converter wrapped the after-handle rest).
+  // materialized; the converter wrapped the after-handle rest). A tail
+  // handle in a direct body resolves k to the never-set knull local — the
+  // terminal cell stands in: a real K_RET whose fragment returns the value,
+  // so the caseDispatch's ckn walk yields a live chain link (a raw null
+  // would sever the resume's k2 threading and lose propagating performs).
   const kref = resolveK(wk, t.k);
   if (kref.kind === "label") throw new WasmError("internal: handle k must be materialized");
   b.i31Const(w.K_HDL);
   b.globalGet(em.lay.hdlTableOff.get(hp.hdlIdx)!);
   b.localGet(hf);
-  b.localGet(kref.local);
-  b.refCast(5, true);
+  if (wk.kTerminal === true && kref.local === wk.kL) {
+    // The tail handle's knull boundary: the terminal cell stands in so the
+    // caseDispatch's ckn walk yields a live chain link (a raw null would
+    // sever the resume's k2 threading and lose propagating performs).
+    cellNextE(wk, b);
+    b.refCast(5, true); // $K.next is $K-typed (cellNextE pushes an anyref global)
+  } else {
+    b.localGet(kref.local);
+    b.refCast(5, true);
+  }
   b.structNew(5);
   b.localSet(hdl);
   // The ret binder: the HDL cell — frame slot (thunks inside the body
@@ -1894,14 +1930,21 @@ function emitHandleT(wk: Walk, t: AHandle): void {
   addLocal(wk.ts[0], t.ret, hdl);
   // Body with the handler cell as the ambient continuation: every value
   // flows through the handler's Return entry. Thunks created inside the
-  // body rebind the ret binder to their kNext (the done-marker rule).
+  // body rebind the ret binder to their kNext (the done-marker rule). The
+  // island's ambient chain is the HDL cell — a real continuation — so
+  // kTerminal clears: cells installed inside must chain to it (their
+  // completions reach the handler's ret path), not to the direct entry's
+  // terminal return.
   const saved = wk.kL;
   const savedRet = wk.retName;
+  const savedTerm = wk.kTerminal;
   wk.kL = hdl;
+  wk.kTerminal = false;
   wk.retName = t.ret;
   emitTerm(wk, t.body);
   wk.kL = saved;
   wk.retName = savedRet;
+  wk.kTerminal = savedTerm;
   b.u8(0x00); // unreachable: the body's dispatch tail-calls away
 }
 
@@ -2231,6 +2274,11 @@ export function emitCaseFns(em: Emit, plan: TermPlan): void {
   idf.em = em;
   emitIdRetFn(em, idf, 1);
   em.funcs.push(idf);
+  // Pass 1: every case fn (op cases + explicit Return cases) — the layout
+  // assigns them the contiguous case0.. block, so they must all be emitted
+  // before the identity rets (pass 2), which own the idRet0.. block. A
+  // per-handle interleaving here would collide funcrefs once a program has
+  // two handles without explicit Return cases.
   for (const hdl of plan.hdlOrder) {
     const hp = hdl.__p!;
     const cases = hdl.cases;
@@ -2241,7 +2289,7 @@ export function emitCaseFns(em: Emit, plan: TermPlan): void {
       const cp = hp.caseP[ci++];
       const f = new Fn(2, em);
       f.typeIdx = w.T_KABI;
-      f.idx = cp.fnIdx;
+      f.idx = em.ix.case0 + cp.fnIdx;
       em.ix.funcRefTypes.set(f.idx, w.T_KABI);
       f.em = em;
       emitCaseBody(em, f, c.body, cp.base, cp.esc, hdl.exit, undefined, npMax);
@@ -2252,20 +2300,26 @@ export function emitCaseFns(em: Emit, plan: TermPlan): void {
       const cp = hp.retP!;
       const f = new Fn(2, em);
       f.typeIdx = w.T_KABI;
-      f.idx = cp.fnIdx;
+      f.idx = em.ix.case0 + cp.fnIdx;
       em.ix.funcRefTypes.set(f.idx, w.T_KABI);
       f.em = em;
       emitCaseBody(em, f, retCase.body, cp.base, cp.esc, hdl.exit, hp.retResumeIdx, npMax);
       em.funcs.push(f);
-    } else if (hp.idRetIdx !== undefined) {
-      const f = new Fn(2, em);
-      f.typeIdx = w.T_KABI;
-      f.idx = em.ix.idRet0 + hp.idRetIdx;
-      em.ix.funcRefTypes.set(f.idx, w.T_KABI);
-      f.em = em;
-      emitIdRetFn(em, f, npMax + 1);
-      em.funcs.push(f);
     }
+  }
+  // Pass 2: per-handle identity rets (handles without an explicit Return
+  // case), in plan order over the idRet0.. block.
+  for (const hdl of plan.hdlOrder) {
+    const hp = hdl.__p!;
+    if (hp.idRetIdx === undefined) continue;
+    const npMax = Math.max(0, ...hdl.cases.map(c => c.params.length));
+    const f = new Fn(2, em);
+    f.typeIdx = w.T_KABI;
+    f.idx = em.ix.idRet0 + hp.idRetIdx;
+    em.ix.funcRefTypes.set(f.idx, w.T_KABI);
+    f.em = em;
+    emitIdRetFn(em, f, npMax + 1);
+    em.funcs.push(f);
   }
 }
 

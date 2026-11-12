@@ -38,7 +38,8 @@
 //   strlen/char/Out); array/list = $ARR slice fat pointer {(ref null
 //   $ELEMS) data, i32 off, i32 len} (immutable — views share the backing,
 //   only elements mutate); tuple = immutable $TUP {(ref null $ELEMS)};
-//   closure = immutable $CLO {i31 fnIdx, (ref null $FRAME) env, i31 fsize}.
+//   closure = immutable $CLO {i31 fnIdx, (ref null $FRAME) env, i31
+//   fsize, i31 direct flag}.
 // - Every call frame is a $FRAME {mut (ref null $FRAME) parent, mut (ref
 //   null $ELEMS) slots} with slot array length max(fsize, argc); closures
 //   capture their defining frame, so escaping/mutable capture works exactly
@@ -48,19 +49,27 @@
 //   $K) next}: K_RET{a = i31
 //   thunk funcref index, b = frame}, K_HDL{a = $ELEMS case table of flat
 //   [opid, fnIdx, fsize, nparams] i31 quadruples (Return case = opid -1),
-//   b = hframe}. k = ref.null $K is the final return.
-// - All ef functions have uniform T_KABI signature ((ref null $FRAME),
-//   (ref null $K)) -> anyref and dispatch through one funcref table via
-//   call_indirect. Builtins are trampolines; map/each/flatmap are compiled
-//   CPS loops calling callbacks the same way; tail positions keep
+//   b = hframe}. k = ref.null $K is the final return; the terminal cell —
+//   a shared K_RET whose fragment just returns its param — stands in for
+//   a direct-boundary function's never-set $ret wherever a synthesized
+//   cell or a tail-handle HDL would otherwise chain to null.
+// - Dual call ABI, one funcref table: classified-pure functions (empty
+//   effect row and no tail call to a suspending callee — cps.ts) compile
+//   to T_DABI ((ref null $FRAME)) -> anyref with no continuation operand;
+//   everything that can suspend keeps T_KABI ((ref null $FRAME), (ref
+//   null $K)) -> anyref. dcall sites check the $CLO's direct flag at
+//   runtime — static knowledge is only a hint, never a bypass (a
+//   pure-typed slot can hold a resume binder or an any-smuggled closure,
+//   which take the T_KABI arm through a synthesized land cell chaining to
+//   the terminal one inside a direct body). Tail positions keep
 //   return_call/return_call_indirect.
-// - dcall (selective CPS, interim generic shape): classified-pure callees are
-//   still T_KABI functions, but a dcall site tails into the callee with a
-//   synthesized RET cell whose thunk stores the result and runs the rest —
-//   no wrapper letk in the IR, no freeze at the site. dret dispatches the
-//   return value through the ambient chain head. Direct functions therefore
-//   still pay the T_KABI boundary here; the dual-ABI work gives them a
-//   plain value-returning signature.
+// - Mixed functions — row {} with internal handles — keep the direct
+//   boundary: their islands run over the ambient chain like any CPS
+//   region. A tail handle's HDL chains to the terminal cell instead of
+//   the never-set $ret, and a case fn is invoked with its exit k walked
+//   past same-table splice cells — a K_RET there (terminal or caller's)
+//   makes the case completion a plain return, delivering the island's
+//   value out of the direct entry.
 // - Static literals (nums, strings, bools, unit, builtin closures, PI,
 //   per-handle case tables) are immutable anyref globals, each initialized
 //   by a GC constant expression at instantiation; run() builds the global

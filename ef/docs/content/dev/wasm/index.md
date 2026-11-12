@@ -50,7 +50,7 @@ Each phase has its own page under this one in the sidebar.
 | string | `$STR` — mutable i16 array, UTF-16 code units (matches JS `strlen`/`char`/`Out`) |
 | array / list | `$ARR` slice fat pointer `{(ref null $ELEMS) data, i32 off, i32 len}` — immutable; **views (`sub`) share the backing with a shifted window**, only backing elements mutate |
 | tuple | `$TUP {(ref null $ELEMS)}` — immutable, struct-like: no offset/length, distinct from slices |
-| closure | `$CLO {i31 fnIdx, (ref null $FRAME) env, i31 fsize}` — immutable |
+| closure | `$CLO {i31 fnIdx, (ref null $FRAME) env, i31 fsize, i31 direct flag}` — immutable |
 
 ## Frames, variables, calls
 
@@ -60,9 +60,18 @@ mutable capture work exactly like the interpreter's env chain; variables
 resolve statically to `(frame depth, slot)` — a read is `struct.get $FRAME 1`
 + `array.get`.
 
-All ef functions share one uniform signature
-`T_KABI = (($FRAME), ($K)) -> anyref` and dispatch through a single funcref
-table via `call_indirect`. Builtins are trampolines; `map`/`each`/`flatmap`
+The call ABI is dual, over one funcref table. Classified-pure functions (empty
+effect row, no tail call to a suspending callee) compile to the direct
+signature `T_DABI = (($FRAME)) -> anyref`: no continuation operand, tails
+deliver with `dret`, and `dcall` sites invoke them directly — the `$CLO`'s
+direct flag picks the entry at runtime for unknown callees (a pure-typed slot
+can hold a resume binder or an `any`-smuggled closure, which take the `T_KABI`
+arm through a synthesized land cell). A **mixed function** — empty row with
+internal handlers — keeps the direct boundary: its islands run over the
+ambient chain like any CPS region, the tail handler's `K_HDL` chains to the
+terminal return-cell instead of the never-set `$ret`, and a case fn's
+completion dispatches through that cell, returning the island's value from
+the direct entry. Builtins are trampolines (`T_KABI`); `map`/`each`/`flatmap`
 are compiled CPS loops that call callbacks the same way. Tail positions keep
 `return_call`/`return_call_indirect` (O(1) wasm stack).
 

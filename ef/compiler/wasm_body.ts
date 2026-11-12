@@ -790,18 +790,6 @@ export class Fn {
 
   constF64(x: number): () => void { return () => this.body.f64Const(x); }
 
-  // Calls the closure in local `fc`; argEmit(k, ffp) stores argument k into
-  // the fresh frame at local ffp. The callee has the uniform CPS ABI
-  // (frame, k) -> i32. Leaves the result cell on the stack — or, when `tail`,
-  // returns the callee's result from the enclosing function directly
-  // (return_call_indirect passing the caller's k through, so tail recursion
-  // uses O(1) stack). A non-tail call passes k=0: the callee's dispatch(0, v)
-  // returns its result cell inline (today's zero-overhead arithmetic) — or,
-  // when `land`, a freshly allocated RET cell {K_RET, landA, $fp, k}:
-  // the callee's dispatch tail-calls the land thunk over the caller's frame
-  // and k, which dispatches the result into the caller's continuation (k=0
-  // here, so the value comes back to this call site and the body continues
-  // inline).
   // A RET cell {K_RET, fragIdx, $fp, next}: the continuation cell that
   // tail-calls the thunk `fragIdx` (T_III_I) over the caller's frame (local
   // 0). `nextE` pushes the cell's next-pointer operand. Returns the cell.

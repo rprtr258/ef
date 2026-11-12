@@ -19,16 +19,25 @@
 // honor. Named variables stay live in the (shared, mutable) frame: re-resuming
 // after an assignment sees the new value.
 //
-// The transform is selective: a function whose body contains no suspension
-// point in its own subtree (no perform/handle, no checker-stamped suspending
-// call) converts direct-style — its boundary delivers with `dret` instead of
-// jumping `$ret`, and calls to classified-pure callees are `dcall`s that bind
-// results in-frame. Direct regions contain no suspension points, so nothing
-// in them is ever captured or frozen; the freeze discipline above applies
-// only inside CPS regions. `dcall` itself never suspends (its operands and
-// result need no freezing), but a dcall inside a CPS function can still sit
-// after a suspension — its operand reads flow through the freeze machinery
-// like any other value read.
+// The transform is selective: a function whose resolved effect row is empty
+// and whose body has no checker-stamped suspending call in its tail chain
+// converts direct-style — its boundary delivers with `dret` instead of
+// jumping `$ret`, and calls to classified-pure callees are `dcall`s that
+// bind results in-frame. An empty row vouches that every perform in the
+// body is lexically under a covering handler, so a function whose body is
+// (or ends in) a `handle` — a mixed function — still converts direct: its
+// islands run over the ambient chain like any CPS region, and the tail
+// handle's k operand (the never-set `$ret`) is resolved to a terminal
+// return-cell by the backends. The tail guard closes the row's blind spot:
+// a resume binder's type performs nothing (contCall stamps an empty row)
+// and an `any` callee's row is unread, so a tail call to either would flow
+// the never-set `$ret` into a callee that can suspend. Direct regions
+// contain no suspension points, so nothing in them is ever captured or
+// frozen; the freeze discipline above applies only inside CPS regions.
+// `dcall` itself never suspends (its operands and result need no freezing),
+// but a dcall inside a CPS function can still sit after a suspension — its
+// operand reads flow through the freeze machinery like any other value
+// read.
 //
 // `$`-prefixed names are converter-generated and can never collide with
 // source identifiers (the lexer only allows [A-Za-z0-9_]).

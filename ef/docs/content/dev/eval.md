@@ -15,24 +15,35 @@ Because everything is tail-call structured, JSC's TCO keeps the JS stack O(1)
 for tail calls; non-tail recursion allocates heap frames instead of stack
 frames (slow, but no stack overflow).
 
+The conversion is **selective**: a function whose resolved effect row is empty
+and whose body has no suspending call in its tail chain converts
+direct-style — its boundary delivers with `dret` instead of jumping `$ret`,
+and calls to classified-pure callees are `dcall`s that bind results in-frame.
+A mixed function — empty row with internal handlers — keeps the direct
+boundary: its handler islands run over the ambient chain like any CPS region,
+and the tail handler's continuation resolves to the caller's continuation at
+runtime.
+
 ## Core shapes
 
 | Shape | Meaning |
 |-------|---------|
 | `Value` | `null · number · bigint · string · boolean · Value[] · Closure · Native` |
-| `Closure` | `{params, body, env, nodes}` — carries its **own node slice**, so closures stay valid across REPL lines and programs |
+| `Closure` | `{params, fun, ir, env, typ?}` — `fun` indexes the closure's **own CPS IR** function table, so closures stay valid across REPL lines and programs |
 | `Native` | `{fn: (args, k) => Outcome}` — CPS builtins |
 | `Cont` | `(Value) => Outcome` |
 | `Outcome` | `{tag: "done", value}` or `{tag: "eff", op, args, k}` — a trapped effect |
 
-`evalE(id, nodes, env, k)` dispatches over the flat node slice;
-`apply(f, args, k)` dispatches native vs closure.
+`evalTerm(t, ir, env, k)` dispatches over the CPS IR term;
+`apply(f, args, k)` dispatches native vs closure (a `dcall` whose callee is a
+direct closure applies it inline at the site instead).
 
 ## Width normalization
 
-The checker stamps every numeric node with its width (`numKind`). `evalE`
-wraps `k` once per stamped node, normalizing the produced value exactly like
-the wasm backend's per-width ops:
+The checker stamps every numeric node with its width (`numKind`); the CPS IR
+carries those stamps as `norm` marks on the bind sites (prim results, `bind`s,
+continuation parameters, dcall results). `normWidth` normalizes the produced
+value exactly like the wasm backend's per-width ops:
 
 | Stamp | Normalization |
 |-------|---------------|

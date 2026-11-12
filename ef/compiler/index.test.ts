@@ -1179,4 +1179,73 @@ describe("selective CPS: dcall/dret classification", () => {
     expect(countNodes(c, t => t.t === "call")).toBe(1);
     expect(countNodes(c, t => t.t === "dcall")).toBe(0);
   });
+
+  test("mixed function: internal handle keeps the direct boundary (row {})", () => {
+    const src = `
+      effect Tick(n: i64): i64;
+      mix :: fn(x: i64): i64 {
+        handle { Tick!(x) + 1 } case Tick(n) => k { k(n * 10) }
+      };
+      mix(3) + mix(4)
+    `;
+    expect(show(run(src))).toBe("72"); // (30 + 1) + (40 + 1)
+    const c = ir(src);
+    // mix's row is {} — the island covers Tick — so the boundary stays
+    // direct: both call sites are dcalls, and the handle's k operand is the
+    // never-set $ret (the emitter resolves it to the terminal return-cell;
+    // no dret node materializes under a tail handle).
+    expect(countNodes(c, t => t.t === "dret")).toBe(0);
+    expect(countNodes(c, t => t.t === "handle")).toBe(1);
+    expect(countNodes(c, t => t.t === "dcall")).toBe(2);
+    expect(countNodes(c, t => t.t === "call")).toBe(1); // the case body's k(n * 10) resume
+    expect(c.funcs.filter(f => f.direct === true).length).toBe(1);
+  });
+
+  test("mixed function with a tail handle: boundary rides the terminal cell", () => {
+    const src = `
+      effect Tick(n: i64): i64;
+      mix :: fn(x: i64): i64 {
+        handle { Tick!(x) } case Tick(n) => k { n * 2 }
+      };
+      mix(21)
+    `;
+    expect(show(run(src))).toBe("42");
+    const c = ir(src);
+    // The handle IS the body: its k operand is the never-set $ret — the
+    // emitted HDL chains to the terminal return-cell instead.
+    expect(countNodes(c, t => t.t === "dret")).toBe(0);
+    expect(countNodes(c, t => t.t === "handle")).toBe(1);
+    expect(c.funcs.filter(f => f.direct === true).length).toBe(1);
+  });
+
+  test("multi-shot resume inside a mixed function (the amb shape)", () => {
+    const src = `
+      effect Choose(lo: i64, hi: i64): i64;
+      effect Emit(t: [i64]): unit;
+      inner :: fn(n: i64): unit ! { Choose, Emit } {
+        a :: Choose!(1, n);
+        Emit!([a])
+      };
+      middle :: fn(n: i64): unit ! { Emit } {
+        handle { inner(n) } case Choose(lo, hi) => k {
+          each(fn(x, _) { k(x) }, range(lo, hi + 1, 1))
+        }
+      };
+      outer :: fn(n: i64): [[i64]] {
+        handle { middle(n) } case Emit(t) => k {
+          concat([t], k(unit))
+        } case Return(v) => k { [] }
+      };
+      outer(2)
+    `;
+    // middle is CPS (its row carries Emit); outer is mixed: row {} with an
+    // internal handle, resumed multi-shot by the Choose handler inside
+    // middle. Each Choose resume re-enters the spine through the resume
+    // lambda's tail contCall — its performs must reach outer's Emit island
+    // across the direct boundary.
+    expect(show(run(src))).toBe("[[1], [2]]");
+    const c = ir(src);
+    expect(countNodes(c, t => t.t === "dret")).toBe(0); // outer's boundary is its tail handle's k operand
+    expect(c.funcs.filter(f => f.direct === true).length).toBe(1); // outer only
+  });
 });
