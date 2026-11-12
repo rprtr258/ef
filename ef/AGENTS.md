@@ -246,7 +246,15 @@ typing rules.
   type `R` is NOT unified with the body type (handlers transform results).
   When the body is pure, `R ~ bodyType`.
 - **resume `k` type.** `k : (effectRetType) -> R` where `R` is the handle
-  result type, not the body type.
+  result type, not the body type. For a Return-less handle whose body
+  performs no op outside lambda bodies, an op case whose body references
+  `k` also unifies the resume's return with the body's type — every
+  resumption then runs the body to completion, so the delivery is the
+  body's completion value (nested case-body completions agree through the
+  same var). Residual holes: perform-spined bodies keep the unchecked
+  boundary; observing handlers over forced bodies are rejected by design
+  (escape: return the delivery from the case body and observe outside); the
+  `+` delayed constraint lets `k(1) + k(2)` shapes through unchecked.
 - **Value restriction.** `::`/`:=` with a lambda RHS is generalized
   (user-defined polymorphic functions); a non-lambda RHS is not. Builtins
   get fresh type vars per use via scheme thunks.

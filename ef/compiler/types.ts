@@ -695,6 +695,80 @@ function plusType(u: Unifier, a: Type, b: Type): Type {
   throw new TypeError_(`+: ${showT(ra)} and ${showT(rb)} are not both numeric or both string`);
 }
 
+// Resume-delivery rule (see AGENTS.md "resume k type"): both walks drive the
+// spine-gated resume typing in the handle case.
+
+// Does `root`'s spine — everything except lambda bodies, which run only when
+// invoked — perform any op? A lambda-internal perform (e.g. a HOF loop's
+// land) does not suspend the enclosing expression's evaluation spine.
+function hasPerformOutsideLambdas(nodes: Expr[], root: ExprID): boolean {
+  const e = nodes[root];
+  switch (e.t) {
+    case "num": case "str": case "bool": case "unit": case "sym": case "lambda":
+      return false;
+    case "let": case "dlet": case "assign":
+      return hasPerformOutsideLambdas(nodes, e.val);
+    case "as":
+      return hasPerformOutsideLambdas(nodes, e.e);
+    case "if":
+      return hasPerformOutsideLambdas(nodes, e.c) || hasPerformOutsideLambdas(nodes, e.a) || hasPerformOutsideLambdas(nodes, e.b);
+    case "while":
+      return hasPerformOutsideLambdas(nodes, e.c) || hasPerformOutsideLambdas(nodes, e.body);
+    case "block":
+      return e.stmts.some(s => hasPerformOutsideLambdas(nodes, s));
+    case "perform":
+      return true;
+    case "handle":
+      return hasPerformOutsideLambdas(nodes, e.body);
+    case "app":
+      return hasPerformOutsideLambdas(nodes, e.fn) || e.args.some(a => hasPerformOutsideLambdas(nodes, a));
+    case "arr":
+      return e.elems.some(el => hasPerformOutsideLambdas(nodes, el));
+    case "field":
+      return hasPerformOutsideLambdas(nodes, e.obj);
+    default:
+      return assertNever(e);
+  }
+}
+
+// Does the case body lexically reference the resume binder `name`? Any
+// textual occurrence counts — even inside lambda bodies (`map(k, opts)`) or
+// shadowed — so the gate over-approximates referencing and can only fire
+// more, never less.
+function caseReferencesK(nodes: Expr[], name: string, root: ExprID): boolean {
+  const e = nodes[root];
+  switch (e.t) {
+    case "num": case "str": case "bool": case "unit":
+      return false;
+    case "sym":
+      return e.v === name;
+    case "lambda":
+      return caseReferencesK(nodes, name, e.body);
+    case "let": case "dlet": case "assign":
+      return caseReferencesK(nodes, name, e.val);
+    case "as":
+      return caseReferencesK(nodes, name, e.e);
+    case "if":
+      return caseReferencesK(nodes, name, e.c) || caseReferencesK(nodes, name, e.a) || caseReferencesK(nodes, name, e.b);
+    case "while":
+      return caseReferencesK(nodes, name, e.c) || caseReferencesK(nodes, name, e.body);
+    case "block":
+      return e.stmts.some(s => caseReferencesK(nodes, name, s));
+    case "perform":
+      return e.args.some(a => caseReferencesK(nodes, name, a));
+    case "handle":
+      return caseReferencesK(nodes, name, e.body) || e.cases.some(c => caseReferencesK(nodes, name, c.body));
+    case "app":
+      return caseReferencesK(nodes, name, e.fn) || e.args.some(a => caseReferencesK(nodes, name, a));
+    case "arr":
+      return e.elems.some(el => caseReferencesK(nodes, name, el));
+    case "field":
+      return caseReferencesK(nodes, name, e.obj);
+    default:
+      return assertNever(e);
+  }
+}
+
 // infer: returns the type, side-effecting `effs` with performed effects.
 // `id` indexes into the program's flat node slice `nodes`. Every node's
 // inferred type is recorded in `uni.nodeTypes`; after checking completes, a
@@ -998,6 +1072,13 @@ function inferNode(
     case "handle": {
       const bodyEffs = new Set<string>();
       const bodyT = infer(e.body, nodes, env, bodyEffs, effects);
+      // Spine-gated resume typing: with no Return case and no perform on the
+      // body's spine, every resumption runs the body to completion, so the
+      // value k delivers is the body's completion — its boundary value, or a
+      // nested case body's completion when the rest re-performs. Op cases
+      // that reference k therefore also unify k's return with the body type;
+      // a perform-spined body (or a Return case) keeps the looser boundary.
+      const bodyCompletes = !e.cases.some(c => c.op === "Return") && !hasPerformOutsideLambdas(nodes, e.body);
       let resultT: Type | null = null;
       for (const c of e.cases) {
         const n = env.extend();
@@ -1038,6 +1119,8 @@ function inferNode(
         else
           env.uni.unify(resultT, ct);
         env.uni.unify(resumeT.ret, ct);
+        if (bodyCompletes && caseReferencesK(nodes, c.resume, c.body))
+          env.uni.unify(resumeT.ret, env.uni.res(bodyT));
       }
       for (const c of e.cases) bodyEffs.delete(c.op);
       for (const op of bodyEffs) effs.add(op);

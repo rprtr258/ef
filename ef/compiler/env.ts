@@ -95,6 +95,14 @@ export function num(v: Value): number {
 }
 
 export function show(v: Value): string {
+  return showVal(v, new Set());
+}
+
+// `active` is the set of objects on the current recursion path: a cycle
+// prints `#cycle` in its place instead of recursing forever. Shared
+// (aliased) objects print fully each time — only re-entering an ancestor is
+// a cycle.
+function showVal(v: Value, active: Set<object>): string {
   if (v === null) return "unit";
   if (v === true) return "true";
   if (v === false) return "false";
@@ -102,10 +110,19 @@ export function show(v: Value): string {
   if (typeof v === "number") return String(v);
   if (typeof v === "string") return "\"" + v + "\"";
   if (typeof v === "object") {
-    if (v.tag === "slice")
-      return "[" + sliceElems(v).map(show).join(", ") + "]";
-    if (v.tag === "tup")
-      return "[" + v.elems.map(show).join(", ") + "]";
+    if (active.has(v)) return "#cycle";
+    if (v.tag === "slice") {
+      active.add(v);
+      const s = "[" + sliceElems(v).map(e => showVal(e, active)).join(", ") + "]";
+      active.delete(v);
+      return s;
+    }
+    if (v.tag === "tup") {
+      active.add(v);
+      const s = "[" + v.elems.map(e => showVal(e, active)).join(", ") + "]";
+      active.delete(v);
+      return s;
+    }
     if (v.tag === "fn")
       return v.typ !== undefined ? "[fn: " + showT(v.typ) + "]" : "[fn]";
     if (v.tag === "cont") return "[cont]"; // unreachable from source code

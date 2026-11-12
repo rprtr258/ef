@@ -564,6 +564,29 @@ describe("wasm effect codegen regressions", () => {
   });
 });
 
+describe("spine-gated resume typing: multi-shot resume over HOF loops", () => {
+  test("abort idiom: a k-free case body skips the delivery constraint", () => {
+    expect(parity(`effect Op(): i64; cb :: fn(x: i64): i64 { Op!() };
+      handle { map(cb, [1, 2]) } case Op() => k { 42 }`)).toBe("42");
+  });
+
+  test("transforming handler: len outside, k(10) inside", () => {
+    expect(parity(`effect Op(): i64; cb :: fn(x: i64): i64 { Op!() };
+      len(handle { map(cb, [1, 2]) } case Op() => k { k(10) })`)).toBe("2");
+  });
+
+  test("KNOWN DIVERGENCE: multi-shot delivery over map — interp [11, 11], wasm crashes", () => {
+    // map's land closure carries per-element state (out[i], the loop index)
+    // in the interpreter, but the wasm backend's land is one shared state
+    // re-entered by every resume. Fixed by the per-element land state
+    // change — flip this to parity() there; not a parity() test until then.
+    const src = `effect Op(): i64; cb :: fn(x: i64): i64 { Op!() };
+      handle { map(cb, [1, 2]) } case Op() => k { q := k(10); k(11); q }`;
+    expect(show(run(src))).toBe("[11, 11]");
+    expect(() => runWasm(src)).toThrow();
+  });
+});
+
 describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () => {
   test("effect-free program with no served builtins: no host imports", () => {
     const src = "x := 1; i := 0; while (i < 5) { x = x + i; i = i + 1 }; x";

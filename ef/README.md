@@ -12,7 +12,10 @@ unhandled-effect program before it runs.
   times.
 - **Statically tracked.** Every function type carries its inferred effect set
   (`(i64) -> i64 ! { Emit }`); statically unhandled effects are rejected
-  before evaluation starts.
+  before evaluation starts. Handler resumes are checked too — over a body
+  with no `Return` case and no perform on its spine, `k` must deliver the
+  body's result type (so a double resume over a `map` loop is a compile
+  error, not a corrupt array).
 - **Two backends, one frontend.** A CPS interpreter and a WebAssembly (WasmGC)
   backend — no external toolchain — with identical observable output. Selective
   CPS conversion: functions with empty effect rows convert direct-style; mixed

@@ -170,6 +170,20 @@ case        ::= "case" ("Return" | name) params "=>" name block
   the effect's arguments; `k` is the captured continuation, callable as
   `k(value)` to resume the body with `value` (of the effect's return type). `k`
   may be called zero, one, or many times.
+- **Resume typing:** `k`'s parameter is the effect's return type; its return
+  type is the handler's result type. When the handled body has no `Return`
+  case and performs no operation outside lambda bodies, an op case whose
+  body references `k` must also deliver the body's type: every resumption
+  then runs the body to completion, so `k(v)`'s delivery is the body's
+  completion value — the body's boundary value, or a nested case body's
+  completion when the resumed rest re-performs. A `Return` case or a
+  perform on the body's spine (e.g. `Op!()` between statements) drops that
+  requirement. Two residual gaps remain by design: a handler case that
+  completes without the delivery (e.g. `Println!(k(10))`) is rejected —
+  return the delivery and observe it outside the handle instead; and a
+  case body that only combines deliveries arithmetically (`k(1) + k(2)`)
+  delays its numeric constraint past the check, so it typechecks and fails
+  at runtime if the deliveries are not numbers.
 - **Propagation:** an effect performed inside a handler body that has no
   matching case walks outward to the next enclosing handler.
 
@@ -426,6 +440,7 @@ handle {
 - **Evaluation is in continuation-passing style.** `evalE(e, env, k)` either calls `k(v)` with a value or produces an `Outcome` describing a trapped effect.
 - **Effects.** `Op!(args)` searches outward for a handler whose cases include `Op`. On a match, the handler runs with the effect's arguments bound and `k` set to a closure capturing the suspended computation; calling `k(v)` resumes the body with `v`. On no match, evaluation fails.
 - **Multi-shot resume.** `k` is an ordinary JS function, so it can be invoked many times — each call re-runs the continuation from the point. This enables nondeterminism, backtracking, etc.
+- **Multi-shot resume over loop builtins.** The loop builtins `map`/`each`/`flatmap` call the callback per element through a land continuation that resumes the loop with the element's result. A multi-shot `k` re-enters that loop continuation: remaining elements run again, and the result window is shared across resumes — the last write wins per element. The interpreter gives each element's land its own state; the wasm backend currently shares one land state across a callback's resumes and can misbehave on these shapes (a compile-time delivery check rejects most of them — see resume typing in §2).
 - **Deep handlers.** The `Return` case sees the body's final value; effect cases see the site and can resume or not. Effects performed inside a handler case propagate outward to the next handler.
 
 ## 6. Examples

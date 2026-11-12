@@ -5,7 +5,7 @@ import {readFileSync, unlinkSync, existsSync, writeFileSync} from "node:fs";
 import {execSync} from "node:child_process";
 import {run, newCtx, exec, type Ctx} from "./eval.ts";
 import {checkProgram, showT} from "./types.ts";
-import {show, sliceElems, type Slice, type Value} from "./env.ts";
+import {show, sliceElems, mkSlice, mkTup, type Slice, type Value} from "./env.ts";
 import {Parser} from "./parser.ts";
 import {toCps} from "./cps.ts";
 import type {CIr, CTerm} from "./cps_ir.ts";
@@ -1247,5 +1247,110 @@ describe("selective CPS: dcall/dret classification", () => {
     const c = ir(src);
     expect(countNodes(c, t => t.t === "dret")).toBe(0); // outer's boundary is its tail handle's k operand
     expect(c.funcs.filter(f => f.direct === true).length).toBe(1); // outer only
+  });
+});
+
+describe("Spine-gated resume typing (multi-shot resume over HOF loops)", () => {
+  // Resuming the body of a Return-less, spine-perform-free handle runs it to
+  // completion, so k delivers the body's completion value: op cases that
+  // reference k must agree with the body's type.
+  const cb = "cb :: fn(x: i64): i64 { Op!() }";
+
+  test("double resume over map: delivery must match the body type (named callback)", () => {
+    expect(() => run(`effect Op(): i64; ${cb};
+      handle { map(cb, [1, 2]) } case Op() => k { k(k(10)) }`))
+      .toThrow("expected : [i64]");
+  });
+
+  test("double resume over map: same rejection with an inline callback", () => {
+    expect(() => run(`effect Op(): i64;
+      handle { map(fn(x: i64): i64 { Op!() }, [1, 2]) } case Op() => k { k(k(10)) }`))
+      .toThrow("expected : [i64]");
+  });
+
+  test("single resume over map: the delivery constraint surfaces at the use site", () => {
+    // k(10)'s type stays a fresh var at the case body, so the mismatch is
+    // not forced there — it surfaces where the handle's result is consumed.
+    expect(() => run(`effect Op(): i64; ${cb};
+      s := handle { map(cb, [1, 2]) } case Op() => k { k(10) };
+      s + 0`))
+      .toThrow("+: [a] and i64 are not both numeric or both string");
+  });
+
+  test("len-inside: the case body's completion conflicts with the delivery", () => {
+    // k(10) flows into len's [a] param, binding k's return to [a]; the
+    // body-completion boundary then rejects the case body's i64 — matching
+    // the shape's garbage runtime (len of a delivery window).
+    expect(() => run(`effect Op(): i64; ${cb};
+      handle { map(cb, [1, 2]) } case Op() => k { len(k(10)) }`))
+      .toThrow(/got\s+: \[a\]\nexpected : i64/);
+  });
+
+  test("observing handler: a case body completing without the delivery is rejected", () => {
+    // The delivery is the body's completion; discarding it (Println!) would
+    // misreport the body's result. Escape: return the delivery and observe
+    // outside the handle.
+    expect(() => run(`effect Op(): i64; ${cb};
+      handle { map(cb, [1, 2]) } case Op() => k { Println!(k(10)) }`))
+      .toThrow(/got\s+: unit\nexpected : \[i64\]/);
+  });
+
+  test("abort idiom: a k-free case body skips the delivery constraint", () => {
+    expect(show(run(`effect Op(): i64; ${cb};
+      handle { map(cb, [1, 2]) } case Op() => k { 42 }`))).toBe("42");
+  });
+
+  test("transforming handler: len outside, k(10) inside", () => {
+    const src = `effect Op(): i64; ${cb};
+      len(handle { map(cb, [1, 2]) } case Op() => k { k(10) })`;
+    expect(typeOf(src)).toBe("i64");
+    expect(show(run(src))).toBe("2");
+  });
+
+  test("multi-shot delivery over map is [i64]: interp aliases the shared result window", () => {
+    // Each resume re-runs the body; map's land re-writes the shared window
+    // (last write wins per element). The wasm backend diverges here —
+    // pinned in wasm.test.ts until the per-element land state change.
+    const src = `effect Op(): i64; ${cb};
+      handle { map(cb, [1, 2]) } case Op() => k { q := k(10); k(11); q }`;
+    expect(typeOf(src)).toBe("[i64]");
+    expect(show(run(src))).toBe("[11, 11]");
+  });
+
+  test("single-shot resume over map is unchanged", () => {
+    expect(show(run(`effect Op(): i64; ${cb};
+      handle { map(cb, [1, 2]) } case Op() => k { k(10) }`))).toBe("[10, 10]");
+  });
+
+  test("each multi-shot with a trailing spine perform is unchanged", () => {
+    // The trailing Op! puts a perform on the body's spine, so the delivery
+    // constraint never fires — the looser boundary holds.
+    expect(show(run(`effect Op(): i64; cb :: fn(x: i64, i: i64): i64 { Op!() };
+      handle {
+        each(cb, [1, 2]);
+        Op!()
+      } case Op() => k { k(k(0)) }`))).toBe("0");
+  });
+
+  test("each under a handler resumes single-shot: unit result", () => {
+    expect(show(run(`effect Op(): i64; cb :: fn(x: i64, i: i64): i64 { Op!() };
+      handle { each(cb, [1, 2]) } case Op() => k { k(0) }`))).toBe("unit");
+  });
+
+  test("design-B: k(1) + k(2) over a perform-spined body is unchanged", () => {
+    expect(show(run(`effect Op(): i64;
+      handle { Op!() } case Op() => k { k(1) + k(2) }`))).toBe("3");
+  });
+
+  test("show prints cyclic values as #cycle instead of recursing forever", () => {
+    const cell: Value[] = [null]; // placeholder replaced by the cycle below
+    const cyc = mkSlice(cell);
+    cell[0] = cyc;
+    expect(show(cyc)).toBe("[#cycle]");
+    expect(show(mkSlice([cyc]))).toBe("[[#cycle]]");
+    expect(show(mkTup([cyc]))).toBe("[[#cycle]]");
+    // Shared (acyclic) objects still print in full at each occurrence.
+    const shared = mkSlice([1n, 2n]);
+    expect(show(mkSlice([shared, shared]))).toBe("[[1, 2], [1, 2]]");
   });
 });
