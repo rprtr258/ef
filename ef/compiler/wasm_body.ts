@@ -792,13 +792,17 @@ export class Fn {
 
   // A RET cell {K_RET, fragIdx, $fp, next}: the continuation cell that
   // tail-calls the thunk `fragIdx` (T_III_I) over the caller's frame (local
-  // 0). `nextE` pushes the cell's next-pointer operand. Returns the cell.
-  retCell(fragIdx: number, nextE: () => void, frameLocal = 0): number {
+  // 0). `nextE` pushes the cell's next-pointer operand. `frameE` overrides
+  // the frame operand — the map-like loops install a fresh per-iteration
+  // frame so each captured cell freezes its own loop state; default: local
+  // `frameLocal`. Returns the cell.
+  retCell(fragIdx: number, nextE: () => void, frameLocal = 0, frameE?: () => void): number {
     const b = this.body;
     const cell = this.anyref();
     b.i31Const(w.K_RET);
     b.i31Const(fragIdx);
-    b.localGet(frameLocal); // b = the frame the fragment runs over
+    if (frameE === undefined) b.localGet(frameLocal); // b = the frame the fragment runs over
+    else frameE();
     nextE();
     b.refCast(5, true);
     b.structNew(5);

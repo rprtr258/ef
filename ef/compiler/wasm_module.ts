@@ -735,57 +735,56 @@ export function emitTightMaps(em: Emit): void {
 
 // map/each/flatmap CPS: the entry (this builtin Fn) runs with the
 // caller's RET cell as its k and its result dispatches through the
-// caller's continuation. The
-// entry reads the array, allocates the result array into its own frame,
-// and tail-calls the loop-entry thunk; each iteration calls the callback
-// with a RET cell {K_RET, iter-land, entry frame, ambient k} — so a
-// performing callback walks the caller's handler chain, and a completed
-// callback lands in the per-iteration thunk (res[i] = v, i+1, loop-entry).
-// All loop state (result/tmp array, counter) lives in the entry frame
-// slots, so the loop survives suspension. The counter slot holds a boxed
-// number (slots are anyref); it is unboxed for comparisons and boxed
-// again when passed to the callback as the iteration index.
+// caller's continuation. The entry allocates the result array into its
+// own frame and tail-calls the loop-entry thunk with the next index
+// riding its value arg; each iteration installs a fresh per-iteration
+// land frame {parent: the entry frame, slots: [the boxed index]} and
+// calls the callback with a RET cell {K_RET, iter-land, that frame,
+// ambient k} — so a performing callback walks the caller's handler
+// chain, and a completed callback lands in the per-iteration thunk
+// (res[i] = v at the cell's own index, loop-entry at i+1). The index is
+// frozen in the cell's frame the moment the cell is installed, so a
+// captured copy resumed later re-delivers into its own iteration — never
+// re-reading shared loop state (the interp's per-element land closure,
+// builtins.ts natives). The result/tmp array stays in the entry frame:
+// shared across resumes, monotonic (each delivery overwrites its own
+// slot), so the loop survives suspension.
 // `cb` (devirt): when set, this is a per-site tight variant — the callback
 // is a proven pure direct CFn; its T_DABI entry is called statically (env
 // still read off the closure value), no per-element flag dispatch.
 function emitMapLike(em: Emit, f: Fn, name: string, cb?: {idx: number, fsize: number}): void {
   const b = f.body;
   const resSlot = name === "each" ? -1 : 2; // map: res, flatmap: tmp
-  const iSlot = name === "each" ? 2 : 3;
   const loopEntry = makeRestThunk(em, "maplike:loopEntry");
   const iterLand = makeRestThunk(em, "maplike:iterLand");
-  // Per-iteration land: store the callback result (map/flatmap), bump the
-  // counter, continue the loop. frame = the entry frame, v = the callback
-  // result, k = the ambient continuation (passed to the next iteration).
+  // Per-iteration land: store the callback result (map/flatmap) at the
+  // iteration's own index, continue the loop at i + 1. frame = the
+  // iteration's own land frame (slot 0 = the boxed index), v = the
+  // callback result, k = the ambient continuation (passed to the next
+  // iteration).
   {
     const t = iterLand, tb = t.body;
+    const iL = t.i32();
+    t.slot(0); // the land frame's boxed index ($I64 box)
+    tb.readBoxPayload(9);
+    tb.u8(w.I32_WRAP_I64);
+    tb.localSet(iL);
     if (name !== "each") {
-      const blk = t.anyref(), iL = t.i32();
-      t.slot(resSlot);
+      const blk = t.anyref();
+      tb.localGet(0); tb.structGet(4, 0); // the entry frame (the land frame's parent)
+      tb.structGet(4, 1);
+      tb.i32Const(resSlot);
+      tb.arrayGet(1);
       t.unboxArr(blk);
-      t.slot(iSlot);
-      tb.readBoxPayload(0);
-      tb.u8(w.TRUNC_F64);
-      tb.localSet(iL);
       t.elemAddr(blk, iL);
       tb.localGet(1);
       tb.arraySet();
     }
-    // counter += 1 (boxed back into the slot)
-    tb.localGet(0); tb.structGet(4, 1);
-    tb.i32Const(iSlot);
-    t.slot(iSlot);
-    tb.readBoxPayload(0);
-    tb.f64Const(1);
-    tb.u8(w.FADD);
-    tb.callFn(em.ix.fBox);
-    tb.arraySet();
-    tb.localGet(0);
-    // The unit arg must ride the $I64 box: the loopEntry thunk's frame
-    // build reads its param as a stamped i64 (pushAtom's lit path). The
-    // unitRef static is an $F64 box — wrong shape here (and an anyref
-    // under the f64-param fBox misvalidates).
-    tb.i64Const(0n);
+    tb.localGet(0); tb.structGet(4, 0); // the entry frame
+    tb.localGet(iL);
+    tb.i32Const(1);
+    tb.u8(w.ADD);
+    tb.u8(w.I64_EXTEND_I32_S); // the next index rides the $I64 box
     rebox(em, t, "i64");
     tb.localGet(2);
     tb.u8(w.RETURN_CALL);
@@ -793,18 +792,18 @@ function emitMapLike(em: Emit, f: Fn, name: string, cb?: {idx: number, fsize: nu
   }
 
   // Loop entry: done → finalize (box the result / flatmap copy) and
-  // dispatch through this thunk's k; else call the callback on element i.
-  // The back-edge's unit arg rides the $I64 box: the letk-thunk's frame
-  // build reads its param as a stamped i64 (pushAtom's lit path), so the
-  // raw null (a frame parent) would misvalidate struct.new.
+  // dispatch through this thunk's k; else call the callback on element i
+  // over a fresh per-iteration land frame. The next index arrives in the
+  // value arg as an $I64 box (the value arg is an anyref under the
+  // T_III_I ABI — a raw frame-parent null would misvalidate struct.new).
   {
     const t = loopEntry, tb = t.body;
     const xd = t.anyref(), xo = t.i32(), n = t.i32(), iL = t.i32(), fc = t.anyref();
     t.slot(1); // the xs wrapper (arg 1) → its view window (data, off, len)
     t.unboxSlice(xd, xo, n);
-    t.slot(iSlot);
-    tb.readBoxPayload(0);
-    tb.u8(w.TRUNC_F64);
+    tb.localGet(1); // the value arg = the next index ($I64 box)
+    tb.readBoxPayload(9);
+    tb.u8(w.I32_WRAP_I64);
     tb.localSet(iL);
     tb.localGet(iL);
     tb.localGet(n);
@@ -839,16 +838,34 @@ function emitMapLike(em: Emit, f: Fn, name: string, cb?: {idx: number, fsize: nu
     tb.u8(w.RETURN); // only the k=0 branch reaches here, with the value
     tb.u8(w.ELSE);
     // Iteration: elem = xs[i] (through the view's window); the callback's
-    // RET cell lands in iterLand (landA) over this thunk's frame, with
-    // next = this thunk's k. The callback closure's flag picks the entry
-    // ABI: direct entries return their value — land it in iterLand here;
-    // CPS entries take the generic land-cell call.
+    // RET cell lands in iterLand (landA) over a fresh per-iteration land
+    // frame, with next = this thunk's k. The callback closure's flag picks
+    // the entry ABI: direct entries return their value — land it in
+    // iterLand here; CPS entries take the generic land-cell call.
     t.slot(0);
     tb.localSet(fc);
     const elem = t.anyref();
     t.elemAddrOff(xd, iL, xo);
     tb.arrayGet(1);
     tb.localSet(elem);
+    // The per-iteration land frame {parent: the entry frame, slots: [the
+    // boxed index]}: once the cell is installed the frame is never written
+    // again, so a captured copy freezes its iteration's index.
+    const landFrame = (): void => {
+      const slots = t.anyref();
+      tb.i32Const(1);
+      tb.arrayNew(1);
+      tb.localSet(slots);
+      tb.localGet(slots);
+      tb.refCast(1, true);
+      tb.i32Const(0);
+      tb.localGet(1); // the boxed index (this thunk's value arg)
+      tb.arraySet();
+      tb.localGet(0); // parent = the entry frame
+      tb.localGet(slots);
+      tb.refCast(1, true);
+      tb.structNew(4); // {parent, slots} — the cell's frame operand
+    };
     const cbArgs = (k: number, ffp: number): void => {
       // Suspension-safe as-is: elem/iL are locals set before the call, and
       // fBox cannot suspend, so no operand spans a suspension point.
@@ -866,7 +883,7 @@ function emitMapLike(em: Emit, f: Fn, name: string, cb?: {idx: number, fsize: nu
     if (cb !== undefined) {
       // Tight variant: static T_DABI call over the callback's env, landed
       // in iterLand — no flag read, no call_indirect, no CPS arm.
-      emitDirectEntryCall(em, t, fc, argc, cbArgs, {kind: "land", landA: iterLand.idx, kL: 2}, cb);
+      emitDirectEntryCall(em, t, fc, argc, cbArgs, {kind: "land", landA: iterLand.idx, kL: 2, landFrameE: landFrame}, cb);
       tb.u8(w.UNREACHABLE); // the land dispatch always tails
     } else {
       const cbFlag = t.i32();
@@ -874,10 +891,10 @@ function emitMapLike(em: Emit, f: Fn, name: string, cb?: {idx: number, fsize: nu
       tb.localSet(cbFlag);
       tb.localGet(cbFlag);
       tb.if();
-      emitDirectEntryCall(em, t, fc, argc, cbArgs, {kind: "land", landA: iterLand.idx, kL: 2});
+      emitDirectEntryCall(em, t, fc, argc, cbArgs, {kind: "land", landA: iterLand.idx, kL: 2, landFrameE: landFrame});
       tb.u8(w.UNREACHABLE); // the land dispatch always tails
       tb.u8(w.ELSE);
-      emitCallClosure(t, fc, argc, cbArgs, {land: true, kL: 2, landA: iterLand.idx});
+      emitCallClosure(t, fc, argc, cbArgs, {land: true, kL: 2, landA: iterLand.idx, landFrameE: landFrame});
       tb.u8(w.UNREACHABLE); // the callback always tails into iterLand
       tb.u8(w.END);
       tb.u8(w.UNREACHABLE); // both flag arms diverge
@@ -885,9 +902,9 @@ function emitMapLike(em: Emit, f: Fn, name: string, cb?: {idx: number, fsize: nu
     tb.u8(w.END);
     tb.u8(w.UNREACHABLE); // both iteration arms diverge; keep the implicit end typed
   }
-  // Entry (this builtin Fn): allocate the result array, init the counter,
-  // tail-call the loop entry. n comes from the wrapper's len field (the
-  // view's length), not the backing's.
+  // Entry (this builtin Fn): allocate the result array, tail-call the loop
+  // entry with index 0. n comes from the wrapper's len field (the view's
+  // length), not the backing's.
   const n = f.i32();
   f.slot(1);
   b.refCast(3, true);
@@ -901,14 +918,9 @@ function emitMapLike(em: Emit, f: Fn, name: string, cb?: {idx: number, fsize: nu
                          // done path read it back as a wrapper)
     b.arraySet();
   }
-  b.localGet(0); b.structGet(4, 1);
-  b.i32Const(iSlot);
-  b.i32Const(0);
-  b.u8(w.CONV_I32);
-  b.callFn(em.ix.fBox);
-  b.arraySet();
   b.localGet(0);
-  // See loopEntry: the unit arg rides the $I64 box, not the unitRef static.
+  // The next index (0) rides the $I64 box: loopEntry reads its value arg
+  // as an $I64 box, and the unitRef static is an $F64 box — wrong shape.
   b.i64Const(0n);
   rebox(em, f, "i64");
   b.localGet(1);

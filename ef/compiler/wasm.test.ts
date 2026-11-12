@@ -575,15 +575,34 @@ describe("spine-gated resume typing: multi-shot resume over HOF loops", () => {
       len(handle { map(cb, [1, 2]) } case Op() => k { k(10) })`)).toBe("2");
   });
 
-  test("KNOWN DIVERGENCE: multi-shot delivery over map — interp [11, 11], wasm crashes", () => {
-    // map's land closure carries per-element state (out[i], the loop index)
-    // in the interpreter, but the wasm backend's land is one shared state
-    // re-entered by every resume. Fixed by the per-element land state
-    // change — flip this to parity() there; not a parity() test until then.
-    const src = `effect Op(): i64; cb :: fn(x: i64): i64 { Op!() };
-      handle { map(cb, [1, 2]) } case Op() => k { q := k(10); k(11); q }`;
-    expect(show(run(src))).toBe("[11, 11]");
-    expect(() => runWasm(src)).toThrow();
+  test("multi-shot delivery over map: both deliveries land at their own element", () => {
+    // Per-element land state: each iteration's land cell freezes its own
+    // index, so re-delivery of a captured chain re-enters its own slot
+    // instead of double-advancing a shared counter (plan repro 2 — a
+    // shared-counter land double-advances here and misindexes the stores).
+    expect(parity(`effect Op(): i64; cb :: fn(x: i64): i64 { Op!() };
+      handle { map(cb, [1, 2]) } case Op() => k { q := k(10); k(11); q }`)).toBe("[11, 11]");
+  });
+
+  test("each multi-shot: the callback i argument tracks per-element land state", () => {
+    // set()'s index is the callback's i: a shared land state would
+    // double-advance past the element and misindex the stores.
+    expect(parity(`effect Op(): unit; a := [0, 0, 0];
+      cb :: fn(x: i64, i: i64): unit { Op!(); set(a, i, x); unit };
+      handle { each(cb, [7, 8, 9]) } case Op() => k { q := k(unit); k(unit); q };
+      a`)).toBe("[7, 8, 9]");
+  });
+
+  test("flatmap multi-shot: per-element land state (same land structure as map)", () => {
+    expect(parity(`effect Op(): i64; cb :: fn(x: i64, i: i64): [i64] { [x + Op!(), i] };
+      handle { flatmap(cb, [1, 2]) } case Op() => k { q := k(10); k(20); q }`)).toBe("[11, 0, 12, 1]");
+  });
+
+  test("each multi-shot unit shape: a delivery per resume", () => {
+    expect(parity(`effect Op(): i64; acc := 0;
+      cb :: fn(x: i64, i: i64): unit { acc = acc + x * 10 + i + Op!(); unit };
+      handle { each(cb, [1, 2]) } case Op() => k { q := k(1); k(2); q };
+      acc`)).toBe("35");
   });
 });
 

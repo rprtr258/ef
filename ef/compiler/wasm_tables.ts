@@ -10,8 +10,10 @@ import * as w from "./wasm_consts.ts";
 // loop.
 const MAP_LIKE = new Set(["map", "each", "flatmap"]);
 // Extra entry-frame words a map-like builtin needs beyond its args: the
-// result/tmp array (except each) and the iteration counter.
-export const mapLikeFrameWords = (name: string): number => name === "each" ? 1 : MAP_LIKE.has(name) ? 2 : 0;
+// result/tmp array (except each). The loop index does not live here — each
+// iteration's land cell carries a fresh frame holding it (emitMapLike), so
+// a captured cell stays a complete resume acc.
+export const mapLikeFrameWords = (name: string): number => name === "each" ? 0 : MAP_LIKE.has(name) ? 1 : 0;
 
 // Operators compile inline at call sites stamped with a concrete width (like
 // the checker-stamped `/`): operands unbox to their width right in the

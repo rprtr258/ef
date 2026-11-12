@@ -43,7 +43,7 @@ import binaryen from "binaryen";
 import * as w from "./wasm_consts.ts";
 import {WasmError, _T, type ValueRef} from "./wasm_types.ts";
 import {BUILTINS} from "./analysis.ts";
-import {DBGTRACE} from "./wasm_tables.ts";
+import {DBGTRACE, mapLikeFrameWords} from "./wasm_tables.ts";
 import {type CIr, type CTerm, type CAtom, type CPrim} from "./cps_ir.ts";
 import {type Buf, Fn} from "./wasm_body.ts";
 import {type Emit, emitDispatch, emitCaseScan, selectBool, emitFail, i31of, makeRestThunk, cellGet, CMP_OPS, emitCallClosure, emitDirectEntryCall, tracePoint} from "./wasm_emit.ts";
@@ -1676,9 +1676,9 @@ function directBuiltin(wk: Walk, fnAtom: CAtom): {idx: number, fsize: number} | 
   if (!BUILTINS.some(bb => bb.name === name)) return undefined;
   const idx = wk.em.ix.builtinFnIdx.get(name);
   if (idx === undefined) return undefined;
-  // Trampoline frame: args + map-like counters (0 for plain builtins).
-  const extra = name === "each" ? 1 : (name === "map" || name === "flatmap") ? 2 : 0;
-  return {idx, fsize: 0 + extra + (name === "map" || name === "flatmap" || name === "each" ? 0 : 0) + argcOf(name)};
+  // Trampoline frame: args + the map-like result window (0 for plain
+  // builtins) — mapLikeFrameWords is the single table for these extras.
+  return {idx, fsize: mapLikeFrameWords(name) + argcOf(name)};
   function argcOf(n: string): number {
     switch (n) {
       case "map": case "flatmap": return 2;

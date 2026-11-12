@@ -508,6 +508,8 @@ type CallOpts = {
   land?: boolean,      // lambda call site: land through a RET cell
   kL?: number,         // the ambient continuation local (default 1)
   landA?: number,      // explicit per-iteration land cell (map/each/flatmap)
+  landFrameE?: () => void, // the land cell's frame operand (map-like loops:
+                       // a fresh per-iteration $FRAME; default: local 0)
   direct?: {idx: number, fsize: number, envClo?: boolean}, // direct builtin: static funcref + fsize
   dabi?: true,         // the callee entry is ((ref null $FRAME)) -> anyref:
                        // no continuation operand; tail keeps the result as
@@ -516,7 +518,7 @@ type CallOpts = {
 };
 
 export function emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, opts: CallOpts = {}): number | undefined {
-  const {tail = false, land = false, kL = 1, landA, direct} = opts;
+  const {tail = false, land = false, kL = 1, landA, landFrameE, direct} = opts;
   const b = f.body;
   const clob = f.anyref(), idx = f.i32(), cf = f.anyref(), fs = f.i32(),
     maxL = f.i32(), slots = f.anyref(), ffp = f.anyref();
@@ -600,7 +602,7 @@ export function emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: nu
     // callback's completion always tails into landA (never returns here),
     // and a terminal k=0 return must unwind past the whole loop to the
     // caller's own call site.
-    b.localGet(f.retCell(landA!, () => b.localGet(kL))); // next = ambient k
+    b.localGet(f.retCell(landA!, () => b.localGet(kL), 0, landFrameE)); // next = ambient k
     b.refCast(5, true);
   } else b.refNull(5); // k=0 (ref.null $K): the callee's dispatch returns its value inline
   if (direct === undefined) {
@@ -625,7 +627,7 @@ export function emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: nu
 // envs differ per activation even when the fun index is known.
 export function emitDirectEntryCall(
   em: Emit, f: Fn, clob: number, argc: number, argEmit: (k: number, ffp: number) => void,
-  deliver: {kind: "k", kL: number} | {kind: "land", landA: number, kL: number} | {kind: "tail"} | {kind: "raw"},
+  deliver: {kind: "k", kL: number} | {kind: "land", landA: number, kL: number, landFrameE?: () => void} | {kind: "tail"} | {kind: "raw"},
   st?: {idx: number, fsize: number, noEnv?: true},
 ): number {
   const b = f.body;
@@ -699,7 +701,7 @@ export function emitDirectEntryCall(
   } else if (deliver.kind === "raw") {
     return v; // the caller owns the result local
   } else {
-    const cell = f.retCell(deliver.landA, () => b.localGet(deliver.kL));
+    const cell = f.retCell(deliver.landA, () => b.localGet(deliver.kL), 0, deliver.landFrameE);
     emitDispatch(em, f, v, cell);
   }
   return v;
