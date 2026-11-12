@@ -5,8 +5,8 @@
 import {BUILTINS} from "./analysis.ts";
 import {WasmError} from "./wasm_types.ts";
 import {Buf, Fn} from "./wasm_body.ts";
-import {type Emit, emitCallClosure, emitDirectEntryCall, emitDispatch, emitFail, i31of, ladderBody, makeRestThunk, selectBool, NUM64_ARMS} from "./wasm_emit.ts";
-import {mainFrameSize, rebox} from "./wasm_term.ts";
+import {type Emit, emitCallClosure, emitDirectEntryCall, emitDispatch, emitFail, i31of, ladderBody, makeRestThunk, rebox, selectBool, NUM64_ARMS} from "./wasm_emit.ts";
+import {mainFrameSize} from "./wasm_term.ts";
 import * as w from "./wasm_consts.ts";
 
 // Σ over the n per-element cells in backing `src` (viewed at offset `off`):

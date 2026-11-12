@@ -91,7 +91,10 @@ export type CTerm =
   // captured-frame-slot set; the closure interpreter just uses env chains).
   | {t: "mkfn", name: string, params: string[], capts: string[], fun: number, rest: CTerm}
   // Tail call; k names the callee's continuation (a letk/`$ret`/handle binding).
-  | {t: "call", fn: CAtom, args: CAtom[], k: CAtom}
+  // `rstamp` = the site's result numKind (the same stamp callTail puts on
+  // the synthesized letk's norm) — the wasm backend's numeric-dispatch arms
+  // rebox the unboxed entry result at it; the interpreter never reads it.
+  | {t: "call", fn: CAtom, args: CAtom[], k: CAtom, rstamp?: string}
   // Direct call to a classified-pure callee: evaluates fn/args, binds the
   // result to `name` (normalized by `norm`, the site's numKind) and runs
   // rest in the same frame. Never suspends: the callee's boundary delivers

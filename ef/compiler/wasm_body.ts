@@ -119,7 +119,7 @@ export class Buf {
     if (this.dead()) return MOD.unreachable(); // dead code: value never used
     if (this.ops.length === 0) {
     if (this.pending.length === 0)
-      throw new WasmError(`internal: operand stack underflow (fn ${this.fn.fid} scopes [${this.scopes.map((s) => s.kind + ":" + s.label).join(", ")}])`);
+      throw new WasmError(`internal: operand stack underflow (fn ${this.fn.fid} scopes [${this.scopes.map((s) => s.kind + ":" + s.label).join(", ")}]) ${(new Error().stack ?? "").split("\n").slice(2, 9).join(" | ")}`);
       const t = this.pending.pop()!;
       if (DBGEMIT)
         console.error(`pop  f${this.fn.fid}(idx${this.fn.idx}) d=-1 reload=${t}`);
@@ -442,6 +442,7 @@ export class Buf {
   i32Const(n: number): void { this.push(MOD.i32.const(n)); }
   i64Const(v: bigint): void { this.push(MOD.i64.const(v)); }
   f64Const(x: number): void { this.push(MOD.f64.const(x)); }
+  f32Const(x: number): void { this.push(MOD.f32.const(x)); }
   // Box a small int (K-cell tags, bools): i31.new of a constant.
   i31Const(v: number): void { this.i32Const(v); this.refI31(); }
   // ref.is_null of local i (0xd1).
@@ -785,6 +786,7 @@ export class Fn {
     if (r.k === "g") b.globalGet(r.gi);
     else if (r.k === "bool") { b.i32Const(r.v); b.refI31(); }
     else if (r.k === "local") b.localGet(r.l);
+    else if (r.k === "raw") throw new WasmError("internal: raw param local reached pushRef (box it first)");
     else { b.localGet(0); b.structGet(4, 1); b.i32Const(r.i); b.arrayGet(1); }
   }
 

@@ -17,6 +17,7 @@
 
 import type {Expr, ExprID, Program} from "./parser.ts";
 import type {CAtom, CCase, CFn, CIr, CPrim, CTerm} from "./cps_ir.ts";
+import {widthOf, type Type} from "./types.ts";
 import {optimizeCps} from "./cps_opt.ts";
 import {BUILTINS} from "./analysis.ts";
 import {assertNever} from "./assert.ts";
@@ -111,8 +112,28 @@ class Converter {
     const go = (i: number, acc: CAtom[]): CTerm =>
       i === args.length
         ? kk(acc)
-        : this.convert(args[i], {t: "fn", f: (v) => go(i + 1, acc.concat([v]))});
+        : this.convert(args[i], {t: "fn", f: (v) => go(i + 1, acc.concat([this.stampArg(args[i], v)]))});
     return go(0, []);
+  }
+
+  // Carry the arg node's width stamp onto the bound atom. Computed args
+  // arrive as converter-temp vars (a prim let binds `$t` unstamped), so the
+  // reference would lose the width the checker stamped on the arg node —
+  // call sites read args by stamp (raw numeric args at numeric entries).
+  // The stamp rides only nodes whose own type is a concrete numeric prim:
+  // a comparison node also carries numKind (its OPERANDS' compute width),
+  // but its value is a bool — stamping it would misshape every read. The
+  // interpreter's stamped-var read normalizes at the stamp — idempotent
+  // for a value already computed at that width.
+  private stampArg(id: ExprID, v: CAtom): CAtom {
+    if (v.t === "var" && v.stamp === undefined) {
+      const e = this.prog.nodes[id] as Expr & {numKind?: string, typ?: Type};
+      if (e.numKind !== undefined && e.typ !== undefined &&
+        e.typ.tag === "prim" && widthOf(e.typ)?.concrete === true) {
+        return {t: "var", name: v.name, stamp: e.numKind};
+      }
+    }
+    return v;
   }
 
   // Bind a primitive result, then continue with its var. Prims never
@@ -328,11 +349,11 @@ class Converter {
         if (fn.t === "sym" && isDirectBuiltinName(fn.v)) {
           return this.convArgs(e.args, (vas) =>
             this.callTail(k, e.numKind, (kk) =>
-              ({t: "call", fn: {t: "var", name: fn.v}, args: vas, k: kk})));
+              ({t: "call", fn: {t: "var", name: fn.v}, args: vas, k: kk, rstamp: e.numKind})));
         }
         return this.convert(e.fn, {t: "fn", f: (vf) =>
           this.convArgs(e.args, (vas) =>
-            this.callTail(k, e.numKind, (kk) => ({t: "call", fn: vf, args: vas, k: kk})))});
+            this.callTail(k, e.numKind, (kk) => ({t: "call", fn: vf, args: vas, k: kk, rstamp: e.numKind})))});
       }
       case "as": {
         const asKind = e.asKind;

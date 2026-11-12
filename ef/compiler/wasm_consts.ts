@@ -77,6 +77,11 @@ export const T_RUN = 7, T_PERFORM = 9, T_FAIL = 10, T_STRNUM = 11,
 // functions take their activation frame (params + body binds over the
 // captured env) and RETURN the boxed result; no continuation operand.
 export const T_DABI = 30;
+// Numeric direct-ABI signature base: ((ref null $FRAME), w1..wn) -> wr with
+// every operand a plain valtype. Indices are interned on demand by
+// wasm_tables.ts's numSig; emitters and $CLO tag checks derive them only
+// through that function, so same-shape signatures share one index.
+export const T_DABI_NUM = 100;
 export const T_TRACE = 34; // (i32) -> () — the EFTRACE runtime-trace import
 
 export function impType(n: string): number {

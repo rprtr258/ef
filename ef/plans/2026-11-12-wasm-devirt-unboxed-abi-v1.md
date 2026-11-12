@@ -194,3 +194,24 @@ Fully serial: Step 1 → Step 2 → Step 3 → Step 4. No parallel steps (all to
 ## Review log
 
 - 2026-11-12: adversarial review (reviewer subagent) — verdict FIX-FIRST; all CRITICAL/MAJOR findings fixed in place: (1) context-brief purity claim falsified by the `any`-callee hole (`types.ts` ~1177) → per-CFn purity fixpoint added (task 1b) and gates rewritten (tasks 3, 5); (2) tight-loop gate now excludes pure-but-mixed callbacks + multi-shot mixed-callback test added; (3) `letk` param slots pinned to unknown (join points exist); (4) assign/resolveT + TScope re-walk mechanics recorded; (5) numeric-ABI inventory added ($CLO dual constructors wasm_term.ts:1184/1714, funcref indices in assignIndices, tail `return_call` mismatch fallback, rebox audit sites, `Checked`/deepRes width-extraction gap); (6) PR4 reworded (mechanism exists); (7) any-hole backend divergence verified live (interp 43 vs wasm throws via builtin-`Read` name collision) and recorded as an out-of-scope known limitation. Verified sound: all file:line anchors, emitDirectEntryCall frame semantics, generic-call specialization delivery, CFn.typ feasibility.
+
+## Step 2 implementation record (2026-11-12)
+
+Implemented as specified, with three resolved design points beyond the brief:
+
+- **Dispatch-free body gate.** Every dispatch tail inside an entry returns anyref (dispatch chains, rest thunks, handler case fns), so a raw-return entry requires a dispatch-free body: no `call`/`perform`/`handle` nodes, no materialized letks, every dcall devirt + inlineRest and non-tail (`wasm_devirt.ts` entrySafeBody). Tail dcalls keep the boxed `return_call` (PR1's O(1) guarantee); a raw tail would need callee-ret == caller-ret width matching — deferred to the PR3 grilling alongside slot typing.
+- **Arg stamps at conversion.** Numeric-site matching reads per-arg stamps; computed args arrive as unstamped converter temps, so `cps.ts` convArgs now carries the arg node's numKind onto the atom — only when the node's own type is a concrete numeric prim (comparison nodes carry numKind for their OPERANDS; stamping the bool would misshape reads).
+- **Shape tag = interned SIGS index.** `$CLO` gains `numfn` (funcref table index + 1, 0 = none) and `numsig`; generic arms compare numsig against their stamp-derived `numSig` key. i32/u32 share the i32 valtype — raw bits are width-agnostic, per-op signedness lives in each body's stamps.
+
+**Floor measurement (min-of-7, `compiler/scripts/bench.ts`, this machine, PR1 baseline vs PR2):**
+
+| bench | PR1 wasm min | PR2 wasm min | delta |
+|---|---|---|---|
+| fib.ef | 102.8 ms | 95.6–103 (best 69.9) | ~0–5%, best-run −32% |
+| boy.ef | 0.9 | 0.9 | — |
+| handlers.ef | 233–458 (noisy) | 238–299 | noise-bound |
+| loop.ef | 1739 | 1728 | −0.7% |
+| ray.ef | 331 | 333 | +0.5% |
+| sieve.ef | 80.5 | 79.6 | −1.1% |
+
+PR2's ≤ 52 ms floor is **missed** (PR1's ≤ 77 floor was already missed at ~103 on this machine): the unboxed ABI removes arg boxing + the slot-store round trip at numeric calls and computes params raw, but fib remains dominated by the per-call activation/scope frame allocations, the boxed dcall-result slots (arg box→unbox at each call), and the if-join slot round trips — exactly PR3's slot-typing/elision scope. Renegotiation requested in review with the table above; the mechanism is in place and PR3 builds directly on it (emitNumericEntryCall + pushRawAtom already produce/consume raw operands).

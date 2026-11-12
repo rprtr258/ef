@@ -87,6 +87,11 @@ export type Indices = {
   fU64of: number,
   // CFn funcref base: funcref(lambda i) = lambda0 + i (ir.funcs order).
   lambda0: number,
+  // Numeric direct-ABI entry base: dense block over the eligible CFns in
+  // ir.funcs order (numFn maps CFn index → its entry's funcref; CFns
+  // without an entry own no slot).
+  dnum0: number,
+  numFn: Map<number, number>,
   // Shared default-Return case function, used only by handlers with npMax 0:
   // reads the Return value emitDispatch stashed in hframe slot 1 and
   // dispatches it through its k — eval.ts's `(v, k2) => k2(v)`.
@@ -269,6 +274,8 @@ export function assignIndices(ir: CIr, plan: TermPlan, o: Opt): Indices {
     fI64of: o.liveImports.length + 8,
     fU64of: o.liveImports.length + 9,
     lambda0: o.liveImports.length + 10,
+    dnum0: 0,
+    numFn: new Map(),
     identityRet: undefined!,
     case0: 0,
     idRet0: 0,
@@ -290,10 +297,22 @@ export function assignIndices(ir: CIr, plan: TermPlan, o: Opt): Indices {
   // 2c. CFn funcref indices (ir.funcs order; sigs resolve before emission).
   for (let i = 0; i < ir.funcs.length; i++)
     ix.funcRefTypes.set(ix.lambda0 + i, w.T_KABI);
-  // 2e. Case-function block: identityRet, per-handle case fns + ret cases +
-  // identity rets, ret resumes, then the shared resume fn. The order must
-  // match emitCaseFns/emitRetResumes' push order exactly.
+  // 2e. Case-function block: numeric direct-ABI entries (one per eligible
+  // CFn, ir.funcs order — emitCfns pushes them in the same order right
+  // after the boxed entries), then identityRet, per-handle case fns + ret
+  // cases + identity rets, ret resumes, then the shared resume fn. The
+  // order must match emitCaseFns/emitRetResumes' push order exactly.
   let next = ix.lambda0 + ir.funcs.length;
+  ix.dnum0 = next;
+  next += plan.numEntry.filter(n => n !== null).length;
+  // Dense funcref assignment matching emitCfns' push order (one slot per
+  // eligible CFn, ir.funcs order — no holes).
+  let dn = 0;
+  for (let i = 0; i < ir.funcs.length; i++) {
+    if (plan.numEntry[i] === null) continue;
+    ix.numFn.set(i, ix.dnum0 + dn);
+    dn++;
+  }
   const idf = new Fn(2);
   idf.idx = next++;
   ix.identityRet = idf;
@@ -442,6 +461,8 @@ function staticInit(m: binaryen.Module, d: StaticDesc): binaryen.ExpressionRef {
         m.ref.null(w.heapTypes(4).n), // env: builtins run over the call frame itself
         m.ref.i31(m.i32.const(d.fsize)),
         m.ref.i31(m.i32.const(d.direct === 1 ? 1 : 0)),
+        m.ref.i31(m.i32.const(0)), // no numeric entry (builtin trampolines)
+        m.ref.i31(m.i32.const(0)),
       ], HT[6]);
     case "elems":
       return m.array.new_fixed(HT[1], d.ws.map((w) => m.ref.i31(m.i32.const(w))));
@@ -506,6 +527,7 @@ export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]
       throw e;
     }
   }
+  if (process.env["EF_DUMP_TEXT"] === "1") { try { console.error(m.emitText()); } catch (e) { console.error("emitText failed"); } }
   if (m.validate() === 0) {
     if (DBGEMIT) console.error(m.emitText());
     const dumpPath = process.env["EF_DUMP_INVALID"];

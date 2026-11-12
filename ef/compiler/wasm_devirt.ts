@@ -1,8 +1,9 @@
-// Devirtualization analysis over the CPS IR (leaf: cps_ir + analysis only).
+// Devirtualization analysis over the CPS IR (leaf: cps_ir + analysis + the
+// checker's type resolver for numeric-entry eligibility).
 //
-// Per-slot closure provenance + per-CFn purity fixpoint. The wasm emitters
-// consume the results through the returned site map (copied onto `__p`
-// annotations by planIr) and TermPlan.cfnPure. Soundness rests on two
+// Per-slot closure provenance + per-CFn purity fixpoint + numeric-entry
+// eligibility. The wasm emitters consume the results through the returned
+// site map (copied onto `__p` annotations by planIr) and TermPlan.cfnPure. Soundness rests on two
 // checker guarantees: **no shadowing** (checkBind — no same-frame
 // redeclaration, no hiding an enclosing binding) makes a flat per-unit
 // name→provenance map exact, and **ANF** (bind/let RHS is an atom) gives
@@ -15,7 +16,9 @@
 // computed from the IR shape itself, never from `direct` alone.
 
 import {BUILTINS} from "./analysis.ts";
-import type {CAtom, CIr, CTerm} from "./cps_ir.ts";
+import type {CAtom, CFn, CIr, CTerm} from "./cps_ir.ts";
+import {widthOf, type Type} from "./types.ts";
+import {numSig} from "./wasm_tables.ts";
 
 // The CPS-native builtins (the ones whose trampolines call ef closures).
 // Mirrors builtins.ts's `kind: "native"` entries — the wasm backend already
@@ -292,4 +295,104 @@ export function analyzeDevirt(ir: CIr): Devirt {
   }
 
   return {cfnPure: pure, sites};
+}
+
+// One numeric entry's plan: the callee's concrete numeric param widths and
+// return width, plus the interned numeric signature's type index.
+export type NumEntry = {ws: string[], r: string, sig: number};
+
+// Is the body shape-safe for a raw-return entry? Every dispatch tail inside
+// the entry returns anyref (dispatch chains, rest thunks, handler case
+// fns), so the body may contain none of them: no call/perform/handle nodes,
+// no materialized letks (their jumps dispatch), and every dcall statically
+// devirtualized with an inline rest (a cell-path rest dispatches; a tail
+// rest return_calls the boxed anyref entry).
+function entrySafeBody(fn: CFn, esc: Set<string>, sites: Map<CTerm, SiteInfo>): boolean {
+  let ok = true;
+  const scan = (t: CTerm): void => {
+    if (!ok) return;
+    switch (t.t) {
+      case "call": case "perform": case "handle":
+        ok = false;
+        break;
+      case "letk":
+        if (esc.has(t.name)) { ok = false; break; } // materialized thunk unit
+        scan(t.body); scan(t.rest);
+        break;
+      case "dcall": {
+        if ((t.rest.t === "dret" || t.rest.t === "halt") &&
+          t.rest.v.t === "var" && t.rest.v.name === t.name) { ok = false; break; } // tail rest
+        const si = sites.get(t);
+        if (si?.devirt === undefined || si.inlineRest !== true) { ok = false; break; }
+        scan(t.rest);
+        break;
+      }
+      case "let": case "bind": case "mkfn": case "scope": case "dlet": case "assign":
+        scan(t.rest);
+        break;
+      case "if":
+        scan(t.a); scan(t.b);
+        break;
+      case "jump": case "halt": case "dret":
+        break;
+    }
+  };
+  scan(fn.body);
+  return ok;
+}
+
+// Numeric-entry eligibility per CFn. A candidate is a direct CFn whose
+// deep-resolved checker type is all-concrete-numeric: deepRes resolves
+// bound vars through the unifier (directly-passed lambdas included) but
+// leaves quantified type vars unbound, so polymorphic fns stay ineligible,
+// and anyTaint is inherited through the resolution. Emission additionally
+// demands one Step-1 static call site whose arg/result stamps shape-match
+// the signature — the stamps-vs-typ comparison is defensive (monomorphic
+// callees unify site stamps to the param widths) but keeps a drifting site
+// on the boxed static call.
+export function numericEntries(
+  ir: CIr, sites: Map<CTerm, SiteInfo>, deepRes: (t: Type) => Type, escs: Set<string>[],
+): (NumEntry | null)[] {
+  const out: (NumEntry | null)[] = ir.funcs.map(() => null);
+  const width = (t: Type): string | null => {
+    const w = widthOf(deepRes(t));
+    return w !== null && w.concrete ? w.w : null;
+  };
+  const cands: {fun: number, ws: string[], r: string}[] = [];
+  for (let i = 0; i < ir.funcs.length; i++) {
+    const fn = ir.funcs[i];
+    if (fn.direct !== true || fn.typ === undefined || fn.typ.anyTaint === true) continue;
+    // A body whose dispatch tails flow through the anyref plane (handlers,
+    // runtime dispatch, cell-path rests) cannot take the raw-return entry:
+    // the entry's valtype result would mismatch every return_call in it.
+    if (!entrySafeBody(fn, escs[i], sites)) continue;
+    const ft = deepRes(fn.typ);
+    if (ft.tag !== "fun") continue;
+    const ws: string[] = [];
+    let ok = true;
+    for (const p of ft.params) {
+      const w = width(p);
+      if (w === null) { ok = false; break; }
+      ws.push(w);
+    }
+    if (!ok) continue;
+    const r = width(ft.ret);
+    if (r === null) continue;
+    cands.push({fun: i, ws, r});
+  }
+  if (cands.length === 0) return out;
+  for (const [t, si] of sites) {
+    if (si.devirt === undefined) continue;
+    const c = cands.find(cc => cc.fun === si.devirt);
+    if (c === undefined || out[c.fun] !== null) continue;
+    const rStamp = t.t === "dcall" ? t.norm : (t as {rstamp?: string}).rstamp;
+    const args = (t as {args: CAtom[]}).args;
+    if (rStamp !== c.r || args.length !== c.ws.length) continue;
+    let ok = true;
+    for (let k = 0; k < args.length; k++) {
+      if (args[k].stamp !== c.ws[k]) { ok = false; break; }
+    }
+    if (ok) out[c.fun] = {ws: c.ws, r: c.r, sig: numSig(c.ws, c.r)};
+  }
+  return out;
 }

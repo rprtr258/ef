@@ -918,3 +918,77 @@ handle { h(performer) } case Op() => k { 43 }`;
     expect(wasm).not.toBe("43"); // the known divergence: the op never reaches the handler
   });
 });
+
+describe("wasm numeric entry ABI (wasm_devirt.ts numericEntries: unboxed direct calls, shape-tag dispatch)", () => {
+  test("specialized calls at all six widths", () => {
+    expect(parity("inc :: fn(n: i32): i32 { n + 1 }; inc(41)")).toBe("42");
+    expect(parity("inc :: fn(n: u32): u32 { n + 1 }; inc(41)")).toBe("42");
+    expect(parity("inc :: fn(n: i64): i64 { n + 1 }; inc(41)")).toBe("42");
+    expect(parity("inc :: fn(n: u64): u64 { n + 1 }; inc(41)")).toBe("42");
+    // f32 exercises the fround-at-producing-nodes discipline.
+    expect(parity("dbl :: fn(n: f32): f32 { n * 2.0 }; dbl(1.5)")).toBe("3");
+    expect(parity("dbl :: fn(n: f64): f64 { n * 2.0 }; dbl(1.5)")).toBe("3");
+    // Multi-arg + division (traps and truncation stay interpreter-exact).
+    expect(parity("f :: fn(a: i64, b: i64): i64 { a / b }; f(7, 2)")).toBe("3");
+    expect(parity("f :: fn(a: i64, b: i64): i64 { a / b }; f(7, 0)")).toBe("ERR: integer divide by zero");
+    // u64 keeps the unsigned op selection exact through the raw entry.
+    expect(parity("f :: fn(a: u64, b: u64): u64 { a / b }; f(18446744073709551615, 2)")).toBe("9223372036854775807");
+  });
+
+  test("mixed-signature fn (one boxed param) stays on the boxed static call", () => {
+    // A string param makes the signature non-numeric: no numeric entry, the
+    // site takes the boxed T_DABI call — values and effects identical.
+    expect(parity("f :: fn(n: i64, s: string): i64 { n + strlen(s) }; f(40, \"ab\")")).toBe("42");
+  });
+
+  test("polymorphic direct fn gets no numeric entry (boxed static call)", () => {
+    // id's checker type keeps quantified type vars: deepRes leaves them
+    // unbound, so no entry exists and both instantiations stay boxed.
+    expect(parity("id :: fn(x) { x }; id(7)")).toBe("7");
+    expect(parity("id :: fn(x) { x }; id(2.5)")).toBe("2.5");
+    expect(parity("id :: fn(x) { x }; id(\"s\")")).toBe(String.raw`"s"`);
+  });
+
+  test("escaping numeric fn called generically rides the shape tag", () => {
+    // A static site first (the plan's entry criterion: ≥1 devirt site with a
+    // matching numeric signature), then the same closure escapes through an
+    // apply-typed value slot: the generic site's stamps shape-match the
+    // entry, so the runtime tag check dispatches the raw entry; a
+    // mismatching closure would fail the tag and take the boxed path (same
+    // values either way).
+    const src = `apply :: fn(f: (i64) -> i64, x: i64): i64 { f(x) };
+inc :: fn(n: i64): i64 { n + 1 };
+dec :: fn(n: i64): i64 { n - 1 };
+a :: inc(41);
+apply(inc, 1) + apply(dec, 2) + a`;
+    expect(parity(src)).toBe("45");
+    // Structural lock-in: the numeric entry (frame, i64) -> i64 exists and
+    // the generic site dispatches it through a call_indirect.
+    const mod = bin.readBinary(compile(src), BIN_FEATURES);
+    try {
+      const text = mod.emitText();
+      expect(text).toContain("(param (ref null $4) i64) (result i64)");
+      expect(text).toContain("call_indirect");
+    } finally {
+      mod.dispose();
+    }
+  });
+
+  test("numeric fn inside a handler island", () => {
+    // The handler island performs across the numeric call: the entry stays
+    // boxed-free (the callee is handler-free) and the island machinery is
+    // untouched.
+    expect(parity(`effect Op(): i64;
+h :: fn(x: i64): i64 { handle { Op!() + x } case Op() => k { k(2) } };
+g :: fn(n: i64): i64 { n * 3 };
+h(g(5))`)).toBe("17");
+  });
+
+  test("numeric entries carry the closure env for capts", () => {
+    // The callee's body reads its captured env through the frame chain
+    // (the entry's frame operand is the closure env).
+    expect(parity(`k :: 100;
+addk :: fn(n: i64): i64 { n + k };
+addk(1) + addk(2)`)).toBe("203");
+  });
+});

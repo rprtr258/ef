@@ -47,6 +47,14 @@ export const _T: {
     // static type knowledge is only a hint, never a bypass (a pure-typed
     // slot can hold a resume binder or an any-smuggled closure).
     fld(binaryen.i31ref, false),
+    // Numeric entry (unboxed direct ABI): numfn = the numeric entry's
+    // funcref TABLE index + 1 (0 = no entry), numsig = its SIGS type index.
+    // Generic direct-arm call sites compare numsig against their own
+    // stamp-derived signature and call_indirect the entry on match; any
+    // other closure (no entry, or a differently-shaped one) fails the tag
+    // check and takes the boxed path.
+    fld(binaryen.i31ref, false),
+    fld(binaryen.i31ref, false),
   ]);
   tb.setStructType(7, [fld(binaryen.i32, false)]);                       // 7 $I32
   tb.setStructType(8, [fld(binaryen.i32, false)]);                       // 8 $U32
@@ -88,7 +96,10 @@ export type ValueRef =
   | {k: "g", gi: number}   // static anyref global
   | {k: "bool", v: 0 | 1}  // i31 bool
   | {k: "local", l: number}   // anyref local (single-use)
-  | {k: "slot", i: number};    // frame slot i of local 0's frame
+  | {k: "slot", i: number}    // frame slot i of local 0's frame
+  | {k: "raw", l: number, w: string}; // a numeric entry's param local (the
+                              // raw width value; consumers box or use it
+                              // directly — never an anyref)
 
 // Initializer descriptor of one static global: the data buildModule
 // turns into a GC constant expression. Statics are immutable, so

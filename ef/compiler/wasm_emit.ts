@@ -44,6 +44,46 @@ export type Emit = {
 };
 export const i31of = (b: Buf): void => { b.refCast(w.I31REF, false); b.i31Get(); };
 
+// Number-box shape by width name ($F64 is shape 0, the per-width boxes 7..11).
+export function boxShapeOf(wkn: string): number {
+  switch (wkn) {
+    case "i32": return 7;
+    case "u32": return 8;
+    case "i64": return 9;
+    case "u64": return 10;
+    case "f32": return 11;
+    default: return 0; // $F64
+  }
+}
+
+// Box the width-typed value on the stack (the f64 plane rides $box).
+export function rebox(em: Emit, f: Fn, wkn: string): void {
+  if (wkn === "f64") f.body.callFn(em.ix.fBox);
+  else f.body.structNew(boxShapeOf(wkn));
+}
+
+// A raw value of the width's machine type, fresh scratch local.
+export function planeLocal(f: Fn, wkn: string): number {
+  return wkn === "f32" ? f.f32()
+    : wkn === "i64" || wkn === "u64" ? f.i64()
+    : wkn === "f64" ? f.f64() // the f64 plane's scratch holds raw f64 payloads
+    : f.i32(); // i32/u32-plane scratch
+}
+
+// A raw call result (numeric entry's return valtype) parked in a fresh
+// plane local and reboxed at the same width — the anyref the boxed call
+// paths produce.
+export function reboxCallResult(em: Emit, f: Fn, rW: string): number {
+  const b = f.body;
+  const raw = planeLocal(f, rW);
+  b.localSet(raw);
+  b.localGet(raw);
+  rebox(em, f, rW);
+  const v = f.anyref();
+  b.localSet(v);
+  return v;
+}
+
 // K_HDL case-table read: the table at k.a is a flat $ELEMS of i31
 // quadruples [opid, fnIdx, fsize, nparams]; entryI31 reads word `off` of
 // the entry at word index `ent`.
@@ -704,6 +744,35 @@ export function emitDirectEntryCall(
     const cell = f.retCell(deliver.landA, () => b.localGet(deliver.kL), 0, deliver.landFrameE);
     emitDispatch(em, f, v, cell);
   }
+  return v;
+}
+
+// The numeric direct-ABI entry of a devirt-annotated callee: the closure's
+// env is the frame operand (the entry extends it into its activation frame
+// itself — the call allocates nothing and boxes nothing), the args ride as
+// raw operands at the entry's param widths, and the raw result comes back
+// reboxed at the entry's return width. Signature and funcref index come
+// from the plan (the boxed entry's st is not consulted).
+export function emitNumericEntryCall(
+  em: Emit, f: Fn, clob: number, argc: number, argRaw: (k: number) => void,
+  deliver: {kind: "raw"} | {kind: "k", kL: number},
+  num: {ws: string[], r: string, funcref: number, noEnv?: true},
+): number {
+  const b = f.body;
+  const cf = f.anyref();
+  if (num.noEnv === true) {
+    b.refNull(4);
+    b.localSet(cf);
+  } else {
+    b.localGet(clob); b.refCast(6, true); b.structGet(6, 1); b.localSet(cf);
+  }
+  b.localGet(cf);
+  b.refCast(4, true);
+  for (let k = 0; k < argc; k++) argRaw(k);
+  b.u8(w.CALL);
+  b.lebU(num.funcref);
+  const v = reboxCallResult(em, f, num.r);
+  if (deliver.kind === "k") emitDispatch(em, f, v, deliver.kL);
   return v;
 }
 

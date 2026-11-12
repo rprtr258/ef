@@ -1291,7 +1291,7 @@ function checkLamWidths(u: Unifier, lam: Expr & {unannParams?: {name: string, id
 // The numeric width of a resolved type: concrete widths as-is, untyped
 // int/float literals defaulted to i64/f64 (literal defaulting, not width
 // conversion). null for non-numeric types.
-function widthOf(t: Type): {w: NumName, concrete: boolean} | null {
+export function widthOf(t: Type): {w: NumName, concrete: boolean} | null {
   if (t.tag !== "prim") return null;
   const n = t.name as NumName;
   if (INT_NAMES.has(n) || FLOAT_NAMES.has(n)) return {w: n, concrete: true};

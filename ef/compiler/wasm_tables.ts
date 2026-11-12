@@ -77,6 +77,37 @@ export const SIGS: Record<number, {p: (number | number[])[], r: number | number[
   [w.T_TRACE]: {p: [0x7f, 0x7f], r: null},             // ef_trace(site, val) — EFTRACE only
 };
 
+// Width name -> valtype byte. numSig's inputs are only the six widths.
+function widthByte(name: string): number {
+  switch (name) {
+    case "i32": case "u32": return 0x7f;
+    case "i64": case "u64": return 0x7e;
+    case "f32": return 0x7d;
+    case "f64": return 0x7c;
+    default: throw new WasmError(`internal: no valtype for width ${name}`);
+  }
+}
+
+const numSigs = new Map<string, number>();
+
+// Intern the numeric direct-ABI signature ((ref null $FRAME), ws...) -> r
+// and return its type index. The frame param rides every entry (the
+// closure env is the scope-chain base), params and the result are raw
+// valtypes. Emitters and $CLO tag checks derive indices only through this
+// function, so a site's stamp-derived key and a callee's typ-derived key
+// land on the same entry iff the valtype shapes match (i32/u32 share the
+// i32 valtype — raw bits are width-agnostic; signedness lives in each
+// body's op stamps).
+export function numSig(ws: string[], r: string): number {
+  const key = `${ws.map(widthByte).join(",")}>${widthByte(r)}`;
+  const found = numSigs.get(key);
+  if (found !== undefined) return found;
+  const idx = w.T_DABI_NUM + numSigs.size;
+  SIGS[idx] = {p: [[0x63, 4], ...ws.map(widthByte)], r: widthByte(r)};
+  numSigs.set(key, idx);
+  return idx;
+}
+
 // Valtype byte (or [0x63, idx] pair) → binaryen Type. 0x40 → none (void).
 export function vt(t: number | number[] | null): binaryen.Type {
   if (t === null || t === 0x40) return binaryen.none;
@@ -109,7 +140,7 @@ export const STRUCT_FIELDS: Record<number, (number | number[])[]> = {
   [3]: [[0x63, 1], 0x7f, 0x7f],      // $ARR slice: (ref null $ELEMS), i32 off, i32 len
   [4]: [[0x63, 4], [0x63, 1]],       // $FRAME
   [5]: [w.I31REF, w.ANYREF, w.ANYREF, [0x63, 5]], // $K
-  [6]: [w.I31REF, [0x63, 4], w.I31REF, w.I31REF], // $CLO {idx, env, fsize, direct}
+  [6]: [w.I31REF, [0x63, 4], w.I31REF, w.I31REF, w.I31REF, w.I31REF], // $CLO {idx, env, fsize, direct, numfn, numsig}
   [7]: [0x7f],                       // $I32: i32
   [8]: [0x7f],                       // $U32: i32
   [9]: [0x7e],                       // $I64: i64

@@ -43,11 +43,12 @@ import binaryen from "binaryen";
 import * as w from "./wasm_consts.ts";
 import {WasmError, _T, type ValueRef} from "./wasm_types.ts";
 import {BUILTINS} from "./analysis.ts";
-import {DBGTRACE, mapLikeFrameWords} from "./wasm_tables.ts";
-import {type CIr, type CTerm, type CAtom, type CPrim} from "./cps_ir.ts";
+import {DBGTRACE, mapLikeFrameWords, numSig} from "./wasm_tables.ts";
+import {type CIr, type CTerm, type CAtom, type CPrim, type CFn} from "./cps_ir.ts";
 import {type Buf, Fn} from "./wasm_body.ts";
-import {type Emit, emitDispatch, emitCaseScan, selectBool, emitFail, i31of, makeRestThunk, cellGet, CMP_OPS, emitCallClosure, emitDirectEntryCall, tracePoint} from "./wasm_emit.ts";
-import {analyzeDevirt, type Devirt} from "./wasm_devirt.ts";
+import {type Emit, emitDispatch, emitCaseScan, selectBool, emitFail, i31of, makeRestThunk, cellGet, CMP_OPS, emitCallClosure, emitDirectEntryCall, emitNumericEntryCall, rebox, boxShapeOf, planeLocal, reboxCallResult, tracePoint} from "./wasm_emit.ts";
+import {analyzeDevirt, numericEntries, type Devirt, type NumEntry} from "./wasm_devirt.ts";
+import type {Type} from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Static scope: frame-slot resolution mirroring the interpreter's Env chain.
@@ -63,6 +64,11 @@ type TLevel = {
   // binder). Dropped when the scope is replayed into a thunk: $ret/$exit
   // resolve to the thunk's kNext param there.
   locals: Map<string, number> | null,
+  // A numeric entry's param locals: name -> raw width. The wasm local holds
+  // the unboxed value (not an anyref), so reads normalize like ops, and a
+  // thunk replay (thunkBase) drops the map like locals — only the frame
+  // slots stay reachable cross-function.
+  raw?: Map<string, string>,
 };
 type TScope = TLevel[];
 
@@ -79,12 +85,14 @@ function addLocal(l: TLevel, name: string, local: number): void {
   l.locals.set(name, local);
 }
 
-function resolveT(ts: TScope, name: string): {d: number, i: number, local: number | null} | null {
+function resolveT(ts: TScope, name: string): {d: number, i: number, local: number | null, raw?: string} | null {
   // Same-fn local bindings ($ret, a handle's HDL cell, a case's exit) are
   // function-level: they resolve at any frame depth (scope nodes push the
   // binding level deeper, but the local stays valid). Thunk scopes demote
   // all locals, so nothing leaks across functions.
   for (const l of ts) {
+    const raw = l.raw?.get(name);
+    if (raw !== undefined) return {d: -1, i: -1, local: l.locals!.get(name)!, raw};
     const loc = l.locals?.get(name);
     if (loc !== undefined) return {d: -1, i: -1, local: loc};
   }
@@ -298,6 +306,7 @@ type Cx = {
   idRetCount: number,
   retResCount: number,
   dv: Devirt,
+  cfnParams: Map<number, TLevel>,
 };
 
 function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
@@ -453,6 +462,13 @@ export type TermPlan = {
   // per-CFn purity (wasm_devirt.ts fixpoint): no call/perform/handle and
   // only-pure dcall targets — gates the tight map loops and inline rests
   cfnPure: boolean[],
+  // per-CFn numeric entry (wasm_devirt.ts eligibility): null = boxed entry
+  // only. Emission of the second entry and the site dispatches read it.
+  numEntry: (NumEntry | null)[],
+  // per-CFn planned param level (the numeric entry's activation frame
+  // allocates paramsL.size slots before the body walk grows the emit-side
+  // level)
+  cfnParams: Map<number, TLevel>,
   hdlOrder: AHandle[],
   caseCount: number,
   idRetCount: number,
@@ -460,12 +476,14 @@ export type TermPlan = {
   globalLvl: TLevel, // the main term's base level (slot map shared with the plan)
 };
 
-export function planIr(ir: CIr): TermPlan {
+export function planIr(ir: CIr, deepRes?: (t: Type) => Type): TermPlan {
   // Devirt analysis first: its site facts shape this walk (an inline-rest
   // dcall plans its rest into the site's frame instead of phantom cell
-  // frames) and ride along onto the __p annotations.
+  // frames) and ride along onto the __p annotations. The numeric-entry
+  // eligibility reads the same site map plus the checker's deep resolver.
   const dv = analyzeDevirt(ir);
-  const cx: Cx = {cfnBase: new Map(), hdlOrder: [], caseCount: 0, idRetCount: 0, retResCount: 0, dv};
+  const escs = ir.funcs.map(fn => analyzeEscapes(fn.body));
+  const cx: Cx = {cfnBase: new Map(), hdlOrder: [], caseCount: 0, idRetCount: 0, retResCount: 0, dv, cfnParams: new Map()};
   const globalLvl = lvl();
   planUnit(cx, ir.term, [globalLvl], analyzeEscapes(ir.term));
   // A lambda's mkfn site may live in a LATER lambda's body (nested lambdas),
@@ -482,13 +500,16 @@ export function planIr(ir: CIr): TermPlan {
       const fn = ir.funcs[i];
       const paramsL = lvl();
       for (const p of fn.params) addSlot(paramsL, p);
-      planUnit(cx, fn.body, [paramsL, ...base], analyzeEscapes(fn.body));
+      cx.cfnParams.set(i, paramsL);
+      planUnit(cx, fn.body, [paramsL, ...base], escs[i]);
     }
     if (!progressed)
       throw new WasmError(`internal: lambda ${[...pending][0]} has no mkfn site`);
   }
   return {
-    cfnBase: cx.cfnBase, cfnDirect: ir.funcs.map(fn => fn.direct === true), cfnPure: dv.cfnPure, hdlOrder: cx.hdlOrder,
+    cfnBase: cx.cfnBase, cfnDirect: ir.funcs.map(fn => fn.direct === true), cfnPure: dv.cfnPure,
+    numEntry: deepRes === undefined ? ir.funcs.map(() => null) : numericEntries(ir, dv.sites, deepRes, escs),
+    cfnParams: cx.cfnParams, hdlOrder: cx.hdlOrder,
     caseCount: cx.caseCount, idRetCount: cx.idRetCount, retResCount: cx.retResCount,
     globalLvl,
   };
@@ -518,6 +539,10 @@ type Walk = {
   // directly; the kL local is a never-set (null) $K ref so the generic
   // land-cell paths terminate in a plain return.
   directFn?: true,
+  // A numeric entry's raw return width: dret unboxes its value to that
+  // width before returning (the entry's signature result is a raw
+  // valtype, not an anyref box).
+  rawRet?: string,
   // Thunks created inside a direct fn: their thunks' cells chain to a
   // terminal return-cell instead of the raw null kL (a null next would
   // fire emitDispatch's null-k inside void arms — see emitDcallThunk).
@@ -552,8 +577,20 @@ function pushAtom(wk: Walk, a: CAtom): void {
     rebox(wk.em, f, a.stamp);
     return;
   }
-  if (a.t === "var" && a.stamp !== undefined) pushStampedVar(wk, a);
-  else f.pushRef(atomRef(wk, a));
+  if (a.t === "var") {
+    // A numeric entry's param local holds the raw width value: box it for
+    // the anyref plane. Param reference nodes are not always stamped (a
+    // plain sym read carries no numKind), so the raw check runs on every
+    // var read.
+    const r = resolveT(wk.ts, a.name);
+    if (r !== null && r.raw !== undefined) {
+      f.body.localGet(r.local!);
+      rebox(wk.em, f, r.raw);
+      return;
+    }
+    if (a.stamp !== undefined) pushStampedVar(wk, a);
+    else f.pushRef(atomRef(wk, a));
+  } else f.pushRef(atomRef(wk, a));
 }
 
 // Load an atom's value ref. Literals ride the static pools (i64/u64
@@ -587,6 +624,7 @@ function atomRef(wk: Walk, a: CAtom): ValueRef {
   }
   const r = resolveT(wk.ts, a.name);
   if (r !== null) {
+    if (r.raw !== undefined) return {k: "raw", l: r.local!, w: r.raw};
     if (r.local !== null) return {k: "local", l: r.local};
     if (r.d === 0) return {k: "slot", i: r.i};
     const v = f.anyref();
@@ -620,30 +658,6 @@ function widthHelper(em: Emit, wkn: string): number {
     : wkn === "u32" ? em.ix.fU32of
     : wkn === "i64" ? em.ix.fI64of
     : em.ix.fU64of;
-}
-
-function boxShapeOf(wkn: string): number {
-  switch (wkn) {
-    case "i32": return 7;
-    case "u32": return 8;
-    case "i64": return 9;
-    case "u64": return 10;
-    case "f32": return 11;
-    default: return 0; // $F64
-  }
-}
-
-// Box the width-typed value on the stack (the f64 plane rides $box).
-export function rebox(em: Emit, f: Fn, wkn: string): void {
-  if (wkn === "f64") f.body.callFn(em.ix.fBox);
-  else f.body.structNew(boxShapeOf(wkn));
-}
-
-function planeLocal(f: Fn, wkn: string): number {
-  return wkn === "f32" ? f.f32()
-    : wkn === "i64" || wkn === "u64" ? f.i64()
-    : wkn === "f64" ? f.f64() // the f64 plane's scratch holds raw f64 payloads
-    : f.i32(); // i32/u32-plane scratch
 }
 
 // Store an anyref local into (depth, slot) of the frame chain.
@@ -898,6 +912,21 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}): void {
   // plane ($num64), which unboxes the operand for raw arithmetic.
   const pushArg = (i: number): void => {
     const a = p.args[i];
+    if (a.t === "var") {
+      // A numeric entry's param local: same width reads straight off the
+      // raw local (no box, no unbox); a different width (only reachable via
+      // @as chains) boxes at the local's own width first so the adaptive
+      // helper sees a proper box.
+      const r = resolveT(wk.ts, a.name);
+      if (r !== null && r.raw !== undefined) {
+        b.localGet(r.local!);
+        if (r.raw !== wkName) {
+          rebox(em, f, r.raw);
+          b.callFn(wkName === "f64" ? em.ix.fNum64 : widthHelper(em, wkName));
+        }
+        return;
+      }
+    }
     if (a.stamp === wkName) {
       // Same-width box: cast to its shape and read the raw payload (the
       // payload type follows the shape — $I64 carries i64, $F64 f64, ...).
@@ -1240,6 +1269,12 @@ function emitTerm(wk: Walk, t: CTerm): void {
       // classified direct)
       b.i32Const(wk.em.plan.cfnDirect[t.fun] === true ? 1 : 0);
       b.refI31();
+      // numeric entry: table index + signature tag (both 0 = boxed only)
+      const num = wk.em.plan.numEntry[t.fun];
+      b.i32Const(num !== null ? wk.em.ix.numFn.get(t.fun)! + 1 : 0);
+      b.refI31();
+      b.i32Const(num !== null ? num.sig : 0);
+      b.refI31();
       b.structNew(6);
       b.localSet(clo);
       storeAt(wk, 0, wk.ts[0].slots.get(t.name)!, clo);
@@ -1286,13 +1321,23 @@ function emitTerm(wk: Walk, t: CTerm): void {
         // direct CFn fun's mkfn — static T_DABI call; the result dispatches
         // through the site's materialized continuation (the k operand).
         const st = devirtSt(em, cp2.devirt);
-        emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "k", kL: kref.local}, st);
+        const num = em.plan.numEntry[cp2.devirt.fun];
+        const numOk = num !== null && siteNumericSig(t)?.sig === num.sig;
+        if (numOk) {
+          emitNumericEntryCall(em, f, fc, t.args.length, (k) => pushRawAtom(wk, t.args[k]),
+            {kind: "k", kL: kref.local},
+            {...num, funcref: em.ix.numFn.get(cp2.devirt.fun)!, noEnv: st.noEnv});
+        } else {
+          emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "k", kL: kref.local}, st);
+        }
         b.u8(w.RETURN); // the dispatch's null-k yield: the site's value
         break;
       }
       // Unknown callee kind: the $CLO flag picks the entry ABI. A direct
       // entry returns its value — dispatch it through the site's continuation
-      // here; a CPS entry takes the generic tail call.
+      // here; a CPS entry takes the generic tail call. With all-numeric
+      // stamps the direct arm's shape-tagged numeric entry takes the call
+      // with raw operands (tag mismatch → boxed direct entry).
       const flag = f.i32();
       b.localGet(fc);
       b.refCast(6, true);
@@ -1306,7 +1351,28 @@ function emitTerm(wk: Walk, t: CTerm): void {
       // arithmetic: track it for jumps inside the arms.
       b.if();
       wk.depth++;
-      emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "k", kL: kref.local});
+      const exp = siteNumericSig(t);
+      if (exp !== null) {
+        // Shared-result selection: the numeric tag check picks raw
+        // call_indirect vs the boxed direct entry, both binding the boxed
+        // result into v; one dispatch delivers it through the site's
+        // continuation (the null-k yield returns the site's value).
+        const {numfn} = pushNumericMatch(f, fc, exp.sig);
+        const v = f.anyref();
+        b.if();
+        rawIndirectCall(wk, fc, t.args, numfn, exp.sig);
+        const rv = reboxCallResult(em, f, exp.r);
+        b.localGet(rv);
+        b.localSet(v);
+        b.u8(w.ELSE);
+        const vb = emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "raw"});
+        b.localGet(vb);
+        b.localSet(v);
+        b.u8(w.END);
+        emitDispatch(em, f, v, kref.local);
+      } else {
+        emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "k", kL: kref.local});
+      }
       b.u8(w.RETURN); // the dispatch's null-k yield: the site's value
       b.u8(w.ELSE);
       emitCallClosure(f, fc, t.args.length, argEmit, {tail: true, kL: kref.local});
@@ -1362,7 +1428,14 @@ function emitTerm(wk: Walk, t: CTerm): void {
       const v = f.anyref();
       pushAtom(wk, t.val);
       b.localSet(v);
-      storeAt(wk, r.d, r.i, v);
+      if (r.raw !== undefined) {
+        // A numeric entry's param: the local is the binding — unbox the
+        // assigned value (the checker stamps it at the param's width) into
+        // the raw local.
+        b.localGet(v);
+        b.readBoxPayload(boxShapeOf(r.raw));
+        b.localSet(r.local!);
+      } else storeAt(wk, r.d, r.i, v);
       emitTerm(wk, t.rest);
       break;
     }
@@ -1404,16 +1477,21 @@ function emitTerm(wk: Walk, t: CTerm): void {
       // Direct-function boundary: the boxed value IS the return. In a direct
       // body the kL local is never set (null), so dispatch would immediately
       // take its null-k branch — return straight away. Everywhere else
-      // (thunks over CPS regions) the ambient chain head is real.
+      // (thunks over CPS regions) the ambient chain head is real. A numeric
+      // entry's raw signature returns the unboxed payload.
       const v = f.anyref();
       pushAtom(wk, t.v);
       b.localSet(v);
-      if (wk.directFn === true) {
+      if (wk.rawRet !== undefined) {
         b.localGet(v);
-        b.u8(w.RETURN);
+        b.readBoxPayload(boxShapeOf(wk.rawRet));
+      } else if (wk.directFn === true) {
+        b.localGet(v);
       } else {
         emitDispatch(em, f, v, wk.kL);
+        break;
       }
+      b.u8(w.RETURN);
       break;
     }
     case "dcall": {
@@ -1450,17 +1528,33 @@ function emitTerm(wk: Walk, t: CTerm): void {
         // noEnv: the callee has no capts and never dereferences it).
         const st = devirtSt(em, p.devirt);
         if (tailDret) {
+          // return_call requires the callee's return to be the caller's
+          // return exactly — the numeric entry's raw result can't flow
+          // through a T_DABI/anyref boundary, so tails stay on the boxed
+          // entry (the rebox would need a frame of its own).
           emitDirectEntryCall(em, f, fcb, t.args.length, argEmit, {kind: "tail"}, st);
           break;
         }
+        // The numeric entry takes the call when the callee has one and the
+        // site's stamps shape-match its signature (the box round-trips
+        // through emitDirectEntryCall otherwise). Its result arrives
+        // already reboxed at the entry's return width (= the site's norm —
+        // the match pinned them equal), so the site's own norm pass is
+        // skipped for numeric calls below.
+        const num = em.plan.numEntry[p.devirt.fun];
+        const numOk = num !== null && siteNumericSig(t)?.sig === num.sig;
+        const call = numOk
+          ? emitNumericEntryCall(em, f, fcb, t.args.length, (k) => pushRawAtom(wk, t.args[k]), {kind: "raw"},
+            {...num, funcref: em.ix.numFn.get(p.devirt.fun)!, noEnv: st.noEnv})
+          : emitDirectEntryCall(em, f, fcb, t.args.length, argEmit, {kind: "raw"}, st);
         if (p.inlineRest === true) {
           // Suspension-free rest + pure callee: run the rest inline. The
           // result binds into the site's slot (planned there), the rest
           // walks with the ambient scope — no rest cell, no thunk.
-          const r = emitDirectEntryCall(em, f, fcb, t.args.length, argEmit, {kind: "raw"}, st);
+          const r = call;
           const si = wk.ts[0].slots.get(t.name);
           if (si === undefined) throw new WasmError(`internal: no slot for ${t.name}`);
-          if (t.norm !== undefined) {
+          if (t.norm !== undefined && !numOk) {
             const nrm = f.anyref();
             b.localGet(r);
             if (t.norm !== "f64") b.callFn(widthHelper(em, t.norm));
@@ -1477,13 +1571,13 @@ function emitTerm(wk: Walk, t: CTerm): void {
         // Cell path with the static call: the rest still runs in its own
         // thunk (the site may sit after a suspension, or the rest holds a
         // materialized continuation the cell must preserve).
-        const r = emitDirectEntryCall(em, f, fcb, t.args.length, argEmit, {kind: "raw"}, st);
+        const r = call;
         const fpN2 = extendFrame(wk, p.fnLvl!.size);
         const thunk = makeRestThunk(em, "dcall:" + t.name);
         p.thunk = thunk;
         emitDcallThunk(wk, thunk, t, p);
         const cell = f.retCell(thunk.idx, () => cellNextE(wk, b), fpN2);
-        if (t.norm !== undefined) {
+        if (t.norm !== undefined && !numOk) {
           const nrm = f.anyref();
           b.localGet(r);
           if (t.norm !== "f64") b.callFn(widthHelper(em, t.norm));
@@ -1540,8 +1634,28 @@ function emitTerm(wk: Walk, t: CTerm): void {
         // dispatched into the rest cell so the rest runs in its thunk —
         // the same layout the CPS arm uses, minus the generic callee
         // trampoline (the saving: one continuation operand + one T_KABI
-        // indirection per call).
-        const r = emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "raw"});
+        // indirection per call). With all-numeric stamps the closure's
+        // numeric entry (shape-tagged) takes the call with raw operands;
+        // any other closure fails the tag check and takes the boxed entry.
+        const exp = siteNumericSig(t);
+        const r = f.anyref();
+        if (exp !== null) {
+          const {numfn} = pushNumericMatch(f, fc, exp.sig);
+          b.if();
+          rawIndirectCall(wk, fc, t.args, numfn, exp.sig);
+          const rv = reboxCallResult(em, f, exp.r);
+          b.localGet(rv);
+          b.localSet(r);
+          b.u8(w.ELSE);
+          const rb = emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "raw"});
+          b.localGet(rb);
+          b.localSet(r);
+          b.u8(w.END);
+        } else {
+          const rb = emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "raw"});
+          b.localGet(rb);
+          b.localSet(r);
+        }
         const fpN2 = extendFrame(wk, p.fnLvl!.size);
         const thunk = makeRestThunk(em, "dcall:" + t.name);
         p.thunk = thunk;
@@ -1694,6 +1808,118 @@ function devirtSt(em: Emit, d: {fun: number, noEnv?: true}): {idx: number, fsize
   return d.noEnv === true
     ? {idx: em.ix.lambda0 + d.fun, fsize: em.plan.cfnBase.get(d.fun)![0].size, noEnv: true}
     : {idx: em.ix.lambda0 + d.fun, fsize: em.plan.cfnBase.get(d.fun)![0].size};
+}
+
+// The site's numeric signature when every arg carries a stamp and the
+// result does too: null anywhere else (an unstamped operand could hold any
+// numeric shape — the boxed paths adapt through the runtime helpers).
+function siteNumericSig(t: CTerm & {t: "dcall"} | CTerm & {t: "call"}): {sig: number, ws: string[], r: string} | null {
+  const r = t.t === "dcall" ? t.norm : t.rstamp;
+  if (r === undefined) return null;
+  const ws: string[] = [];
+  for (const a of t.args) {
+    if (a.stamp === undefined) return null;
+    ws.push(a.stamp);
+  }
+  return {sig: numSig(ws, r), ws, r};
+}
+
+// Push atom k's value RAW at its stamp width — the numeric-entry call
+// ABI. Literals const directly (i64/u64 materialize from the raw lexeme
+// like the statics builder); vars read the raw param local or unbox the
+// boxed source (slot/chain/static — the shape follows the stamp, which the
+// site's match check pinned to the callee's param width).
+function pushRawAtom(wk: Walk, a: CAtom): void {
+  const f = wk.f, b = f.body;
+  if (a.t === "lit") {
+    const st = a.stamp ?? "f64";
+    // A stamped UNIT literal boxes zero bits at the stamp's shape (unit
+    // carries no payload) — its raw JS null never reaches the consts.
+    if (a.v === null) {
+      if (st === "i64" || st === "u64") b.i64Const(0n);
+      else if (st === "f64") b.f64Const(0);
+      else b.i32Const(0);
+      return;
+    }
+    if (st === "f64") b.f64Const(a.v as number);
+    else if (st === "f32") b.f32Const(a.v as number);
+    // i64/u64 materialize from the raw lexeme (a JS number loses bits
+    // beyond 2^53) — the converter keeps raw on every stamped 64-bit literal.
+    else if (st === "i64" || st === "u64") b.i64Const(BigInt(a.raw!));
+    else b.i32Const(a.v as number); // i32/u32 — low 32 bits, like the statics
+    return;
+  }
+  const r = resolveT(wk.ts, a.name);
+  if (r !== null && r.raw !== undefined) {
+    b.localGet(r.local!); // the caller's match check pinned the widths equal
+    return;
+  }
+  f.pushRef(atomRef(wk, a));
+  b.readBoxPayload(boxShapeOf(a.stamp ?? "f64"));
+}
+
+// Raw-operand call of the closure's numeric entry through the funcref
+// table (generic sites read the entry index off the $CLO): the frame
+// operand (the closure's env — the entry extends it into its activation
+// frame), the raw args, then the dynamic table index + the site's numeric
+// signature immediate. Leaves the raw result on the operand stack.
+function rawIndirectCall(wk: Walk, fc: number, args: CAtom[], numfn: number, expected: number): void {
+  const f = wk.f, b = f.body;
+  b.localGet(fc);
+  b.refCast(6, true);
+  b.structGet(6, 1); // (ref null $FRAME) — the entry's frame operand
+  for (const a of args) pushRawAtom(wk, a);
+  b.localGet(numfn);
+  b.u8(w.CALL_INDIRECT);
+  b.lebU(expected);
+  b.lebU(0);
+}
+
+// Numeric-entry tag test over a closure value: numfn (table index + 1)
+// non-zero and numsig equal to the site's expected signature. Leaves the
+// condition on the operand stack; side-effects numfn/numsig locals.
+function pushNumericMatch(f: Fn, fc: number, expected: number): {numfn: number} {
+  const b = f.body;
+  const numfn = f.i32(), numsig = f.i32();
+  b.localGet(fc); b.refCast(6, true); b.structGet(6, 4); b.i31Get(); b.localSet(numfn);
+  b.localGet(fc); b.refCast(6, true); b.structGet(6, 5); b.i31Get(); b.localSet(numsig);
+  b.localGet(numfn); b.u8(w.EQZ); b.u8(w.EQZ); // numfn != 0
+  b.localGet(numsig); b.i32Const(expected); b.u8(w.EQ);
+  b.u8(w.AND);
+  return {numfn};
+}
+
+// Which of a numeric entry's params must ALSO land boxed in the activation
+// frame: any cross-function unit may read them through the frame chain —
+// closures created inside (capts read the env slots), materialized letk
+// thunks (scope replay demotes locals), and handle case bodies (separate
+// fns over the hframe). Everything else keeps the params raw-local only.
+function escapedParams(fn: CFn, esc: Set<string>): Set<string> {
+  const params = fn.params;
+  const hit = new Set<string>();
+  const boxAll = (): void => { for (const p of params) hit.add(p); };
+  const scan = (t: CTerm): void => {
+    switch (t.t) {
+      case "mkfn":
+        for (const c of t.capts) if (params.includes(c)) hit.add(c);
+        scan(t.rest);
+        break;
+      case "handle":
+        boxAll(); // case bodies are separate fns — box everything
+        break;
+      case "letk":
+        if (esc.has(t.name)) { boxAll(); break; } // materialized thunk unit
+        scan(t.body); scan(t.rest);
+        break;
+      case "let": case "bind": scan(t.rest); break;
+      case "dcall": scan(t.rest); break;
+      case "call": case "perform": case "jump": case "halt": case "dret": break;
+      case "scope": case "dlet": case "assign": scan(t.rest); break;
+      case "if": scan(t.a); scan(t.b); break;
+    }
+  };
+  scan(fn.body);
+  return hit;
 }
 
 // Tight map/each/flatmap override at a builtin call site: when the callback
@@ -1883,6 +2109,10 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   b.i32Const(1);
   b.refI31();
   b.i32Const(0); // CPS entry (T_KABI): the resume fn drives the chain
+  b.refI31();
+  b.i32Const(0); // resume binders have no numeric entry
+  b.refI31();
+  b.i32Const(0);
   b.refI31();
   b.structNew(6); // the resume binder: $CLO over $resumeCapture
   const rclo = f.anyref();
@@ -2139,6 +2369,10 @@ function emitCaseBody(em: Emit, f: Fn, body: CTerm, base: TScope, esc: Set<strin
     bb.i32Const(0);
     bb.refI31();
     bb.i32Const(0); // CPS entry (T_KABI)
+    bb.refI31();
+    bb.i32Const(0); // resume binders have no numeric entry
+    bb.refI31();
+    bb.i32Const(0);
     bb.refI31();
     bb.structNew(6);
     bb.localSet(clo);
@@ -2398,9 +2632,14 @@ export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
   // Final entry types for every CFn up front: assignIndices pre-seeds all
   // lambdas T_KABI, and devirt call sites emit static calls whose Buf-side
   // sig resolution reads the callee's entry — a forward reference (an early
-  // fn calling a later one) must resolve the direct ABI, not the seed.
-  for (let i = 0; i < ir.funcs.length; i++)
+  // fn calling a later one) must resolve the direct ABI, not the seed. The
+  // numeric entries resolve the same way (their SIGS records intern on the
+  // plan's numSig call, before any emitter runs).
+  for (let i = 0; i < ir.funcs.length; i++) {
     em.ix.funcRefTypes.set(em.ix.lambda0 + i, ir.funcs[i].direct === true ? w.T_DABI : w.T_KABI);
+    const num = plan.numEntry[i];
+    if (num !== null) em.ix.funcRefTypes.set(em.ix.numFn.get(i)!, num.sig);
+  }
   for (let i = 0; i < ir.funcs.length; i++) {
     const fn = ir.funcs[i];
     const base = plan.cfnBase.get(i)!;
@@ -2432,6 +2671,54 @@ export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
       esc: analyzeEscapes(fn.body), labels: [], depth: 0,
     };
     addLocal(wk.ts[0], "$ret", 1);
+    emitTerm(wk, fn.body);
+    em.funcs.push(f);
+  }
+  // Numeric direct-ABI entries (ir.funcs order — the dnum0 block's layout
+  // order). The frame operand is the closure's captured env; the entry
+  // itself extends it into the activation frame for the body's binds.
+  // Slots 0..n-1 stay dead (params ride raw locals — the walk's slot
+  // numbering keeps matching the planned scopes); params a cross-function
+  // unit can read through the frame chain box into their slot at entry.
+  for (let i = 0; i < ir.funcs.length; i++) {
+    const num = plan.numEntry[i];
+    if (num === null) continue;
+    const fn = ir.funcs[i];
+    const base = plan.cfnBase.get(i)!;
+    const esc = analyzeEscapes(fn.body);
+    const escaped = escapedParams(fn, esc);
+    const f = new Fn(1 + num.ws.length, em);
+    f.typeIdx = num.sig;
+    f.idx = em.ix.numFn.get(i)!;
+    const paramsL = lvl();
+    paramsL.raw = new Map();
+    for (let k = 0; k < fn.params.length; k++) {
+      addSlot(paramsL, fn.params[k]); // slot numbering matches the plan
+      if (!escaped.has(fn.params[k])) {
+        addLocal(paramsL, fn.params[k], 1 + k); // frame param is local 0
+        paramsL.raw.set(fn.params[k], num.ws[k]);
+      }
+    }
+    const knull = f.typed(_T.RF[5]);
+    const wk: Walk = {
+      em, f, ts: [paramsL, ...base], kL: knull,
+      esc, labels: [], depth: 0, directFn: true, kTerminal: true, rawRet: num.r,
+    };
+    addLocal(wk.ts[0], "$ret", knull); // never referenced (dret boundary)
+    // Activation frame over the captured env: the body's binds live in its
+    // slots (slot indices already include the dead param reservations).
+    const fp = extendFrame(wk, plan.cfnParams.get(i)!.size);
+    const bb = f.body;
+    bb.localGet(fp);
+    bb.localSet(0);
+    for (let k = 0; k < fn.params.length; k++) {
+      if (!escaped.has(fn.params[k])) continue;
+      const pv = 1 + k;
+      f.storeSlot(k, () => {
+        bb.localGet(pv);
+        rebox(em, f, num.ws[k]);
+      });
+    }
     emitTerm(wk, fn.body);
     em.funcs.push(f);
   }

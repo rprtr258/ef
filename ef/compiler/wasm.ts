@@ -4,14 +4,16 @@
 // phases read) → frontend analysis
 // (analysis.ts: builtin tree-shaking, op discovery, live imports) → CPS
 // conversion (cps.ts) → devirtualization analysis (wasm_devirt.ts: slot
-// provenance + per-CFn purity, consumed by the term emitters) → IR term
+// provenance + per-CFn purity + numeric-entry eligibility, consumed by the
+// term emitters) → IR term
 // emission over the shared value plane
 // (wasm_term.ts/wasm_emit.ts: a binary .wasm module, WasmGC value plane,
 // no linear memory) → binaryen shrink pass (optimizeBinary: in-process
 // npm `binaryen`, no external tools) → imports and run. No types needed at
 // emission time: the only checker output the backend consumes is the
 // runtime stamps the checker leaves on nodes (`e.div` for division,
-// `e.idx` for field access).
+// `e.idx` for field access) plus the deep-resolved checker types the
+// numeric-entry eligibility resolves.
 //
 // Effects: every `perform` (builtin or user-declared op) boxes its args
 // into an $ELEMS carrier, resolves the k-operand cell (the reified
@@ -142,8 +144,10 @@ export function compileWithOps(src: string): {bytes: Uint8Array<ArrayBuffer>, op
   const prog = new Parser(src).parseProgram();
   // Check before the backend runs: rejects ill-typed programs and stamps the
   // runtime markers the phases read (`numKind` on literals, `div` on
-  // applications of `/`, `idx` on field accesses).
-  checkProgram(prog);
+  // applications of `/`, `idx` on field accesses). The Checked result rides
+  // into the wasm pipeline as the numeric-entry eligibility's type resolver
+  // (uni.deepRes resolves bound vars; quantified vars stay unbound).
+  const checked = checkProgram(prog);
   // Stage 2: the CPS IR — the single conversion both backends consume. The
   // checker stamps the AST the converter reads (`numKind`/`div`/`idx`).
   const ir = toCps(prog);
@@ -157,7 +161,7 @@ export function compileWithOps(src: string): {bytes: Uint8Array<ArrayBuffer>, op
   // then emission (one local Emit context) and assembly.
   const d = discover(ir, prog);
   const o = optimize(prog);
-  const plan = planIr(ir);
+  const plan = planIr(ir, (t) => checked.uni.deepRes(t));
   const ix = assignIndices(ir, plan, o);
   const lay = layoutStatics(d, ix, o, plan);
   const funcs = emit(ir, d, o, ix, lay, plan);
