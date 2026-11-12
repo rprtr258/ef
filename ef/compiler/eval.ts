@@ -49,7 +49,7 @@ function evalTerm(t: CTerm, ir: CIr, env: Env, k: Cont): Outcome {
       // Frozen accs: cross-suspension temps are captured NOW (pre-perform)
       // and restored on every entry — a resume must never see a later
       // activation's re-binding of the same temp. Source named variables
-      // stay live (frame-shared), matching the wasm backend's K_SPILL
+      // stay live (frame-shared), matching the wasm backend's letk-freeze
       // (frozen operand image) vs $FRAME (live named slots) split.
       const frozen = t.freeze?.map(fr => [fr.name, evalAtom(fr.val, env)] as const);
       n.vars.set(t.name, {tag: "cont", fn: (v) => {
@@ -107,8 +107,8 @@ function evalTerm(t: CTerm, ir: CIr, env: Env, k: Cont): Outcome {
   }
 }
 
-// Handler installation: the run() loop from the pre-IR evaluator, driving
-// the CPS term. `ret` is bound once to the done-wrapper (the handled body's
+// Handler installation: the run() loop driving the CPS term. `ret` is
+// bound once to the done-wrapper (the handled body's
 // tails jump it); `exit` is rebound per run() to the current continuation —
 // resume re-entries pass a different kOuter than the first run did.
 function evalHandle(t: CTerm & {t: "handle"}, ir: CIr, env: Env): Outcome {
@@ -357,9 +357,9 @@ export function exec(prog: Program, ctx: Ctx, checked: Checked): {value: Value, 
   // never overwrites anything).
   seedBuiltins(ctx.env, builtinRefs(prog));
   // One conversion, one term, one runTop drive: items chain inside the term,
-  // so an interp-resumed effect continues into the next item exactly like
-  // the old per-item loop did. Top-level binds land in ctx.env (the items
-  // bind in the caller's frame), preserving the REPL accumulator protocol.
+  // so an interp-resumed effect continues into the next item. Top-level
+  // binds land in ctx.env (the items bind in the caller's frame),
+  // preserving the REPL accumulator protocol.
   const ir = toCps(prog);
   let lastIsExpr = false;
   for (const it of prog.items)

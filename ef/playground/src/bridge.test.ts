@@ -109,7 +109,7 @@ describe("bridge", () => {
       buf += s;
     });
     expect(buf).toBe("raw3\n");
-    // i64 values cross the wasm boundary as BigInt (typed-widths step 4).
+    // i64 values cross the wasm boundary as BigInt.
     expect(r.value).toBe(7n);
     expect(showT(r.type)).toBe("i64");
     expect(r.ops).toEqual(["Out", "Println"]);

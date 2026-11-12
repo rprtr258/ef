@@ -1,6 +1,6 @@
 // Function-body emission primitives of the wasm backend: Buf (the streaming
 // bytecode→binaryen assembler) and Fn (one function's emitter: locals, frame
-// slots, scope tracking). The §-numbered design doc for the whole backend
+// slots, scope tracking). The design doc for the whole backend
 // lives at the top of wasm.ts.
 import binaryen from "binaryen";
 import {ValueRef, _T, WasmError} from "./wasm_types.ts";
@@ -118,7 +118,8 @@ export class Buf {
   pop(): binaryen.ExpressionRef {
     if (this.dead()) return MOD.unreachable(); // dead code: value never used
     if (this.ops.length === 0) {
-      if (this.pending.length === 0) throw new WasmError("internal: operand stack underflow");
+    if (this.pending.length === 0)
+      throw new WasmError(`internal: operand stack underflow (fn ${this.fn.fid} scopes [${this.scopes.map((s) => s.kind + ":" + s.label).join(", ")}])`);
       const t = this.pending.pop()!;
       if (DBGEMIT)
         console.error(`pop  f${this.fn.fid}(idx${this.fn.idx}) d=-1 reload=${t}`);
@@ -451,6 +452,7 @@ export class Buf {
   readBoxPayload(ht: number): void { this.refCast(ht, false); this.structGet(ht, 0); }
   localGet(i: number): void { this.push(MOD.local.get(i, this.localType(i))); }
   localSet(i: number): void { this.stmt(MOD.local.set(i, this.pop())); }
+  drop(): void { this.stmt(MOD.drop(this.pop())); }
   globalGet(gi: number, t: binaryen.Type = binaryen.anyref): void { this.push(MOD.global.get(`g${gi}`, t)); }
   globalSet(gi: number): void { this.stmt(MOD.global.set(`g${gi}`, this.pop())); }
   // Control-scope openers: opcode + blocktype immediate in one call
@@ -487,9 +489,6 @@ export class Buf {
     this.stmt(MOD.array.set(ref, idx, v));
   }
   arrayLen(): void { this.push(MOD.array.len(this.pop())); }
-  // Length of the $ELEMS backing in local `blk` (the standard prologue after
-  // unboxArr — localGet, cast to the non-null $ELEMS type, array.len).
-  arrLenOf(blk: number): void { this.localGet(blk); this.refCast(1, true); this.arrayLen(); }
   arrayCopy(d: number, s: number): void { // pops (dst, dstOff, src, srcOff, len)
     const len = this.pop(), srcOff = this.pop(), src = this.pop(), dstOff = this.pop(), dst = this.pop();
     this.stmt(MOD.array.copy(dst, dstOff, src, srcOff, len));
@@ -631,7 +630,8 @@ export class Fn {
   }
 
   // f64 payload of slot i's number; ref.cast traps on non-numbers (the
-  // frozen §7.7 deviation — unreachable in well-typed programs).
+  // frozen trap deviation — see wasm.ts's "Known deviations"; unreachable
+  // in well-typed programs).
   slotF64(i: number): number {
     const l = this.f64();
     this.slot(i);
@@ -665,14 +665,6 @@ export class Fn {
     g();
     this.body.structGet(3, 2);
     this.body.localSet(len);
-  }
-
-
-  // Unbox the $TUP wrapper on the stack → its fields array in `into`.
-  unboxTup(into: number): void {
-    this.body.refCast(12, true);
-    this.body.structGet(12, 0);
-    this.body.localSet(into);
   }
 
   // String concatenation of $STR locals a, b → new $STR on the stack.
@@ -793,7 +785,6 @@ export class Fn {
     if (r.k === "g") b.globalGet(r.gi);
     else if (r.k === "bool") { b.i32Const(r.v); b.refI31(); }
     else if (r.k === "local") b.localGet(r.l);
-    else if (r.k === "snapSlot") { b.localGet(r.snap); b.refCast(4, true); b.structGet(4, 1); b.i32Const(r.i); b.arrayGet(1); }
     else { b.localGet(0); b.structGet(4, 1); b.i32Const(r.i); b.arrayGet(1); }
   }
 
@@ -810,10 +801,9 @@ export class Fn {
   // the callee's dispatch tail-calls the land thunk over the caller's frame
   // and k, which dispatches the result into the caller's continuation (k=0
   // here, so the value comes back to this call site and the body continues
-  // inline; the rest-of-site fragment machinery is in place for the
-  // suspendable constructs of later steps).
-  // A RET cell {K_RET, fragIdx, $fp, next} (§3): the continuation cell that
-  // tail-calls fragment `fragIdx` (T_III_I) over the caller's frame (local
+  // inline).
+  // A RET cell {K_RET, fragIdx, $fp, next}: the continuation cell that
+  // tail-calls the thunk `fragIdx` (T_III_I) over the caller's frame (local
   // 0). `nextE` pushes the cell's next-pointer operand. Returns the cell.
   retCell(fragIdx: number, nextE: () => void): number {
     const b = this.body;
@@ -826,52 +816,6 @@ export class Fn {
     b.structNew(5);
     b.localSet(cell);
     return cell;
-  }
-
-  // A K_SPILL cell {K_SPILL, snapshot, null, next} chained in front of a
-  // split site's rest fragment. The snapshot freezes the values the rest
-  // fragment reloads from operand-spill slots: a copy of the current frame
-  // image taken at the split site (per capture — this cell is allocated at
-  // runtime on every site execution and copied into every continuation
-  // captured here, so multi-shot resumes each see the values this execution
-  // had built up, matching the interpreter's CPS accs).
-  // This is correct at a NESTED site too (a split site inside a fragment
-  // re-emission): the frame slots such a fragment reloads
-  // were all written after the outer freeze — fresh emission aborts at the
-  // first split site, so anything after it is only ever computed by
-  // fragment code, which re-runs on every resume and re-persists its spill
-  // slots before reaching the nested site. The outer frozen image predates
-  // those writes (reusing it here handed the nested fragment null for
-  // slots it legitimately reloads), while pre-outer-cut values still sit
-  // unmutated in the live frame, so the live freeze sees them too.
-  snapWrap(nextE: () => void): number {
-    const b = this.body;
-    const ksp = this.anyref(), snapv = this.anyref();
-    // Fresh $FRAME {same parent, slots array copied via array.copy} — the
-    // per-capture freeze (shallow slot copy, same as the old block copy).
-    b.localGet(0); b.structGet(4, 1); b.arrayLen();
-    b.arrayNew(1);
-    b.localSet(snapv);
-    b.localGet(snapv);
-    b.refCast(1, true);
-    b.i32Const(0);
-    b.localGet(0); b.structGet(4, 1);
-    b.i32Const(0);
-    b.localGet(0); b.structGet(4, 1); b.arrayLen();
-    b.arrayCopy(1, 1);
-    b.localGet(0); b.structGet(4, 0);
-    b.localGet(snapv);
-    b.refCast(1, true);
-    b.structNew(4);
-    b.localSet(snapv);
-    b.i31Const(w.K_SPILL);
-    b.localGet(snapv);
-    b.refNull(w.ANYREF); // b unused (was UNIT_CELL)
-    nextE();
-    b.refCast(5, true);
-    b.structNew(5);
-    b.localSet(ksp);
-    return ksp;
   }
 }
 

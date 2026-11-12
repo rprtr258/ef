@@ -92,14 +92,13 @@ export const builtins: Builtin[] = [
       return go(0);
     }},
 
-    // --- builtins added for the star.ink port ---
     {kind: "value", name: "PI", t: TFLOAT, fn: Math.PI},
     {kind: "fn", name: "cos", t: tFun([TFLOAT], TFLOAT, new Set()), pnames: ["x"], fn: a => Math.cos(num(a))},
     {kind: "fn", name: "sin", t: tFun([TFLOAT], TFLOAT, new Set()), pnames: ["x"], fn: a => Math.sin(num(a))},
     {kind: "fn", name: "abs", t: tFun([TFLOAT], TFLOAT, new Set()), pnames: ["x"], fn: a => Math.abs(num(a))},
     {kind: "fn", name: "round", t: tFun([TF64], TI64, new Set()), pnames: ["x"], fn: a => Math.round(num(a))},
     {kind: "fn", name: "sqrt", t: tFun([TFLOAT], TFLOAT, new Set()), pnames: ["x"], fn: a => Math.sqrt(num(a))},
-    // D7: builtins return concrete widths — range is (i64, i64, i64) -> [i64],
+    // Builtins return concrete widths — range is (i64, i64, i64) -> [i64],
     // so its output is never width-ambiguous. Elements are plain JS numbers;
     // every read at an i64-typed site (get, callbacks) re-normalizes to BigInt.
     {kind: "fn", name: "range", t: tFun([TI64, TI64, TI64], tArr(TI64), new Set()), pnames: ["from", "to", "step"], fn: (a, b, c) => {

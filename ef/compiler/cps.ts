@@ -17,7 +17,13 @@
 
 import type {Expr, ExprID, Program} from "./parser.ts";
 import type {CAtom, CCase, CFn, CIr, CPrim, CTerm} from "./cps_ir.ts";
+import {BUILTINS} from "./analysis.ts";
 import {assertNever} from "./assert.ts";
+
+// Builtin names the emitter specializes at direct call sites (analysis.ts's
+// surface table — parser-types-only, so no import-order hazards).
+const BUILTIN_NAMES = new Set(BUILTINS.map(b => b.name));
+const isDirectBuiltinName = (n: string): boolean => BUILTIN_NAMES.has(n);
 
 // The function-body continuation, bound by apply at call entry.
 export const RET = "$ret";
@@ -127,10 +133,9 @@ class Converter {
       case "sym": {
         // Force the read into a bind-once temp at walk position: every value
         // read before a possible suspension becomes a temp, and freezeFor
-        // then freezes exactly the ones crossing it — the closure-argument
-        // discipline of the pre-IR evaluator (an operand read pre-perform is
-        // frozen; a post-resume read in a case body binds its temp at
-        // execution time and stays live).
+        // then freezes exactly the ones crossing it (an operand read
+        // pre-perform is frozen; a post-resume read in a case body binds
+        // its temp at execution time and stays live).
         const name = this.fresh("$t");
         this.temps.add(name);
         return {
@@ -264,6 +269,15 @@ class Converter {
               this.primLet({t: "op", op, args: vas, stamp: nk, norm: nk}, k));
         }
         // General call: fn first, then args left-to-right, then the call.
+        // A sym naming a builtin in callee position stays an unbound name:
+        // the emitter specializes it to the builtin's trampoline
+        // (directBuiltin) — temp-binding it would strand the name in a
+        // slot no runtime value ever fills.
+        if (fn.t === "sym" && isDirectBuiltinName(fn.v)) {
+          return this.convArgs(e.args, (vas) =>
+            this.callTail(k, e.numKind, (kk) =>
+              ({t: "call", fn: {t: "var", name: fn.v}, args: vas, k: kk})));
+        }
         return this.convert(e.fn, {t: "fn", f: (vf) =>
           this.convArgs(e.args, (vas) =>
             this.callTail(k, e.numKind, (kk) => ({t: "call", fn: vf, args: vas, k: kk})))});

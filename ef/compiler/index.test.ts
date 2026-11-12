@@ -218,9 +218,8 @@ describe("Tuples, aliases, and field access", () => {
   test("named tuple via annotation", () => {
     expect(typeOf(`p: [x: f64, y: f64] :: [1.0, 2.0]; p`)).toBe("[x: f64, y: f64]");
   });
-  // `[x: 1, y: 2]` used to parse as six elements (the stray `:` became a `sym`
-  // node) and fail later with a baffling "literal arity 6 ≠ tuple 2"; field
-  // names are type-position-only, so the literal must fail at parse time.
+  // Field names are type-position-only, so a named-field literal must fail
+  // at parse time.
   test("named-field expression literal is rejected at parse time", () => {
     expect(() => run(`p: [x: i64, y: i64] :: [x: 1, y: 2]; p`)).toThrow("Unexpected token \":\"");
   });
@@ -317,7 +316,7 @@ describe("Negative tests (static type checker rejects)", () => {
     assertTypeError(`"x" != 1`, "Type mismatch");
   });
 
-  test("exit/wait are no longer builtins (use Exit!/Wait)", () => {
+  test("exit/wait are not builtins (use Exit!/Wait)", () => {
     assertTypeError(`exit(1)`, "Unbound: exit");
     assertTypeError(`wait(1)`, "Unbound: wait");
   });
@@ -751,7 +750,7 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
   });
 });
 
-// Numeric widths (typed-widths plan): the interpreter is width-exact —
+// Numeric widths: the interpreter is width-exact —
 // i32/u32/f32/f64 values are JS numbers, i64/u64 values are BigInt (exact
 // beyond 2^53) — and integer division/remainder trap on ÷0 and INT_MIN÷-1
 // like wasm's div/rem ops. All six widths have graduated to full
@@ -815,7 +814,7 @@ describe("numeric widths", () => {
     expect(typeOf(`1.5 + 1.5`)).toBe("f64");
   });
 
-  test("builtins return concrete widths (D7)", () => {
+  test("builtins return concrete widths", () => {
     expect(typeOf(`range(0, 4, 1)`)).toBe("[i64]");
     expect(typeOf(`len([1, 2])`)).toBe("i64");
     expect(typeOf(`strlen("ab")`)).toBe("i64");

@@ -129,6 +129,6 @@ Known and pinned by tests — degenerate programs only:
 | Arithmetic on non-numbers traps (`ref.cast` failure) instead of producing a garbage number | the checker rejects non-numeric arithmetic statically, so well-typed programs never hit it |
 | Closures always display as `[fn]` | interpreter may show an inferred type |
 | Stack overflow is a wasm `RuntimeError`, not a JS `RangeError` | |
-| Heap reclamation is the host GC's job | recursion depth no longer costs O(N) unreclaimed bytes |
+| Heap reclamation is the host GC's job | recursion depth costs only GC-reclaimed frame blocks |
 
 Next: [Discover](discover.md).

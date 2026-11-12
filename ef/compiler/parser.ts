@@ -213,7 +213,6 @@ export class Parser {
   // primitive used in their parameter annotations):
   //   `Name :: <type>;`                               — nullary alias
   //   `Name :: fn(p: type, ...): type { <type> };`    — parametric alias
-  // Both produce the same {alias} Item the old `type Name = ...;` form did.
   // Disambiguation from `name :: expr;` is type-first: the RHS must parse as
   // a type landing on `;` (unknown names throw out of parseType, so
   // `pair :: [a, b];` over value variables and bare `y :: x;` rewind and keep

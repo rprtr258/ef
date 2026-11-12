@@ -7,6 +7,8 @@ import {run} from "./eval.ts";
 import {BIN_FEATURES, compile} from "./wasm.ts";
 import {checkProgram} from "./types.ts";
 import {discover, optimize, assignIndices, layoutStatics} from "./wasm_pipeline.ts";
+import {toCps} from "./cps.ts";
+import {planIr} from "./wasm_term.ts";
 import {Parser} from "./parser.ts";
 import {runWasm} from "./wasm_host.ts";
 import {show} from "./env.ts";
@@ -74,30 +76,27 @@ describe("wasm backend", () => {
   });
 
   test("pipeline phases run standalone (init-order/TDZ guard)", () => {
-    // Regression guard (batch A): layoutStatics briefly had a closure
-    // (newStatic) capturing `lay` before lay's own initializer ran — a
-    // use-before-init typecheck cannot see, fatal only when called.
     // Drive each exported phase directly so an init-order bug fails here,
     // named by phase, instead of as a generic compile() error. The program
     // touches every layoutStatics branch: number + string literals, a PI
     // reference, and a value-referenced builtin (closure static).
     const prog = new Parser("x :: 1;\ns :: \"a\";\npi :: PI;\nl :: len;\nx;").parseProgram();
     checkProgram(prog); // discover reads the runtime markers the check stamps
-    const d = discover(prog);
+    const ir = toCps(prog);
+    const d = discover(ir, prog);
     const o = optimize(prog);
-    const ix = assignIndices(prog, d, o);
-    const lay = layoutStatics(d, ix, o); // the batch-A TDZ site
+    const plan = planIr(ir);
+    const ix = assignIndices(ir, plan, o);
+    const lay = layoutStatics(d, ix, o, plan); // the batch-A TDZ site
     expect(lay.statics.length).toBeGreaterThan(3);
     expect(lay.unitRef.k).toBe("g");
     expect(lay.piG).toBeGreaterThanOrEqual(0); // PI referenced → static
   });
 
   test("every example compiles to a valid module with no empty function bodies", () => {
-    // Generalized from a star.ef-only check (moved here from
-    // examples.test.ts): the invariant holds for any compiled program, so
-    // it runs over every .ef file in examples/. Compiling all examples
-    // takes ~11s (star.ef alone ~3s), well over the 5s default timeout.
-    // (Non-.ef files, e.g. the old-syntax .ml sources, are not examples.)
+    // The invariant holds for any compiled program, so it runs over every
+    // .ef file in examples/. Compiling all examples takes ~11s (star.ef
+    // alone ~3s), well over the 5s default timeout.
     const dir = join(workspaceDir, "..", "examples");
     for (const bin of readdirSync(dir)
       .filter(file => file.endsWith(".ef"))
@@ -112,13 +111,13 @@ describe("wasm backend", () => {
     expect(parity("7.0 / 2")).toBe("3.5");
     expect(parity("-5 + 3")).toBe("-2");
     expect(parity("17 % 5")).toBe("2");
-    // Interp-only until the wasm backend grows per-width div (steps 2-4):
-    // integer division by zero traps instead of producing Infinity.
+    // Integer division by zero traps instead of producing Infinity.
     expect(() => run("1 / 0")).toThrow(/integer divide by zero/);
   });
 
   test("arithmetic on non-numbers traps via ref.cast (frozen documented deviation)", () => {
-    // §7.7: the checker rejects statically-ill-typed arithmetic, but a
+    // Known deviation (wasm.ts): the checker rejects statically-ill-typed
+    // arithmetic, but a
     // dynamically non-number operand (e.g. through `any`) traps at the
     // wasm ref.cast instead of throwing a host-side ef error — the GC
     // plane's frozen deviation from the interpreter's TypeError.
@@ -133,7 +132,7 @@ describe("wasm backend", () => {
     expect(parity("1 != 2")).toBe("true");
   });
 
-  test("any-typed equality is value-based across all six widths (step 5)", () => {
+  test("any-typed equality is value-based across all six widths", () => {
     // The $eq helper matches the interpreter's JS === on values exactly:
     // same-representation numbers compare by value (f32 promotes, i32/u32
     // convert), BigInt is never === a Number, and mixed i64/u64 compares
@@ -154,11 +153,9 @@ describe("wasm backend", () => {
   });
 
   test("tail operator after a land call dispatches through the RET cell", () => {
-    // Regression: a lambda whose tail was `/` used to return the boxed
-    // value raw (return_call $box), bypassing the land site's RET cell —
-    // the `let y` binding was never stored and later reads saw unit. The
-    // inlined operators share the fixed shape: the tail value returns to
-    // the enclosing wrapper, which dispatches it through the continuation.
+    // The inlined operators share the fixed shape: the tail value returns
+    // to the enclosing wrapper, which dispatches it through the
+    // continuation.
     expect(parity(`f :: fn(x: i64): i64 { x / 2 };
       y :: f(10);
       y + 1`)).toBe("6");
@@ -248,9 +245,9 @@ describe("wasm backend", () => {
   });
 
   test("i32/u32 wraparound: native mod-2^32 ops, comparisons, @as", () => {
-    // Typed-widths step 3: i32/u32 sites compute with i32.add/sub/mul (the
-    // wrap IS the semantics) and the interpreter wraps through
-    // BigInt.asIntN/asUintN — parity.
+    // i32/u32 sites compute with i32.add/sub/mul (the wrap IS the
+    // semantics) and the interpreter wraps through BigInt.asIntN/asUintN —
+    // parity.
     expect(parity("x: i32 :: 2147483647; x + 1")).toBe("-2147483648");
     expect(parity("x: i32 :: -2147483648; x - 1")).toBe("2147483647");
     expect(parity("x: i32 :: 2147483647; x * 2")).toBe("-2");
@@ -285,15 +282,16 @@ describe("wasm backend", () => {
     expect(parity("x: u32 :: 1; x / 0")).toBe("ERR: integer divide by zero");
     expect(parity("x: i32 :: -2147483648; x / -1")).toBe("ERR: integer overflow");
     expect(parity("x: i32 :: -2147483648; x % -1")).toBe("0"); // rem_i32_s of INT_MIN by -1 is 0, no overflow
-    // i64-plane division keeps the f64-trunc semantics until step 4.
+    // Untyped literals default to the i64 plane: native integer division,
+    // trunc toward zero.
     expect(parity("7 / 2")).toBe("3");
     expect(parity("-7 / 2")).toBe("-3");
   });
 
   test("i64/u64 wraparound: exact 64-bit BigInt arithmetic, comparisons, @as", () => {
-    // Typed-widths step 4: i64/u64 sites compute with i64.add/sub/mul (the
-    // wrap IS the semantics) and the interpreter wraps through
-    // BigInt.asIntN/asUintN — parity, exact to 2^63 and beyond 2^53.
+    // i64/u64 sites compute with i64.add/sub/mul (the wrap IS the
+    // semantics) and the interpreter wraps through BigInt.asIntN/asUintN —
+    // parity, exact to 2^63 and beyond 2^53.
     expect(parity("x: i64 :: 9223372036854775807; x + 1")).toBe("-9223372036854775808");
     expect(parity("x: i64 :: -9223372036854775808; x - 1")).toBe("9223372036854775807");
     expect(parity("x: i64 :: 4611686018427387904; x * 2")).toBe("-9223372036854775808"); // 2^62 * 2 wraps to INT64_MIN
@@ -385,7 +383,7 @@ a + b`)).toBe("6");
     // Same unhandled-effect error message as the interpreter.
     parity("effect Foo(n: i64): i64; Foo!(1) + 2");
     // One-shot interp injection overrides the default interpretation.
-    // i64 args unbox to BigInt at the host boundary (typed-widths step 4).
+    // i64 args unbox to BigInt at the host boundary.
     expect(show(runWasm("effect Foo(n: i64): i64; Foo!(21) * 2", {Foo: args => Number(args[0]) + 1}))).toBe("44");
   });
 
@@ -512,16 +510,13 @@ describe("wasm effect codegen regressions", () => {
     expect(parity("effect Op(): i64; handle { [x, y, z] :: [1, Op!(), 3]; [w] :: [x + z + Op!()]; w + y } case Op() => k { k(k(4)) }")).toBe("52");
   });
 
-  test("pre-cut operands reload from the frozen frame across resumes", () => {
-    // A pre-cut operand of a split-mode app must reload from the K_SPILL
-    // cell's frozen frame image, never the live frame: a later loop pass
-    // re-stores the spill slot while an older continuation of the same
-    // site is still pending. The fragment chain here runs while -> body
-    // statement (emitStmtsFrom) -> app, so every chain node must thread
-    // the snap (frozen image) ctx down to the reload.
+  test("loop operands reload from the frozen freeze across resumes", () => {
+    // A loop-carried operand of a performing app must reload from the
+    // letk's frozen freeze, never the live frame: a later loop pass
+    // re-stores the temp while an older continuation of the same site is
+    // still pending.
     expect(parity("effect Op(): i64; handle { s := 0; i := 0; while (i < 2) { s = s + i + Op!(); i = i + 1 }; s } case Op() => k { k(k(7)) }")).toBe("23");
-    // Same reload behind an @as on the chain (single-child nodes cut
-    // through too).
+    // Same reload behind an @as on the expression.
     expect(parity("effect Op(): i64; handle { s := 0; i := 0; while (i < 2) { s = s + @as(i + Op!(), i64); i = i + 1 }; s } case Op() => k { k(k(7)) }")).toBe("23");
   });
 });
@@ -585,7 +580,7 @@ describe("wasm binaryen shrink pass (optimizeBinary)", () => {
     assertModule(bytes);
     const mod = new WebAssembly.Module(bytes);
     const exports = WebAssembly.Module.exports(mod).map(e => e.name);
-    // §4/§6: no memory/$hp in the GC plane — run + the 12 accessors only.
+    // GC plane: no memory/$hp — run + the 12 accessors only.
     for (const e of [
       "run", "__tag", "__num", "__str_len", "__str_get",
       "__arr_len", "__arr_get", "__mk_num", "__mk_bool", "__str_new",
@@ -602,15 +597,11 @@ describe("wasm binaryen shrink pass (optimizeBinary)", () => {
     expect(Buffer.from(compile("len(range(1, 10, 1))")).equals(Buffer.from(compile("len(range(1, 10, 1))")))).toBe(true);
   });
 });
-// --- split re-emission regressions -----------------------------------------
-// A dispatch-shape if whose arms contain split sites used to (a) leave the
-// after-if rest thunk empty (invalid module) when an arm's own split escaped
-// through the condition path, and (b) regenerate sibling-arm fragments
-// forever at compile time when both arms could split. These pins cover the
-// repaired protocol: after-if fragments always exist and fill exactly once
-// per site, and arm-internal fragments root at the arm, not the body root.
+// --- split re-emission ------------------------------------------------------
+// After-if fragments always exist and fill exactly once per site, and
+// arm-internal fragments root at the arm, not the body root.
 describe("split re-emission regressions", () => {
-  test("if with split sites in both arms: parity (fragment ping-pong regression)", () => {
+  test("if with split sites in both arms: parity", () => {
     parity(`if (1 < 0) {
   Println!("then-arm");
   Println!("after-then")
@@ -627,14 +618,10 @@ if (x < 1) { Println!("then") } else { Println!("else") };
 Println!("tail")`);
   });
 
-  test("land calls in both branches of a nested if-else compile (site-memo regression)", () => {
+  test("land calls in both branches of a nested if-else compile", () => {
     // Every non-builtin call is a land-call split site; its rest fragment
-    // re-emits from the body root, and the sibling branch (containing
-    // another land call) re-emitted fresh during that fill used to fill its
-    // own fragment from the same root again — mutual recursion between
-    // fillRest and the call site's synchronous fill, growing until the
-    // stack overflowed inside binaryen. Rest fragments are now memoized by
-    // their split chain: same site, same fragment fn.
+    // re-emits from the body root. Rest fragments are memoized by their
+    // split chain: same site, same fragment fn.
     const src = `g :: fn(x: i64): i64 { x + 1 };
 f :: fn(a: i64): i64 {
   if (a == 0) {
@@ -650,14 +637,9 @@ Println!(f(0))`;
     expect(parity(src)).toBe("unit");
   });
 
-  test("nested-operand land call plus a sibling land call in one body: parity (stale K_SPILL snapshot regression)", () => {
+  test("nested-operand land call plus a sibling land call in one body: parity", () => {
     // A land-call result consumed as a nested OPERAND of another expression
-    // in the same body as a second (bare let-RHS) land call used to trap at
-    // runtime with a null deref: the nested site's K_SPILL cell reused the
-    // enclosing fragment's frozen frame image, but operand spills written
-    // by the enclosing fragment AFTER the outer freeze (the `-2.0` literal
-    // here) are missing from that stale image — the nested fragment's
-    // preCut reload read null and the `$NUM` ref.cast trapped.
+    // in the same body as a second (bare let-RHS) land call.
     const src = `vDot :: fn(a: [f64], b: [f64]): f64 { (a.0 * b.0) + ((a.1 * b.1) + (a.2 * b.2)) };
 sphereT2 :: fn(d: [f64], c: [f64], r: f64): f64 {
   a :: vDot(d, d);

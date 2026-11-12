@@ -1,6 +1,6 @@
-# Bench: pure boxed while-loop arithmetic. No calls, no frames — control
-# workload: the numeric op path is unchanged by the optimizations, so old
-# and new should time within noise.
+# Bench: pure boxed while-loop arithmetic. No calls — isolates the frame
+# and boxing path: every iteration allocates a fresh frame and boxes/
+# unboxes the loop variables around each numeric op.
 i := 0;
 acc := 0;
 while (i < 20000000) {

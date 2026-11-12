@@ -1,14 +1,14 @@
 // Shared tables of the wasm backend: host-import layout, function
-// signatures, valtype decoding and the binaryen module binding. The §-numbered
+// signatures, valtype decoding and the binaryen module binding. The
 // design doc for the whole backend lives at the top of wasm.ts.
 import binaryen from "binaryen";
 import {WasmError, _T} from "./wasm_types.ts";
 import * as w from "./wasm_consts.ts";
 
-// map/each/flatmap invoke user callbacks, so they are called land-style: a
-// map-like call site is a landCalls split site (§3) and the builtin loops
-// through per-iteration thunks instead of an inline wasm loop.
-export const MAP_LIKE = new Set(["map", "each", "flatmap"]);
+// map/each/flatmap invoke user callbacks, so they are called land-style:
+// the builtin loops through per-iteration thunks instead of an inline wasm
+// loop.
+const MAP_LIKE = new Set(["map", "each", "flatmap"]);
 // Extra entry-frame words a map-like builtin needs beyond its args: the
 // result/tmp array (except each) and the iteration counter.
 export const mapLikeFrameWords = (name: string): number => name === "each" ? 1 : MAP_LIKE.has(name) ? 2 : 0;
@@ -29,12 +29,22 @@ export const BUILTIN_IMPORTS: Record<string, string> = {
 export const HOST_IMPORTS = [
   "ef_perform", "ef_fail",
   ...Object.keys(BUILTIN_IMPORTS),
+  "ef_trace",
 ];
 
 // debug emitter tracing: run with DBGEMIT=1 to log split/thunk internals
 // during compile; off (and free) otherwise.
 export const DBGEMIT = process.env["DBGEMIT"] === "1";
-// Func signatures by type index (§1 func types 7..23). Valtype spellings
+// Runtime tracing (EFTRACE=1): the emitter inserts an ef_trace(site, val)
+// host call at key points; the host keeps a ring buffer of (site, val) and
+// prints it when a runtime trap escapes (a trap otherwise loses all
+// location info).
+export const DBGTRACE = process.env["EFTRACE"] === "1";
+// Emission-site descriptions, indexed by the site id the emitter passes to
+// ef_trace. Lives in this leaf module so the emitter and the host share it
+// without an import cycle.
+export const TRACE_SITES: string[] = [];
+// Func signatures by type index. Valtype spellings
 // mirror the emitter's byte language: 0x7f i32, 0x7c f64, 0x6e anyref,
 // [0x63, n] = (ref null $n). Consumed by Buf's call handling and by
 // buildModule's addFunction calls.
@@ -55,16 +65,13 @@ export const SIGS: Record<number, {p: (number | number[])[], r: number | number[
   [21]: {p: [w.ANYREF, 0x7f, 0x7f], r: null},       // __str_set
   [22]: {p: [w.ANYREF, 0x7f], r: w.ANYREF},           // __arr_get
   [23]: {p: [w.ANYREF, 0x7f, w.ANYREF], r: null},     // __arr_set
-  [w.T_MKF32]: {p: [0x7d], r: w.ANYREF},              // __mk_f32 (step 2)
-  [w.T_F32]: {p: [w.ANYREF], r: 0x7d},                // __f32/fF32of (step 2)
-  [w.T_MKI32]: {p: [0x7f], r: w.ANYREF},              // __mk_i32/__mk_u32 (step 3)
-  [w.T_GETI32]: {p: [w.ANYREF], r: 0x7f},             // __i32/__u32/fI32of/fU32of (step 3)
-  [w.T_MKI64]: {p: [0x7e], r: w.ANYREF},              // __mk_i64/__mk_u64 (step 4; BigInt at the host)
-  [w.T_GETI64]: {p: [w.ANYREF], r: 0x7e},             // __i64/__u64/fI64of/fU64of (step 4)
-  [w.T_UKABI_I32]: {p: [[0x63, 13], [0x63, 5]], r: w.ANYREF},
-  [w.T_UKABI_I64]: {p: [[0x63, 14], [0x63, 5]], r: w.ANYREF},
-  [w.T_UKABI_F32]: {p: [[0x63, 15], [0x63, 5]], r: w.ANYREF},
-  [w.T_UKABI_F64]: {p: [[0x63, 16], [0x63, 5]], r: w.ANYREF},
+  [w.T_MKF32]: {p: [0x7d], r: w.ANYREF},              // __mk_f32
+  [w.T_F32]: {p: [w.ANYREF], r: 0x7d},                // __f32/fF32of
+  [w.T_MKI32]: {p: [0x7f], r: w.ANYREF},              // __mk_i32/__mk_u32
+  [w.T_GETI32]: {p: [w.ANYREF], r: 0x7f},             // __i32/__u32/fI32of/fU32of
+  [w.T_MKI64]: {p: [0x7e], r: w.ANYREF},              // __mk_i64/__mk_u64 (BigInt at the host)
+  [w.T_GETI64]: {p: [w.ANYREF], r: 0x7e},             // __i64/__u64/fI64of/fU64of
+  [w.T_TRACE]: {p: [0x7f, 0x7f], r: null},             // ef_trace(site, val) — EFTRACE only
 };
 
 // Valtype byte (or [0x63, idx] pair) → binaryen Type. 0x40 → none (void).

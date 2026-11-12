@@ -139,8 +139,7 @@ describe("module init order", () => {
   // The eval⇄builtins import cycle is runtime-only on both sides (`apply`
   // is called from builtin closures; eval builds the effect interps lazily
   // on first unhandled effect), so every module must initialize cleanly
-  // regardless of entry point. Regression guard: these entries used to TDZ
-  // when eval.ts's builtinInterps was a top-level initializer.
+  // regardless of entry point.
   for (const entry of ["builtins.ts", "env.ts", "parser.ts", "types.ts", "eval.ts", "lint.ts"])
     test(`${entry} as entry point`, () => {
       const p = Bun.spawnSync(

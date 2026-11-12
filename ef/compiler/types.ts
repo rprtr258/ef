@@ -1069,7 +1069,7 @@ function inferNode(
         // `/` is type-preserving: int/int -> int (truncated at runtime),
         // float/float -> float. The checker stamps the division's WIDTH on
         // the node so the evaluator/emitters pick truncation and the
-        // signed/unsigned op variants (typed-widths step 3).
+        // signed/unsigned op variants.
         if (fn.v === "/") {
           const rw = widthOf(env.uni.res(widened));
           e.div = rw !== null ? rw.w : "f64";

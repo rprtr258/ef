@@ -13,6 +13,7 @@ export let editor: monaco.editor.IStandaloneCodeEditor | null = null;
 // stateless per line).
 class EfState implements monaco.languages.IState {
   constructor(public line = 0) {}
+  /** @public — monaco calls clone() when forking tokenization state (IState contract). */
   clone(): EfState {
     return new EfState(this.line);
   }

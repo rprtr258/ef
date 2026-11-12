@@ -395,7 +395,6 @@ process control is via the `Exit`/`Wait` effects (§4.4), not functions.
 | `args` | `() -> [string]` | CLI args after the source file. |
 
 `each`/`flatmap`/`map` take the function **first**, matching `map`.
-(Formerly `exit`/`wait` builtins existed; they are now the `Exit`/`Wait` effects in §4.4.)
 
 ### 4.4 Builtin effects
 
@@ -538,8 +537,8 @@ handle {
 ## 7. Examples on disk
 
 - `examples/newton.ef` — Newton's method square root (`while` + assignment).
-- `examples/tco.ef` — recursion probe. The CPS evaluator is fully tail-call-structured, so Bun/JSC's TCO keeps the stack O(1) for both tail and non-tail calls; non-tail recursion costs heap allocation (linear time), not stack overflow. The wasm target also runs it: calls in tail position compile to `return_call_indirect` (O(1) wasm stack); each call still allocates a frame block, but the host GC reclaims them (the old linear-memory backend exhausted the heap at ~100M depth).
-- `examples/star.ef` — rotating 3D star polygon (port of `ink/samples/star.ink`).
+- `examples/tco.ef` — recursion probe. The CPS evaluator is fully tail-call-structured, so Bun/JSC's TCO keeps the stack O(1) for both tail and non-tail calls; non-tail recursion costs heap allocation (linear time), not stack overflow. The wasm target also runs it: calls in tail position compile to `return_call_indirect` (O(1) wasm stack); each call still allocates a frame block, but the host GC reclaims them.
+- `examples/star.ef` — rotating 3D star polygon.
   Run: `ef run examples/star.ef <vertices> <step>` where `0 < step < vertices/2`.
 - `examples/widths.ef` — the numeric-widths end-to-end probe: f32 precision at
   every producing step, per-width `@as` conversions, truncating `/`, i32/u32

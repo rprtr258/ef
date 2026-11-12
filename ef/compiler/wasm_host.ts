@@ -1,15 +1,16 @@
 // wasm_host.ts — host runtime for the WebAssembly backend: instantiates the
 // module built by wasm.ts's compileWithOps, rebuilds interpreter Values
 // across the WasmGC boundary through the module's 12 exported accessor
-// functions (the §4 accessor ABI — see wasm.ts's module docstring), and
+// functions (the accessor ABI — see wasm.ts's module docstring), and
 // implements the host imports, including effects that reach the host with
 // no matching handler (builtins.ts's builtinEffectHosts, optionally
 // overridden per-op through the `interp` argument).
 import {type Value, show, asSlice, mkSlice, mkTup, sliceElems} from "./env.ts";
 import {builtinEffectHosts} from "./builtins.ts";
 import {compileWithOps} from "./wasm.ts";
+import {DBGTRACE, TRACE_SITES} from "./wasm_tables.ts";
 
-// The §4 accessor ABI: exported accessor functions — the only way JS can touch
+// The accessor ABI: exported accessor functions — the only way JS can touch
 // GC structs. hostBox/hostUnbox rebuild interpreter Values through them; the
 // field names are the wasm export names.
 type Accessors = {
@@ -103,14 +104,14 @@ function hostUnbox(ex: Accessors, v: unknown): Value {
       return mkTup(elems);
     }
     case 5: return {tag: "fn"} as Value; // closures display as [fn]
-    case 10: return ex.__f32(v); // $F32 box (typed-widths step 2)
-    case 6: return ex.__i32(v); // $I32 box (typed-widths step 3)
+    case 10: return ex.__f32(v); // $F32 box
+    case 6: return ex.__i32(v); // $I32 box
     // JS i32 returns are already sign-extended; u32 masks the raw bits.
     // The 64-bit widths cross as BigInt (the standard wasm JS-BigInt
     // integration); u64 masks the raw two's-complement bits.
-    case 7: return ex.__u32(v) >>> 0; // $U32 box (masked; step 3)
-    case 8: return BigInt.asIntN(64, ex.__i64(v)); // $I64 box: BigInt (step 4)
-    case 9: return BigInt.asUintN(64, ex.__u64(v)); // $U64 box: BigInt masked (step 4)
+    case 7: return ex.__u32(v) >>> 0; // $U32 box (masked)
+    case 8: return BigInt.asIntN(64, ex.__i64(v)); // $I64 box: BigInt
+    case 9: return BigInt.asUintN(64, ex.__u64(v)); // $U64 box: BigInt masked
   }
   throw new Error(`wasm host: unknown anyref tag ${ex.__tag(v)}`);
 }
@@ -134,6 +135,10 @@ export function runWasm(src: string, interp?: EffectInterp): Value {
 
 // Instantiate and run an already-compiled module: used by runWasm and by hosts
 // that compile separately from running (the playground runs through here).
+// Last entered emission sites (ef_trace calls), printed when a runtime
+// trap escapes under EFTRACE=1.
+const traceBuf: number[] = [];
+
 export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[], interp?: EffectInterp): Value {
   const mod = new WebAssembly.Module(bytes);
   const imports = {
@@ -158,7 +163,7 @@ export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[]
       if (code === 1) throw new Error(`get: index ${a} out of bounds [0, ${b})`);
       if (code === 5) throw new Error(`sub: range [${a}, ${b}) out of bounds [0, ${c})`);
       if (code === 6) throw new Error(`set: index ${a} out of bounds [0, ${b})`);
-      // Typed-widths step 3: the i32/u32 division guards (emitFail at the
+      // The i32/u32 division guards (emitFail at the
       // / and % sites) reuse this channel; codes 3/4 carry the interpreter's
       // exact trap messages (eval.ts widthOp) for parity. Code 2 is the
       // named field-access OOB (falls to the default template).
@@ -166,9 +171,30 @@ export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[]
       if (code === 4) throw new Error("integer overflow");
       throw new Error(`.${hostStr(ex(), name)}: index ${a} out of bounds [0, ${b})`);
     },
+    ef_trace: (site: number, val: number) => {
+      // Ring buffer of the last entered emission sites (EFTRACE=1 only;
+      // the import is dead code otherwise). val carries a runtime value.
+      traceBuf.push(site * 100000 + (val | 0));
+      if (traceBuf.length > 64) traceBuf.shift();
+    },
   };
   const inst = new WebAssembly.Instance(mod, {env: imports});
   const ex = () => accessorsOf(inst);
-  const result = (inst.exports["run"] as () => unknown)();
-  return hostUnbox(ex(), result);
+  const dumpTrace = (): void => {
+    if (!DBGTRACE) return;
+    const sites = traceBuf.map((s) => {
+      const site = Math.floor(s / 100000), val = s % 100000;
+      return (TRACE_SITES[site] ?? `#${site}`) + (val !== 0 ? `=${val}` : "");
+    });
+    console.error(`[EFTRACE] last sites: ${sites.join(" -> ")}`);
+  };
+  try {
+    const result = (inst.exports["run"] as () => unknown)();
+    const v = hostUnbox(ex(), result);
+    dumpTrace();
+    return v;
+  } catch (e) {
+    dumpTrace();
+    throw e;
+  }
 }

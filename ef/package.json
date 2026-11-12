@@ -9,7 +9,7 @@
     "vscode"
   ],
   "scripts": {
-    "lint": "eslint '**/*.{ts,json}' && knip",
+    "lint": "eslint '**/*.{ts,json,md}' && knip",
     "typecheck": "bun check && bun check --cwd playground && bun check --cwd docs && bun check --cwd vscode",
     "check:deps": "bun compiler/scripts/check-runtime-deps.ts",
     "install:vscode": "bun run --filter=vscode build && bun run --filter=vscode package && code --install-extension vscode/vscode-0.1.0.vsix",

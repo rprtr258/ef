@@ -201,7 +201,6 @@ export async function build(): Promise<{pages: Page[], html: Map<string, string>
     slugCounts.clear();
     const body = rewriteLinks(await marked.parse(page.md));
     const html = renderPage(page, body, overview, sections);
-    // Bun.write used to create parent dirs implicitly (createPath); writeFileSync needs them explicit
     mkdirSync(dirname(join(dist, outPath(page))), {recursive: true});
     writeFileSync(join(dist, outPath(page)), html);
     out.set(page.file, html);

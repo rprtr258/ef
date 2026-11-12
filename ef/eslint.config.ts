@@ -4,6 +4,7 @@ import tseslint from "typescript-eslint";
 import stylistic from "@stylistic/eslint-plugin";
 import importPlugin from "eslint-plugin-import";
 import {noUnusedClassMembers} from "./eslint/rules/no-unused-class-members.ts";
+import {commentHygiene, mdParser} from "./eslint/rules/comment-hygiene.ts";
 
 export default defineConfig([
   {
@@ -11,7 +12,7 @@ export default defineConfig([
     plugins: {js},
     ...js.configs.recommended,
   },
-  tseslint.configs.recommendedTypeChecked,
+  ...tseslint.configs.recommendedTypeChecked.map((config) => ({...config, files: ["**/*.ts", "*.ts"]})),
   {
     files: ["**/*.ts", "*.ts"],
     languageOptions: {
@@ -23,13 +24,15 @@ export default defineConfig([
     },
   },
   {
+    files: ["**/*.ts", "*.ts"],
     plugins: {
       "@stylistic": stylistic,
       import: importPlugin,
-      local: {rules: {"no-unused-class-members": noUnusedClassMembers}},
+      local: {rules: {"no-unused-class-members": noUnusedClassMembers, "comment-hygiene": commentHygiene}},
     },
     rules: {
       "local/no-unused-class-members": "error",
+      "local/comment-hygiene": "error",
       "eqeqeq": ["error", "always"],
       "object-curly-spacing": ["error", "never"],
       "semi": ["error", "always"],
@@ -85,5 +88,11 @@ export default defineConfig([
       }],
       "@typescript-eslint/require-await": "off",
     },
+  },
+  {
+    files: ["**/*.md"],
+    plugins: {local: {rules: {"comment-hygiene": commentHygiene}}},
+    languageOptions: {parser: mdParser},
+    rules: {"local/comment-hygiene": ["error", {prose: true}]},
   },
 ]);

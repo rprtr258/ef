@@ -177,7 +177,7 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
       expect(lines[7]).toBe("true");
       expect(lines[9]).toBe("-3");
       expect(lines[10]).toBe("-1");
-      // i32/u32 wraparound (step 3): native mod-2^32 ops in both backends.
+      // i32/u32 wraparound: native mod-2^32 ops in both backends.
       expect(lines[16]).toBe("-2147483648"); // INT_MAX + 1
       expect(lines[17]).toBe("2147483647"); // INT_MIN - 1
       expect(lines[18]).toBe("-2"); // INT_MAX * 2
@@ -186,7 +186,7 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
       // Signed vs unsigned ordering of the same bits.
       expect(lines[22]).toBe("true");
       expect(lines[23]).toBe("true");
-      // i64/u64 exactness beyond 2^53 (step 4): BigInt at the wasm
+      // i64/u64 exactness beyond 2^53: BigInt at the wasm
       // boundary, wraps at 2^63/2^64, signed vs unsigned ordering.
       expect(lines[25]).toBe("9007199254740993"); // 2^53 + 1 is exact
       expect(lines[26]).toBe("false");
@@ -440,10 +440,8 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
     self: true,
     body: async file => {
       // Output-bounded, not wall-clock-bounded: read stdout until the
-      // 3000-char cap is reached, then kill the child. A time budget here
-      // (the old timeout 8) flaked under parallel test load — startup plus
-      // wasm compile could eat the whole window and yield 0 bytes. Bytes
-      // are load-independent: slower machines just take longer to fill the
+      // 3000-char cap is reached, then kill the child. Bytes are
+      // load-independent: slower machines just take longer to fill the
       // cap. If star ever stops producing output (a real regression), the
       // read blocks until the test-level timeout fails the test.
       const runBounded = async (mode: string): Promise<string> => {

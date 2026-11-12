@@ -2,25 +2,25 @@
 //
 // Pipeline: parse → typecheck (types.ts; stamps the runtime markers the
 // phases read) → frontend analysis
-// (analysis.ts: builtin tree-shaking, op discovery, live imports) → emit a
-// binary .wasm module (WasmGC value plane, no linear memory) → binaryen
-// shrink pass (optimizeBinary: in-process npm `binaryen`, no external
-// tools) → imports and run. No types needed at emission time: the only
-// checker output the backend consumes is the runtime stamps the checker
-// leaves on nodes (`e.div` for division, `e.idx` for field access).
+// (analysis.ts: builtin tree-shaking, op discovery, live imports) → CPS
+// conversion (cps.ts) → IR term emission over the shared value plane
+// (wasm_term.ts/wasm_emit.ts: a binary .wasm module, WasmGC value plane,
+// no linear memory) → binaryen shrink pass (optimizeBinary: in-process
+// npm `binaryen`, no external tools) → imports and run. No types needed at
+// emission time: the only checker output the backend consumes is the
+// runtime stamps the checker leaves on nodes (`e.div` for division,
+// `e.idx` for field access).
 //
-// Subset: everything except suspension across `if`/`while` (a perform or
-// handle site inside a branch or loop body is rejected at compile time).
-// Every `perform` (builtin or user-declared op) boxes its args into an
-// $ELEMS array, spills the args cell to a frame slot, and walks the
-// continuation chain for a handler. With no handler in the chain the
-// effect reaches the host (which interprets it via the op table
-// `compileWithOps` returns) and the rest-of-site fragment continues with
-// the resumed value. `handle` installs a K_HDL continuation cell whose
-// case table dispatches performed ops to per-case T_KABI functions running
-// over the handler's shared hframe (§4.4); every perform/handle site ends
-// the inline body and reifies the code after it as a rest-of-site fragment
-// via the compile-time split protocol below. Resume as a value (§4.6): the
+// Effects: every `perform` (builtin or user-declared op) boxes its args
+// into an $ELEMS carrier, resolves the k-operand cell (the reified
+// continuation — the CPS IR already holds every "rest of computation" as
+// a named `letk` continuation), and walks the continuation chain for a
+// handler. With no handler in the chain the effect reaches the host
+// (which interprets it via the op table `compileWithOps` returns) and the
+// resumed value dispatches through the k cell. `handle` installs a K_HDL
+// continuation cell whose case table dispatches performed ops to per-case
+// T_KABI functions running over the handler's shared hframe. Resume as a
+// value: the
 // resume binder is a $CLO closure over the shared resume fn plus a
 // per-perform-site capture record {self-contained slice — its bottom's
 // next is null, so the record never reaches into the live chain or
@@ -45,11 +45,10 @@
 //   like the interpreter's env chain. Variables resolve statically to
 //   (frame depth, slot); a slot read is struct.get $FRAME 1 + array.get.
 // - Continuations are $K cells {mut i31 kind, mut a, mut b, mut (ref null
-//   $K) next}, mirroring the old 4-word k-cell layout: K_RET{a = i31
+//   $K) next}: K_RET{a = i31
 //   thunk funcref index, b = frame}, K_HDL{a = $ELEMS case table of flat
 //   [opid, fnIdx, fsize, nparams] i31 quadruples (Return case = opid -1),
-//   b = hframe}, K_SPILL{a = frozen $FRAME snapshot, b unused}. k = ref.null
-//   $K is the final return.
+//   b = hframe}. k = ref.null $K is the final return.
 // - All ef functions have uniform T_KABI signature ((ref null $FRAME),
 //   (ref null $K)) -> anyref and dispatch through one funcref table via
 //   call_indirect. Builtins are trampolines; map/each/flatmap are compiled
@@ -76,30 +75,38 @@
 //   so well-typed programs never hit it.
 // - Closures always display as [fn] (interpreter may show an inferred type).
 // - Stack overflow surfaces as a wasm RuntimeError, not a JS RangeError.
-// - Heap reclamation is the host GC's job (the old bump heap was never
-//   freed; recursion depth no longer costs O(N) unreclaimed bytes).
+// - Heap reclamation is the host GC's job: recursion depth costs only
+//   GC-reclaimed frame blocks.
 
 // (The eval⇄builtins import cycle is runtime-only on both sides — apply is
 // called from builtin closures, eval reads the effect interps lazily — so
 // module init order is free; no entry-order breaker import needed.)
 import binaryen from "binaryen";
-import {Parser, type Program} from "./parser.ts";
+import {Parser} from "./parser.ts";
 import {checkProgram} from "./types.ts";
+import {toCps} from "./cps.ts";
 import {bindMOD} from "./wasm_tables.ts";
 import {buildModule, discover, layoutStatics, optimize, assignIndices, type Discovery, type Indices, type Layout, type Opt} from "./wasm_pipeline.ts";
+import {planIr, emitCfns, emitCaseFns, emitRetResumes, emitResumeFn, emitMain as emitMainTerm} from "./wasm_term.ts";
 import {Fn} from "./wasm_body.ts";
-import {type Emit, emitCaseFns, emitHelpers, emitLambdas} from "./wasm_emit.ts";
-import {emitBuiltins, emitInits, emitMain} from "./wasm_module.ts";
+import {type Emit, emitHelpers} from "./wasm_emit.ts";
+import {emitBuiltins, emitInits} from "./wasm_module.ts";
+import {type CIr} from "./cps_ir.ts";
+import {type TermPlan} from "./wasm_term.ts";
+
 // The binary format layer is gone: Buf interprets the emitters' stack-machine
 // instruction stream directly into binaryen AST (wasm_body.ts).
 //
 // Module map (strictly layered, no import cycles):
-// - wasm_types.ts   — WasmGC shape types, Ctx, ValueRef/StaticDesc (leaf)
+// - wasm_types.ts   — WasmGC shape types, ValueRef/StaticDesc (leaf)
 // - wasm_tables.ts  — signatures, host-import layout, binaryen module binding
 // - wasm_body.ts    — Buf + Fn: per-function body emission primitives
+// - cps.ts/cps_ir.ts— the CPS IR conversion (stage 1; shared by both backends)
 // - wasm_pipeline.ts— discover/optimize/assignIndices/layoutStatics/buildModule
-// - wasm_emit.ts    — expr() + statement/effect emitters (split protocol)
-// - wasm_module.ts  — builtin trampolines, main, run/accessor init fns
+// - wasm_emit.ts    — shared value plane: helpers, dispatch, call ABI, pooling
+// - wasm_term.ts    — the IR term emitters (CFns, letk thunks, perform/handle,
+//                     case functions, main)
+// - wasm_module.ts  — builtin trampolines, run/accessor init fns
 // - wasm.ts         — this entry: compile/compileWithOps + emit() orchestration
 
 // --- compiler ---------------------------------------------------------------
@@ -117,6 +124,9 @@ export function compileWithOps(src: string): {bytes: Uint8Array<ArrayBuffer>, op
   // runtime markers the phases read (`numKind` on literals, `div` on
   // applications of `/`, `idx` on field accesses).
   checkProgram(prog);
+  // Stage 2: the CPS IR — the single conversion both backends consume. The
+  // checker stamps the AST the converter reads (`numKind`/`div`/`idx`).
+  const ir = toCps(prog);
   // One compile at a time runs in-process; bind the module for the Buf
   // emitters (they construct binaryen expressions without threading it
   // through every call).
@@ -125,11 +135,12 @@ export function compileWithOps(src: string): {bytes: Uint8Array<ArrayBuffer>, op
   bindMOD(mod);
   // Phase pipeline (free functions over plain artifact records),
   // then emission (one local Emit context) and assembly.
-  const d = discover(prog);
+  const d = discover(ir, prog);
   const o = optimize(prog);
-  const ix = assignIndices(prog, d, o);
-  const lay = layoutStatics(d, ix, o);
-  const funcs = emit(prog, d, o, ix, lay);
+  const plan = planIr(ir);
+  const ix = assignIndices(ir, plan, o);
+  const lay = layoutStatics(d, ix, o, plan);
+  const funcs = emit(ir, d, o, ix, lay, plan);
   return {bytes: buildModule(mod, o, lay, funcs), ops: [...d.effOpIds.keys()]};
 }
 
@@ -155,46 +166,33 @@ export const BIN_FEATURES = binaryen.Features.MVP | binaryen.Features.ReferenceT
 // WasmError. The aborted binaryen heap is not reusable in-process afterwards;
 // every current caller either recovers by process exit or never hits this.
 // extraFeatures extends the read mask without touching the production set
-// (the GC probe test passes binaryen.Features.GC; the rewrite flips the mask
-// for real in step 2).
+// (the GC probe test passes binaryen.Features.GC).
 
 
 // Emission orchestration: one Emit context per compile, dropped at return.
-// Lives here (not wasm_emit.ts) so the two emit modules stay one-way:
-// wasm_module.ts imports wasm_emit.ts (Split/selectBool...), and
-// nothing imports back up.
-function emit(prog: Program, d: Discovery, o: Opt, ix: Indices, lay: Layout): Fn[] {
+// Lives here so the emit modules stay one-way (wasm_module imports
+// wasm_emit/wasm_term; nothing imports back up).
+function emit(ir: CIr, d: Discovery, o: Opt, ix: Indices, lay: Layout, plan: TermPlan): Fn[] {
   const em: Emit = {
-    prog,
-    nodes: prog.nodes,
-    d, o, ix, lay,
+    d, o, ix, lay, plan,
     funcs: [],
     thunks: [],
-    sp: {
-      cutStack: [],
-      bodyRoots: [],
-      filledRests: new Set(),
-      restByChain: new Map(),
-      restRoot: null,
-      hdlRest: new Map(),
-      ctlLoops: new Map(),
-    },
+    mainFn: undefined!,
   };
-  // Helpers (right after the live imports), lambdas, builtin trampolines,
-  // then main (last; run/accessors follow in buildModule).
+  // Helpers (right after the live imports), CFns, case fns + ret resumes,
+  // the shared resume fn, builtin trampolines, then main (last; run/
+  // accessors follow in buildModule). Thunks (letk continuations + map-like
+  // land cells) are appended after the builtins — makeRestThunk assigns
+  // their indices from thunk0 at creation.
   em.funcs.push(...emitHelpers(em));
-  for (const it of prog.items) {
-    if ("e" in it) emitLambdas(em, it.e);
-  }
-  emitCaseFns(em);
+  emitCfns(em, ir, plan);
+  emitCaseFns(em, plan);
+  emitRetResumes(em, plan);
+  emitResumeFn(em, ix.resumeFn);
   em.funcs.push(...emitBuiltins(em, ix.builtin0));
-  const main = new Fn(2, em);
-  emitMain(em, main);
-  // Thunks are appended after all emission (emitMain's top-level calls
-  // create thunks too); main stays the last program function (exported
-  // as run — the run wrapper is assembled after it).
+  emitMainTerm(em, ir, plan);
   em.funcs.push(...em.thunks);
-  em.funcs.push(main);
+  em.funcs.push(em.mainFn);
   emitInits(em);
   return em.funcs;
 }

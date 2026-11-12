@@ -1,6 +1,6 @@
 # Bench: Knuth's man-or-boy test. Deep mutual recursion through closures
-# with mutable capture — boxed frames, tier-1 direct calls (env from the
-# closure slot), indirect calls through lambda-typed parameters.
+# with mutable capture — boxed frames, all calls load env from the closure
+# slot and dispatch indirectly, including lambda-typed parameters.
 a :: fn(
   k: i64,
   x1: () -> i64,

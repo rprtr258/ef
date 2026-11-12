@@ -1,6 +1,6 @@
-# Bench: naive doubly-recursive Fibonacci. Exercises the typed unboxed
-# calling convention (single-width i64), direct calls of ::-const callees
-# (recursion included), and pooled call frames.
+# Bench: naive doubly-recursive Fibonacci. Pure i64 recursion through the
+# generic boxed call ABI — each call allocates a fresh frame, args and
+# results cross it boxed, and the call dispatches indirectly.
 fib :: fn(n: i64): i64 {
   if (n < 2) { n } else { fib(n - 1) + fib(n - 2) }
 };

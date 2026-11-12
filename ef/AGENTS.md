@@ -132,7 +132,11 @@ Hindley-Milner-flavoured type system with effect tracking.
    (line loop over `newCtx`/`exec`; bindings accumulate across lines).
 ## Working rules
 
-- **`bun run ci` must pass** — host typecheck (`bun check`), eslint, the
+- **`bun run ci` must pass** — host typecheck (`bun check`), eslint (which
+  includes the comment-hygiene custom rule `eslint/rules/comment-hygiene.ts`:
+  comments and prose must describe the present — no dead provenance,
+  removed-backend references, off-repo decision-log labels, or
+  resolved-transition wording; git history is the archive), the
   runtime-deps check (`compiler/scripts/check-runtime-deps.ts`: every bare package import
   reachable from the runtime entries must be a `dependency`, not a
   `devDependency`), and the test suite all clean.

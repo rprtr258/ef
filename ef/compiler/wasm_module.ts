@@ -1,13 +1,12 @@
 // Module-level function emission of the wasm backend: builtin trampolines
-// and host-import thunks (§7), main (§7.2) and the run/accessor init
-// functions the host imports (§4). The §-numbered design doc for the whole
+// and host-import thunks, main, and the run/accessor init
+// functions the host imports. The design doc for the whole
 // backend lives at the top of wasm.ts.
-import {type ExprID} from "./parser.ts";
 import {BUILTINS} from "./analysis.ts";
 import {WasmError} from "./wasm_types.ts";
 import {Buf, Fn} from "./wasm_body.ts";
-import {frameSizeOf} from "./wasm_pipeline.ts";
-import {NUM64_ARMS, type Emit, Split, emitCallClosure, emitDispatch, emitFail, expr, fillRest, i31of, ladderBody, makeRestThunk, selectBool} from "./wasm_emit.ts";
+import {type Emit, emitCallClosure, emitDispatch, emitFail, i31of, ladderBody, makeRestThunk, selectBool, NUM64_ARMS} from "./wasm_emit.ts";
+import {mainFrameSize} from "./wasm_term.ts";
 import * as w from "./wasm_consts.ts";
 
 // Σ over the n per-element cells in backing `src` (viewed at offset `off`):
@@ -83,8 +82,8 @@ function collectCopy(f: Fn, src: number, off: number, dst: number, n: number): v
 
 export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
   const out: Fn[] = [];
-  // Wide-priority dispatch for the trampolines' fallback plane (typed-widths
-  // step 5): the interpreter's eitherBig coerces the Number side to BigInt
+  // Wide-priority dispatch for the trampolines' fallback plane: the
+  // interpreter's eitherBig coerces the Number side to BigInt
   // (trunc) whenever either operand is a BigInt (an $I64/$U64 box), so the
   // fallback computes in i64 then, reading each box with its own signedness
   // ($I64/$I32 signed, $U64/$U32 unsigned, floats truncate — asBig's
@@ -206,8 +205,8 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
       case ">":
       case "<=":
       case ">=": {
-        // Typed-widths step 2: operators reached as values dispatch on the
-        // boxed operands' tags — both $F32 computes with the f32 family,
+        // Operators reached as values dispatch on the boxed operands'
+        // tags — both $F32 computes with the f32 family,
         // anything else takes the f64 plane (matches the inline emitters,
         // which dispatch statically on the site's numKind stamp).
         const f32op = name !== "neg"; // binary ops test both operands
@@ -257,7 +256,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
             [[w.F32_DIV, w.F32_TRUNC], w.F32_MUL, w.F32_SUB]);
           plane(7, () => f.i32(), [w.SUB, w.MUL, w.LTS, w.GTS, w.LES, w.GES], [[w.REMS], w.MUL, w.SUB]);
           plane(8, () => f.i32(), [w.SUB, w.MUL, w.LTU, w.GTU, w.LEU, w.GEU], [[w.REMU], w.MUL, w.SUB]);
-          // $I64/$U64 arms (typed-widths step 4): exact 64-bit compute.
+          // $I64/$U64 arms: exact 64-bit compute.
           for (const wide of [9, 10]) {
             plane(wide, () => f.i64(), [
               w.I64_SUB, w.I64_MUL,
@@ -501,7 +500,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         f.slot(0);
         if (name === "len") { b.refCast(3, true); b.structGet(3, 2); }
         else { b.refCast(2, true); b.arrayLen(); }
-        b.u8(w.I64_EXTEND_I32_S); // len is i64 (D7)
+        b.u8(w.I64_EXTEND_I32_S); // len is i64
         b.structNew(9);
         break;
       }
@@ -530,14 +529,14 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.f64Const(0.5);
         b.u8(w.FADD);
         b.u8(w.FFLOOR);
-        b.u8(w.I64_TRUNC_F64); // round is i64 (D7)
+        b.u8(w.I64_TRUNC_F64); // round is i64
         b.structNew(9);
         break;
       }
       case "range": {
-        // range is an i64 builtin (D7): the bounds read adaptively ($I64
-        // boxes since step 4; legacy $F64 boxes truncate), the count and
-        // the elements compute in i64. Count = the interpreter's
+        // range is an i64 builtin: the bounds read adaptively ($I64
+        // boxes; $F64 boxes truncate), the count and the elements compute
+        // in i64. Count = the interpreter's
         // max(0, ceil((e - s) / step)): with span = |e - s| and mag =
         // |step|, elements exist iff (step > 0) == (e > s) && step != 0,
         // and the count is ceil(span / mag) = (span + mag - 1) / mag over
@@ -633,7 +632,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         break;
       }
       case "char": {
-        // char's code-point arg is i64 (D7): adapt the box, wrap to i32,
+        // char's code-point arg is i64: adapt the box, wrap to i32,
         // hand the host a plain number box (the import reads the f64
         // payload).
         const cp = f.i64();
@@ -726,9 +725,9 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
   return out;
 }
 
-// map/each/flatmap CPS (§3): a map-like call site is a landCalls split
-// site, so the entry (this builtin Fn) runs with the caller's RET cell as
-// its k and its result dispatches through the caller's continuation. The
+// map/each/flatmap CPS: the entry (this builtin Fn) runs with the
+// caller's RET cell as its k and its result dispatches through the
+// caller's continuation. The
 // entry reads the array, allocates the result array into its own frame,
 // and tail-calls the loop-entry thunk; each iteration calls the callback
 // with a RET cell {K_RET, iter-land, entry frame, ambient k} — so a
@@ -829,7 +828,7 @@ function emitMapLike(em: Emit, f: Fn, name: string): void {
     t.elemAddrOff(xd, iL, xo);
     tb.arrayGet(1);
     tb.localSet(elem);
-    emitCallClosure(em, t, fc, name === "map" ? 1 : 2, (k, ffp) => {
+    emitCallClosure(t, fc, name === "map" ? 1 : 2, (k, ffp) => {
       // Suspension-safe as-is: elem/iL are locals set before the call, and
       // fBox cannot suspend, so no operand spans a suspension point.
       tb.localGet(ffp); tb.refCast(4, true); tb.structGet(4, 1);
@@ -875,45 +874,8 @@ function emitMapLike(em: Emit, f: Fn, name: string): void {
   b.lebU(loopEntry.idx);
 }
 
-export function emitMain(em: Emit, f: Fn): void {
-  const b = f.body;
-  // The global frame is allocated by run() (the frame param is local 0).
-  const exprs = em.prog.items.filter((it): it is {e: ExprID} => "e" in it);
-  const v = f.anyref();
-  if (exprs.length === 0) {
-    f.pushRef(em.lay.unitRef);
-    b.localSet(v);
-  } else {
-    // Same split protocol as bodyCatch: a perform/handle at the top level
-    // ends the inline body; its fragment re-emits the remaining items.
-    const savedCut = em.sp.cutStack;
-    const roots = exprs.map(it => it.e);
-    em.sp.bodyRoots.push({stmts: roots, sc: em.d.globalScope, tail: false, savedCut: [...savedCut]});
-    try {
-      try {
-        for (let k = 0; k < exprs.length; k++) {
-          const r = expr(em, exprs[k].e, f, em.d.globalScope);
-          if (k < exprs.length - 1) { /* dropped: nothing on the stack */ }
-          else { f.pushRef(r); b.localSet(v); }
-        }
-      } catch (sp) {
-        em.sp.cutStack = savedCut;
-        if (!(sp instanceof Split)) throw sp;
-        fillRest(em, sp, roots, em.d.globalScope, false);
-        return; // the body ends at the split site (both paths tail-call)
-      }
-      em.sp.cutStack = savedCut;
-    } finally {
-      em.sp.bodyRoots.pop();
-    }
-  }
-  // run() calls main with k = ref.null $K, so dispatch(null, v) returns
-  // the top-level value.
-  emitDispatch(em, f, v);
-}
-
 // run (allocates the global frame, calls main with k = null) and the
-// 12 host accessors (§4 — JS cannot read GC fields directly). Appended
+// 12 host accessors (JS cannot read GC fields directly). Appended
 // after main; indices computed here.
 export function emitInits(em: Emit): void {
   const mainIdx = em.o.liveImports.length + em.funcs.length - 1; // main is last
@@ -925,7 +887,7 @@ export function emitInits(em: Emit): void {
   {
     const b = run.body;
     b.refNull(4); // global frame parent = null
-    b.i32Const(frameSizeOf(em.ix, em.d.globalScope));
+    b.i32Const(mainFrameSize(em.plan));
     b.arrayNew(1);
     b.structNew(4);
     b.refNull(5); // k = null: main's dispatch returns its value
@@ -1006,8 +968,8 @@ export function emitInits(em: Emit): void {
     b.arrayGet(1);
   });
   // Box constructors/readers: __mk_num (the $F64 box), then __mk_f32/__f32,
-  // __mk_i32/__mk_u32/__i32/__u32, __mk_i64/__mk_u64/__i64/__u64 (typed-widths
-  // steps 2-4; the i64/u64 param is a JS BigInt through the standard wasm
+  // __mk_i32/__mk_u32/__i32/__u32, __mk_i64/__mk_u64/__i64/__u64 (the
+  // i64/u64 param is a JS BigInt through the standard wasm
   // JS-BigInt integration). Payload is raw two's-complement bits — the HOST
   // masks __u32 with >>> 0 and __u64 with BigInt.asUintN(64, ...). Call order
   // is positional: export names zip onto the last functions in push order.

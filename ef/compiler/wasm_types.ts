@@ -1,22 +1,15 @@
 import binaryen from "binaryen";
-import {type ExprID} from "./parser.ts";
 
-export type Scope = {
-  frame: {slots: number}, // frame identity: changes only at lambda boundaries
-  parent: Scope | null,
-  map: Map<string, number>,
-};
+class WasmError extends Error {}
+export {WasmError};
 
-export class WasmError extends Error {}
-
-// WasmGC types (§1): one rec group of 13 struct/array shapes. binaryen types
+// WasmGC types: one rec group of 13 struct/array shapes. binaryen types
 // are process-global interned ids, so they build once and are reused by every
 // compiled module. HT[i] = bare heap type (the immediate GC instruction
 // builders take); RF[i] = (ref null $i) (params, fields, ref.null);
 // RN[i] = (ref $i) (non-null casts). $STR packs i16 over an i32 element type.
-// Shapes 0–6 are the original plane ($F64 was "$NUM" — one f64-backed number
-// box); 7–11 are the per-width number boxes appended by the typed-widths plan
-// (append-only: existing indices 0–6 untouched); 12 is $TUP (slices plan).
+// Shapes 0–6 are the base plane ($F64 is the f64-backed number box); 7–11
+// are the per-width number boxes; 12 is $TUP.
 export const _T: {
   HT: binaryen.HeapType[],
   RF: binaryen.Type[],
@@ -83,32 +76,15 @@ export const _T: {
   };
 })();
 
-// Emission context: which local holds the ambient continuation cell (1 = a
-// T_KABI function's k param, 2 = a rest-of-site fragment's kNext param, any
-// other local = a handle's K_HDL cell), plus the not-yet-executed cut path
-// when re-emitting a fragment: cut[0] is the child of the current node on
-// the path to the split site; an empty array marks the split site itself
-// (its value is the fragment's v param). `snap` is the wasm local holding
-// the fragment's frozen frame-image pointer (the K_SPILL cell's a): pre-cut
-// siblings reload from it instead of the live frame, matching the
-// interpreter's frozen CPS accs under multi-shot resume.
-export type Ctx = {
-  kL: number,
-  cut?: ExprID[],
-  snap?: number,
-};
-export const INLINE: Ctx = {kL: 1};
-
-// One operand-stack value reference the emitters pass around (§3): a
+// One operand-stack value reference the emitters pass around: a
 // materializable anyref source consumed at its use site.
 export type ValueRef =
-  | {k: "g", gi: number}   // static anyref global (§5)
+  | {k: "g", gi: number}   // static anyref global
   | {k: "bool", v: 0 | 1}  // i31 bool
   | {k: "local", l: number}   // anyref local (single-use)
-  | {k: "slot", i: number}    // frame slot i of local 0's frame
-  | {k: "snapSlot", snap: number, i: number}; // frozen-frame slot (fragment re-emission)
+  | {k: "slot", i: number};    // frame slot i of local 0's frame
 
-// Initializer descriptor of one static global (§5): the data buildModule
+// Initializer descriptor of one static global: the data buildModule
 // turns into a GC constant expression. Statics are immutable, so
 // instantiation itself builds the value — no runtime fill.
 export type StaticDesc =
