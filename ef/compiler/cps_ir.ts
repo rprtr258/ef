@@ -98,6 +98,14 @@ export type CTerm =
 // funcs[fun]: one per source lambda. `$ret` is the function's continuation,
 // bound by apply at entry (the body's tails jump/call it — a tail call passes
 // its own k operand, which is how CPS keeps calls in tail position).
-export type CFn = {params: string[], capts: string[], body: CTerm, typ?: FunT};
+export type CFn = {
+  params: string[],
+  capts: string[],
+  body: CTerm,
+  typ?: FunT,
+};
 
-export type CIr = {funcs: CFn[], term: CTerm};
+export type CIr = {
+  funcs: CFn[],
+  term: CTerm,
+};

@@ -17,6 +17,7 @@
 
 import type {Expr, ExprID, Program} from "./parser.ts";
 import type {CAtom, CCase, CFn, CIr, CPrim, CTerm} from "./cps_ir.ts";
+import {optimizeCps} from "./cps_opt.ts";
 import {BUILTINS} from "./analysis.ts";
 import {assertNever} from "./assert.ts";
 
@@ -36,6 +37,12 @@ const NUM_OPS = new Set(["+", "-", "*", "<", ">", "<=", ">=", "==", "!=", "neg"]
 type K = {t: "fn", f: (v: CAtom) => CTerm} | {t: "tail", name: string};
 
 const UNIT: CAtom = {t: "lit", v: null};
+
+function kap(k: K, v: CAtom): CTerm {
+  return k.t === "tail"
+    ? {t: "jump", k: {t: "var", name: k.name}, arg: v}
+    : k.f(v);
+}
 
 class Converter {
   funcs: CFn[] = [];
@@ -58,14 +65,9 @@ class Converter {
   // converter-generated value temps, captured at letk execution.
   private freezeFor(body: CTerm): {name: string, val: CAtom}[] | undefined {
     const crossing = freeVars(body, new Set()).filter(nm => this.temps.has(nm));
-    if (crossing.length === 0) return undefined;
+    if (crossing.length === 0)
+      return undefined;
     return crossing.map(nm => ({name: nm, val: {t: "var", name: nm}}));
-  }
-
-  private kap(k: K, v: CAtom): CTerm {
-    return k.t === "tail"
-      ? {t: "jump", k: {t: "var", name: k.name}, arg: v}
-      : k.f(v);
   }
 
   // Left-to-right argument evaluation, each bound to a temp before the next
@@ -84,7 +86,7 @@ class Converter {
   private primLet(rhs: CPrim, k: K): CTerm {
     const name = this.fresh("$t");
     this.temps.add(name);
-    return {t: "let", name, rhs, rest: this.kap(k, {t: "var", name})};
+    return {t: "let", name, rhs, rest: kap(k, {t: "var", name})};
   }
 
   // The value-delivering tail of a call/perform site. Tail positions jump
@@ -95,7 +97,7 @@ class Converter {
       return mk({t: "var", name: k.name});
     const kc = this.fresh("$k");
     const rv = this.fresh("$v");
-    const body = this.kap(k, {t: "var", name: rv});
+    const body = kap(k, {t: "var", name: rv});
     return {
       t: "letk", name: kc, param: rv, norm, freeze: this.freezeFor(body),
       body,
@@ -124,12 +126,12 @@ class Converter {
       case "num":
         // i64/u64 literals materialize from the raw lexeme at runtime (a JS
         // number loses bits beyond 2^53); the stamp normalizes.
-        return this.kap(k, {t: "lit", v: e.v, raw: e.raw, stamp: e.numKind});
+        return kap(k, {t: "lit", v: e.v, raw: e.raw, stamp: e.numKind});
       case "str":
       case "bool":
-        return this.kap(k, {t: "lit", v: e.v});
+        return kap(k, {t: "lit", v: e.v});
       case "unit":
-        return this.kap(k, UNIT);
+        return kap(k, UNIT);
       case "sym": {
         // Force the read into a bind-once temp at walk position: every value
         // read before a possible suspension becomes a temp, and freezeFor
@@ -141,7 +143,7 @@ class Converter {
         return {
           t: "bind", name,
           val: {t: "var", name: e.v, stamp: (e as Expr & {numKind?: string}).numKind},
-          rest: this.kap(k, {t: "var", name}),
+          rest: kap(k, {t: "var", name}),
         };
       }
       case "lambda": {
@@ -158,20 +160,20 @@ class Converter {
         this.temps.add(name);
         return {
           t: "mkfn", name, params, capts: this.funcs[fun].capts, fun,
-          rest: this.kap(k, {t: "var", name}),
+          rest: kap(k, {t: "var", name}),
         };
       }
       case "let":
         return this.convert(e.val, {t: "fn", f: (v) => ({
-          t: "bind", name: e.name, val: v, rest: this.kap(k, UNIT),
+          t: "bind", name: e.name, val: v, rest: kap(k, UNIT),
         })});
       case "dlet":
         return this.convert(e.val, {t: "fn", f: (v) => ({
-          t: "dlet", val: v, fields: e.fields.map(fd => fd.name), rest: this.kap(k, UNIT),
+          t: "dlet", val: v, fields: e.fields.map(fd => fd.name), rest: kap(k, UNIT),
         })});
       case "assign":
         return this.convert(e.val, {t: "fn", f: (v) => ({
-          t: "assign", name: e.name, val: v, rest: this.kap(k, UNIT),
+          t: "assign", name: e.name, val: v, rest: kap(k, UNIT),
         })});
       case "if": {
         // Tail positions: both arms jump the same named continuation — no
@@ -207,14 +209,14 @@ class Converter {
           a: this.convert(e.body, {t: "fn", f: () => again}),
           b: {t: "jump", k: {t: "var", name: kx}, arg: UNIT},
         })});
-        const xbody = this.kap(k, {t: "var", name: vu});
+        const xbody = kap(k, {t: "var", name: vu});
         return {
           t: "letk", name: kx, param: vu, freeze: this.freezeFor(xbody), body: xbody, rest:
           {t: "letk", name: ka, param: vu, freeze: this.freezeFor(condTerm), body: condTerm, rest: again},
         };
       }
       case "block": {
-        if (e.stmts.length === 0) return this.kap(k, UNIT);
+        if (e.stmts.length === 0) return kap(k, UNIT);
         const go = (i: number): CTerm =>
           i === e.stmts.length - 1
             ? this.convert(e.stmts[i], k)
@@ -288,7 +290,7 @@ class Converter {
         return this.convert(e.e, {t: "fn", f: (v) => {
           // No asKind and no stamp: a pure pass-through conversion.
           if (asKind === undefined && stamp === undefined)
-            return this.kap(k, v);
+            return kap(k, v);
           return this.primLet({t: "as", arg: v, asKind, stamp}, k);
         }});
       }
@@ -306,7 +308,10 @@ class Converter {
 
 export function toCps(prog: Program): CIr {
   const c = new Converter(prog);
-  return {funcs: c.funcs, term: c.program()};
+  // The optimization passes are the conversion's final stage: every consumer
+  // of toCps (interpreter, wasm backend) sees the same optimized term, and
+  // none of them knows the passes exist.
+  return optimizeCps({funcs: c.funcs, term: c.program()});
 }
 
 // Free value variables of a term (wasm's captured-frame-slot set; the

@@ -9,10 +9,15 @@ Hindley-Milner-flavoured type system with effect tracking.
 - Modules (all under `compiler/`, a bun workspace package): `lexer.ts`, `parser.ts`, `types.ts` (checker), `env.ts` (runtime
   values), `builtins.ts` (the one builtin table), `analysis.ts` (frontend
   passes: builtin surface, op discovery, builtin-ref tree-shaking — shared
-  by the wasm backend, parser-types-only leaf module), `eval.ts` (evaluator
-  + pipeline), `wasm.ts` (wasm backend entry: CPS→wasm codegen, binaryen
+  by the wasm backend, parser-types-only leaf module), `cps.ts` (CPS
+  converter: checked AST → the shared CPS IR), `cps_ir.ts` (the CPS IR node
+  set + the multi-shot ANF/freeze discipline comments; leaf module),
+  `cps_opt.ts` (optimization passes applied as the final stage of CPS
+  conversion),
+  `eval.ts` (CPS IR interpreter + pipeline), `wasm.ts` (wasm backend entry:
+  CPS IR → wasm codegen, binaryen
   shrink pass; split into `wasm_types.ts`/`wasm_tables.ts`/`wasm_body.ts`/
-  `wasm_pipeline.ts`/`wasm_emit.ts`/`wasm_module.ts` — see item 8),
+  `wasm_pipeline.ts`/`wasm_emit.ts`/`wasm_module.ts` — see item 10),
   `wasm_host.ts` (wasm host runtime: instantiation, GC↔JS boxing,
   effect interpretation), `lint.ts`, `prims.ts`, `assert.ts` (the
   `assertNever` exhaustive-switch guard — every switch over `Expr` ends in
@@ -89,9 +94,45 @@ Hindley-Milner-flavoured type system with effect tracking.
    checker). Consumed by wasm_pipeline.ts's OPT_PASSES and eval.ts's exec (fail-fast
    unhandled-op check + per-call env seeding); the rows also surface via
    `ef types`'s result line.
-7. **`eval.ts`** — CPS evaluator (`evalE`/`apply`), multi-shot resume via
-   plain JS functions; `Op!(...)` walks up to a matching handler and calls
-   its `resume` (the captured continuation `k`). `runTop(out, interp?)`
+7. **`cps_ir.ts`** — the higher-order CPS IR, the single intermediate
+   representation both backends consume: explicit continuations (`letk`
+   binds a continuation λv.body; tail positions name their continuation as
+   a var reference), `perform`/`handle` naming the reified handler
+   continuations, and the multi-shot ANF discipline pinned once in its
+   header comment — operands computed before a possible suspension are
+   let-bound before it, so continuation parameters and in-scope `let`
+   bindings are exactly the frozen accs a resume must honor, while named
+   variables stay live in the shared, mutable frame. `$`-prefixed converter
+   names can never collide with source identifiers.
+8. **`cps.ts`** — CPS conversion (checked AST → `cps_ir.ts` term): the one
+   conversion both backends consume, so effect/resume/multi-shot semantics
+   live in one place, not per backend. ANF-style: every compound value
+   binds a fresh `$`-temp before flowing on; the converter's continuation
+   K is either a meta function (builds the rest term from the value's
+   atom — the administrative reductions) or a tail position naming an
+   existing continuation (no wrapper). Wrapper letks are emitted for
+   call/perform sites whose node carries a numKind stamp: the
+   resumed/returned value must normalize to that width at the site.
+9. **`cps_opt.ts`** — optimization passes over the CPS IR (`optimizeCps`,
+   applied by `toCps` as its final stage — consumers of `toCps` only ever
+   see optimized IR). Four
+   sound-by-construction rewrites, iterated to a fixpoint (every firing
+   strictly shrinks the term): read-temp substitution (drops `bind $t = x`
+   read temps unless the temp is frozen or the source var is assigned;
+   frozen temps of never-assigned vars are rewritten to snapshot the var),
+   prim-let fusion (`let $t = prim; bind x = $t` → `let x = prim`),
+   exit-continuation beta (a letk referenced exactly once via a `jump` node
+   — the while loop's exit — is spliced into that jump; call/perform k
+   operands are runtime reifications and never fire), and dead binding drop
+   (zero-use temps; dead trapping prims — field, div/rem — keep their
+   binding so the throw survives). Source-named binds are never dropped:
+   top-level bindings must land in the caller's frame for the REPL
+   accumulator. Soundness conditions are checked against the whole IR
+   (assigned names, capts); regions (spine, closure bodies) are optimized
+   independently.
+10. **`eval.ts`** — CPS IR interpreter (`evalTerm`; `apply` dispatches
+   calls): continuations are plain JS closures, re-invoked on resume.
+   `runTop(out, interp?)`
    interprets unhandled effects; `interp` optionally overrides builtin
    interpretations (tests inject fake fs/time/randomness there). The
    eval⇄builtins import cycle is runtime-only on eval's side (`apply` is
@@ -110,8 +151,8 @@ Hindley-Milner-flavoured type system with effect tracking.
    reference a previously-unused builtin; the no-shadowing checker rule
    keeps collisions impossible), then evaluates and returns `{value,
    lastType, lastIsExpr}`; `run(src, interp?)` is a one-shot `exec`.
-8. **`wasm.ts`** — WebAssembly backend: CPS→wasm codegen over the same
-   parser/types output, OPT_PASSES seam (tree-shaking, dead host-import
+11. **`wasm.ts`** — WebAssembly backend: CPS IR → wasm codegen (defunctionalizing
+   the same term eval.ts interprets), OPT_PASSES seam (tree-shaking, dead host-import
    elimination), in-process binaryen shrink pass. Split into strictly-layered
    sub-modules (no import cycles; §-numbered design doc at the top of
    `wasm.ts`): **`wasm_types.ts`** (GC shape types, Ctx, ValueRef/StaticDesc
@@ -125,9 +166,9 @@ Hindley-Milner-flavoured type system with effect tracking.
    **`wasm_host.ts`** (direct-style: instantiation, GC↔JS boxing through the
    §4 accessor ABI, `runWasm`; effect interpretation comes from builtins.ts's
    `builtinEffectHosts`).
-9. **`lint.ts`** — lint passes over a parsed program (`LINT_PASSES`);
+12. **`lint.ts`** — lint passes over a parsed program (`LINT_PASSES`);
    currently one rule (`unused-arg`).
-10. **Frontends** — `cli.ts` (`ef run|buildwasm|runwasm|types|lint <file>`,
+13. **Frontends** — `cli.ts` (`ef run|buildwasm|runwasm|types|lint <file>`,
     `ef repl`, `ef lsp`) and `repl.ts`
    (line loop over `newCtx`/`exec`; bindings accumulate across lines).
 ## Working rules

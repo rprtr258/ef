@@ -3,7 +3,7 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {readFileSync, unlinkSync, existsSync, writeFileSync} from "node:fs";
 import {execSync} from "node:child_process";
-import {run, newCtx, exec} from "./eval.ts";
+import {run, newCtx, exec, type Ctx} from "./eval.ts";
 import {checkProgram, showT} from "./types.ts";
 import {show, sliceElems, type Slice, type Value} from "./env.ts";
 import {Parser} from "./parser.ts";
@@ -747,6 +747,54 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
     } finally {
       unlinkSync(f);
     }
+  });
+});
+
+// Regression: the converter inserts wrapper continuations (if-join, while
+// exit, call/perform sites) as letks between top-level items, so bindings
+// made after them land in a letk child frame instead of ctx.env — while
+// checkProgram's acc still records the name. The next line therefore
+// typechecks and then dies at runtime with "Unbound symbol".
+describe("REPL acc regression: bindings after wrapper continuations", () => {
+  const line = (ctx: Ctx, src: string) => {
+    const p = new Parser(src).parseProgram();
+    return exec(p, ctx, checkProgram(p, ctx.checked));
+  };
+
+  test("checker side keeps the binding (the divergence is runtime-only)", () => {
+    const ctx = newCtx();
+    line(ctx, "c := true; if (c) { 1 } else { 2 }; q :: 5;");
+    expect(() => checkProgram(new Parser("q;").parseProgram(), ctx.checked)).not.toThrow();
+  });
+
+  // bun:test has no test.fails: this stand-in passes while the body throws
+  // "Unbound symbol" (the open bug — a checker error would fail it) and
+  // fails once the bug is fixed. Flip each call to a plain test then.
+  const fails = (name: string, fn: () => void) =>
+    test(name, () => expect(fn).toThrow(/Unbound symbol/));
+
+  fails("after a top-level if", () => {
+    const ctx = newCtx();
+    line(ctx, "c := true; if (c) { 1 } else { 2 }; q :: 5;");
+    expect(line(ctx, "q;").value).toBe(5n);
+  });
+
+  fails("after a top-level while", () => {
+    const ctx = newCtx();
+    line(ctx, "i := 0; while (i < 1) { i = i + 1 }; q :: 5;");
+    expect(line(ctx, "q;").value).toBe(5n);
+  });
+
+  fails("after a top-level call", () => {
+    const ctx = newCtx();
+    line(ctx, "f :: fn(): i64 { 1 }; f(); q :: 5;");
+    expect(line(ctx, "q;").value).toBe(5n);
+  });
+
+  fails("after a top-level perform", () => {
+    const ctx = newCtx();
+    line(ctx, "Println!(1); q :: 5;");
+    expect(line(ctx, "q;").value).toBe(5n);
   });
 });
 
