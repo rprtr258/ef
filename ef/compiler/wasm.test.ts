@@ -9,6 +9,8 @@ import {checkProgram} from "./types.ts";
 import {discover, optimize, assignIndices, layoutStatics} from "./wasm_pipeline.ts";
 import {toCps} from "./cps.ts";
 import {planIr} from "./wasm_term.ts";
+import {classifySlots} from "./wasm_devirt.ts";
+import type {TLevel} from "./wasm_term.ts";
 import {Parser} from "./parser.ts";
 import {runWasm} from "./wasm_host.ts";
 import {show} from "./env.ts";
@@ -990,5 +992,164 @@ h(g(5))`)).toBe("17");
     expect(parity(`k :: 100;
 addk :: fn(n: i64): i64 { n + k };
 addk(1) + addk(2)`)).toBe("203");
+  });
+});
+
+describe("wasm typed slots + scope-frame elision (wasm_devirt.ts classifySlots + wasm_term.ts emission)", () => {
+  // A planned level as the audit sees it: slot map, surviving typed map,
+  // elision flag.
+  type Lv = {slots: Map<string, number>, typed?: Map<string, string>, elided?: boolean};
+
+  // Every TLevel planIr creates for `src`: scope nodes annotate their level
+  // on __p directly; letk/dcall/handle annotations carry fnLvl plus the
+  // entry/rest scope snapshots (shared level objects, so the Set dedups).
+  const audit = (src: string): Lv[] => {
+    const prog = new Parser(src).parseProgram();
+    checkProgram(prog);
+    const ir = toCps(prog);
+    const plan = planIr(ir);
+    const out: Lv[] = [];
+    const seen = new Set<object>();
+    const pushL = (l: unknown): void => {
+      if (l !== null && l !== undefined && typeof l === "object" && !seen.has(l)) {
+        seen.add(l);
+        out.push(l as Lv);
+      }
+    };
+    pushL(plan.globalLvl); // top-level bindings type on the global level
+    const walk = (t: unknown): void => {
+      if (t === null || t === undefined || typeof t !== "object") return;
+      const p = (t as {__p?: unknown}).__p as
+        | Lv | {fnLvl?: Lv, entryScope?: Lv[], restScope?: Lv[]} | undefined;
+      if (p !== undefined) {
+        if ((p as Lv).slots instanceof Map) pushL(p);
+        pushL((p as {fnLvl?: Lv}).fnLvl);
+        for (const l of (p as {entryScope?: Lv[]}).entryScope ?? []) pushL(l);
+        for (const l of (p as {restScope?: Lv[]}).restScope ?? []) pushL(l);
+      }
+      const n = t as {[k: string]: unknown};
+      for (const k of ["body", "rest", "a", "b"]) if (n[k] !== undefined) walk(n[k]);
+      if (Array.isArray(n["cases"])) for (const c of n["cases"] as {body: unknown}[]) walk(c.body);
+    };
+    walk(ir.term);
+    for (const f of ir.funcs) walk(f.body);
+    return out;
+  };
+
+  // No planned level may type `name` (every path to it was poisoned).
+  const assertUntyped = (levels: Lv[], name: string): void => {
+    for (const l of levels) {
+      expect(l.typed?.has(name) ?? false).toBe(false);
+    }
+  };
+
+  test("classifySlots: xread poisoning, elision only for fully-typed elideOk scopes", () => {
+    const lvl = (names: string[], elideOk = false): TLevel => {
+      const slots = new Map<string, number>();
+      for (const n of names) slots.set(n, slots.size);
+      const l: TLevel = {slots, size: names.length, locals: null};
+      if (elideOk) l.elideOk = true;
+      return l;
+    };
+    // All-typed candidate set on a scope level: typed + elided.
+    const a = lvl(["x", "y"], true);
+    classifySlots(new Map([[a, new Map([["x", "i64"], ["y", "i64"]])]]), new Map());
+    expect(a.typed?.get("x")).toBe("i64");
+    expect(a.typed?.get("y")).toBe("i64");
+    expect(a.elided).toBe(true);
+    // A cross-fn read poisons the name: it loses typing, the scope stays
+    // materialized.
+    const b = lvl(["x", "y"], true);
+    classifySlots(new Map([[b, new Map([["x", "i64"], ["y", "i64"]])]]),
+      new Map([[b, new Set(["x"])]]));
+    expect(b.typed?.has("x")).toBe(false);
+    expect(b.typed?.get("y")).toBe("i64");
+    expect(b.elided ?? false).toBe(false);
+    // Partial typing never elides (the frame still carries the holes).
+    const c = lvl(["x", "y"], true);
+    classifySlots(new Map([[c, new Map([["x", "f64"]])]]), new Map());
+    expect(c.typed?.get("x")).toBe("f64");
+    expect(c.elided ?? false).toBe(false);
+    // Non-scope levels (elideOk unset) type but never elide: chain anchors
+    // must keep allocating their frame.
+    const d = lvl(["x"]);
+    classifySlots(new Map([[d, new Map([["x", "i32"]])]]), new Map());
+    expect(d.typed?.get("x")).toBe("i32");
+    expect(d.elided ?? false).toBe(false);
+  });
+
+  test("while-body i64 assign exactness: typed op temps, cells stay boxed", () => {
+    const src = `x := 9007199254740993;
+i := 0;
+while (i < 2) { x = x + 1; i = i + 1; Println!(i); }
+x`;
+    // 2^53+1 stays exact through the typed op temps and the boxed cells.
+    expect(parity(src)).toBe("9007199254740995");
+    const levels = audit(src);
+    assertUntyped(levels, "x"); // assigned with an unstamped val: poisoned
+    assertUntyped(levels, "i");
+    // The arithmetic joins did classify.
+    expect(levels.some(l => [...(l.typed?.values() ?? [])].includes("i64"))).toBe(true);
+  });
+
+  test("scope-frame elision: a fully-typed while body's extend is skipped, hops stay right", () => {
+    // The perform sits inside the loop body scope: its continuation thunk
+    // re-enters through the elided level, so the resume-side frame walk
+    // must skip the elided hop together with the skipped extend.
+    const src = `effect Op(): i64;
+s := 0;
+handle { while (s < 3) { s = s + Op!() }; s } case Op() => k { k(3) }`;
+    expect(parity(src)).toBe("3");
+    const levels = audit(src);
+    expect(levels.some(l => l.elided === true && l.slots.size > 0 && l.typed?.size === l.slots.size)).toBe(true);
+  });
+
+  test("multi-shot rest-thunk read after resume: the read is cross-fn, the slot stays boxed", () => {
+    const src = `effect Op(): i64;
+x: i64 :: 10;
+handle { Op!() } case Op() => k { k(1); k(2) } + x`;
+    expect(parity(src)).toBe("12");
+    assertUntyped(audit(src), "x");
+  });
+
+  test("escaping-closure capture: the captured slot stays boxed (env path)", () => {
+    const src = `mk :: fn() { x: i64 :: 7; fn() { x } };
+mk()()`;
+    expect(parity(src)).toBe("7");
+    assertUntyped(audit(src), "x");
+  });
+
+  test("case-fn depth>0 read: cross-fn reach keeps the site slot boxed", () => {
+    const src = `effect Op(): i64;
+y: i64 :: 5;
+handle { y + Op!() } case Op() => k { k(y + 1) }`;
+    expect(parity(src)).toBe("11");
+    assertUntyped(audit(src), "y");
+  });
+
+  test("top-level captured assign: cross-fn writes poison candidacy, env path sees them", () => {
+    const src = `acc := 0;
+bump :: fn(v: i64): i64 { acc = acc + v; acc };
+[bump(1), bump(2), acc]`;
+    expect(parity(src)).toBe("[1, 3, 3]");
+    assertUntyped(audit(src), "acc");
+  });
+
+  test("f32 slots type and round at every producing node (fround parity)", () => {
+    const src = `a: f32 :: 0.1;
+b: f32 :: 0.2;
+a + b == @as(0.3, f32)`;
+    expect(parity(src)).toBe("true");
+    const levels = audit(src);
+    // The literal binds survived classification as f32 typed slots.
+    expect(levels.some(l => [...(l.typed?.values() ?? [])].includes("f32"))).toBe(true);
+  });
+
+  test("numeric entry over typed joins: the dcall result lands typed at the site", () => {
+    const src = `add3 :: fn(a: i32, b: i32, c: i32): i32 { a + b + c };
+add3(1, 2, 3)`;
+    expect(parity(src)).toBe("6");
+    const levels = audit(src);
+    expect(levels.some(l => [...(l.typed?.values() ?? [])].includes("i32"))).toBe(true);
   });
 });

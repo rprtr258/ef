@@ -71,13 +71,15 @@ export function planeLocal(f: Fn, wkn: string): number {
 }
 
 // A raw call result (numeric entry's return valtype) parked in a fresh
-// plane local and reboxed at the same width — the anyref the boxed call
-// paths produce.
-export function reboxCallResult(em: Emit, f: Fn, rW: string): number {
+// plane local — reboxed at the same width by default (the anyref the boxed
+// call paths produce); `raw` skips the rebox and returns the unboxed
+// plane local (a typed destination slot takes it directly).
+export function reboxCallResult(em: Emit, f: Fn, rW: string, raw = false): number {
   const b = f.body;
-  const raw = planeLocal(f, rW);
-  b.localSet(raw);
-  b.localGet(raw);
+  const pl = planeLocal(f, rW);
+  b.localSet(pl);
+  if (raw) return pl;
+  b.localGet(pl);
   rebox(em, f, rW);
   const v = f.anyref();
   b.localSet(v);
@@ -757,6 +759,7 @@ export function emitNumericEntryCall(
   em: Emit, f: Fn, clob: number, argc: number, argRaw: (k: number) => void,
   deliver: {kind: "raw"} | {kind: "k", kL: number},
   num: {ws: string[], r: string, funcref: number, noEnv?: true},
+  rawRet?: string,
 ): number {
   const b = f.body;
   const cf = f.anyref();
@@ -771,7 +774,10 @@ export function emitNumericEntryCall(
   for (let k = 0; k < argc; k++) argRaw(k);
   b.u8(w.CALL);
   b.lebU(num.funcref);
-  const v = reboxCallResult(em, f, num.r);
+  // rawRet (a typed destination slot at the entry's return width) parks
+  // the raw valtype in its plane local — no rebox round trip; the caller
+  // stores it with raw: true.
+  const v = rawRet === undefined ? reboxCallResult(em, f, num.r) : reboxCallResult(em, f, rawRet, true);
   if (deliver.kind === "k") emitDispatch(em, f, v, deliver.kL);
   return v;
 }

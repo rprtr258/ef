@@ -19,6 +19,7 @@ import {BUILTINS} from "./analysis.ts";
 import type {CAtom, CFn, CIr, CTerm} from "./cps_ir.ts";
 import {widthOf, type Type} from "./types.ts";
 import {numSig} from "./wasm_tables.ts";
+import type {TLevel} from "./wasm_term.ts";
 
 // The CPS-native builtins (the ones whose trampolines call ef closures).
 // Mirrors builtins.ts's `kind: "native"` entries — the wasm backend already
@@ -395,4 +396,35 @@ export function numericEntries(
     if (ok) out[c.fun] = {ws: c.ws, r: c.r, sig: numSig(c.ws, c.r)};
   }
   return out;
+}
+
+// PR3 slot classification: finalizes TLevel.typed/elided flags after
+// planning completes. A slot is typed when it has a concrete numeric
+// candidate (noteCand), every assign re-stamps it at the same width and
+// from the same wasm-fn region (noteAssign poisons otherwise), and it is
+// never read cross-fn (noteRead). A typed slot's value lives only in a
+// same-fn wasm local — locals die on unwind, frames survive — so any
+// cross-fn reach (captures, post-suspension reads, cross-fn writes)
+// disqualifies. A scope-node level whose every slot is typed elides its
+// frame allocation: the frame cells would stay null and the chain hop
+// drops together with the skipped extendFrame (frameHops skips elided
+// levels; the runtime parent chain matches because a skipped extend never
+// rebinds local 0). Chain anchors — cfn param levels, letk entry/F_n
+// frames, the main frame — carry no elideOk mark and always materialize.
+export function classifySlots(
+  cand: Map<TLevel, Map<string, string>>,
+  xread: Map<TLevel, Set<string>>,
+): void {
+  for (const [l, cs] of cand) {
+    if (cs.size === 0) continue;
+    const xr = xread.get(l);
+    const typed = new Map<string, string>();
+    for (const [name, w] of cs) {
+      if (xr !== undefined && xr.has(name)) continue;
+      typed.set(name, w);
+    }
+    if (typed.size === 0) continue;
+    l.typed = typed;
+    if (l.elideOk === true && typed.size === l.size) l.elided = true;
+  }
 }

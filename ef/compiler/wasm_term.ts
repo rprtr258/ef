@@ -47,7 +47,7 @@ import {DBGTRACE, mapLikeFrameWords, numSig} from "./wasm_tables.ts";
 import {type CIr, type CTerm, type CAtom, type CPrim, type CFn} from "./cps_ir.ts";
 import {type Buf, Fn} from "./wasm_body.ts";
 import {type Emit, emitDispatch, emitCaseScan, selectBool, emitFail, i31of, makeRestThunk, cellGet, CMP_OPS, emitCallClosure, emitDirectEntryCall, emitNumericEntryCall, rebox, boxShapeOf, planeLocal, reboxCallResult, tracePoint} from "./wasm_emit.ts";
-import {analyzeDevirt, numericEntries, type Devirt, type NumEntry} from "./wasm_devirt.ts";
+import {analyzeDevirt, classifySlots, numericEntries, type Devirt, type NumEntry} from "./wasm_devirt.ts";
 import type {Type} from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ import type {Type} from "./types.ts";
 // are no pops. levels[0] is the innermost (current) frame. The plan and the
 // emitter share the same level objects (both traversals construct the chains
 // identically).
-type TLevel = {
+export type TLevel = {
   slots: Map<string, number>,
   size: number,
   // Same-fn local bindings ($ret, a handle's ret binder, a case's exit
@@ -69,6 +69,28 @@ type TLevel = {
   // thunk replay (thunkBase) drops the map like locals — only the frame
   // slots stay reachable cross-function.
   raw?: Map<string, string>,
+  // PR3: reverse of `slots` (slot index -> name) — write sites resolve
+  // through (d, i) and need the name to consult `typed`.
+  rev?: (string | undefined)[],
+  // PR3: the wasm-fn region this level's slots bind in. A slot read or
+  // written from any other region (thunks, case fns, nested lambdas) is
+  // recorded by the planner and disqualifies typed-slot treatment — locals
+  // die with the invocation, frames survive it.
+  fnCtx?: number,
+  // PR3: slot name -> numeric width, set by classifySlots after planning
+  // completes. A typed slot never lands in the slots array; reads and
+  // writes resolve to a same-fn wasm local through the WALK's tloc map
+  // (NOT `locals`: resolveT's any-depth locals search assumes anyref
+  // locals — a typed slot's unboxed value there would type-mismatch every
+  // pushRef). Per-walk because multiple fns emit the same planned scopes.
+  typed?: Map<string, string>,
+  // PR3: scope-node level whose every slot is typed — the emitter skips
+  // the frame allocation (all values ride same-fn locals) and the frame
+  // hop drops together with it. Only scope nodes set this: chain anchors
+  // (cfn param levels, letk entry/F_n frames, the main frame) always
+  // materialize because other fns reach them through the parent chain.
+  elideOk?: boolean,
+  elided?: boolean,
 };
 type TScope = TLevel[];
 
@@ -78,6 +100,7 @@ function lvl(): TLevel {
 function addSlot(l: TLevel, name: string): number {
   const i = l.size++;
   l.slots.set(name, i);
+  (l.rev ??= [])[i] = name;
   return i;
 }
 function addLocal(l: TLevel, name: string, local: number): void {
@@ -307,6 +330,71 @@ type Cx = {
   retResCount: number,
   dv: Devirt,
   cfnParams: Map<number, TLevel>,
+  // PR3 slot classification recording: candidate widths at binding sites
+  // (poisoned by width-unstable or cross-fn assigns), cross-fn reads per
+  // level, and the current wasm-fn region id. classifySlots finalizes the
+  // TLevel.typed/elided flags after the fixpoint completes.
+  cand: Map<TLevel, Map<string, string>>,
+  xread: Map<TLevel, Set<string>>,
+  fnCtx: number,
+};
+
+// A binding's candidate width from its RHS prim: op/as prims carry the
+// result stamp (norm decides the stored plane), boolean-result comparisons
+// never qualify, and `+` (the f64-dispatch prim, whose fast path can
+// produce a $STR string) only when every arg is numerically stamped —
+// then the string arm is statically impossible.
+function rhsWidth(p: CPrim): string | undefined {
+  if (p.t === "op") {
+    if (p.op === "<" || p.op === ">" || p.op === "<=" || p.op === ">=" || p.op === "==" || p.op === "!=") return undefined;
+    if (!p.args.every(a => a.stamp !== undefined)) return undefined;
+    return p.norm ?? p.stamp;
+  }
+  if (p.t === "as") return p.stamp;
+  return undefined;
+}
+
+const noteCand = (cx: Cx, l: TLevel, name: string, w: string | undefined): void => {
+  if (w === undefined) return;
+  let m = cx.cand.get(l);
+  if (m === undefined) cx.cand.set(l, m = new Map<string, string>());
+  m.set(name, w);
+};
+
+// An assign re-binds an existing slot: a different width, an unstamped
+// value, or a cross-fn write (a thunk writing a site variable through the
+// chain) all poison the candidate. Resolution mirrors resolveT's order —
+// fn-level locals first (never slots), then the slot walk.
+const noteAssign = (cx: Cx, ts: TScope, name: string, w: string | undefined): void => {
+  for (let d = 0; d < ts.length; d++) {
+    if (!ts[d].slots.has(name)) continue;
+    const m = cx.cand.get(ts[d]);
+    if (m !== undefined && m.has(name) &&
+      (ts[d].fnCtx !== cx.fnCtx || w === undefined || w !== m.get(name))) m.delete(name);
+    return;
+  }
+};
+
+// Record a slot read: fn-level locals resolve same-fn by construction; a
+// slot resolved in a different wasm-fn region than its level's ctx goes to
+// the level's cross-read set (reads after a suspension are always
+// cross-fn — the ANF discipline freezes operands, so no special case).
+const noteRead = (cx: Cx, ts: TScope, name: string): void => {
+  for (let d = 0; d < ts.length; d++) {
+    if (ts[d].locals?.has(name) === true) return;
+    if (!ts[d].slots.has(name)) continue;
+    if (process.env["EF_DBG_NR"] === "1") console.error(`noteRead ${name} lvlCtx=${ts[d].fnCtx} cur=${cx.fnCtx}`);
+    if (ts[d].fnCtx !== cx.fnCtx) {
+      let s = cx.xread.get(ts[d]);
+      if (s === undefined) cx.xread.set(ts[d], s = new Set());
+      s.add(name);
+    }
+    return;
+  }
+};
+
+const readAtom = (cx: Cx, ts: TScope, a: CAtom | undefined): void => {
+  if (a !== undefined && a.t === "var") noteRead(cx, ts, a.name);
 };
 
 function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
@@ -316,11 +404,17 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
         const al = t as ALetk;
         if (esc.has(t.name)) {
           const fl = lvl();
+          fl.fnCtx = cx.fnCtx;
           const fnSlot = addSlot(fl, t.name);
           const freezeSlots = new Map<string, number>();
           if (t.freeze !== undefined)
-            for (const fr of t.freeze) freezeSlots.set(fr.name, addSlot(fl, fr.name));
+            for (const fr of t.freeze) {
+              freezeSlots.set(fr.name, addSlot(fl, fr.name));
+              readAtom(cx, ts, fr.val);
+            }
           const entry = lvl();
+          const siteCtx = cx.fnCtx;
+          entry.fnCtx = ++cx.fnCtx;
           addSlot(entry, t.param);
           const bodyEsc = analyzeEscapes(t.body);
           al.__p = {
@@ -329,12 +423,14 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
             isLoop: jumpsTo(t.body, t.name), bodyEsc, param: t.param,
           };
           planUnit(cx, t.body, [entry, fl, ...ts], bodyEsc);
+          cx.fnCtx = siteCtx;
           // The rest runs inside F_n: its bindings (e.g. a handle's $hret
           // slot) extend F_n — fnLvl.size is read at emit time, after
           // planning finalizes the level.
           walk(t.rest, [fl, ...ts], esc);
         } else {
           al.__p = {mat: false, paramSlot: addSlot(ts[0], t.param), isLoop: jumpsTo(t.body, t.name)};
+          noteCand(cx, ts[0], t.param, t.norm); // loop-carried params: same-fn label delivery
           walk(t.body, ts, esc);
           walk(t.rest, ts, esc);
         }
@@ -342,19 +438,33 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
       }
       case "let": case "bind": case "mkfn":
         addSlot(ts[0], t.name);
+        if (t.t === "let") {
+          noteCand(cx, ts[0], t.name, rhsWidth(t.rhs));
+          if (t.rhs.t === "op" || t.rhs.t === "arr") for (const a of t.rhs.args) readAtom(cx, ts, a);
+          else if (t.rhs.t === "as") readAtom(cx, ts, t.rhs.arg);
+          else readAtom(cx, ts, t.rhs.obj);
+        } else if (t.t === "bind") {
+          noteCand(cx, ts[0], t.name, t.val.stamp);
+          readAtom(cx, ts, t.val);
+        }
         if (t.t === "mkfn" && !cx.cfnBase.has(t.fun)) cx.cfnBase.set(t.fun, [...ts]);
         walk(t.rest, ts, esc);
         break;
       case "dlet":
         for (const fld of t.fields) addSlot(ts[0], fld);
+        readAtom(cx, ts, t.val);
         walk(t.rest, ts, esc);
         break;
       case "assign":
+        noteAssign(cx, ts, t.name, t.val.stamp);
+        readAtom(cx, ts, t.val);
         walk(t.rest, ts, esc);
         break;
       case "scope": {
         const as = t as AScope;
         as.__p = lvl();
+        as.__p.fnCtx = cx.fnCtx;
+        as.__p.elideOk = true;
         walk(t.rest, [as.__p, ...ts], esc);
         break;
       }
@@ -362,6 +472,9 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
         // Devirt analysis: a known direct CFn callee — the emitter issues a
         // static T_DABI call and dispatches through the site's k operand;
         // argFun feeds the tight map/each/flatmap loop specialization.
+        readAtom(cx, ts, t.fn);
+        for (const a of t.args) readAtom(cx, ts, a);
+        readAtom(cx, ts, t.k);
         const dv = cx.dv.sites.get(t);
         if (dv !== undefined) {
           (t as ACall).__p = {
@@ -374,9 +487,13 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
         break;
       }
       case "perform":
+        for (const a of t.args) readAtom(cx, ts, a);
+        readAtom(cx, ts, t.k);
         break;
       case "dcall": {
         const ad = t as ADcall;
+        readAtom(cx, ts, t.fn);
+        for (const a of t.args) readAtom(cx, ts, a);
         const dvi = cx.dv.sites.get(t);
         if (dvi?.inlineRest === true) {
           // Inline rest (devirt pass): the result and the rest's binds land
@@ -384,6 +501,7 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
           // site's own esc keeps letk materialization consistent with the
           // emitter's inline walk of the rest.
           addSlot(ts[0], t.name);
+          noteCand(cx, ts[0], t.name, t.norm);
           ad.__p = {
             inlineRest: true, devirt: dvi.noEnv === true ? {fun: dvi.devirt!, noEnv: true} : {fun: dvi.devirt!},
             argFun: dvi.argFun,
@@ -396,7 +514,9 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
         // allocates the activation over the captured F_n; the direct-entry
         // path dispatches its result through the same cell.
         const fl = lvl();
+        fl.fnCtx = cx.fnCtx;
         const entry = lvl();
+        entry.fnCtx = ++cx.fnCtx;
         addSlot(entry, t.name);
         const restEsc = analyzeEscapes(t.rest);
         ad.__p = {
@@ -407,6 +527,7 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
           ...(dvi !== undefined && dvi.argFun.size > 0 ? {argFun: dvi.argFun} : {}),
         };
         planUnit(cx, t.rest, [entry, fl, ...ts], restEsc);
+        cx.fnCtx = fl.fnCtx;
         break;
       }
       case "handle": {
@@ -418,18 +539,22 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
         const hp: HdlP = {hdlIdx: cx.hdlOrder.length, hframeSize, retSlot, caseP: []};
         ah.__p = hp;
         cx.hdlOrder.push(ah);
+        const siteCtx = cx.fnCtx;
         for (const c of t.cases) {
           if (c.op === "Return") continue;
           const hl = lvl();
+          hl.fnCtx = ++cx.fnCtx;
           for (let i = 0; i < npMax; i++) addSlot(hl, i < c.params.length ? c.params[i] : `$p${i}`);
           addSlot(hl, c.resume);
           const cesc = analyzeEscapes(c.body);
           hp.caseP.push({base: [hl, ...ts], esc: cesc, fnIdx: cx.caseCount++});
           planUnit(cx, c.body, [hl, ...ts], cesc);
+          cx.fnCtx = siteCtx;
         }
         const retCase = t.cases.find(c => c.op === "Return");
         if (retCase !== undefined) {
           const hl = lvl();
+          hl.fnCtx = ++cx.fnCtx;
           for (let i = 0; i < npMax; i++) addSlot(hl, `$p${i}`);
           addSlot(hl, retCase.resume);
           addSlot(hl, retCase.params[0]);
@@ -437,6 +562,7 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
           hp.retP = {base: [hl, ...ts], esc: resc, fnIdx: cx.caseCount++};
           hp.retResumeIdx = cx.retResCount++;
           planUnit(cx, retCase.body, [hl, ...ts], resc);
+          cx.fnCtx = hl.fnCtx;
         } else if (npMax > 0) {
           hp.idRetIdx = cx.idRetCount++;
         }
@@ -444,8 +570,28 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
         break;
       }
       case "if":
+        readAtom(cx, ts, t.c);
         walk(t.a, ts, esc);
         walk(t.b, ts, esc);
+        break;
+      case "call":
+        readAtom(cx, ts, t.fn);
+        for (const a of t.args) readAtom(cx, ts, a);
+        readAtom(cx, ts, t.k);
+        break;
+      case "perform":
+        for (const a of t.args) readAtom(cx, ts, a);
+        readAtom(cx, ts, t.k);
+        break;
+      case "jump":
+        readAtom(cx, ts, t.k);
+        readAtom(cx, ts, t.arg);
+        break;
+      case "dret":
+        readAtom(cx, ts, t.v);
+        break;
+      case "halt":
+        readAtom(cx, ts, t.v);
         break;
       default:
         break;
@@ -480,11 +626,15 @@ export function planIr(ir: CIr, deepRes?: (t: Type) => Type): TermPlan {
   // Devirt analysis first: its site facts shape this walk (an inline-rest
   // dcall plans its rest into the site's frame instead of phantom cell
   // frames) and ride along onto the __p annotations. The numeric-entry
-  // eligibility reads the same site map plus the checker's deep resolver.
+  // eligibility reads the same site map plus the checker's deep resolver —
+  // computed up front so the fixpoint can skip typed-slot candidates for
+  // params that ride raw locals in a numeric entry.
   const dv = analyzeDevirt(ir);
   const escs = ir.funcs.map(fn => analyzeEscapes(fn.body));
-  const cx: Cx = {cfnBase: new Map(), hdlOrder: [], caseCount: 0, idRetCount: 0, retResCount: 0, dv, cfnParams: new Map()};
+  const numEntry = deepRes === undefined ? ir.funcs.map(() => null) : numericEntries(ir, dv.sites, deepRes, escs);
+  const cx: Cx = {cfnBase: new Map(), hdlOrder: [], caseCount: 0, idRetCount: 0, retResCount: 0, dv, cfnParams: new Map(), cand: new Map(), xread: new Map(), fnCtx: 0};
   const globalLvl = lvl();
+  globalLvl.fnCtx = 0;
   planUnit(cx, ir.term, [globalLvl], analyzeEscapes(ir.term));
   // A lambda's mkfn site may live in a LATER lambda's body (nested lambdas),
   // so plan in fixpoint order: each pass plans the fns whose site scopes
@@ -499,16 +649,22 @@ export function planIr(ir: CIr, deepRes?: (t: Type) => Type): TermPlan {
       progressed = true;
       const fn = ir.funcs[i];
       const paramsL = lvl();
-      for (const p of fn.params) addSlot(paramsL, p);
+      paramsL.fnCtx = ++cx.fnCtx;
+      for (let k = 0; k < fn.params.length; k++) {
+        addSlot(paramsL, fn.params[k]);
+      }
       cx.cfnParams.set(i, paramsL);
       planUnit(cx, fn.body, [paramsL, ...base], escs[i]);
     }
     if (!progressed)
       throw new WasmError(`internal: lambda ${[...pending][0]} has no mkfn site`);
   }
+  // Planning is complete: every read/write is recorded, so finalize the
+  // typed-slot and elision flags on the shared level objects.
+  classifySlots(cx.cand, cx.xread);
   return {
     cfnBase: cx.cfnBase, cfnDirect: ir.funcs.map(fn => fn.direct === true), cfnPure: dv.cfnPure,
-    numEntry: deepRes === undefined ? ir.funcs.map(() => null) : numericEntries(ir, dv.sites, deepRes, escs),
+    numEntry,
     cfnParams: cx.cfnParams, hdlOrder: cx.hdlOrder,
     caseCount: cx.caseCount, idRetCount: cx.idRetCount, retResCount: cx.retResCount,
     globalLvl,
@@ -547,6 +703,12 @@ type Walk = {
   // terminal return-cell instead of the raw null kL (a null next would
   // fire emitDispatch's null-k inside void arms — see emitDcallThunk).
   kTerminal?: boolean,
+  // PR3: typed slot locals per level — per WALK (per wasm fn): the same
+  // planned scopes are emitted by multiple fns (a CFn's boxed and numeric
+  // entries), and a map on the shared level would hand the second fn the
+  // first fn's local indices. Keyed by the level's slots Map (thunkBase
+  // copies share it with the planned level).
+  tloc: Map<Map<string, number>, Map<string, number>>,
 };
 
 // The next-pointer operand for a dcall's synthesized cell: the ambient
@@ -625,11 +787,27 @@ function atomRef(wk: Walk, a: CAtom): ValueRef {
   const r = resolveT(wk.ts, a.name);
   if (r !== null) {
     if (r.raw !== undefined) return {k: "raw", l: r.local!, w: r.raw};
+    {
+      // Typed slot: the value is unboxed. A stamped read (the atom's
+      // numKind always equals the slot's width) takes it raw; adaptive
+      // reads rebox into an anyref first.
+      for (const l of wk.ts) {
+        const tw = l.typed?.get(a.name);
+        if (tw === undefined) continue;
+        const tl = typedLocal(wk, l, a.name, tw);
+        if (a.stamp === tw) return {k: "raw", l: tl, w: tw};
+        const v = f.anyref();
+        b.localGet(tl);
+        rebox(wk.em, f, tw);
+        b.localSet(v);
+        return {k: "local", l: v};
+      }
+    }
     if (r.local !== null) return {k: "local", l: r.local};
     if (r.d === 0) return {k: "slot", i: r.i};
     const v = f.anyref();
     b.localGet(0);
-    for (let k = 0; k < r.d; k++) b.structGet(4, 0); // walk parent frames
+    for (let k = 0; k < frameHops(wk.ts, r.d); k++) b.structGet(4, 0); // walk parent frames
     b.structGet(4, 1);
     b.i32Const(r.i);
     b.arrayGet(1);
@@ -645,7 +823,16 @@ function atomRef(wk: Walk, a: CAtom): ValueRef {
 // width's adaptive helper, rebox at the width's shape.
 function pushStampedVar(wk: Walk, a: CAtom & {t: "var"}): void {
   const f = wk.f, b = f.body;
-  f.pushRef(atomRef(wk, a));
+  const r = atomRef(wk, a);
+  if (r.k === "raw") {
+    // Typed slot (numeric-entry params resolve raw in pushAtom before this
+    // point): the local holds the unboxed width value — box it at the
+    // stamp's shape for the anyref plane.
+    b.localGet(r.l);
+    rebox(wk.em, f, r.w);
+    return;
+  }
+  f.pushRef(r);
   const wkn = a.stamp!;
   if (wkn === "f64") return; // the f64 plane's $F64 boxes pass through
   b.callFn(widthHelper(wk.em, wkn));
@@ -660,15 +847,56 @@ function widthHelper(em: Emit, wkn: string): number {
     : em.ix.fU64of;
 }
 
-// Store an anyref local into (depth, slot) of the frame chain.
-function storeAt(wk: Walk, d: number, i: number, v: number): void {
+// Store a value into (depth, slot) of the frame chain. A typed slot (name
+// via the level's reverse map) unboxes into its same-fn local instead;
+// `raw` marks the stack value as already unboxed at the slot's width (a
+// numeric-entry result or a raw-atom read).
+function storeAt(wk: Walk, d: number, i: number, v: number, raw = false): void {
   const b = wk.f.body;
+  const l = wk.ts[d];
+  const name = l.rev?.[i];
+  const tw = name !== undefined ? l.typed?.get(name) : undefined;
+  if (tw !== undefined) {
+    const tl = typedLocal(wk, l, name!, tw);
+    b.localGet(v);
+    if (!raw) b.readBoxPayload(boxShapeOf(tw));
+    b.localSet(tl);
+    return;
+  }
   b.localGet(0);
-  for (let k = 0; k < d; k++) b.structGet(4, 0);
+  for (let k = 0; k < frameHops(wk.ts, d); k++) b.structGet(4, 0);
   b.structGet(4, 1);
   b.i32Const(i);
   b.localGet(v);
   b.arraySet();
+}
+
+// The single static-depth → parent-hop translation (storeAt, atomRef and
+// resolveK all route through it). Elided scope levels allocate no frame
+// and never rebind local 0, so each skipped extend drops one hop together
+// with the allocation: hops = the frame-allocating levels in ts[0..d]
+// minus one (the innermost allocating level's frame IS local 0).
+function frameHops(ts: TScope, d: number): number {
+  let hops = -1;
+  for (let k = 0; k <= d; k++) if (ts[k].elided !== true) hops++;
+  return hops;
+}
+
+// The same-fn local holding a typed slot's unboxed value, allocated on
+// first use in the fn that binds the slot (classification excludes every
+// other fn's reads and writes, so one fn ever allocates). Keyed by the
+// level's slots map — thunkBase copies share it with the planned levels,
+// so a body walk and the rest walk (planned restScope originals) hit the
+// same entry. Rides the WALK's map, never `locals` (resolveT's any-depth
+// locals search assumes anyref locals).
+function typedLocal(wk: Walk, l: TLevel, name: string, w: string): number {
+  let m = wk.tloc.get(l.slots);
+  const got = m?.get(name);
+  if (got !== undefined) return got;
+  const tl = planeLocal(wk.f, w);
+  if (m === undefined) wk.tloc.set(l.slots, m = new Map<string, number>());
+  m.set(name, tl);
+  return tl;
 }
 
 
@@ -690,10 +918,18 @@ function extendFrame(wk: Walk, size: number): number {
 // ---------------------------------------------------------------------------
 // Prims: pure computations, never suspend.
 
-function emitPrim(wk: Walk, p: CPrim): number {
+function emitPrim(wk: Walk, p: CPrim, rawW?: string): number {
   const f = wk.f, b = f.body;
   switch (p.t) {
     case "op": {
+      if (rawW !== undefined) {
+        // Raw result path (a typed destination slot): the unboxed width
+        // value parks in a plane local.
+        const res = planeLocal(f, rawW);
+        emitOpPrim(wk, p, rawW);
+        b.localSet(res);
+        return res;
+      }
       const res = f.anyref();
       emitOpPrim(wk, p);
       b.localSet(res);
@@ -899,7 +1135,7 @@ function emitAsPrim(wk: Walk, p: CPrim & {t: "as"}): number {
 
 // Stamped operator computation over IR atoms, operands loaded from atoms.
 // Leaves the boxed result on the stack.
-function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}): void {
+function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
   const em = wk.em, f = wk.f, b = f.body;
   const wkName = p.stamp;
   const isF32 = wkName === "f32", isI32 = wkName === "i32", isU32 = wkName === "u32";
@@ -926,6 +1162,19 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}): void {
         }
         return;
       }
+      // A typed slot's local (tloc keeps it out of resolveT's locals
+      // search): same unbox discipline as raw params.
+      for (const l of wk.ts) {
+        const tw = l.typed?.get(a.name);
+        if (tw === undefined) continue;
+        const tl = typedLocal(wk, l, a.name, tw);
+        b.localGet(tl);
+        if (tw !== wkName) {
+          rebox(em, f, tw);
+          b.callFn(wkName === "f64" ? em.ix.fNum64 : widthHelper(em, wkName));
+        }
+        return;
+      }
     }
     if (a.stamp === wkName) {
       // Same-width box: cast to its shape and read the raw payload (the
@@ -943,7 +1192,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}): void {
     b.localSet(loc);
     return loc;
   };
-  const boxW = (): void => rebox(em, f, wkName);
+  const boxW = (): void => { if (rawW === undefined) rebox(em, f, wkName); };
   switch (name) {
     case "+": {
       if (wkName === "f64") {
@@ -955,19 +1204,26 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}): void {
         b.localGet(a); b.refTest(0, false);
         b.localGet(bv); b.refTest(0, false);
         b.u8(w.AND);
-        b.u8(w.IF); b.u8(w.ANYREF);
+        b.u8(w.IF); b.u8(rawW === undefined ? w.ANYREF : 0x7c); // f64 valtype
         b.localGet(a); b.readBoxPayload(0);
         b.localGet(bv); b.readBoxPayload(0);
         b.u8(w.FADD);
-        b.callFn(em.ix.fBox);
+        if (rawW === undefined) b.callFn(em.ix.fBox);
         b.u8(w.ELSE);
-        b.localGet(a); b.refTest(2, false);
-        b.localGet(bv); b.refTest(2, false);
-        b.u8(w.AND);
-        b.u8(w.IF); b.u8(w.ANYREF);
-        f.emitStrCat(a, bv);
-        b.u8(w.ELSE); b.refNull(w.ANYREF);
-        b.u8(w.END);
+        if (rawW === undefined) {
+          b.localGet(a); b.refTest(2, false);
+          b.localGet(bv); b.refTest(2, false);
+          b.u8(w.AND);
+          b.u8(w.IF); b.u8(w.ANYREF);
+          f.emitStrCat(a, bv);
+          b.u8(w.ELSE); b.refNull(w.ANYREF);
+          b.u8(w.END);
+        } else {
+          // A typed numeric destination (every arg numerically stamped)
+          // makes the string arm statically impossible; unreachable keeps
+          // the if/else arms type-consistent with the f64 result.
+          b.u8(w.UNREACHABLE);
+        }
         b.u8(w.END);
         break;
       }
@@ -1099,8 +1355,10 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}): void {
       throw new WasmError(`internal: no inline emitter for operator ${name}`);
   }
   // The prim's norm re-normalizes a result computed in a different plane
-  // than the app node's stamp (identity otherwise).
-  if (p.norm !== undefined && p.norm !== wkName) {
+  // than the app node's stamp (identity otherwise). The raw path only
+  // fires for identity norms (the caller gates rawW), so a norm pass
+  // would consume an unboxed value — skip it.
+  if (rawW === undefined && p.norm !== undefined && p.norm !== wkName) {
     const r = f.anyref();
     b.localSet(r);
     b.localGet(r);
@@ -1131,7 +1389,7 @@ function resolveK(wk: Walk, a: CAtom): KRef {
   if (r.local !== null) return {kind: "cell", local: r.local};
   const cell = f.anyref();
   b.localGet(0);
-  for (let k = 0; k < r.d; k++) b.structGet(4, 0);
+  for (let k = 0; k < frameHops(wk.ts, r.d); k++) b.structGet(4, 0);
   b.structGet(4, 1);
   b.i32Const(r.i);
   b.arrayGet(1);
@@ -1196,9 +1454,12 @@ function emitTerm(wk: Walk, t: CTerm): void {
         b.localGet(fpN);
         b.localSet(0);
         // 3. The rest runs inside F_n; the walker's scope shifts to the
-        // planned restScope (the pre-pass pushed the F_n level).
+        // F_n level over the CURRENT walk scopes (copies share the planned
+        // slots maps, so slot indices match the planned restScope while
+        // typed visibility stays consistent with the body walk above — a
+        // thunk-level bind written cell-path must be read cell-path).
         const saved = wk.ts;
-        wk.ts = p.restScope!;
+        wk.ts = [p.restScope![0], ...wk.ts];
         emitTerm(wk, t.rest);
         wk.ts = saved;
         break;
@@ -1241,10 +1502,21 @@ function emitTerm(wk: Walk, t: CTerm): void {
       break;
     }
     case "let": {
-      const res = emitPrim(wk, t.rhs);
       const si = wk.ts[0].slots.get(t.name);
       if (si === undefined) throw new WasmError(`internal: no slot for ${t.name}`);
-      storeAt(wk, 0, si, res);
+      const tw = wk.ts[0].typed?.get(t.name);
+      if (tw !== undefined && t.rhs.t === "op" &&
+        (t.rhs.norm === undefined || t.rhs.norm === t.rhs.stamp) && t.rhs.stamp === tw) {
+        // Op-site unboxing: the prim's raw width value lands directly in
+        // the slot's typed local (no box, no readBoxPayload round trip).
+        const res = emitPrim(wk, t.rhs, tw);
+        const tl = typedLocal(wk, wk.ts[0], t.name, tw);
+        b.localGet(res);
+        b.localSet(tl);
+      } else {
+        const res = emitPrim(wk, t.rhs);
+        storeAt(wk, 0, si, res);
+      }
       emitTerm(wk, t.rest);
       break;
     }
@@ -1405,11 +1677,16 @@ function emitTerm(wk: Walk, t: CTerm): void {
     }
     case "scope": {
       const as = t as AScope;
-      const fp = extendFrame(wk, as.__p!.size);
-      b.localGet(fp);
-      b.localSet(0);
+      const p = as.__p!;
       const saved = wk.ts;
-      wk.ts = [as.__p!, ...wk.ts];
+      wk.ts = [p, ...wk.ts];
+      if (p.elided !== true) {
+        // Every slot rides a same-fn typed local: no frame to allocate, and
+        // frameHops skips this level's hop together with it.
+        const fp = extendFrame(wk, p.size);
+        b.localGet(fp);
+        b.localSet(0);
+      }
       emitTerm(wk, t.rest);
       wk.ts = saved;
       break;
@@ -1543,9 +1820,13 @@ function emitTerm(wk: Walk, t: CTerm): void {
         // skipped for numeric calls below.
         const num = em.plan.numEntry[p.devirt.fun];
         const numOk = num !== null && siteNumericSig(t)?.sig === num.sig;
+        // A typed destination slot at the entry's return width takes the
+        // raw result directly (the reboxCallResult round trip is skipped).
+        const rtw = wk.ts[0].typed?.get(t.name);
+        const rawOk = numOk && rtw !== undefined && t.norm === rtw;
         const call = numOk
           ? emitNumericEntryCall(em, f, fcb, t.args.length, (k) => pushRawAtom(wk, t.args[k]), {kind: "raw"},
-            {...num, funcref: em.ix.numFn.get(p.devirt.fun)!, noEnv: st.noEnv})
+            {...num, funcref: em.ix.numFn.get(p.devirt.fun)!, noEnv: st.noEnv}, rawOk ? t.norm : undefined)
           : emitDirectEntryCall(em, f, fcb, t.args.length, argEmit, {kind: "raw"}, st);
         if (p.inlineRest === true) {
           // Suspension-free rest + pure callee: run the rest inline. The
@@ -1563,7 +1844,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
             b.localSet(nrm);
             storeAt(wk, 0, si, nrm);
           } else {
-            storeAt(wk, 0, si, r);
+            storeAt(wk, 0, si, r, rawOk);
           }
           emitTerm(wk, t.rest);
           break;
@@ -1709,7 +1990,7 @@ function emitDcallThunk(wk: Walk, thunk: Fn, t: CTerm & {t: "dcall"}, p: DcallP)
   // inside a void arm dispatches to a K_RET whose fragment just returns its
   // param — the value unwinds as each fragment's result instead of yielding
   // inside a void arm (whose trailing unreachable would execute).
-  const tw: Walk = {em, f: thunk, ts: thunkBase(p.entryScope!), kL: 2, esc: p.bodyEsc!, labels: [], depth: 0, exitName: wk.exitName, retName: wk.retName, kTerminal: wk.kTerminal};
+  const tw: Walk = {em, f: thunk, ts: thunkBase(p.entryScope!), kL: 2, esc: p.bodyEsc!, labels: [], depth: 0, exitName: wk.exitName, retName: wk.retName, kTerminal: wk.kTerminal, tloc: new Map()};
   addLocal(tw.ts[0], "$ret", 2);
   if (wk.exitName !== undefined) addLocal(tw.ts[0], wk.exitName, 2);
   if (wk.retName !== undefined) addLocal(tw.ts[0], wk.retName, 2);
@@ -1744,7 +2025,7 @@ function emitLetkThunk(wk: Walk, thunk: Fn, t: CTerm & {t: "letk"}, p: LetkP): v
   // directFn must NOT leak into thunks: they are CPS fragments over the
   // materialized chain — their dret dispatches through kNext (the cell's
   // next), it never returns the fragment's value.
-  const tw: Walk = {em, f: thunk, ts: thunkBase(p.entryScope!), kL: 2, esc: p.bodyEsc!, labels: [], depth: 0, exitName: wk.exitName, retName: wk.retName, kTerminal: wk.kTerminal};
+  const tw: Walk = {em, f: thunk, ts: thunkBase(p.entryScope!), kL: 2, esc: p.bodyEsc!, labels: [], depth: 0, exitName: wk.exitName, retName: wk.retName, kTerminal: wk.kTerminal, tloc: new Map()};
   // $ret (the enclosing case's exit binder, the enclosing handle's ret
   // binder) denote the kNext param in a thunk: the cell's next = the ambient
   // at installation = the value those bindings held at the perform/call
@@ -1777,7 +2058,12 @@ function emitLetkThunk(wk: Walk, thunk: Fn, t: CTerm & {t: "letk"}, p: LetkP): v
 // demoted; $ret/$exit resolve to the kNext param (bound in the entry
 // level by emitLetkThunk's caller).
 function thunkBase(entryScope: TScope): TScope {
-  return entryScope.map(l => ({slots: l.slots, size: l.size, locals: null}));
+  // locals demote (cross-fn); elided carries over — the replayed chain's
+  // hop counting (frameHops) must skip the same levels the site fn
+  // skipped. typed stays dropped: a thunk body's walk must not resurrect
+  // site-fn typed slots (its ts differs from the rest walk's planned
+  // restScope originals otherwise — divergence breaks while loops).
+  return entryScope.map(l => ({slots: l.slots, size: l.size, locals: null, elided: l.elided}));
 }
 
 // Direct builtin specialization: an unbound callee name that names a used
@@ -1853,6 +2139,17 @@ function pushRawAtom(wk: Walk, a: CAtom): void {
   if (r !== null && r.raw !== undefined) {
     b.localGet(r.local!); // the caller's match check pinned the widths equal
     return;
+  }
+  {
+    // Typed slot: the unboxed value rides the walk's tloc local — the
+    // caller's match check pinned the widths equal (a.stamp), so take it
+    // raw.
+    for (const l of wk.ts) {
+      const tw = l.typed?.get(a.name);
+      if (tw === undefined) continue;
+      b.localGet(typedLocal(wk, l, a.name, tw));
+      return;
+    }
   }
   f.pushRef(atomRef(wk, a));
   b.readBoxPayload(boxShapeOf(a.stamp ?? "f64"));
@@ -2355,7 +2652,7 @@ function emitHandleT(wk: Walk, t: AHandle): void {
 // cases read their resume binder from the hframe (written at the perform
 // site); the Return case's prologue materializes its identity resume.
 function emitCaseBody(em: Emit, f: Fn, body: CTerm, base: TScope, esc: Set<string>, exitName: string, retResumeIdx: number | undefined, npMax: number): void {
-  const wk: Walk = {em, f, ts: base, kL: 1, esc, labels: [], depth: 0, exitName};
+  const wk: Walk = {em, f, ts: base, kL: 1, esc, labels: [], depth: 0, exitName, tloc: new Map()};
   tracePoint(em, f, `case f${f.fid} enter`);
   if (retResumeIdx !== undefined) {
     // resume binder (slot npMax) := $CLO{retResume, env = this hframe} —
@@ -2645,6 +2942,11 @@ export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
     const base = plan.cfnBase.get(i)!;
     const paramsL = lvl();
     for (const p of fn.params) addSlot(paramsL, p);
+    // PR3 v1: cfn params stay boxed. The generic map/each/flatmap
+    // trampolines box the callback's INDEX argument through $F64's fBox
+    // regardless of the declared param width, so an entry-side unbox to
+    // the declared width would ref.cast-fail — param typing needs a
+    // caller-ABI guarantee first.
     if (fn.direct === true) {
       // Direct ABI: (frame) -> anyref — no continuation operand. The kL
       // local is never set (null): generic land-cell paths inside (a dcall's
@@ -2656,7 +2958,7 @@ export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
       const knull = f.typed(_T.RF[5]);
       const wk: Walk = {
         em, f, ts: [paramsL, ...base], kL: knull,
-        esc: analyzeEscapes(fn.body), labels: [], depth: 0, directFn: true, kTerminal: true,
+        esc: analyzeEscapes(fn.body), labels: [], depth: 0, directFn: true, kTerminal: true, tloc: new Map(),
       };
       addLocal(wk.ts[0], "$ret", knull); // never referenced (dret boundary)
       emitTerm(wk, fn.body);
@@ -2668,7 +2970,7 @@ export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
     f.idx = em.ix.lambda0 + i;
     const wk: Walk = {
       em, f, ts: [paramsL, ...base], kL: 1,
-      esc: analyzeEscapes(fn.body), labels: [], depth: 0,
+      esc: analyzeEscapes(fn.body), labels: [], depth: 0, tloc: new Map(),
     };
     addLocal(wk.ts[0], "$ret", 1);
     emitTerm(wk, fn.body);
@@ -2702,7 +3004,7 @@ export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
     const knull = f.typed(_T.RF[5]);
     const wk: Walk = {
       em, f, ts: [paramsL, ...base], kL: knull,
-      esc, labels: [], depth: 0, directFn: true, kTerminal: true, rawRet: num.r,
+      esc, labels: [], depth: 0, directFn: true, kTerminal: true, rawRet: num.r, tloc: new Map(),
     };
     addLocal(wk.ts[0], "$ret", knull); // never referenced (dret boundary)
     // Activation frame over the captured env: the body's binds live in its
@@ -2813,7 +3115,7 @@ export function emitMain(em: Emit, ir: CIr, plan: TermPlan): void {
   f.em = em;
   const wk: Walk = {
     em, f, ts: [plan.globalLvl], kL: 1,
-    esc: analyzeEscapes(ir.term), labels: [], depth: 0,
+    esc: analyzeEscapes(ir.term), labels: [], depth: 0, tloc: new Map(),
   };
   emitTerm(wk, ir.term);
   em.mainFn = f;
