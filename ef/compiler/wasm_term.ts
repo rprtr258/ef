@@ -126,6 +126,13 @@ type ScopeP = TLevel;
 type ALetk = CTerm & {t: "letk"} & {__p?: LetkP};
 type AHandle = CTerm & {t: "handle"} & {__p?: HdlP};
 type AScope = CTerm & {t: "scope"} & {__p?: ScopeP};
+type DcallP = {
+  entryScope?: TScope,       // thunk rest base: [entry, F_n, ...site]
+  bodyEsc?: Set<string>,     // the rest's own escape set
+  fnLvl?: TLevel,            // the cell's frame (zero slots; a chain link)
+  thunk?: Fn,                // created at emission
+};
+type ADcall = CTerm & {t: "dcall"} & {__p?: DcallP};
 
 // ---------------------------------------------------------------------------
 // Escape analysis.
@@ -147,6 +154,11 @@ function numberLetks(t: CTerm, opKs: Set<string>, at: Map<string, {enter: number
       at.set(t.name, {enter, exit: st.n++});
       break;
     case "let": case "bind": case "mkfn": case "dlet": case "assign": case "scope":
+      numberLetks(t.rest, opKs, at, st);
+      break;
+    case "dcall":
+      // The rest runs inside a thunk: its k operands must materialize their
+      // targets like any other cross-unit reference.
       numberLetks(t.rest, opKs, at, st);
       break;
     case "call": case "perform":
@@ -190,6 +202,12 @@ function analyzeEscapes(term: CTerm): Set<string> {
       case "let": case "bind": case "mkfn": case "dlet": case "assign": case "scope":
         walk(t.rest, root);
         break;
+      case "dcall":
+        // The rest runs inside a materialized thunk, so any letk it jumps to
+        // must materialize — boundedOutside against a range nothing falls
+        // inside marks every jumped name.
+        walk(t.rest, {enter: -1, exit: -1});
+        break;
       case "call": case "perform":
         if (t.k.t === "var" && boundOutside(t.k.name, root)) esc.add(t.k.name);
         break;
@@ -228,6 +246,7 @@ function jumpsTo(t: CTerm, name: string): boolean {
     case "letk": return jumpsTo(t.body, name) || jumpsTo(t.rest, name);
     case "let": case "bind": case "mkfn": case "dlet": case "assign": case "scope":
       return jumpsTo(t.rest, name);
+    case "dcall": return jumpsTo(t.rest, name);
     case "call": case "perform": return false;
     case "handle":
       return jumpsTo(t.body, name) || t.cases.some(c => jumpsTo(c.body, name));
@@ -243,6 +262,9 @@ function countTopBinds(t: CTerm): number {
     case "bind": case "let": case "mkfn": return 1 + countTopBinds(t.rest);
     case "dlet": return t.fields.length + countTopBinds(t.rest);
     case "assign": return countTopBinds(t.rest);
+    // dcall binds its result inside its thunk's activation frame, not the
+    // site's spine frame.
+    case "dcall": return 0;
     default: return 0; // if/letk/handle/scope open their own frames/units
   }
 }
@@ -310,6 +332,19 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
       }
       case "call": case "perform":
         break;
+      case "dcall": {
+        const ad = t as ADcall;
+        // The rest runs inside a thunk over its own activation frame: entry
+        // holds the result slot (slot 0); fl is the cell's frame — a
+        // zero-slot chain link in the materialized letk's F_n role.
+        const fl = lvl();
+        const entry = lvl();
+        addSlot(entry, t.name);
+        const restEsc = analyzeEscapes(t.rest);
+        ad.__p = {entryScope: [entry, fl, ...ts], bodyEsc: restEsc, fnLvl: fl};
+        planUnit(cx, t.rest, [entry, fl, ...ts], restEsc);
+        break;
+      }
       case "handle": {
         const ah = t as AHandle;
         const retSlot = addSlot(ts[0], t.ret);
@@ -1210,9 +1245,88 @@ function emitTerm(wk: Walk, t: CTerm): void {
       b.u8(w.RETURN);
       break;
     }
+    case "dret": {
+      // Direct-function boundary: deliver through the ambient chain head —
+      // the same dispatch a `jump $ret` resolves to (local 1 in fn bodies,
+      // kNext in thunks).
+      const v = f.anyref();
+      pushAtom(wk, t.v);
+      b.localSet(v);
+      emitDispatch(em, f, v, wk.kL);
+      break;
+    }
+    case "dcall": {
+      const p = (t as ADcall).__p!;
+      const direct = directBuiltin(wk, t.fn);
+      const fc = f.anyref();
+      if (direct === undefined) {
+        pushAtom(wk, t.fn);
+        b.localSet(fc);
+      }
+      // Synthesized continuation: a rest thunk + RET cell (the materialized
+      // letk's shape; no freeze — dcall never suspends). The call tails into
+      // the callee with this cell as its continuation; the callee's
+      // completion (its dret, or a CPS body's $ret dispatch) stores the
+      // result and runs rest.
+      const thunk = makeRestThunk(em, "dcall:" + t.name);
+      p.thunk = thunk;
+      emitDcallThunk(wk, thunk, t, p);
+      const fpN = extendFrame(wk, p.fnLvl!.size);
+      const cell = f.anyref();
+      b.i31Const(w.K_RET);
+      b.i32Const(thunk.idx);
+      b.refI31();
+      b.localGet(fpN);
+      b.localGet(wk.kL);
+      b.refCast(5, true); // $K.next is $K-typed
+      b.structNew(5);
+      b.localSet(cell);
+      emitCallClosure(f, fc, t.args.length, (k, ffp) => {
+        const r = f.anyref();
+        pushAtom(wk, t.args[k]);
+        b.localSet(r);
+        b.localGet(ffp);
+        b.refCast(4, true);
+        b.structGet(4, 1);
+        b.i32Const(k);
+        b.localGet(r);
+        b.arraySet();
+      }, {tail: true, kL: cell, direct});
+      break;
+    }
     default:
       throw new WasmError("internal: no term emitter for this node");
   }
+}
+
+// The dcall rest thunk (T_III_I: frame = the cell's frame, v = the call's
+// result, kNext = the cell's next = the ambient at the site). Allocates the
+// activation frame (the result slot + the rest's top-level binds), writes
+// the normalized result, and runs the rest with kNext as the ambient.
+function emitDcallThunk(wk: Walk, thunk: Fn, t: CTerm & {t: "dcall"}, p: DcallP): void {
+  const em = wk.em;
+  const entry = p.entryScope![0];
+  const tw: Walk = {em, f: thunk, ts: thunkBase(p.entryScope!), kL: 2, esc: p.bodyEsc!, labels: [], depth: 0, exitName: wk.exitName, retName: wk.retName};
+  addLocal(tw.ts[0], "$ret", 2);
+  if (wk.exitName !== undefined) addLocal(tw.ts[0], wk.exitName, 2);
+  if (wk.retName !== undefined) addLocal(tw.ts[0], wk.retName, 2);
+  const nb = extendFrame(tw, entry.size);
+  thunk.body.localGet(nb);
+  thunk.body.localSet(0);
+  // The result (local 1), normalized by the dcall's norm, into the result
+  // slot — the same box-normalization the letk thunk applies to its param.
+  if (t.norm !== undefined) {
+    const nrm = thunk.anyref();
+    thunk.body.localGet(1);
+    if (t.norm !== "f64") thunk.body.callFn(widthHelper(em, t.norm));
+    else thunk.body.callFn(em.ix.fNum64);
+    rebox(em, thunk, t.norm);
+    thunk.body.localSet(nrm);
+    thunk.storeSlot(0, () => thunk.body.localGet(nrm));
+  } else {
+    thunk.storeSlot(0, () => thunk.body.localGet(1));
+  }
+  emitTerm(tw, t.rest);
 }
 
 // The letk thunk (T_III_I: frame = F_n, v = the resumed value, kNext = the

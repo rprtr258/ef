@@ -58,9 +58,11 @@ function mapAtoms(t: CTerm, f: (a: CAtom) => CAtom): void {
     case "bind": case "dlet": case "assign": t.val = f(t.val); return;
     case "let": mapPrimAtoms(t.rhs, f); return;
     case "call": t.fn = f(t.fn); t.args = t.args.map(f); return;
+    case "dcall": t.fn = f(t.fn); t.args = t.args.map(f); return;
     case "perform": t.args = t.args.map(f); return;
     case "jump": t.arg = f(t.arg); return;
     case "halt": t.v = f(t.v); return;
+    case "dret": t.v = f(t.v); return;
     case "if": t.c = f(t.c); return;
     case "letk":
       if (t.freeze !== undefined)
@@ -85,13 +87,14 @@ function rewriteChildren(t: CTerm, rw: (c: CTerm) => CTerm): void {
     case "letk": t.body = rw(t.body); t.rest = rw(t.rest); return;
     case "let": case "bind": case "mkfn": case "dlet": case "assign": case "scope":
       t.rest = rw(t.rest); return;
+    case "dcall": t.rest = rw(t.rest); return;
     case "if": t.a = rw(t.a); t.b = rw(t.b); return;
     case "handle":
       t.body = rw(t.body);
       for (const c of t.cases)
         c.body = rw(c.body);
       return;
-    case "call": case "perform": case "jump": case "halt": return;
+    case "call": case "perform": case "jump": case "halt": case "dret": return;
     default: assertNever(t);
   }
 }
@@ -103,9 +106,11 @@ function visitRefs(t: CTerm, f: (a: CAtom) => void): void {
     case "bind": case "dlet": case "assign": f(t.val); return;
     case "let": mapPrimAtoms(t.rhs, (a) => { f(a); return a; }); return;
     case "call": f(t.fn); for (const a of t.args) f(a); f(t.k); return;
+    case "dcall": f(t.fn); for (const a of t.args) f(a); return;
     case "perform": for (const a of t.args) f(a); f(t.k); return;
     case "jump": f(t.k); f(t.arg); return;
     case "halt": f(t.v); return;
+    case "dret": f(t.v); return;
     case "if": f(t.c); return;
     case "letk": if (t.freeze !== undefined) for (const fr of t.freeze) f(fr.val); return;
     case "handle": f(t.k); return;

@@ -7,6 +7,8 @@ import {run, newCtx, exec, type Ctx} from "./eval.ts";
 import {checkProgram, showT} from "./types.ts";
 import {show, sliceElems, type Slice, type Value} from "./env.ts";
 import {Parser} from "./parser.ts";
+import {toCps} from "./cps.ts";
+import type {CIr, CTerm} from "./cps_ir.ts";
 
 // typeOf: return the inferred type of the last expression, as a string.
 // Surfaces effect sets in function signatures, e.g. `(i64) -> i64 ! { Emit }`.
@@ -772,7 +774,6 @@ describe("REPL acc regression: bindings after wrapper continuations", () => {
   // fails once the bug is fixed. Flip each call to a plain test then.
   const fails = (name: string, fn: () => void) =>
     test(name, () => expect(fn).toThrow(/Unbound symbol/));
-
   fails("after a top-level if", () => {
     const ctx = newCtx();
     line(ctx, "c := true; if (c) { 1 } else { 2 }; q :: 5;");
@@ -785,7 +786,11 @@ describe("REPL acc regression: bindings after wrapper continuations", () => {
     expect(line(ctx, "q;").value).toBe(5n);
   });
 
-  fails("after a top-level call", () => {
+  // Fixed on the interpreter: a classified-pure top-level call is a dcall —
+  // its result binds in-frame with no wrapper letk, so the following
+  // binding lands in the caller's frame (the REPL accumulator) as the other
+  // shapes still expect wrapper-letk work.
+  test("after a top-level call", () => {
     const ctx = newCtx();
     line(ctx, "f :: fn(): i64 { 1 }; f(); q :: 5;");
     expect(line(ctx, "q;").value).toBe(5n);
@@ -1036,5 +1041,142 @@ collect(1);`)).toEqual([
       {kind: "type", text: "y"},
       {kind: "type", text: "type"},
     ]);
+  });
+});
+
+// Selective CPS: classified-pure functions convert direct-style (dcall sites,
+// dret boundary); everything that can suspend stays CPS. Structural
+// assertions read the converted IR; behavioral ones pin both paths.
+describe("selective CPS: dcall/dret classification", () => {
+  const countNodes = (ir: CIr, pred: (t: CTerm) => boolean): number => {
+    let n = 0;
+    const walk = (t: CTerm): void => {
+      if (pred(t)) n++;
+      switch (t.t) {
+        case "letk": walk(t.body); walk(t.rest); return;
+        case "let": case "bind": case "mkfn": case "dlet": case "assign": case "scope":
+          walk(t.rest); return;
+        case "dcall": walk(t.rest); return;
+        case "if": walk(t.a); walk(t.b); return;
+        case "handle": walk(t.body); for (const c of t.cases) walk(c.body); return;
+        default: return;
+      }
+    };
+    walk(ir.term);
+    for (const fn of ir.funcs) walk(fn.body);
+    return n;
+  };
+  const ir = (src: string): CIr => {
+    const prog = new Parser(src).parseProgram();
+    checkProgram(prog); // the suspension stamps are checker-stamped
+    return toCps(prog);
+  };
+
+  test("pure recursive function: self-call and top-level call are dcalls, boundary is dret", () => {
+    const src = `
+      fact :: fn(n: i64): i64 {
+        if (n <= 1) { 1 } else { n * fact(n - 1) }
+      };
+      fact(5)
+    `;
+    expect(show(run(src))).toBe("120");
+    const c = ir(src);
+    expect(countNodes(c, t => t.t === "dcall")).toBe(2); // self-call + top-level
+    expect(countNodes(c, t => t.t === "dret")).toBe(2); // one per tail arm of fact's if
+    expect(countNodes(c, t => t.t === "call")).toBe(0);
+  });
+
+  test("pure closure passed to map: direct boundary, generic call for map itself", () => {
+    const src = `
+      double :: fn(x: i64): i64 { x * 2 };
+      map(double, [1, 2, 3])
+    `;
+    expect(show(run(src))).toBe("[2, 4, 6]");
+    const c = ir(src);
+    expect(countNodes(c, t => t.t === "dcall")).toBe(0); // x * 2 is an op; map stays generic
+    expect(countNodes(c, t => t.t === "dret")).toBe(1); // double's boundary
+    expect(countNodes(c, t => t.t === "call")).toBe(1);
+  });
+
+  test("effectful function calling pure helpers: dcalls inside a CPS body", () => {
+    const src = `
+      effect Log(n: i64): i64;
+      helper :: fn(x: i64): i64 { x + 1 };
+      main :: fn(): i64 { Log!(helper(10)) };
+      handle {
+        main() + helper(100)
+      } case Log(n) => k { k(n * 2) } case Return(v) => k { v }
+    `;
+    expect(show(run(src))).toBe("123"); // helper(10)=11 → Log resumes 22; 22 + helper(100)=101 → 123
+    const c = ir(src);
+    // helper calls classify direct (pure row); main() performs Log — its row
+    // is {Log} — so it stays a generic call; the case body's resume call too.
+    expect(countNodes(c, t => t.t === "dcall")).toBe(2); // helper(10), helper(100)
+    expect(countNodes(c, t => t.t === "call")).toBe(2); // main(), k(n * 2)
+    expect(countNodes(c, t => t.t === "dret")).toBe(1); // helper's boundary (main's tail is a perform — CPS)
+    expect(countNodes(c, t => t.t === "perform")).toBe(1);
+  });
+
+  test("multi-shot resume crossing dcall-produced bindings", () => {
+    expect(show(run(`
+      effect Pick(opts: [i64]): i64;
+      pure :: fn(x: i64): i64 { x * 10 };
+      handle {
+        a :: pure(1);
+        b :: Pick!([1, 2]);
+        c :: pure(b);
+        [a, b, c]
+      } case Return(v) => k { [v] }
+        case Pick(opts) => k { flat(map(k, opts)) }
+    `))).toBe("[[10, 1, 10], [10, 2, 20]]");
+  });
+
+  test("any-typed callee and row-polymorphic native callee stay suspending", () => {
+    expect(show(run(`
+      effect Ask(n: i64): i64;
+      f :: fn(x: i64): i64 { Ask!(x) };
+      a: any = f;
+      handle { a(3) } case Ask(n) => k { k(n * 2) } case Return(v) => k { v }
+    `))).toBe("6");
+    expect(show(run(`
+      effect Tick(n: i64): i64;
+      cb :: fn(x: i64): i64 ! { Tick } { Tick!(x) };
+      handle { map(cb, [1, 2]) } case Tick(n) => k { k(n + 100) } case Return(v) => k { v }
+    `))).toBe("[101, 102]");
+  });
+
+  test("anyTaint: suspending function through an any binding into a pure-typed param still suspends", () => {
+    const src = `
+      effect Ask(n: i64): i64;
+      run1 :: fn(f: (i64) -> i64): i64 { f(3) };
+      susp :: fn(x: i64): i64 ! { Ask } { Ask!(x) };
+      a: any = susp;
+      handle { run1(a) } case Ask(n) => k { k(n * 2) } case Return(v) => k { v }
+    `;
+    expect(show(run(src))).toBe("6");
+    const c = ir(src);
+    // The outer run1(a) site classifies direct (run1's own FunT is pure —
+    // the anyTaint landed on the param FunT), but the inner f(3) — typed by
+    // that tainted param FunT — must stay a suspending call.
+    expect(countNodes(c, t => t.t === "dcall")).toBe(1); // run1(a)
+    expect(countNodes(c, t => t.t === "call")).toBe(2); // f(3) inside run1 + the case body's resume call
+  });
+
+  test("contCall: invoking a resume binder stays suspending and re-performs (multi-shot)", () => {
+    const src = `
+      effect Ask(n: i64): i64;
+      handle {
+        x :: Ask!(1);
+        y :: Ask!(x);
+        y
+      } case Ask(n) => k { k(n * 2) } case Return(v) => k { v }
+    `;
+    expect(show(run(src))).toBe("4");
+    const c = ir(src);
+    // The case body invokes the resume binder: the binder's FunT carries
+    // contCall, so the invoke site must be a call, never a dcall — resuming
+    // re-enters captured CPS machinery and performs again.
+    expect(countNodes(c, t => t.t === "call")).toBe(1);
+    expect(countNodes(c, t => t.t === "dcall")).toBe(0);
   });
 });

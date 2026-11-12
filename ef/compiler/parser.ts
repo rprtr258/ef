@@ -88,7 +88,11 @@ export type Expr =
   | { t: "block", stmts: ExprID[], pos?: Pos }
   | { t: "perform", op: string, args: ExprID[], pos?: Pos }
   | { t: "handle", body: ExprID, cases: HandlerCase[], pos?: Pos }
-  | { t: "app", fn: ExprID, args: ExprID[], div?: NumName, numKind?: string, pos?: Pos }
+  | { t: "app", fn: ExprID, args: ExprID[], div?: NumName, numKind?: string, pos?: Pos,
+      // Checker-stamped (stampSuspension): false — dcall — when the callee's
+      // resolved FunT proves the call cannot suspend; true/absent otherwise.
+      sus?: boolean,
+    }
   | { t: "as", e: ExprID, typ: Type, asKind?: "trunc" | "boolnum", pos?: Pos } // `@as(expr, T)` numeric cast; asKind stamped by the checker.
   | { t: "arr", elems: ExprID[], pos?: Pos, arrKind?: "arr" | "tup" } // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous. The checker stamps `arrKind` so the evaluator picks the runtime shape.
   | { t: "field", obj: ExprID, name: string, idx?: number, pos?: Pos, shape?: "tup" | "arr" } // `obj.x` / `obj.0` field access; `idx` is resolved by the checker, `shape` stamped by it too.

@@ -2,6 +2,7 @@ import {describe, expect, test} from "bun:test";
 import {Parser} from "./parser.ts";
 import {toCps} from "./cps.ts";
 import {run} from "./eval.ts";
+import {checkProgram} from "./types.ts";
 import type {CAtom, CIr, CTerm} from "./cps_ir.ts";
 
 // toCps applies the cps_opt passes as its final stage: every test here sees
@@ -14,6 +15,7 @@ function walk(t: CTerm, f: (t: CTerm) => void): void {
     case "letk": walk(t.body, f); walk(t.rest, f); return;
     case "let": case "bind": case "mkfn": case "dlet": case "assign": case "scope":
       walk(t.rest, f); return;
+    case "dcall": walk(t.rest, f); return;
     case "if": walk(t.a, f); walk(t.b, f); return;
     case "handle": walk(t.body, f); for (const c of t.cases) walk(c.body, f); return;
     default: return;
@@ -184,5 +186,55 @@ describe("cps_opt via toCps: dead binding drop", () => {
     expect(countNode(kept, (n) => n.t === "let" && n.rhs.t === "field")).toBe(1);
     expect(run("u :: [1]; u.0; 7")).toBe(7n);
     expect(() => run("u :: [1]; u.5; 7")).toThrow(/out of bounds/);
+  });
+});
+
+describe("cps_opt via toCps: dcall/dret through the rewrites", () => {
+  // Suspension stamps are checker-stamped: conversion sees them only after
+  // checkProgram.
+  const convC = (src: string): CIr => {
+    const prog = new Parser(src).parseProgram();
+    checkProgram(prog);
+    return toCps(prog);
+  };
+
+  // A pure callee: the dcall's operand read-temps substitute away like call
+  // args, and the direct boundary is a dret tail (never a jump to $ret).
+  test("read-temp substitution reaches dcall operands; dret replaces the $ret jump", () => {
+    const src = "add1 :: fn(x: i64): i64 { x + 1 };\ndbl :: fn(n: i64): i64 { add1(n) * 2 };\ndbl(20)";
+    const ir = convC(src);
+    expect(run(src)).toBe(42n);
+    // The dcall's fn/args read the source names directly — no read temps.
+    expect(countNode(ir, (n) => n.t === "dcall")).toBe(2); // add1(n) + top-level dbl(20)
+    const dcalls: (CTerm & {t: "dcall"})[] = [];
+    for (const t of terms(ir))
+      walk(t, (n) => { if (n.t === "dcall") dcalls.push(n); });
+    for (const d of dcalls) {
+      expect(d.fn.t === "var" && !d.fn.name.startsWith("$")).toBe(true);
+      for (const a of d.args) if (a.t === "var") expect(!a.name.startsWith("$")).toBe(true);
+    }
+    // Direct boundaries deliver with dret; $ret is never jumped in a direct
+    // body (the converter never emits it there).
+    expect(countNode(ir, (n) => n.t === "dret")).toBe(2); // add1 + dbl boundaries
+    expect(countNode(ir, (n) => n.t === "jump" && n.k.t === "var" && n.k.name === "$ret")).toBe(0);
+  });
+
+  test("a dead dcall binding survives (the callee may trap)", () => {
+    const src = "add1 :: fn(x: i64): i64 { x + 1 };\nf :: fn(n: i64): i64 { add1(5); n };\nf(1)";
+    const ir = convC(src);
+    expect(run(src)).toBe(1n);
+    expect(countNode(ir, (n) => n.t === "dcall")).toBe(2); // add1(5) kept + f(1)
+  });
+
+  test("dcall result frozen across a later suspension in the same body", () => {
+    const src = `effect F(n: i64): i64;
+add1 :: fn(x: i64): i64 { x + 1 };
+f :: fn(a: i64): i64 { add1(1) + add1(F!(a)) };
+h :: handle { f(10) } case F(n) => k { k(n) } case Return(v) => k { v };
+h`;
+    const ir = convC(src);
+    // add1(1)'s result temp crosses the perform: frozen at the letk.
+    expect(freezeNames(ir).size).toBeGreaterThan(0);
+    expect(run(src)).toBe(13n); // add1(1)=2 + add1(resume 10)=11
   });
 });

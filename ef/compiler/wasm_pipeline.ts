@@ -186,6 +186,11 @@ export function discover(ir: CIr, prog: Program): Discovery {
         for (const a of t.args) atom(a);
         atom(t.k);
         break;
+      case "dcall":
+        atom(t.fn);
+        for (const a of t.args) atom(a);
+        walk(t.rest);
+        break;
       case "perform":
         for (const a of t.args) atom(a);
         atom(t.k);
@@ -217,6 +222,9 @@ export function discover(ir: CIr, prog: Program): Discovery {
         atom(t.arg);
         break;
       case "halt":
+        atom(t.v);
+        break;
+      case "dret":
         atom(t.v);
         break;
     }

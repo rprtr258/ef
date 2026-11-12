@@ -27,7 +27,16 @@ export type TupT = { tag: "tup", fields: TupField[] };
 // effect-polymorphic: `map : ((a) -> b ! e, [a]) -> [b] ! e` for a fresh `e`.
 export type EffVar = { tag: "effvar", id: number };
 export type Effs = Set<string> | EffVar;
-export type FunT = { tag: "fun", params: Type[], ret: Type, effs: Effs };
+export type FunT = { tag: "fun", params: Type[], ret: Type, effs: Effs,
+  // Suspension markers discovered during checking — data, not constraints.
+  // `contCall`: the FunT is a resume binder's type; invoking it re-enters
+  // captured CPS machinery and can suspend (multi-shot). `anyTaint`: an
+  // `any` unified into this position (unify is a no-op for `any`, so the
+  // row alone cannot vouch for purity). Both force sites typed by this
+  // FunT to stay suspending.
+  contCall?: true,
+  anyTaint?: true,
+};
 export type Var = { tag: "var", id: number };
 export type AnyT = { tag: "any" };
 
@@ -35,8 +44,11 @@ export {TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TUNIT, TANY, TTYPE};
 
 export function tArr(elem: Type): ArrT { return {tag: "arr", elem}; }
 export function tTup(fields: TupField[]): TupT { return {tag: "tup", fields}; }
-export function tFun(params: Type[], ret: Type, effs: Effs): FunT {
-  return {tag: "fun", params, ret, effs};
+export function tFun(params: Type[], ret: Type, effs: Effs, marks?: {contCall?: true, anyTaint?: true}): FunT {
+  const ft: FunT = {tag: "fun", params, ret, effs};
+  if (marks?.contCall === true) ft.contCall = true;
+  if (marks?.anyTaint === true) ft.anyTaint = true;
+  return ft;
 }
 
 // Effect declaration: parameter types + the type the resumed continuation
@@ -166,7 +178,8 @@ export class Unifier {
     if (r.tag === "arr") return tArr(this.deepRes(r.elem));
     if (r.tag === "tup") return tTup(r.fields.map(f => ({name: f.name, type: this.deepRes(f.type)})));
     if (r.tag === "fun")
-      return tFun(r.params.map(p => this.deepRes(p)), this.deepRes(r.ret), this.resEff(r.effs));
+      return tFun(r.params.map(p => this.deepRes(p)), this.deepRes(r.ret), this.resEff(r.effs),
+        r.contCall === true || r.anyTaint === true ? {contCall: r.contCall, anyTaint: r.anyTaint} : undefined);
     return r;
   }
 
@@ -252,7 +265,14 @@ export class Unifier {
 
   unify(a: Type, b: Type): void {
     const ra = this.res(a), rb = this.res(b);
-    if (ra.tag === "any" || rb.tag === "any") return;
+    if (ra.tag === "any" || rb.tag === "any") {
+      // `any` flowing into a function-typed position erases the row evidence
+      // at every site typed by that FunT — the marker keeps suspension
+      // stamping conservative (stampSuspension reads it).
+      if (ra.tag === "fun") ra.anyTaint = true;
+      if (rb.tag === "fun") rb.anyTaint = true;
+      return;
+    }
     if (ra.tag === "var" && rb.tag === "var") {
       this.parent.set(this.find(ra.id), this.find(rb.id));
       return;
@@ -316,6 +336,7 @@ export class Unifier {
           r.params.map(p => this.copyScheme(p, tm, em)),
           this.copyScheme(r.ret, tm, em),
           this.copyEff(r.effs, em),
+          r.contCall === true || r.anyTaint === true ? {contCall: r.contCall, anyTaint: r.anyTaint} : undefined,
         );
       default: return r;
     }
@@ -1003,8 +1024,8 @@ function inferNode(
         }
         // resume: (sig.ret) -> resultT ; Return's resume is identity over bodyT
         const resumeT = c.op === "Return"
-          ? tFun([env.uni.res(bodyT)], env.uni.fresh(), new Set())
-          : tFun([sig!.ret], env.uni.fresh(), new Set());
+          ? tFun([env.uni.res(bodyT)], env.uni.fresh(), new Set(), {contCall: true})
+          : tFun([sig!.ret], env.uni.fresh(), new Set(), {contCall: true});
         checkBind(n, c.resume);
         n.vars.set(c.resume, resumeT);
         // Case bodies run outside this handler (its perform's continuation
@@ -1239,8 +1260,7 @@ function pinWildcard(u: Unifier, argId: ExprID, at: Type, widened: Type): void {
 // int/float literals defaulted to i64/f64 (literal defaulting, not width
 // conversion). Unstamped nodes (type still an unbound var — polymorphic
 // uses) compute by value-based dispatch at runtime.
-function stampNumKinds(nodes: Expr[], uni: Unifier): void {
-  for (const [id, t] of uni.nodeTypes) {
+function stampNumKinds(nodes: Expr[], uni: Unifier): void {  for (const [id, t] of uni.nodeTypes) {
     const rt = uni.res(t);
     let w: NumName | null = null;
     if (rt.tag === "prim") {
@@ -1252,6 +1272,42 @@ function stampNumKinds(nodes: Expr[], uni: Unifier): void {
       } else if (INT_NAMES.has(n) || FLOAT_NAMES.has(n)) w = n;
     }
     if (w !== null) (nodes[id] as Expr & {numKind?: string}).numKind = w;
+  }
+}
+
+// Operator names the app case dispatches structurally (their callees never
+// reach `infer`, so they carry no callee type in nodeTypes and never get a
+// suspension stamp — the converter's own fast paths dispatch them).
+const STAMPED_OPS = new Set([...NUMOPS, ...CMPOPS, ...EQOPS, "+", "neg", "list"]);
+
+// Suspension stamps: after all items are checked, classify every generic
+// call site by its callee's resolved FunT. `sus: false` — a dcall — requires
+// positive evidence: a FunT with neither marker and a concrete empty row.
+// Everything else (nonempty row, unbound row var, non-FunT callee including
+// `any`, anyTaint, contCall) stays a suspending `call`; a callee with no
+// recorded type defaults to suspending. Effect-polymorphic native builtins
+// (map/each/flatmap) have effect-variable rows by construction, so the row
+// test alone already keeps them suspending — the kind check is a
+// belt-and-braces guard (read lazily: builtins.ts may be mid-init when
+// this module loads).
+function stampSuspension(nodes: Expr[], uni: Unifier): void {
+  const nativeBuiltins = new Set(builtins.filter(b => b.kind === "native").map(b => b.name));
+  for (const [id] of uni.nodeTypes) {
+    const e = nodes[id];
+    if (e.t !== "app") continue;
+    const fn = nodes[e.fn];
+    if (fn.t === "sym" && STAMPED_OPS.has(fn.v)) continue;
+    let sus = true;
+    const ct = uni.nodeTypes.get(e.fn);
+    if (ct !== undefined) {
+      const rt = uni.res(ct);
+      if (rt.tag === "fun" && rt.contCall !== true && rt.anyTaint !== true &&
+        !(fn.t === "sym" && nativeBuiltins.has(fn.v))) {
+        const er = uni.resEff(rt.effs);
+        if (er instanceof Set && er.size === 0) sus = false;
+      }
+    }
+    e.sus = sus;
   }
 }
 
@@ -1312,6 +1368,7 @@ export function checkProgram(
     lastType = infer(it.e, prog.nodes, env, unhandled, effects);
 
   stampNumKinds(prog.nodes, uni);
+  stampSuspension(prog.nodes, uni);
 
   return {env, effects, uni, lastType: uni.deepRes(lastType), unhandled, semToks: uni.semToks};
 }

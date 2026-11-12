@@ -34,14 +34,39 @@ export const RET = "$ret";
 // (string +, polymorphic ==, untyped / %).
 const NUM_OPS = new Set(["+", "-", "*", "<", ">", "<=", ">=", "==", "!=", "neg"]);
 
-type K = {t: "fn", f: (v: CAtom) => CTerm} | {t: "tail", name: string};
+type K = {t: "fn", f: (v: CAtom) => CTerm} | {t: "tail", name: string, dret?: true};
 
 const UNIT: CAtom = {t: "lit", v: null};
 
 function kap(k: K, v: CAtom): CTerm {
-  return k.t === "tail"
-    ? {t: "jump", k: {t: "var", name: k.name}, arg: v}
-    : k.f(v);
+  if (k.t === "tail")
+    return k.dret === true ? {t: "dret", v} : {t: "jump", k: {t: "var", name: k.name}, arg: v};
+  return k.f(v);
+}
+
+// Direct-vs-CPS classification of a lambda body: its own subtree only —
+// nested lambdas classify themselves. Any perform/handle, or a checker-
+// stamped suspending call, makes the function CPS; a body with no suspension
+// point converts direct-style. Operator apps are dispatched structurally by
+// the converter (they carry no suspension stamp).
+function isDirectBody(prog: Program, id: ExprID): boolean {
+  const e = prog.nodes[id];
+  switch (e.t) {
+    case "num": case "str": case "bool": case "unit": case "sym": return true;
+    case "lambda": return true;
+    case "perform": case "handle": return false;
+    case "app": return e.sus !== true && isDirectBody(prog, e.fn) && e.args.every(a => isDirectBody(prog, a));
+    case "let": return isDirectBody(prog, e.val);
+    case "dlet": return isDirectBody(prog, e.val);
+    case "assign": return isDirectBody(prog, e.val);
+    case "if": return isDirectBody(prog, e.c) && isDirectBody(prog, e.a) && isDirectBody(prog, e.b);
+    case "while": return isDirectBody(prog, e.c) && isDirectBody(prog, e.body);
+    case "block": return e.stmts.every(s => isDirectBody(prog, s));
+    case "arr": return e.elems.every(s => isDirectBody(prog, s));
+    case "as": return isDirectBody(prog, e.e);
+    case "field": return isDirectBody(prog, e.obj);
+    default: return assertNever(e);
+  }
 }
 
 class Converter {
@@ -148,13 +173,15 @@ class Converter {
       }
       case "lambda": {
         const params = e.params.map(p => p.name);
-        const body = this.convert(e.body, {t: "tail", name: RET});
+        const direct = isDirectBody(this.prog, e.body);
+        const body = this.convert(e.body, direct ? {t: "tail", name: RET, dret: true} : {t: "tail", name: RET});
         const fun = this.funcs.length;
         this.funcs.push({
           params,
           capts: freeVars(body, new Set([RET, ...params])),
           body,
           typ: e.typ ?? undefined,
+          direct: direct || undefined,
         });
         const name = this.fresh("$f");
         this.temps.add(name);
@@ -270,6 +297,20 @@ class Converter {
             return this.convArgs(e.args, (vas) =>
               this.primLet({t: "op", op, args: vas, stamp: nk, norm: nk}, k));
         }
+        // Classified-pure callee (checker stamp): a direct call — the result
+        // binds in-frame and the term continues, with no continuation
+        // machinery at the site. Builtin-sym callees stay unbound names (the
+        // emitter specializes them), like the generic paths below.
+        if (e.sus === false) {
+          const dcallK = (vf: CAtom) => (vas: CAtom[]): CTerm => {
+            const name = this.fresh("$c");
+            this.temps.add(name);
+            return {t: "dcall", fn: vf, args: vas, name, norm: e.numKind, rest: kap(k, {t: "var", name})};
+          };
+          if (fn.t === "sym" && isDirectBuiltinName(fn.v))
+            return this.convArgs(e.args, (vas) => dcallK({t: "var", name: fn.v})(vas));
+          return this.convert(e.fn, {t: "fn", f: (vf) => this.convArgs(e.args, (vas) => dcallK(vf)(vas))});
+        }
         // General call: fn first, then args left-to-right, then the call.
         // A sym naming a builtin in callee position stays an unbound name:
         // the emitter specializes it to the builtin's trampoline
@@ -352,6 +393,14 @@ function freeVars(t: CTerm, bound: Set<string>): string[] {
         atom(t.fn);
         for (const a of t.args) atom(a);
         atom(t.k);
+        return;
+      case "dcall":
+        atom(t.fn);
+        for (const a of t.args) atom(a);
+        walk(t.rest, withB([t.name]));
+        return;
+      case "dret":
+        atom(t.v);
         return;
       case "perform":
         for (const a of t.args) atom(a);

@@ -14,6 +14,10 @@ export type Closure = {
   ir: CIr,
   env: Env,
   typ?: FunT,
+  // Direct-classified function (no suspension in its own subtree; its body
+  // delivers with dret). Callers may use this to skip continuation
+  // reification at the call site.
+  direct?: boolean,
 };
 
 export type Native = {

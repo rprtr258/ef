@@ -68,12 +68,23 @@ function evalTerm(t: CTerm, ir: CIr, env: Env, k: Cont): Outcome {
       env.vars.set(t.name, evalAtom(t.val, env));
       return evalTerm(t.rest, ir, env, k);
     case "mkfn":
-      env.vars.set(t.name, {tag: "fn", params: t.params, fun: t.fun, ir, env, typ: ir.funcs[t.fun].typ});
+      env.vars.set(t.name, {tag: "fn", params: t.params, fun: t.fun, ir, env, typ: ir.funcs[t.fun].typ, direct: ir.funcs[t.fun].direct === true || undefined});
       return evalTerm(t.rest, ir, env, k);
     case "call": {
       const f = evalAtom(t.fn, env);
       const args = t.args.map(a => evalAtom(a, env));
       return apply(f, args, resolveCont(t.k, env));
+    }
+    case "dcall": {
+      // A classified-pure callee never yields {tag: "eff"} (the selection
+      // invariant), so its continuation fires before any other code runs —
+      // binding into the ambient env here matches the let case.
+      const f = evalAtom(t.fn, env);
+      const args = t.args.map(a => evalAtom(a, env));
+      return apply(f, args, (v) => {
+        env.vars.set(t.name, t.norm !== undefined ? normWidth(v, t.norm) : v);
+        return evalTerm(t.rest, ir, env, k);
+      });
     }
     case "perform": {
       const args = t.args.map(a => evalAtom(a, env));
@@ -100,6 +111,8 @@ function evalTerm(t: CTerm, ir: CIr, env: Env, k: Cont): Outcome {
       return evalTerm(t.rest, ir, env, k);
     case "jump":
       return resolveCont(t.k, env)(evalAtom(t.arg, env));
+    case "dret":
+      return k(evalAtom(t.v, env));
     case "halt":
       return k(evalAtom(t.v, env));
     default:

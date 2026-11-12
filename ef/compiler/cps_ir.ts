@@ -19,6 +19,17 @@
 // honor. Named variables stay live in the (shared, mutable) frame: re-resuming
 // after an assignment sees the new value.
 //
+// The transform is selective: a function whose body contains no suspension
+// point in its own subtree (no perform/handle, no checker-stamped suspending
+// call) converts direct-style — its boundary delivers with `dret` instead of
+// jumping `$ret`, and calls to classified-pure callees are `dcall`s that bind
+// results in-frame. Direct regions contain no suspension points, so nothing
+// in them is ever captured or frozen; the freeze discipline above applies
+// only inside CPS regions. `dcall` itself never suspends (its operands and
+// result need no freezing), but a dcall inside a CPS function can still sit
+// after a suspension — its operand reads flow through the freeze machinery
+// like any other value read.
+//
 // `$`-prefixed names are converter-generated and can never collide with
 // source identifiers (the lexer only allows [A-Za-z0-9_]).
 
@@ -72,6 +83,12 @@ export type CTerm =
   | {t: "mkfn", name: string, params: string[], capts: string[], fun: number, rest: CTerm}
   // Tail call; k names the callee's continuation (a letk/`$ret`/handle binding).
   | {t: "call", fn: CAtom, args: CAtom[], k: CAtom}
+  // Direct call to a classified-pure callee: evaluates fn/args, binds the
+  // result to `name` (normalized by `norm`, the site's numKind) and runs
+  // rest in the same frame. Never suspends: the callee's boundary delivers
+  // with `dret`, so no continuation operand exists and no wrapper letk is
+  // built at the site.
+  | {t: "dcall", fn: CAtom, args: CAtom[], name: string, norm?: string, rest: CTerm}
   // Raise op; k names the reified continuation handed to the handler's resume.
   | {t: "perform", op: string, args: CAtom[], k: CAtom}
   // Install handler. `ret` is bound by the runtime to the done-wrapper (the
@@ -92,17 +109,23 @@ export type CTerm =
   // Deliver arg to the named continuation (tail jump; resolves at runtime,
   // which is what makes recursive letk loops and multi-shot resume work).
   | {t: "jump", k: CAtom, arg: CAtom}
+  // Direct-function boundary: deliver the return value to the ambient
+  // continuation. A tail like jump/halt; direct bodies never reference `$ret`.
+  | {t: "dret", v: CAtom}
   // Program boundary: deliver the program result to the top continuation.
   | {t: "halt", v: CAtom};
 
-// funcs[fun]: one per source lambda. `$ret` is the function's continuation,
-// bound by apply at entry (the body's tails jump/call it — a tail call passes
-// its own k operand, which is how CPS keeps calls in tail position).
+// funcs[fun]: one per source lambda. CPS functions' `$ret` is the function's
+// continuation, bound by apply at entry (the body's tails jump/call it — a
+// tail call passes its own k operand, which is how CPS keeps calls in tail
+// position). Direct functions (`direct: true`) deliver with `dret` instead
+// and never reference `$ret`.
 export type CFn = {
   params: string[],
   capts: string[],
   body: CTerm,
   typ?: FunT,
+  direct?: boolean,
 };
 
 export type CIr = {

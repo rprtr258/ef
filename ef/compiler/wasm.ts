@@ -54,6 +54,13 @@
 //   call_indirect. Builtins are trampolines; map/each/flatmap are compiled
 //   CPS loops calling callbacks the same way; tail positions keep
 //   return_call/return_call_indirect.
+// - dcall (selective CPS, interim generic shape): classified-pure callees are
+//   still T_KABI functions, but a dcall site tails into the callee with a
+//   synthesized RET cell whose thunk stores the result and runs the rest —
+//   no wrapper letk in the IR, no freeze at the site. dret dispatches the
+//   return value through the ambient chain head. Direct functions therefore
+//   still pay the T_KABI boundary here; the dual-ABI work gives them a
+//   plain value-returning signature.
 // - Static literals (nums, strings, bools, unit, builtin closures, PI,
 //   per-handle case tables) are immutable anyref globals, each initialized
 //   by a GC constant expression at instantiation; run() builds the global
