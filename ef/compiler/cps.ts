@@ -21,6 +21,7 @@ import {widthOf, type Type} from "./types.ts";
 import {optimizeCps} from "./cps_opt.ts";
 import {BUILTINS} from "./analysis.ts";
 import {assertNever} from "./assert.ts";
+import {OP_ADD, OP_DIV, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_MUL, OP_NE, OP_NEG, OP_REM, OP_SUB} from "./ops.ts";
 
 // Builtin names the emitter specializes at direct call sites (analysis.ts's
 // surface table — parser-types-only, so no import-order hazards).
@@ -33,7 +34,7 @@ export const RET = "$ret";
 // Ops the checker stamps with a compute width (widthOp path). Unstamped
 // operator apps fall through to the value-dispatch natives in env.ts
 // (string +, polymorphic ==, untyped / %).
-const NUM_OPS = new Set(["+", "-", "*", "<", ">", "<=", ">=", "==", "!=", "neg"]);
+const NUM_OPS = new Set([OP_ADD, OP_SUB, OP_MUL, OP_LT, OP_GT, OP_LE, OP_GE, OP_EQ, OP_NE, OP_NEG]);
 
 type K = {t: "fn", f: (v: CAtom) => CTerm} | {t: "tail", name: string, dret?: true};
 
@@ -318,7 +319,7 @@ class Converter {
         if (fn.t === "sym") {
           const op = fn.v;
           const nk = e.numKind;
-          if (op === "/" || op === "%") {
+          if (op === OP_DIV || op === OP_REM) {
             const stamp = nk ?? e.div ?? "f64";
             return this.convArgs(e.args, (vas) =>
               this.primLet({t: "op", op, args: vas, stamp, norm: nk}, k));

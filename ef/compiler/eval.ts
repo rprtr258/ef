@@ -16,7 +16,7 @@ import {prepare, newCtx, rejectUnhandled, type Ctx, type EffectInterp} from "./p
 import {toCps, RET} from "./cps.ts";
 import type {CAtom, CIr, CPrim, CTerm} from "./cps_ir.ts";
 import {assertNever} from "./assert.ts";
-import {errDivByZero, errIndexOOB, errIntOverflow, errUnhandled} from "./ops.ts";
+import {errDivByZero, errIndexOOB, errIntOverflow, errUnhandled, OP_ADD, OP_DIV, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_MUL, OP_NE, OP_NEG, OP_REM, OP_SUB} from "./ops.ts";
 import {builtinInterps} from "./builtins.ts";
 
 function isNative(v: Value): v is Native {
@@ -270,50 +270,50 @@ function toBig(v: Value): bigint {
 // truncates toward zero natively, so no Math.trunc needed.
 function widthOp(op: string, a: Value, b: Value | undefined, nk: string): Value {
   const big = nk === "i64" || nk === "u64";
-  if (op === "/" || op === "%") {
+  if (op === OP_DIV || op === OP_REM) {
     if (big || nk === "i32" || nk === "u32") {
       const ba = toBig(a), bb = toBig(b!);
       if (bb === 0n) throw new Error(errDivByZero());
-      if (op === "/" && bb === -1n) {
+      if (op === OP_DIV && bb === -1n) {
         // Signed-width overflow: INT_MIN ÷ -1 has no in-width result (wasm
         // div_s traps). Unsigned widths can't hold INT_MIN — no trap.
         const min = nk === "i32" ? -(1n << 31n) : nk === "i64" ? -(1n << 63n) : null;
         if (min !== null && ba === min) throw new Error(errIntOverflow());
       }
-      return op === "/" ? ba / bb : ba % bb;
+      return op === OP_DIV ? ba / bb : ba % bb;
     }
     const na = Number(a), nb = Number(b);
-    return op === "/" ? na / nb : na % nb;
+    return op === OP_DIV ? na / nb : na % nb;
   }
-  if (op === "==" || op === "!=") {
+  if (op === OP_EQ || op === OP_NE) {
     const eq = big ? toBig(a) === toBig(b!) : Number(a) === Number(b);
-    return op === "==" ? eq : !eq;
+    return op === OP_EQ ? eq : !eq;
   }
   if (big) {
     const ba = toBig(a);
-    if (op === "neg") return -ba;
+    if (op === OP_NEG) return -ba;
     const bb = toBig(b!);
     switch (op) {
-      case "+": return ba + bb;
-      case "-": return ba - bb;
-      case "*": return ba * bb;
-      case "<": return ba < bb;
-      case ">": return ba > bb;
-      case "<=": return ba <= bb;
-      case ">=": return ba >= bb;
+      case OP_ADD: return ba + bb;
+      case OP_SUB: return ba - bb;
+      case OP_MUL: return ba * bb;
+      case OP_LT: return ba < bb;
+      case OP_GT: return ba > bb;
+      case OP_LE: return ba <= bb;
+      case OP_GE: return ba >= bb;
       default: return assertNever(op as never); // unreachable
     }
   }
   const x = Number(a);
-  if (op === "neg") return -x;
+  if (op === OP_NEG) return -x;
   const y = Number(b);
   switch (op) {
-    case "+": return x + y;
-    case "-": return x - y;
-    case "*": return x * y;
-    case "<": return x < y;
-    case ">": return x > y;
-    case "<=": return x <= y;
+    case OP_ADD: return x + y;
+    case OP_SUB: return x - y;
+    case OP_MUL: return x * y;
+    case OP_LT: return x < y;
+    case OP_GT: return x > y;
+    case OP_LE: return x <= y;
     default: return x >= y; // >=
   }
 }

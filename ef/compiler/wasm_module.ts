@@ -3,6 +3,7 @@
 // functions the host imports. The design doc for the whole
 // backend lives at the top of wasm.ts.
 import {BUILTINS} from "./analysis.ts";
+import {OP_ADD, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_NE, OP_NOT} from "./ops.ts";
 import {OPS} from "./env.ts";
 import {WasmError} from "./wasm_types.ts";
 import {Buf, Fn} from "./wasm_body.ts";
@@ -124,11 +125,11 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
       b.end();
     };
     switch (name) {
-      case "+":
-      case "<":
-      case ">":
-      case "<=":
-      case ">=": {
+      case OP_ADD:
+      case OP_LT:
+      case OP_GT:
+      case OP_LE:
+      case OP_GE: {
         // The only operators with unstamped sites (string `+`, string
         // comparisons — every other app site is width-stamped and compiles
         // inline). The host applies the interpreter's own closure (env.ts
@@ -139,13 +140,13 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.callFn(em.o.impIdx.get("ef_binop")!);
         break;
       }
-      case "==": {
+      case OP_EQ: {
         f.slot(0);
         f.slot(1);
         b.callFn(em.ix.fEq);
         break;
       }
-      case "!=": {
+      case OP_NE: {
         f.slot(0);
         f.slot(1);
         b.callFn(em.ix.fEq);
@@ -154,7 +155,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         selectBool(em, f);
         break;
       }
-      case "not": {
+      case OP_NOT: {
         f.slot(0);
         b.callFn(em.ix.fTruthy);
         b.num(w.EQZ);

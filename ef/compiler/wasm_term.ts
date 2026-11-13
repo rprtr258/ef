@@ -46,6 +46,7 @@ import binaryen from "binaryen";
 import * as w from "./wasm_consts.ts";
 import {WasmError, _T, type ValueRef} from "./wasm_types.ts";
 import {BUILTINS} from "./analysis.ts";
+import {OP_ADD, OP_DIV, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_MUL, OP_NE, OP_NEG, OP_NOT, OP_REM, OP_SUB} from "./ops.ts";
 import {mapLikeFrameWords, numSig} from "./wasm_tables.ts";
 import {type CIr, type CTerm, type CAtom, type CPrim, type CFn} from "./cps_ir.ts";
 import {type Buf, Fn} from "./wasm_body.ts";
@@ -349,7 +350,7 @@ type Cx = {
 // then the string arm is statically impossible.
 function rhsWidth(p: CPrim): string | undefined {
   if (p.t === "op") {
-    if (p.op === "<" || p.op === ">" || p.op === "<=" || p.op === ">=" || p.op === "==" || p.op === "!=") return undefined;
+    if (p.op === OP_LT || p.op === OP_GT || p.op === OP_LE || p.op === OP_GE || p.op === OP_EQ || p.op === OP_NE) return undefined;
     if (!p.args.every(a => a.stamp !== undefined)) return undefined;
     return p.norm ?? p.stamp;
   }
@@ -1197,7 +1198,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
   };
   const boxW = (): void => { if (rawW === undefined) rebox(em, f, wkName); };
   switch (name) {
-    case "+": {
+    case OP_ADD: {
       if (wkName === "f64") {
         const a = f.anyref(), bv = f.anyref();
         pushAtom(wk, p.args[0]);
@@ -1239,17 +1240,17 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
       }
       break;
     }
-    case "-": case "*": {
+    case OP_SUB: case OP_MUL: {
       const x = unbox(0), y = unbox(1);
       b.localGet(x);
       b.localGet(y);
-      b.num(name === "-"
+      b.num(name === OP_SUB
         ? (isF32 ? w.F32_SUB : isNarrow ? w.SUB : isWide ? w.I64_SUB : w.FSUB)
         : (isF32 ? w.F32_MUL : isNarrow ? w.MUL : isWide ? w.I64_MUL : w.FMUL));
       boxW();
       break;
     }
-    case "/": case "%": {
+    case OP_DIV: case OP_REM: {
       if (isNarrow || isWide) {
         // Integer division traps on ÷0; signed `/` also guards INT_MIN ÷ -1
         // (wasm's div_s overflows there; the interpreter fails identically
@@ -1260,7 +1261,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
         b.if(0x40);
         emitFail(em, f, 3, null, f.constF64(0), f.constF64(0), f.constF64(0));
         b.end();
-        if (name === "/" && (isI32 || isI64)) {
+        if (name === OP_DIV && (isI32 || isI64)) {
           b.localGet(y);
           if (isWide) b.i64Const(-1n); else b.i32Const(-1);
           b.num(isWide ? w.I64_EQ : w.EQ);
@@ -1274,13 +1275,13 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
         }
         b.localGet(x);
         b.localGet(y);
-        b.num(name === "/"
+        b.num(name === OP_DIV
           ? (isI32 ? w.DIVS : isU32 ? w.DIVU : isI64 ? w.I64_DIVS : w.I64_DIVU)
           : (isI32 ? w.REMS : isU32 ? w.REMU : isI64 ? w.I64_REMS : w.I64_REMU));
         boxW();
         break;
       }
-      if (name === "%") {
+      if (name === OP_REM) {
         const x = unbox(0), y = unbox(1), t = f.f64();
         if (isF32) { b.localGet(x); b.num(w.F64_PROMOTE); b.localGet(y); b.num(w.F64_PROMOTE); }
         else { b.localGet(x); b.localGet(y); }
@@ -1300,7 +1301,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
       boxW();
       break;
     }
-    case "neg": {
+    case OP_NEG: {
       const x = unbox(0);
       if (isF32) {
         b.localGet(x); b.num(w.F32_NEG);
@@ -1314,7 +1315,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
       boxW();
       break;
     }
-    case "<": case ">": case "<=": case ">=": {
+    case OP_LT: case OP_GT: case OP_LE: case OP_GE: {
       const x = unbox(0), y = unbox(1);
       selectBool(em, f, () => {
         b.localGet(x);
@@ -1323,14 +1324,14 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
       });
       break;
     }
-    case "==": case "!=": {
+    case OP_EQ: case OP_NE: {
       if (wkName !== "f64") {
         const x = unbox(0), y = unbox(1);
         selectBool(em, f, () => {
           b.localGet(x); b.localGet(y);
           b.num(isF32 ? w.F32_EQ : isWide ? w.I64_EQ : w.EQ);
         });
-        if (name === "!=") {
+        if (name === OP_NE) {
           i31of(b);
           b.num(w.EQZ);
           selectBool(em, f);
@@ -1340,14 +1341,14 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
       pushAtom(wk, p.args[0]);
       pushAtom(wk, p.args[1]);
       b.callFn(em.ix.fEq);
-      if (name === "!=") {
+      if (name === OP_NE) {
         i31of(b);
         b.num(w.EQZ);
         selectBool(em, f);
       }
       break;
     }
-    case "not": {
+    case OP_NOT: {
       pushAtom(wk, p.args[0]);
       b.callFn(em.ix.fTruthy);
       b.num(w.EQZ);
