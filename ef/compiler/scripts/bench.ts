@@ -13,8 +13,7 @@ import {readdirSync, readFileSync} from "node:fs";
 import {join} from "node:path";
 import {compileWithOps} from "../wasm.ts";
 import {runModule} from "../wasm_host.ts";
-import {Parser} from "../parser.ts";
-import {checkProgram} from "../types.ts";
+import {prepare} from "../pipeline.ts";
 import {toCps} from "../cps.ts";
 import {newCtx, exec} from "../eval.ts";
 import {show} from "../env.ts";
@@ -54,8 +53,7 @@ for (const file of files) {
   const src = readFileSync(join(DIR, file), "utf8");
   const {bytes, ops} = compileWithOps(src);
   const value = show(runModule(bytes, ops));
-  const prog = new Parser(src).parseProgram();
-  const checked = checkProgram(prog);
+  const {prog, checked} = prepare(src);
   toCps(prog);
   const interpValue = show(exec(prog, newCtx(), checked).value);
   if (interpValue !== value)

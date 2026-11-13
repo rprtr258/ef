@@ -5,13 +5,12 @@ import {readFileSync, readdirSync, writeFileSync} from "node:fs";
 import binaryen from "binaryen";
 import {run} from "./eval.ts";
 import {BIN_FEATURES, compile} from "./wasm.ts";
-import {checkProgram} from "./types.ts";
+import {prepare} from "./pipeline.ts";
 import {discover, optimize, assignIndices, layoutStatics} from "./wasm_pipeline.ts";
 import {toCps} from "./cps.ts";
 import {planIr} from "./wasm_term.ts";
 import {classifySlots} from "./wasm_devirt.ts";
 import type {TLevel} from "./wasm_term.ts";
-import {Parser} from "./parser.ts";
 import {runWasm} from "./wasm_host.ts";
 import {mkSlice, mkTup, show, type Value} from "./env.ts";
 
@@ -82,8 +81,8 @@ describe("wasm backend", () => {
     // named by phase, instead of as a generic compile() error. The program
     // touches every layoutStatics branch: number + string literals, a PI
     // reference, and a value-referenced builtin (closure static).
-    const prog = new Parser("x :: 1;\ns :: \"a\";\npi :: PI;\nl :: len;\nx;").parseProgram();
-    checkProgram(prog); // discover reads the runtime markers the check stamps
+    // The check stamps the runtime markers discover reads.
+    const {prog} = prepare("x :: 1;\ns :: \"a\";\npi :: PI;\nl :: len;\nx;");
     const ir = toCps(prog);
     const d = discover(ir, prog);
     const o = optimize(prog);
@@ -335,7 +334,7 @@ describe("wasm backend", () => {
 
   test("builtin shadowing is rejected before codegen", () => {
     // No shadowing: a user binding can never take a builtin's name, so
-    // tree-shaking never sees an occluded builtin. compile()'s checkProgram
+    // tree-shaking never sees an occluded builtin. compile()'s check
     // rejects these before any module is emitted.
     expect(() => compile("len :: fn(xs: [i64]): i64 { 42 }; len([1, 2, 3])"))
       .toThrow("cannot shadow builtin 'len'");
@@ -366,7 +365,7 @@ a + b`)).toBe("6");
 
   test("errors surface identically (typecheck + runtime)", () => {
     parity("nope + 1"); // Unbound: nope
-    parity("1 + \"a\""); // type error from checkProgram
+    parity("1 + \"a\""); // type error from the check
     parity("get([1,2], 9)"); // get: index 9 out of bounds
     parity("head(1, 2, 3)"); // arity error
   });
@@ -807,8 +806,7 @@ describe("wasm devirtualization (wasm_devirt.ts: static direct calls, inline res
   if (n < 2) { n } else { fib(n - 1) + fib(n - 2) }
 };
 fib(28)`;
-    const prog = new Parser(src).parseProgram();
-    checkProgram(prog);
+    const {prog} = prepare(src);
     const ir = toCps(prog);
     const plan = planIr(ir);
     expect(plan.cfnPure).toEqual([true]);
@@ -828,8 +826,7 @@ fib(28)`;
 mixed :: fn(x: i64): i64 { handle { x + Op!() } case Op() => k2 { k2(100) } };
 caller :: fn(x: i64): i64 { mixed(x) + 1 };
 [caller(1), caller(2)]`;
-    const prog = new Parser(src).parseProgram();
-    checkProgram(prog);
+    const {prog} = prepare(src);
     const ir = toCps(prog);
     const plan = planIr(ir);
     expect(plan.cfnPure[0]).toBe(false); // mixed: internal handle
@@ -1014,8 +1011,7 @@ describe("wasm typed slots + scope-frame elision (wasm_devirt.ts classifySlots +
   // on __p directly; letk/dcall/handle annotations carry fnLvl plus the
   // entry/rest scope snapshots (shared level objects, so the Set dedups).
   const audit = (src: string): Lv[] => {
-    const prog = new Parser(src).parseProgram();
-    checkProgram(prog);
+    const {prog} = prepare(src);
     const ir = toCps(prog);
     const plan = planIr(ir);
     const out: Lv[] = [];

@@ -1,6 +1,6 @@
 // ef language server: LSP over stdio wrapping the ef parser + checker.
 //
-// Diagnostics are fail-fast: `checkProgram` throws on the first error, so each
+// Diagnostics are fail-fast: `prepare` throws on the first error, so each
 // publish carries at most one diagnostic. Errors carry a 1-based source pos
 // as data — parse errors via ParseError's token extent (underlined), checker
 // errors via TypeError_.pos (zero-width marker). Only whole-program failures
@@ -31,7 +31,8 @@ import {
   type SemanticTokensParams,
 } from "vscode-languageserver/node";
 import {Parser, type Alias, type ExprID, type Program, type TypeTok} from "./parser.ts";
-import {checkProgram, showT, tFun, TANY, TypeError_, type Checked, type EffectSig, type Unifier} from "./types.ts";
+import {showT, tFun, TANY, TypeError_, type Checked, type EffectSig, type Unifier} from "./types.ts";
+import {prepare} from "./pipeline.ts";
 import {builtinParamNames} from "./builtins.ts";
 import {ParseError, type Pos} from "./lexer.ts";
 
@@ -59,8 +60,7 @@ const KIND_INDEX: Record<TypeTok["kind"], number> = {type: 0, typeParameter: 1, 
 // highlights on top of an error).
 function semanticTokens(src: string): SemanticTokens {
   try {
-    const prog = new Parser(src).parseProgram();
-    const checked = checkProgram(prog);
+    const {prog, checked} = prepare(src);
     // Parser typeToks (type/effect surface) + checker semToks (value
     // identifiers), one position-sorted delta-encoded stream.
     const toks = [...prog.typeToks, ...checked.semToks].sort((a, b) =>
@@ -81,7 +81,7 @@ function semanticTokens(src: string): SemanticTokens {
 
 function checkDoc(src: string): Diagnostic[] {
   try {
-    checkProgram(new Parser(src).parseProgram());
+    prepare(src);
     return [];
   } catch (err) {
     return [diagnosticOf(err)];
@@ -187,8 +187,7 @@ function hoverText(prog: Program, checked: Checked, id: ExprID, c: Pos): string 
 function hoverAt(src: string, line: number, col: number): Hover | null {
   let prog: Program, checked: Checked;
   try {
-    prog = new Parser(src).parseProgram();
-    checked = checkProgram(prog);
+    ({prog, checked} = prepare(src));
   } catch {
     return null;
   }

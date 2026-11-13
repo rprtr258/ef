@@ -8,10 +8,11 @@
 // continuation for value delivery, and the term's explicit continuations are
 // what the wasm backend defunctionalizes in stage 2.
 
-import {checkProgram, type Checked, type Type} from "./types.ts";
-import {Env, show, asSlice, mkSlice, mkTup, sliceElems, type Cont, type Native, type Outcome, type Value, num, globalEnv, seedBuiltins, type Closure} from "./env.ts";
+import {type Checked, type Type} from "./types.ts";
+import {Env, show, asSlice, mkSlice, mkTup, sliceElems, type Cont, type Native, type Outcome, type Value, num, seedBuiltins, type Closure} from "./env.ts";
 import {builtinRefs} from "./analysis.ts";
-import {Parser, type Program} from "./parser.ts";
+import type {Program} from "./parser.ts";
+import {prepare, newCtx, type Ctx} from "./pipeline.ts";
 import {toCps, RET} from "./cps.ts";
 import type {CAtom, CIr, CPrim, CTerm} from "./cps_ir.ts";
 import {assertNever} from "./assert.ts";
@@ -342,28 +343,12 @@ function runTop(out: Outcome, interp?: EffectInterp): Value {
   }
 }
 
-// Pipeline state for incremental execution (REPL): runtime env, checker
-// accumulator, and an optional effect-interpretation override.
-export type Ctx = {
-  env: Env,
-  checked: Checked,
-  interp?: EffectInterp,
-};
+// The ctx seam lives in pipeline.ts (prepared programs + runtime state);
+// re-exported for the REPL, the tests, the playground bridge, and bench.ts.
+export {newCtx, type Ctx};
 
-// newCtx: fresh pipeline state, seeded with the builtins.
-export function newCtx(interp?: EffectInterp): Ctx {
-  return {
-    // Seeded empty: exec binds exactly the builtins each program references
-    // (builtinRefs), matching the wasm module's tree-shaken builtin table.
-    env: globalEnv(new Set()),
-    checked: checkProgram({nodes: [], items: [], typeToks: [], ends: []}),
-    interp,
-  };
-}
-
-// exec: the pipeline the REPL and `run` share — evaluate an already-checked
-// program (`checked = checkProgram(prog, ctx.checked)` for REPL lines) in
-// ctx's runtime env. Returns the last item's value (null after a pure
+// exec: the pipeline the REPL and `run` share — evaluate an already-prepared
+// program (prepare(src, ctx.checked) for REPL lines) in ctx's runtime env. Returns the last item's value (null after a pure
 // declaration), its resolved type, and whether the program ends in a bare
 // expression (the REPL echo rule: declarations print nothing).
 export function exec(prog: Program, ctx: Ctx, checked: Checked): {value: Value, lastType: Type, lastIsExpr: boolean} {
@@ -394,10 +379,11 @@ export function exec(prog: Program, ctx: Ctx, checked: Checked): {value: Value, 
   return {value, lastType: ctx.checked.lastType, lastIsExpr};
 }
 
-// run: one-shot pipeline — parse, typecheck (before the interpreter runs),
-// and evaluate a source string with fresh state. Throws on type error.
-// `interp` optionally overrides the builtin interpretation of unhandled effects.
+// run: one-shot pipeline — prepare (parse + typecheck, before the
+// interpreter runs), then evaluate a source string with fresh state. Throws
+// on type error. `interp` optionally overrides the builtin interpretation of
+// unhandled effects.
 export function run(src: string, interp?: EffectInterp): Value {
-  const prog = new Parser(src).parseProgram();
-  return exec(prog, newCtx(interp), checkProgram(prog)).value;
+  const {prog, checked} = prepare(src);
+  return exec(prog, newCtx(interp), checked).value;
 }

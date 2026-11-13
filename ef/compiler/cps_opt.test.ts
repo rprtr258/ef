@@ -2,7 +2,7 @@ import {describe, expect, test} from "bun:test";
 import {Parser} from "./parser.ts";
 import {toCps} from "./cps.ts";
 import {run} from "./eval.ts";
-import {checkProgram} from "./types.ts";
+import {prepare} from "./pipeline.ts";
 import type {CAtom, CIr, CTerm} from "./cps_ir.ts";
 
 // toCps applies the cps_opt passes as its final stage: every test here sees
@@ -198,12 +198,8 @@ describe("cps_opt via toCps: dead binding drop", () => {
 
 describe("cps_opt via toCps: dcall/dret through the rewrites", () => {
   // Suspension stamps are checker-stamped: conversion sees them only after
-  // checkProgram.
-  const convC = (src: string): CIr => {
-    const prog = new Parser(src).parseProgram();
-    checkProgram(prog);
-    return toCps(prog);
-  };
+  // the check (prepare).
+  const convC = (src: string): CIr => toCps(prepare(src).prog);
 
   // A pure callee: the dcall's operand read-temps substitute away like call
   // args, and the direct boundary is a dret tail (never a jump to $ret).

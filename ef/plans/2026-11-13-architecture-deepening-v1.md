@@ -78,12 +78,15 @@ non-test `checkProgram` site (a knip entry file — must migrate, not ignore).
  knip flags exports that lose their last importer — migrate all consumers of moved exports within
 the same chunk or tag them `@public`.
 
-**Chunk 2.1 — extract program preparation.**
-- [ ] New `compiler/pipeline.ts` exporting `prepare(src, acc?)` → `{ prog, checked, ctx }`:
+**Chunk 2.1 — extract program preparation.** ✅ commit (see log)
+Landed shape (controller-acked, supersedes the sketch below): `prepare(src, acc?) -> {prog,
+checked}` is pure-frontend; `Ctx`/`newCtx` moved into pipeline.ts (eval re-exports); builtinRefs
+seeding stays in exec so rejected lines leave the accumulator untouched and REPL env persists.
+- [x] New `compiler/pipeline.ts` exporting `prepare(src, acc?)` → `{ prog, checked, ctx }`:
       parse, `checkProgram`, `builtinRefs` seeding, residual-row collection. All 9 sites route
       through it (the 8 product sites + `compiler/scripts/bench.ts:58`); no site composes
       parse+check itself anymore.
-- [ ] `eval.ts` `newCtx`/`exec`/`run` become thin wrappers over pipeline; `wasm.ts` pipeline entry
+- [x] `eval.ts` `newCtx`/`exec`/`run` become thin wrappers over pipeline; `wasm.ts` pipeline entry
       consumes `prepare` output. `cli.ts types` and `lsp.ts` use it.
 
 **Verification:** `bun run ci`; CLI smoke: `run`, `types`, `lint`, `buildwasm` on `examples/`.
@@ -118,6 +121,10 @@ example fails with the static message. **Exit criteria:** one owner of the timin
 - [ ] `pipeline.ts` exports `runLine(ctx, src)` → `{value, lastType, lastIsExpr}` (seed + exec +
       print contract). `repl.ts` and the hand-copied protocol in `index.test.ts` use it; delete the
       duplicate. (`cli.ts` repl path is delegation-only — no change expected.)
+- [ ] Mutation (added after chunk 2.1 review): migrate the playground's two remaining composers —
+      `playground/src/bridge.ts` (~8 sites) and `playground/src/cps_view.ts:16-17` — onto
+      `pipeline.prepare`; smoke via the playground build. (bridge.ts also re-points its
+      `EffectInterp` import in chunk 2.2.)
 
 **Verification:** `bun run ci`; REPL session: define fn, use builtin, rebind error — behavior
 unchanged. **Commit:** `pipeline: single REPL line protocol`

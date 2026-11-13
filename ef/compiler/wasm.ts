@@ -104,8 +104,7 @@
 // called from builtin closures, eval reads the effect interps lazily — so
 // module init order is free; no entry-order breaker import needed.)
 import binaryen from "binaryen";
-import {Parser} from "./parser.ts";
-import {checkProgram} from "./types.ts";
+import {prepare} from "./pipeline.ts";
 import {toCps} from "./cps.ts";
 import {bindMOD} from "./wasm_tables.ts";
 import {buildModule, discover, layoutStatics, optimize, assignIndices, type Discovery, type Indices, type Layout, type Opt} from "./wasm_pipeline.ts";
@@ -151,13 +150,13 @@ export function compile(src: string): Uint8Array<ArrayBuffer> {
 // share, so the WAT text the playground shows is built by the same pipeline
 // as the shipped bytes.
 function pipeline(src: string): {mod: binaryen.Module, ops: string[], o: Opt, lay: Layout, funcs: Fn[]} {
-  const prog = new Parser(src).parseProgram();
-  // Check before the backend runs: rejects ill-typed programs and stamps the
-  // runtime markers the phases read (`numKind` on literals, `div` on
-  // applications of `/`, `idx` on field accesses). The Checked result rides
-  // into the wasm pipeline as the numeric-entry eligibility's type resolver
-  // (uni.deepRes resolves bound vars; quantified vars stay unbound).
-  const checked = checkProgram(prog);
+  // prepare: parse + check before the backend runs — rejects ill-typed
+  // programs and stamps the runtime markers the phases read (`numKind` on
+  // literals, `div` on applications of `/`, `idx` on field accesses). The
+  // Checked result rides into the wasm pipeline as the numeric-entry
+  // eligibility's type resolver (uni.deepRes resolves bound vars;
+  // quantified vars stay unbound).
+  const {prog, checked} = prepare(src);
   // Stage 2: the CPS IR — the single conversion both backends consume. The
   // checker stamps the AST the converter reads (`numKind`/`div`/`idx`).
   const ir = toCps(prog);

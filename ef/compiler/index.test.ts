@@ -4,7 +4,8 @@ import {join} from "node:path";
 import {readFileSync, unlinkSync, existsSync, writeFileSync} from "node:fs";
 import {execSync} from "node:child_process";
 import {run, newCtx, exec, type Ctx} from "./eval.ts";
-import {checkProgram, showT, showErr, TypeError_} from "./types.ts";
+import {prepare} from "./pipeline.ts";
+import {showT, showErr, TypeError_} from "./types.ts";
 import {show, sliceElems, mkSlice, mkTup, type Slice, type Value} from "./env.ts";
 import {Parser} from "./parser.ts";
 import {toCps} from "./cps.ts";
@@ -13,18 +14,23 @@ import type {CIr, CTerm} from "./cps_ir.ts";
 // typeOf: return the inferred type of the last expression, as a string.
 // Surfaces effect sets in function signatures, e.g. `(i64) -> i64 ! { Emit }`.
 export function typeOf(src: string): string {
-  const prog = new Parser(src).parseProgram();
-  return showT(checkProgram(prog).lastType);
+  return showT(prepare(src).checked.lastType);
 }
+
+// The REPL line protocol the exec tests share: prepare against ctx's
+// accumulator, then exec (repl.ts wraps the same two steps around its echo
+// rule).
+const execLine = (ctx: Ctx, src: string) => {
+  const {prog, checked} = prepare(src, ctx.checked);
+  return exec(prog, ctx, checked);
+};
 
 const tmpPath = (n: string) => join(tmpdir(), `ef-test-${process.pid}-${n}.txt`);
 
 test("exec drives a REPL session: bindings persist, lastType resolved", () => {
   const ctx = newCtx();
-  const p1 = new Parser("add :: fn(a: i64, b: i64): i64 { a + b };").parseProgram();
-  const l1 = exec(p1, ctx, checkProgram(p1, ctx.checked));
-  const p2 = new Parser("add(1, 2)").parseProgram();
-  const l2 = exec(p2, ctx, checkProgram(p2, ctx.checked));
+  const l1 = execLine(ctx, "add :: fn(a: i64, b: i64): i64 { a + b };");
+  const l2 = execLine(ctx, "add(1, 2)");
   expect(l1.value).toBe(null);
   expect(l1.lastIsExpr).toBe(false);
   expect(l2.value).toBe(3n);
@@ -910,11 +916,11 @@ k(s, 1)`)).toThrow();
     });
 
     test("lookupResolved deep-resolves and instantiates schemes", () => {
-      const c = checkProgram(new Parser("m :: 5; m").parseProgram());
-      expect(showT(c.env.lookupResolved("m"))).toBe("i64");
+      const c = prepare("m :: 5; m");
+      expect(showT(c.checked.env.lookupResolved("m"))).toBe("i64");
       // The builtin's scheme instantiates fresh type and effect variables.
-      const m = checkProgram(new Parser("map").parseProgram());
-      expect(showT(m.env.lookupResolved("map")))
+      const m = prepare("map");
+      expect(showT(m.checked.env.lookupResolved("map")))
       .toMatch(/^\(\(a\) -> b ! \{ e\d+ \}, \[a\]\) -> \[b\] ! \{ e\d+ \}$/);
     });
 
@@ -931,27 +937,21 @@ k(s, 1)`)).toThrow();
 describe("Env seeding (exec binds referenced builtins per line)", () => {
   test("a later REPL line can reference a previously-unused builtin", () => {
     const ctx = newCtx();
-    const p1 = new Parser(`x :: 1;`).parseProgram();
-    exec(p1, ctx, checkProgram(p1, ctx.checked));
+    execLine(ctx, `x :: 1;`);
     expect(ctx.env.vars.has("len")).toBe(false); // not referenced yet -> not bound
-    const p2 = new Parser(`len([1, 2]);`).parseProgram();
-    expect(exec(p2, ctx, checkProgram(p2, ctx.checked)).value).toBe(2n);
+    expect(execLine(ctx, `len([1, 2]);`).value).toBe(2n);
     expect(ctx.env.vars.has("len")).toBe(true);
   });
 
   test("rebinding across REPL lines is an error (strict no-shadowing)", () => {
-    // checkProgram's acc reuses one top-level frame, so earlier lines' names
+    // prepare's acc reuses one top-level frame, so earlier lines' names
     // (and builtins) collide exactly like same-frame redeclarations.
     const ctx = newCtx();
-    const p1 = new Parser(`x :: 1;`).parseProgram();
-    exec(p1, ctx, checkProgram(p1, ctx.checked));
-    const p2 = new Parser(`x := 2;`).parseProgram();
-    expect(() => checkProgram(p2, ctx.checked)).toThrow("cannot redeclare 'x'");
-    const p3 = new Parser(`len :: 3;`).parseProgram();
-    expect(() => checkProgram(p3, ctx.checked)).toThrow("cannot shadow builtin 'len'");
+    execLine(ctx, `x :: 1;`);
+    expect(() => prepare(`x := 2;`, ctx.checked)).toThrow("cannot redeclare 'x'");
+    expect(() => prepare(`len :: 3;`, ctx.checked)).toThrow("cannot shadow builtin 'len'");
     // A rejected line leaves the accumulator untouched: x still reads as 1.
-    const p4 = new Parser(`x`).parseProgram();
-    expect(exec(p4, ctx, checkProgram(p4, ctx.checked)).value).toBe(1n);
+    expect(execLine(ctx, `x`).value).toBe(1n);
   });
 
   test("ef types prints symbols, then the program result type and effect row", () => {
@@ -979,18 +979,15 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
 // Regression: the converter inserts wrapper continuations (if-join, while
 // exit, call/perform sites) as letks between top-level items, so bindings
 // made after them land in a letk child frame instead of ctx.env — while
-// checkProgram's acc still records the name. The next line therefore
+// prepare's acc still records the name. The next line therefore
 // typechecks and then dies at runtime with "Unbound symbol".
 describe("REPL acc regression: bindings after wrapper continuations", () => {
-  const line = (ctx: Ctx, src: string) => {
-    const p = new Parser(src).parseProgram();
-    return exec(p, ctx, checkProgram(p, ctx.checked));
-  };
+  const line = execLine;
 
   test("checker side keeps the binding (the divergence is runtime-only)", () => {
     const ctx = newCtx();
     line(ctx, "c := true; if (c) { 1 } else { 2 }; q :: 5;");
-    expect(() => checkProgram(new Parser("q;").parseProgram(), ctx.checked)).not.toThrow();
+    expect(() => prepare("q;", ctx.checked)).not.toThrow();
   });
 
   // bun:test has no test.fails: this stand-in passes while the body throws
@@ -1116,7 +1113,7 @@ describe("numeric widths", () => {
     // types come from the instantiation); numeric-free bodies stay polymorphic.
     expect(run(`inc :: fn(n: i64) { n + 1 }; inc(41)`)).toBe(42n);
     expect(sliceElems(run(`map(fn(x) { x * x }, range(0, 4, 1))`) as Slice)).toEqual([0n, 1n, 4n, 9n]);
-    expect(showT(checkProgram(new Parser(`id :: fn(x) { x }; id`).parseProgram()).lastType)).toBe("(a) -> a");
+    expect(showT(prepare(`id :: fn(x) { x }; id`).checked.lastType)).toBe("(a) -> a");
   });
 
   test("arithmetic on any is a static error (use @as to pin a width)", () => {
@@ -1149,8 +1146,7 @@ describe("Semantic tokens (typeToks feed the LSP's type/effect highlighting)", (
   // Same for the checker's value-identifier tokens (semToks).
   const vt = (src: string): {kind: string, text: string}[] => {
     const lines = src.split("\n");
-    const prog = new Parser(src).parseProgram();
-    return [...checkProgram(prog).semToks]
+    return [...prepare(src).checked.semToks]
       .sort((a, b) => a.pos.line !== b.pos.line ? a.pos.line - b.pos.line : a.pos.col - b.pos.col)
       .map(t => ({
         kind: t.kind,
@@ -1256,7 +1252,7 @@ collect(1);`)).toEqual([
     // `x :: Foo;` rewinds into a value binding; the failed attempt's tokens
     // (x, Foo) must not leak. The binding then fails the check.
     expect(toks("x :: Foo;")).toEqual([]);
-    expect(() => checkProgram(new Parser("x :: Foo;").parseProgram())).toThrow(/Unbound: Foo/);
+    expect(() => prepare("x :: Foo;")).toThrow(/Unbound: Foo/);
     expect(toks("Pair :: [i32, i32]; counter :: 0;")).toEqual([
       {kind: "type", text: "Pair"},
       {kind: "type", text: "i32"},
@@ -1297,8 +1293,7 @@ describe("selective CPS: dcall/dret classification", () => {
     return n;
   };
   const ir = (src: string): CIr => {
-    const prog = new Parser(src).parseProgram();
-    checkProgram(prog); // the suspension stamps are checker-stamped
+    const {prog} = prepare(src); // the suspension stamps are checker-stamped
     return toCps(prog);
   };
 

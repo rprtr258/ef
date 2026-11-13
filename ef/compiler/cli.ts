@@ -14,21 +14,21 @@
 import {readFileSync, writeFileSync} from "fs";
 import {styleText} from "util";
 import {run} from "./eval.ts";
+import {prepare} from "./pipeline.ts";
 import {compile} from "./wasm.ts";
 import {runWasm} from "./wasm_host.ts";
-import {type Type, showT, showErr, checkProgram} from "./types.ts";
+import {type Type, showT, showErr} from "./types.ts";
 import {lint} from "./lint.ts";
 import {repl} from "./repl.ts";
 import {startLsp} from "./lsp.ts";
 import {show} from "./env.ts";
-import {Parser, type ExprID} from "./parser.ts";
+import {type ExprID} from "./parser.ts";
 
 // types: typecheck a source file; return every top-level symbol (let) with
 // its inferred type, plus the whole program's result type and its residual
 // top-level effect row (Checked.unhandled — the ops that reach the runner).
 function types(src: string): {syms: {name: string, type: Type}[], result: Type, effs: Set<string>} {
-  const prog = new Parser(src).parseProgram();
-  const checked = checkProgram(prog);
+  const {prog, checked} = prepare(src);
   const names: string[] = [];
   for (const it of prog.items.filter((it): it is {e: ExprID} => "e" in it)) {
     const e = prog.nodes[it.e];
