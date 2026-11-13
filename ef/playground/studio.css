@@ -87,8 +87,10 @@ body {
 }
 .tb-btn.icon { padding: 4px 8px; }
 
-/* theme-btn: moon in light mode, sun in dark mode (lucide via icones.js.org) */
-#theme-btn svg { display: block; width: 14px; height: 14px; }
+/* topbar icon glyphs — lucide via icones.js.org */
+.tb-btn.icon svg { display: block; width: 14px; height: 14px; }
+
+/* theme-btn: moon in light mode, sun in dark mode */
 #theme-btn .i-sun { display: none; }
 html[data-theme="dark"] #theme-btn .i-sun { display: block; }
 html[data-theme="dark"] #theme-btn .i-moon { display: none; }
@@ -97,9 +99,46 @@ html[data-theme="dark"] #theme-btn .i-moon { display: none; }
 
 #main {
   flex: 1; min-height: 0;
+  position: relative; /* anchor for the pane corner toggles */
   display: grid;
   grid-template-columns: var(--tree-w, 228px) 6px minmax(0, 1fr) 6px var(--rail-w, 288px);
 }
+
+/* pane fold (panes.ts): a display:none grid item takes no cell — the
+   remaining items reflow into the template's tracks in source order, so each
+   state's template lists exactly the boxed items' tracks. A folded side pane
+   stays as a 28px strip (22px toggle + 3px insets) so its button keeps clear
+   space; the folded bottom panel keeps just its title bar, which hosts its
+   toggle. */
+#main.tree-folded { grid-template-columns: 28px minmax(0, 1fr) 6px var(--rail-w, 288px); }
+#main.rail-folded { grid-template-columns: var(--tree-w, 228px) 6px minmax(0, 1fr) 28px; }
+#main.tree-folded.rail-folded { grid-template-columns: 28px minmax(0, 1fr) 28px; }
+#tree.folded > *, #rail.folded > * { display: none; }
+#panel.folded > :not(#panel-head) { display: none; }
+#panel.folded { height: auto; }
+
+/* pane toggles (panes.ts): the panel's lives in the title bar's right end;
+   the tree/rail's float at their pane's outer corner — the tree's tracks the
+   draggable width, and a folded pane re-pins its button into the residual
+   strip */
+.pane-btn {
+  display: flex; align-items: center; justify-content: center;
+  flex: none;
+  width: 22px; height: 22px; padding: 0;
+  border: none; background: transparent;
+  color: var(--faint); cursor: pointer;
+}
+.pane-btn:hover { color: var(--ink); }
+.pane-btn.off { opacity: .45; }
+.pane-btn svg { display: block; width: 14px; height: 14px; }
+#pane-tree-btn, #pane-rail-btn {
+  position: absolute; z-index: 5;
+  background: var(--pane); border: 1px solid var(--hair); border-radius: 6px;
+}
+#pane-tree-btn { top: 5px; left: calc(var(--tree-w, 228px) - 27px); }
+#main.tree-folded #pane-tree-btn { left: 3px; }
+#pane-rail-btn { top: 5px; right: 5px; }
+#main.rail-folded #pane-rail-btn { right: 3px; }
 
 .pane { overflow: auto; background: var(--pane); }
 

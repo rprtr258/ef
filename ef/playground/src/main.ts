@@ -38,6 +38,7 @@
 // - problems.ts      — problems pane (parse/check/lint diagnostics)
 // - downloads.ts     — file/wasm download helpers
 // - splits.ts        — draggable pane splits
+// - panes.ts          — pane fold/show toggles (tree, bottom panel, rail)
 // - modal.ts         — name-prompt modal
 // - actions.ts       — run/build/recompute/openFile (the controller)
 // - palette.ts       — Ctrl+K command palette
@@ -49,6 +50,7 @@ import {editor, refreshTokens, setupMonaco} from "./editor.ts";
 import {closeModal, setupModal} from "./modal.ts";
 import {clearOutput, outLine, setTab} from "./output.ts";
 import {closePalette, openPalette, setupPalette} from "./palette.ts";
+import {setupPanes} from "./panes.ts";
 import {renderStages} from "./pipeline_card.ts";
 import {renderBuildCard} from "./rail.ts";
 import {setupSplits} from "./splits.ts";
@@ -70,6 +72,7 @@ function boot(): void {
   els.paletteBtn.addEventListener("click", () => openPalette());
   els.clearBtn.addEventListener("click", () => clearOutput());
   setupSplits();
+  setupPanes();
   setupModal();
   setupPalette();
   els.tabOutput.addEventListener("click", () => setTab("output"));
