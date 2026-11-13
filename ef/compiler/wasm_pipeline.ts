@@ -78,7 +78,6 @@ export type Indices = {
   fTruthy: number,
   fEq: number,
   fBox: number,
-  fCapture: number,
   fNum64: number,
   fF32of: number,
   fI32of: number,
@@ -138,6 +137,11 @@ export type Layout = {
   // Terminal K_RET cell (direct-fn dcall fallbacks chain here; its fragment
   // returns the param the dispatcher delivered).
   terminalCellG: number,
+  // Handler-boundary sentinel (immutable K_BND cell) and the mutable
+  // hctx global (the innermost $HDLCTX entry; null at top level). The
+  // sentinel's global index comes after every static; hctx after it.
+  bndG: number,
+  ctxG: number,
 };
 
 // --- phase functions ---------------------------------------------------------
@@ -266,14 +270,13 @@ export function assignIndices(ir: CIr, plan: TermPlan, o: Opt): Indices {
     fTruthy: o.liveImports.length,
     fEq: o.liveImports.length + 1,
     fBox: o.liveImports.length + 2,
-    fCapture: o.liveImports.length + 3,
-    fNum64: o.liveImports.length + 4,
-    fF32of: o.liveImports.length + 5,
-    fI32of: o.liveImports.length + 6,
-    fU32of: o.liveImports.length + 7,
-    fI64of: o.liveImports.length + 8,
-    fU64of: o.liveImports.length + 9,
-    lambda0: o.liveImports.length + 10,
+    fNum64: o.liveImports.length + 3,
+    fF32of: o.liveImports.length + 4,
+    fI32of: o.liveImports.length + 5,
+    fU32of: o.liveImports.length + 6,
+    fI64of: o.liveImports.length + 7,
+    fU64of: o.liveImports.length + 8,
+    lambda0: o.liveImports.length + 9,
     dnum0: 0,
     numFn: new Map(),
     identityRet: undefined!,
@@ -362,6 +365,8 @@ export function layoutStatics(d: Discovery, ix: Indices, o: Opt, plan: TermPlan)
     cloOffsets: new Map(),
     hdlTableOff: new Map(),
     terminalCellG: -1,
+    bndG: -1,
+    ctxG: -1,
   };
   // Number literals (deduped by width + value; the Discovery keys carry both).
   for (const [k, w] of d.numLits) {
@@ -426,6 +431,10 @@ export function layoutStatics(d: Discovery, ix: Indices, o: Opt, plan: TermPlan)
   // cell whose fragment is the terminal-return thunk — (frame, v, k) returns
   // the param the dispatcher delivered as v.
   lay.terminalCellG = newStatic({t: "kret", fni: ix.terminalRet.idx});
+  // The handler-boundary sentinel (a dead-end K_BND cell) + the mutable hctx
+  // global after it — hctx's index is statics.length at build time.
+  lay.bndG = newStatic({t: "kbnd"});
+  lay.ctxG = statics.length;
   return lay;
 }
 
@@ -474,6 +483,15 @@ function staticInit(m: binaryen.Module, d: StaticDesc): binaryen.ExpressionRef {
         m.ref.null(w.heapTypes(4).n),
         m.ref.null(w.heapTypes(5).n),
       ], HT[5]);
+    case "kbnd":
+      // The handler-boundary sentinel: a dead-end K_BND cell — its a/b/next
+      // are dead; dispatch resolves it through the hctx global.
+      return m.struct.new([
+        m.ref.i31(m.i32.const(2)),
+        m.ref.null(w.heapTypes(4).n),
+        m.ref.null(w.heapTypes(4).n),
+        m.ref.null(w.heapTypes(5).n),
+      ], HT[5]);
   }
 }
 
@@ -488,9 +506,12 @@ export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]
       binaryen.createType(sig.p.map(vt)), sig.r === null ? binaryen.none : vt(sig.r));
   }
   // global section: immutable statics, each initialized by a GC constant
-  // expression — instantiation builds the value, no runtime fill.
+  // expression — instantiation builds the value, no runtime fill. The hctx
+  // global (the innermost $HDLCTX handler boundary; null at top level)
+  // trails them as the module's only mutable global.
   for (let i = 0; i < lay.statics.length; i++)
     m.addGlobal(`g${i}`, binaryen.anyref, false, staticInit(m, lay.statics[i]));
+  m.addGlobal(`g${lay.ctxG}`, binaryen.anyref, true, m.ref.null(binaryen.anyref));
   // table + functions + identity element segment (slot i → func i).
   const total = o.liveImports.length + funcs.length;
   m.addTable("t0", total, total);

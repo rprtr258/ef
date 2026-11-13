@@ -15,8 +15,8 @@ export const _T: {
   RF: binaryen.Type[],
   RN: binaryen.Type[],
 } = (() => {
-  const tb = new binaryen.TypeBuilder(21);
-  tb.createRecGroup(0, 21);
+  const tb = new binaryen.TypeBuilder(22);
+  tb.createRecGroup(0, 22);
   const fld = (ty: binaryen.Type, mutable: boolean) => ({type: ty, packedType: binaryen.notPacked, mutable});
   tb.setStructType(0, [fld(binaryen.f64, false)]);                       // 0 $F64 (f64 plane)
   tb.setArrayType(1, binaryen.anyref, binaryen.notPacked, true);         // 1 $ELEMS
@@ -82,6 +82,19 @@ export const _T: {
   tb.setArrayType(18, binaryen.i64, binaryen.notPacked, true);
   tb.setArrayType(19, binaryen.f32, binaryen.notPacked, true);
   tb.setArrayType(20, binaryen.f64, binaryen.notPacked, true);
+  tb.setStructType(21, [                                                 // 21 $HDLCTX
+    // Handler boundary entry — the paper's effect-continuation stack cell.
+    // Lives only in the hctx global (never in K-cell next chains): tag is
+    // always K_HDL; tab = the case table; hframe = the invocation's frame;
+    // outer = the enclosing boundary (null at top level); kret = the Return
+    // delivery target (the handle's own continuation, or the resumer's k2
+    // on a fresh resume entry).
+    fld(binaryen.i31ref, true),
+    fld(binaryen.anyref, true),
+    fld(binaryen.anyref, true),
+    fld(tb.getTempRefType(tb.getTempHeapType(21), true), true),
+    fld(tb.getTempRefType(tb.getTempHeapType(5), true), true),
+  ]);
   const HT = tb.buildAndDispose();
   return {
     HT,
@@ -115,4 +128,5 @@ export type StaticDesc =
   | {t: "clo", fni: number, fsize: number, direct?: 1} // builtin $CLO (direct
                                       // is unset: builtin trampolines are T_KABI)
   | {t: "elems", ws: number[]}        // handler case table ($ELEMS i31s)
-  | {t: "kret", fni: number};         // terminal K_RET cell {0, fni, null, null}
+  | {t: "kret", fni: number}          // terminal K_RET cell {0, fni, null, null}
+  | {t: "kbnd"};                      // the handler-boundary sentinel {2, null, null, null}

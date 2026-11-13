@@ -1,0 +1,39 @@
+# Bench: effect forwarding. Each iteration performs Outer! inside two
+# enclosing handlers that do not catch it, so the op forwards through both
+# handler boundaries (closure composition per boundary in the interpreter,
+# re-walked on resume) before the outermost handler resumes with acc + 2.
+# Regression control for the forwarding path — compare against handlers.ef
+# (single handler, no forwarding) to isolate the per-forward cost.
+effect Inner(acc: i64): i64;
+effect Outer(acc: i64): i64;
+
+inner :: fn(n: i64, acc: i64): i64 ! { Outer } {
+  if (n == 0) {
+    acc
+  } else {
+    next := Outer!(acc);
+    inner(n - 1, next)
+  }
+};
+
+mid :: fn(n: i64, m: i64): i64 ! { Outer } {
+  handle {
+    inner(n, m)
+  } case Inner(acc) => k {
+    k(acc + 1)
+  } case Return(v) => k {
+    v
+  }
+};
+
+run :: fn(n: i64): i64 {
+  handle {
+    mid(n, 0)
+  } case Outer(acc) => k {
+    k(acc + 2)
+  } case Return(v) => k {
+    v
+  }
+};
+
+run(50000)

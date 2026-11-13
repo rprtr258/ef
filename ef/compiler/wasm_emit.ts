@@ -1,5 +1,5 @@
 // Shared value-plane emission of the wasm backend: helper functions ($eq,
-// $truthy, $num64, the width ladders, $captureSlice), the dispatch walk,
+// $truthy, $num64, the width ladders), the dispatch walk,
 // the boxed call ABI, and the failure/bool idioms.
 // The control plane — the IR term walk, perform/handle, case functions —
 // lives in wasm_term.ts. The design doc for the whole backend
@@ -100,10 +100,17 @@ const entryI31 = (b: Buf, tbl: number, ent: number, off: number): void => {
 
 // k-cell field read: cast the local to the $K cell type (shape 5:
 // {kind, a, frame, next}) and read `field`.
-export const cellGet = (b: Buf, cell: number, field: number): void => {
+const cellGet = (b: Buf, cell: number, field: number): void => {
   b.localGet(cell);
   b.refCast(5, true);
   b.structGet(5, field);
+};
+
+// $HDLCTX field read (shape 21: {tag, tab, hframe, outer, kret}).
+export const hdlGet = (b: Buf, entry: number, field: number): void => {
+  b.localGet(entry);
+  b.refCast(21, true);
+  b.structGet(21, field);
 };
 
 // k-cell's frame field (slot 2) cast to the $FRAME shape (4).
@@ -119,10 +126,9 @@ const cellFrame = (b: Buf, cell: number): void => {
 // (emitPerform, matching the performed op): scan the flat [opid, fnIdx,
 // fsize, nparams]* i31 table at `tbl` for the first entry whose word 0
 // equals the i32 `want` pushes; on the first match set `found`, read
-// fnIdx/fsize/nparams into fresh scan locals (returned), run `onMatch`
-// for caller extras (e.g. remember the matching handler cell), and break
-// out of the scan. The caller branches on `found` afterwards.
-export function emitCaseScan(f: Fn, tbl: number, want: () => void, onMatch?: () => void): {found: number, fnIdx: number, fsz: number, nparams: number} {
+// fnIdx/fsize/nparams into fresh scan locals (returned), and break out of
+// the scan. The caller branches on `found` afterwards.
+export function emitCaseScan(f: Fn, tbl: number, want: () => void): {found: number, fnIdx: number, fsz: number, nparams: number} {
   const b = f.body;
   const found = f.i32(), fnIdx = f.i32(), fsz = f.i32(),
     nparams = f.i32(), ent = f.i32();
@@ -145,7 +151,6 @@ export function emitCaseScan(f: Fn, tbl: number, want: () => void, onMatch?: () 
     entryI31(b, tbl, ent, 1); b.localSet(fnIdx);
     entryI31(b, tbl, ent, 2); b.localSet(fsz);
     entryI31(b, tbl, ent, 3); b.localSet(nparams);
-    if (onMatch !== undefined) onMatch();
     b.br(2); // exit the scan
     b.end();
   });
@@ -435,76 +440,6 @@ export function emitHelpers(em: Emit): Fn[] {
   em.ix.funcRefTypes.set(em.ix.fBox, w.T_BOX);
   box.body.localGet(0);
   box.body.structNew(0);
-  // $captureSlice(k: (ref null $K), n: anyref i31) -> (ref null $K): fresh
-  // copies of the first n cells of the chain at k, each {kind, a, b} verbatim;
-  // the copies chain in walk order and the bottom copy's next is null — the
-  // slice is self-contained. It must not chain onto the live chain's
-  // handler cell: the record holding the slice stays reachable while its
-  // resume closure is (the invocation's hframe copy → the resume binder
-  // slot), and a link out would root the previous generation's record
-  // through this one, so every per-perform O(depth) slice would retain all
-  // earlier ones — O(n²) live cells over a run of n performs. The resume
-  // fn splices its fresh HDL onto the copy's bottom by position (the
-  // record's length) instead. One pass: allocate each copy with next =
-  // null and patch the previous copy's next on the way (copies are fresh,
-  // so aliasing is not a concern). n ≥ 1: the slice always starts at a
-  // RET cell, so head is non-null at the end. (The length rides as an
-  // i31 in an anyref param: a [ref, i32] param tuple makes binaryen.js's
-  // createType abort mid-pipeline.)
-  const capture = new Fn(2, em);
-  capture.typeIdx = w.T_CAPTURE;
-  em.ix.funcRefTypes.set(em.ix.fCapture, w.T_CAPTURE);
-  tracePoint(em, capture, "capture enter");
-  {
-    const b = capture.body;
-    const cur = capture.anyref(), cell = capture.anyref(),
-      prev = capture.anyref(), head = capture.anyref();
-    const n = capture.i32();
-    b.localGet(0);
-    b.localSet(cur);
-    b.localGet(1); // the length, i31-boxed into the anyref param
-    i31of(b);
-    b.localSet(n);
-    tracePoint(em, capture, "capture n", () => b.localGet(n));
-    capture.walkLoop(
-      () => {
-        b.localGet(n);
-        b.num(w.EQZ);
-      },
-      () => {
-        // cell = a fresh copy of cur with next = null.
-        cellGet(b, cur, 0);
-        cellGet(b, cur, 1);
-        cellGet(b, cur, 2);
-        b.refNull(5);
-        b.structNew(5);
-        b.localSet(cell);
-        // head = the first copy; later copies chain off the previous one.
-        b.localIsNull(head); // ref.is_null: first copy → remember it as head
-        b.if();
-        b.localGet(cell);
-        b.localSet(head);
-        b.els();
-        b.localGet(prev);
-        b.refCast(5, true);
-        b.localGet(cell);
-        b.refCast(5, true); // the local is anyref; struct.set needs the exact $K type
-        b.structSet(3); // prev.next = cell
-        b.end();
-        b.localGet(cell);
-        b.localSet(prev);
-        cellGet(b, cur, 3);
-        b.localSet(cur);
-        b.localGet(n);
-        b.i32Const(1);
-        b.num(w.SUB);
-        b.localSet(n);
-      },
-    );
-    // the bottom copy's next stays null (self-contained slice)
-    b.localGet(head);
-    b.refCast(5, true);
-  }
   // $num64(v: anyref) -> f64: adaptive numeric unbox for the f64 plane —
   // $F64 payload as-is; an $F32 box promotes (exact): float-wildcard
   // values can flow into f64-plane positions (builtin params,
@@ -543,7 +478,7 @@ export function emitHelpers(em: Emit): Fn[] {
   const u32of = ofPair(w.T_GETI32, 0x7f, 8, 7, [[9, [w.I32_WRAP_I64]], [10, [w.I32_WRAP_I64]]], [w.I64_TRUNC_F64, w.I32_WRAP_I64]);
   const i64of = ofPair(w.T_GETI64, 0x7e, 9, 10, [[7, [w.I64_EXTEND_I32_S]], [8, [w.I64_EXTEND_I32_U]]], [w.I64_TRUNC_F64]);
   const u64of = ofPair(w.T_GETI64, 0x7e, 10, 9, [[7, [w.I64_EXTEND_I32_S]], [8, [w.I64_EXTEND_I32_U]]], [w.I64_TRUNC_F64]);
-  return [truthy, eq, box, capture, num64, f32of, i32of, u32of, i64of, u64of];
+  return [truthy, eq, box, num64, f32of, i32of, u32of, i64of, u64of];
 }
 
 type CallOpts = {
@@ -801,45 +736,6 @@ export function tracePoint(em: Emit, f: Fn, label: string, pushVal?: () => void)
   b.callFn(imp);
 }
 
-// Walk the $K chain from local `kn` until the cell is NOT a same-table
-// splice cell: exits with kn = the first non-splice next (null at the tail
-// handle's direct boundary — exit before dereferencing; the case fn's
-// completion null-k-yields to the direct entry). A foreign nested handle's
-// HDL on the chain is a legitimate scan target and stops the walk —
-// skipping it would sever the completion's path into that handle.
-export function skipSameTableSplices(f: Fn, kn: number, tbl: number, stepTrace?: () => void): void {
-  const b = f.body;
-  const knx = f.i32();
-  f.walkLoop(
-    () => {
-      b.localGet(kn);
-      b.isNull(); // ref.is_null
-      b.localSet(knx);
-      b.localGet(knx);
-      b.num(w.EQZ);
-      b.if();
-      cellGet(b, kn, 0); b.i31Get();
-      b.i32Const(w.K_HDL); b.num(w.EQ); b.num(w.EQZ);
-      b.localSet(knx); // 1 = exit (not a K_HDL)
-      b.localGet(knx);
-      b.num(w.EQZ);
-      b.if();
-      cellGet(b, kn, 1); b.refCast(w.EQREF, true);
-      b.localGet(tbl); b.refCast(w.EQREF, true);
-      b.refEq(); b.num(w.EQZ); // 1 = exit (a foreign handle's HDL)
-      b.localSet(knx);
-      b.end();
-      b.end();
-      b.localGet(knx);
-    },
-    () => {
-      cellGet(b, kn, 3);
-      b.localSet(kn);
-      stepTrace?.();
-    },
-  );
-}
-
 export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
   const b = f.body;
   const kind = () => { cellGet(b, k, 0); b.i31Get(); };
@@ -860,49 +756,56 @@ export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
   cellGet(b, k, 1); i31of(b);
   b.callIndirect(w.T_III_I, true);
   b.end();
-  // K_HDL: scan the case table at k.a (a $ELEMS of flat [opid, fnIdx,
-  // fsize, nparams] i31 quadruples; the Return case, opid -1, goes last).
-  // Only kind==K_HDL scans. The scan is emitted only when the program
-  // contains a handle: K_HDL
-  // cells enter a chain solely via handle emission, so a handle-free
-  // program's scan is dead code — skipping it drops a nested scan loop
-  // (plus ~30 instructions of table probing) from every dispatch site.
+  // K_BND: the handler-boundary sentinel — resolve the Return delivery
+  // through the hctx global's innermost $HDLCTX entry (handler boundaries
+  // never sit in K-cell chains). Only kind==K_BND scans. The arm is emitted
+  // only when the program contains a handle: sentinel cells enter a chain
+  // solely via handle emission, so a handle-free program's scan is dead
+  // code — skipping it drops a nested scan loop (plus ~30 instructions of
+  // table probing) from every dispatch site.
   if (em.d.hasHandle) {
-    kind(); b.i32Const(w.K_HDL); b.num(w.EQ);
+    kind(); b.i32Const(w.K_BND); b.num(w.EQ);
     b.if();
-    tracePoint(em, f, `d f${f.fid}(idx${f.idx}) K_HDL`);
-    const tbl = f.anyref();
-    cellGet(b, k, 1);
+    tracePoint(em, f, `d f${f.fid}(idx${f.idx}) K_BND`);
+    const entry = f.anyref(), tbl = f.anyref();
+    b.globalGet(em.lay.ctxG);
+    b.localSet(entry);
+    hdlGet(b, entry, 1);
     b.localSet(tbl);
     const {found, fnIdx, nparams} = emitCaseScan(f, tbl, () => b.i32Const(-1));
     b.localGet(found);
     b.if();
-    // Return case: store v into the hframe's Return param slot, then
-    // tail-call the case body as (hframe, k.next); funcref index last.
-    // The continuation walks past K_HDL cells: on a resumed sub-run the
-    // chain's next HDL is the fresh splice cell whose Return row would
-    // re-run this case body on its own already-transformed result
-    // (clobbering the hframe slot). The interpreter delivers the ret
-    // case's value straight to the resume's k2 — one ret-body run per
-    // completion — so skip splice cells here; the first run's κ (a K_RET)
-    // is reached unchanged.
-    cellFrame(b, k); b.structGet(4, 1);
+    // Return case: store v into the hframe's Return param slot, pop the
+    // boundary (hctx := outer), then tail-call the case body as
+    // (hframe, kret) — the paper's ret clause discarding the effect
+    // continuation. kret is the entry's delivery target: the handle's own
+    // continuation on the first run, the resumer's k2 on a fresh entry.
+    const hf = f.typed(_T.RF[4]);
+    hdlGet(b, entry, 2);
+    b.refCast(4, true);
+    b.localSet(hf);
+    b.localGet(hf);
+    b.structGet(4, 1);
     b.localGet(nparams); b.i32Const(1); b.num(w.ADD);
     b.localGet(v);
     b.arraySet();
-    const hf = f.typed(_T.RF[4]);
-    cellFrame(b, k);
-    b.localSet(hf);
+    const outer = f.anyref();
+    hdlGet(b, entry, 3);
+    b.localSet(outer);
+    b.localGet(outer);
+    b.globalSet(em.lay.ctxG);
     const kn = f.typed(_T.RF[5]);
-    cellGet(b, k, 3);
+    hdlGet(b, entry, 4);
     b.localSet(kn);
-    skipSameTableSplices(f, kn, tbl);
     b.localGet(hf);
     b.localGet(kn);
     b.localGet(fnIdx);
     b.callIndirect(w.T_KABI, true);
     b.end();
-    b.end(); // kind==K_HDL guard
+    // The table always ends with a -1 row (explicit Return, identityRet,
+    // or idRet) — the scan cannot miss.
+    b.unreachable();
+    b.end(); // kind==K_BND guard
   }
   // No Return case: k = k.next and dispatch again.
   cellGet(b, k, 3);

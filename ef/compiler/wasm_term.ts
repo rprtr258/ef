@@ -18,16 +18,19 @@
 //   operand carries the rest), reusing emitCallClosure's boxed ABI.
 // - `perform` boxes its atoms into the op-args carrier, resolves the
 //   k-operand cell (the reified continuation — the converter guarantees it
-//   denotes the ambient continuation), walks the ambient chain for a
-//   K_HDL, builds the resume record over the slice [k-cell .. handler)
-//   and tail-calls the case body over an hframe copy; with no handler the
-//   host fallback runs and the value dispatches through the k cell.
-// - `handle` installs a K_HDL {case table, hframe, next = the k-operand
-//   cell}; the body emits inline with the ret binder bound to the HDL
-//   (frame slot + local); case bodies emit as T_KABI functions over the
-//   hframe with the exit binder bound to their k param. The Return case's
-//   resume binder (identity returning the done value) is materialized by
-//   the ret case fn's prologue.
+//   denotes the ambient continuation), walks the hctx boundary stack for a
+//   handler (O(1) for the innermost; forwarding follows outer pointers),
+//   records the live k cell + the reversed chain of forwarded boundaries
+//   in the resume record and tail-calls the case body over an hframe copy;
+//   with no handler the host fallback runs and the value dispatches
+//   through the k cell.
+// - `handle` pushes a $HDLCTX boundary {case table, hframe, outer, kret}
+//   onto the hctx global (handler boundaries never sit in K-cell chains)
+//   and binds the ret binder to the K_BND sentinel (frame slot + local);
+//   case bodies emit as T_KABI functions over the hframe with the exit
+//   binder bound to their k param. The Return case's resume binder
+//   (identity returning the done value) is materialized by the ret case
+//   fn's prologue.
 //
 // The frame model mirrors the interpreter's Env chain exactly (that is the
 // contract capts/freeze assume): scope nodes, materialized-letk definition
@@ -43,10 +46,10 @@ import binaryen from "binaryen";
 import * as w from "./wasm_consts.ts";
 import {WasmError, _T, type ValueRef} from "./wasm_types.ts";
 import {BUILTINS} from "./analysis.ts";
-import {DBGTRACE, mapLikeFrameWords, numSig} from "./wasm_tables.ts";
+import {mapLikeFrameWords, numSig} from "./wasm_tables.ts";
 import {type CIr, type CTerm, type CAtom, type CPrim, type CFn} from "./cps_ir.ts";
 import {type Buf, Fn} from "./wasm_body.ts";
-import {type Emit, emitDispatch, emitCaseScan, selectBool, emitFail, i31of, makeRestThunk, cellGet, CMP_OPS, emitCallClosure, emitDirectEntryCall, emitNumericEntryCall, rebox, boxShapeOf, planeLocal, reboxCallResult, skipSameTableSplices, tracePoint} from "./wasm_emit.ts";
+import {type Emit, emitDispatch, emitCaseScan, selectBool, emitFail, i31of, makeRestThunk, hdlGet, CMP_OPS, emitCallClosure, emitDirectEntryCall, emitNumericEntryCall, rebox, boxShapeOf, planeLocal, reboxCallResult, tracePoint} from "./wasm_emit.ts";
 import {analyzeDevirt, classifySlots, numericEntries, type Devirt, type NumEntry} from "./wasm_devirt.ts";
 import type {Type} from "./types.ts";
 
@@ -2288,9 +2291,8 @@ function emitDlet(wk: Walk, t: CTerm & {t: "dlet"}, v: number): void {
 }
 
 // ---------------------------------------------------------------------------
-// perform (IR): the k-operand cell is the continuation.
-// Slice = [k cell .. handler) captured by position (the shared resume
-// fn's splice machinery unchanged).
+// perform (IR): the k-operand cell is the continuation; handler lookup
+// walks the hctx boundary stack, never the K-cell chain.
 
 function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   const em = wk.em, f = wk.f, b = f.body;
@@ -2322,76 +2324,15 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   const opid = em.d.effOpIds.get(t.op)!;
   const kref = resolveK(wk, t.k);
   if (kref.kind === "label") throw new WasmError("internal: perform k must be materialized");
-  // The k operand denotes the ambient continuation (converter guarantee),
-  // so the reified cell IS the ambient head: the walk starts at its next.
-  const kL = f.anyref(), hdl = f.anyref(), tbl = f.anyref();
-  const steps = f.i32();
-  const knd = f.i32();
-  let found = 0, fnIdx = 0, fsz = 0, nparams = 0;
-  b.localGet(kref.local);
-  b.localSet(kL);
-  b.i32Const(0);
-  b.localSet(steps);
-  f.walkLoop(
-    () => {
-      b.localIsNull(kL); // k=0 → no handler anywhere → host fallback
-    },
-    () => {
-      cellGet(b, kL, 0); b.i31Get();
-      b.localSet(knd);
-      tracePoint(em, f, "walk:kind", () => b.localGet(knd));
-      b.localGet(knd);
-      b.i32Const(w.K_HDL);
-      b.num(w.EQ);
-      b.if();
-      tracePoint(em, f, "walk:K_HDL");
-      cellGet(b, kL, 1);
-      b.localSet(tbl);
-      tracePoint(em, f, "walk:tbl", () => {
-        b.localGet(tbl);
-        b.refCast(1, true);
-        b.i32Const(0);
-        b.arrayGet(1); // first row's opid — identifies WHICH handle's table
-        b.refCast(w.I31REF, false);
-        b.i31Get();
-      });
-      tracePoint(em, f, "walk:fsz", () => {
-        cellGet(b, kL, 2);
-        b.refCast(4, true);
-        b.structGet(4, 1);
-        b.arrayLen(); // original handle frame vs the resume hfc (fsz=4)
-      });
-      ({found, fnIdx, fsz, nparams} = emitCaseScan(f, tbl, () => b.i32Const(opid), () => {
-        b.localGet(kL);
-        b.localSet(hdl); // remember the matching handler cell
-      }));
-      b.localGet(found);
-      b.brIf(2); // matched handler → leave the walk
-      b.end();
-      if (DBGTRACE) {
-        // K_RET only: field a = the thunk funcref (i31) — identifies the
-        // letk (an HDL's field 1 is a table ref, not an i31).
-        b.localGet(knd);
-        b.num(w.EQZ);
-        b.if();
-        tracePoint(em, f, "walk:fn", () => {
-          cellGet(b, kL, 1);
-          b.refCast(w.I31REF, false);
-          b.i31Get();
-        });
-        b.end();
-      }
-      cellGet(b, kL, 3);
-      b.localSet(kL);
-      b.localGet(steps);
-      b.i32Const(1);
-      b.num(w.ADD);
-      b.localSet(steps);
-      tracePoint(em, f, "walk:step", () => b.localGet(steps));
-    },
-  );
-  // Resume capture record: 5 slots {1: slice, 2: table, 3: hfc, 4: slen};
-  // slice = [k cell] + the walked cells (slen = steps + 1).
+  // Resume capture record: 5 slots {0: slice head, 1: table, 2: hfc,
+  // 3: matched boundary, 4: skipped boundaries}. The slice head is the
+  // perform site's own k cell — live and shared: the resume fn conses a
+  // fresh $HDLCTX onto hctx (the paper's resumption re-arming the handler
+  // on the resumer's context) and dispatches straight into the captured
+  // chain — no slice copy, no splice, no off-chain rewrite. The skipped
+  // chain holds REVERSED copies of the boundaries forwarded over (innermost
+  // first): a resumed segment stays lexically inside them, so the resume
+  // re-chains them above the fresh entry — the paper's Mforward consing.
   const rec = extendFrame(wk, 5);
   const recSlots = f.typed(_T.RF[1]);
   b.localGet(rec);
@@ -2407,45 +2348,69 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   b.refI31();
   b.i32Const(0);
   b.refI31();
-  b.structNew(6); // the resume binder: $CLO over $resumeCapture
+  b.structNew(6); // the resume binder: $CLO over $resumeFn
   const rclo = f.anyref();
   b.localSet(rclo);
+  b.localGet(recSlots);
+  b.i32Const(0);
+  b.localGet(kref.local);
+  b.refCast(5, true);
+  b.arraySet();
+  // Handler lookup: walk the hctx boundary stack — the paper's effect
+  // continuation at a fixed position. O(1) for the innermost handler;
+  // forwarding follows outer pointers, one step per handler boundary —
+  // never through the K-cell chain, so recursion depth is invisible here.
+  // Each forwarded boundary is consed (reversed) into the skip chain for
+  // the resume record.
+  const cur = f.anyref(), entry = f.anyref(), tbl = f.anyref();
+  const skip = f.anyref();
+  b.globalGet(em.lay.ctxG);
+  b.localSet(cur);
+  b.refNull(21);
+  b.localSet(skip);
+  let found = 0, fnIdx = 0, fsz = 0, nparams = 0;
+  f.walkLoop(
+    () => {
+      b.localIsNull(cur);
+    },
+    () => {
+      hdlGet(b, cur, 1);
+      b.localSet(tbl);
+      ({found, fnIdx, fsz, nparams} = emitCaseScan(f, tbl, () => b.i32Const(opid)));
+      b.localGet(found);
+      b.if();
+      b.localGet(cur);
+      b.localSet(entry);
+      b.br(2); // matched handler → leave the walk
+      b.end();
+      // Forwarded boundary: cons a private copy (verbatim fields, outer =
+      // the chain built so far) — the resume fn re-chains these above its
+      // fresh entry so the sub-run's completions re-enter them.
+      b.i31Const(w.K_HDL);
+      hdlGet(b, cur, 1); // tab
+      hdlGet(b, cur, 2); // hframe
+      b.localGet(skip); // outer
+      b.refCast(21, true);
+      hdlGet(b, cur, 4); // kret (verbatim)
+      b.structNew(21);
+      b.localSet(skip);
+      hdlGet(b, cur, 3); // outer — the next enclosing boundary
+      b.localSet(cur);
+    },
+  );
   b.localGet(found);
   b.if(); // void: both arms end in tail calls (the no-handler arm drops
   // the dead null-k path's block result below)
-  // FOUND ARM — everything here dereferences hdl (null when no handler
-  // matched; the walk may end at k=0 without ever setting it).
+  // FOUND ARM — everything here dereferences entry (set iff the hctx walk
+  // matched; the walk may end at hctx = null without ever setting it).
   tracePoint(em, f, "perform:found", () => b.localGet(fsz)); // matched row's fsize
-  // rec[1] = the captured chain [k cell .. handler); rec[2] = the handler's
-  // case table; rec[3] = the per-invocation hframe copy; rec[4] = the chain
-  // length (the shared resume fn splices the fresh HDL back in on resume).
+  // rec[1] = the matched boundary's case table; rec[2] = the per-invocation
+  // hframe copy. rec[0] (the slice head) was stored before the lookup.
   b.localGet(recSlots);
   b.i32Const(1);
-  b.localGet(kref.local);
-  b.refCast(5, true);
-  b.localGet(steps);
-  b.i32Const(1);
-  b.num(w.ADD);
-  b.refI31();
-  tr("perform:preCapture");
-  b.callFn(em.ix.fCapture);
+  hdlGet(b, entry, 1); // the matched boundary's case table
   b.arraySet();
   tr("perform:rec1");
-  b.localGet(recSlots);
-  b.i32Const(2);
-  b.localGet(hdl);
-  b.refCast(5, true);
-  b.structGet(5, 1); // the matched handler's case table
-  b.arraySet();
-  tr("perform:rec2");
-  // rec[0] = the ORIGINAL HDL cell: the shared resume fn's off-chain
-  // rewrite needs it to recognize install-time cells tailing into this
-  // handle (fCapture's copies hide it — the splice only retargets copies).
-  b.localGet(recSlots);
-  b.i32Const(0);
-  b.localGet(hdl);
-  b.refCast(5, true);
-  b.arraySet();
   // Per-invocation hframe copy (case invocations of one handler nest; the
   // resume record roots this invocation's copy).
   // fsz is a runtime local from the scan — the frame size and copy length
@@ -2453,14 +2418,17 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   // constant); the op arity is static (the performed op's arg count = the
   // matched row's nparams).
   const hfc = f.typed(_T.RF[4]), slots = f.typed(_T.RF[1]);
-  // The hfc's parent = the matched handler's hframe parent: the case body's
+  // The hfc's parent = the matched boundary's hframe parent: the case body's
   // slot depths resolve against the HANDLE site's frame chain (where the
   // case is defined), not the perform site's (which may be inside a letk
-  // thunk with extra activation frames).
-  b.localGet(hdl);
-  b.refCast(5, true);
-  b.structGet(5, 2); // the shared hframe
+  // thunk with extra activation frames). On a fresh (resumed) entry the
+  // hframe is the record's hfc — its parent chains back to the handle site
+  // through the copy that created it.
+  const ehf = f.typed(_T.RF[4]);
+  hdlGet(b, entry, 2); // the boundary's hframe
   b.refCast(4, true);
+  b.localSet(ehf);
+  b.localGet(ehf);
   b.structGet(4, 0); // its parent = the handle site's frame
   b.localGet(fsz);
   b.arrayNew(1);
@@ -2471,10 +2439,7 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   b.localSet(slots);
   b.localGet(slots);
   b.i32Const(0);
-  b.localGet(hdl);
-  b.refCast(5, true);
-  b.structGet(5, 2); // the shared hframe
-  b.refCast(4, true);
+  b.localGet(ehf);
   b.structGet(4, 1);
   b.i32Const(0);
   b.localGet(fsz);
@@ -2497,31 +2462,26 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   b.arraySet();
   tr("perform:caseDispatch");
   b.localGet(recSlots);
-  b.i32Const(3);
+  b.i32Const(2);
   b.localGet(hfc);
   b.arraySet();
   b.localGet(recSlots);
-  b.i32Const(4);
-  b.localGet(steps);
-  b.i32Const(1);
-  b.num(w.ADD);
-  b.refI31();
+  b.i32Const(3);
+  b.localGet(entry);
   b.arraySet();
-  // k = the matched handler's own continuation, walked past K_HDL cells:
-  // on a resumed perform the found hdl is a chain copy whose next is the
-  // fresh splice cell — the case body's completion ($xit = kNext) must
-  // reach the resume's k2 directly, exactly like the interpreter's
-  // per-run kOuter, not re-enter the fresh cell's Return scan.
+  b.localGet(recSlots);
+  b.i32Const(4);
+  b.localGet(skip);
+  b.arraySet();
+  // The case body runs OUTSIDE the handler (the paper's case clause on the
+  // stack tail below the matched pair): pop the boundary before dispatch.
+  // Its completion ($xit) = the boundary's kret — the handle's own
+  // continuation on the first run, the resumer's k2 on a fresh entry.
   const ckn = f.typed(_T.RF[5]);
-  cellGet(b, hdl, 3);
+  hdlGet(b, entry, 4);
   b.localSet(ckn);
-  skipSameTableSplices(f, ckn, tbl, () => tracePoint(em, f, `f${f.fid} cknhop`, () => {
-    const t1 = f.i32();
-    b.localGet(ckn);
-    b.isNull();
-    b.localSet(t1);
-    b.localGet(t1);
-  }));
+  hdlGet(b, entry, 3); // outer
+  b.globalSet(em.lay.ctxG);
   b.localGet(hfc);
   b.localGet(ckn);
   b.localGet(fnIdx);
@@ -2555,50 +2515,64 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
 function emitHandleT(wk: Walk, t: AHandle): void {
   const em = wk.em, f = wk.f, b = f.body;
   const hp = t.__p!;
-  const hf = f.typed(_T.RF[4]), hdl = f.anyref();
+  const hf = f.typed(_T.RF[4]), kn = f.typed(_T.RF[5]);
   b.localGet(0); // parent = the frame at the handle site
   b.i32Const(hp.hframeSize);
   b.arrayNew(1);
   b.structNew(4);
   b.localSet(hf);
-  // HDL next = the handle's own continuation (the k-operand cell — always
-  // materialized; the converter wrapped the after-handle rest). A tail
-  // handle in a direct body resolves k to the never-set knull local — the
-  // terminal cell stands in: a real K_RET whose fragment returns the value,
-  // so the caseDispatch's ckn walk yields a live chain link (a raw null
-  // would sever the resume's k2 threading and lose propagating performs).
+  // kret = the handle's own continuation (the k-operand cell — always
+  // materialized; the converter wrapped the after-handle rest): the Return
+  // delivery target for the first run. A tail handle in a direct body
+  // resolves k to the never-set knull local — the terminal cell stands in:
+  // the case body's completion returns the value (a raw null would sever
+  // the resume's k2 threading and lose propagating performs).
   const kref = resolveK(wk, t.k);
   if (kref.kind === "label") throw new WasmError("internal: handle k must be materialized");
-  b.i31Const(w.K_HDL);
-  b.globalGet(em.lay.hdlTableOff.get(hp.hdlIdx)!);
-  b.localGet(hf);
   if (wk.kTerminal === true && kref.local === wk.kL) {
-    // The tail handle's knull boundary: the terminal cell stands in so the
-    // caseDispatch's ckn walk yields a live chain link (a raw null would
-    // sever the resume's k2 threading and lose propagating performs).
     cellNextE(wk, b);
     b.refCast(5, true); // $K.next is $K-typed (cellNextE pushes an anyref global)
   } else {
     b.localGet(kref.local);
     b.refCast(5, true);
   }
-  b.structNew(5);
-  b.localSet(hdl);
-  // The ret binder: the HDL cell — frame slot (thunks inside the body
-  // reach it through the chain) + a local for inline jumps.
-  storeAt(wk, 0, hp.retSlot, hdl);
-  addLocal(wk.ts[0], t.ret, hdl);
-  // Body with the handler cell as the ambient continuation: every value
-  // flows through the handler's Return entry. Thunks created inside the
-  // body rebind the ret binder to their kNext (the done-marker rule). The
-  // island's ambient chain is the HDL cell — a real continuation — so
-  // kTerminal clears: cells installed inside must chain to it (their
-  // completions reach the handler's ret path), not to the direct entry's
-  // terminal return.
+  b.localSet(kn);
+  // The boundary entry (the paper's effect-continuation stack cell): pushed
+  // onto hctx for the body's run — performs match its case table, the
+  // K_BND sentinel resolves Return deliveries through it. outer = the
+  // pre-entry hctx; the entry is discarded (popped at the sentinel) when
+  // the body completes, and never sits in any K-cell chain.
+  const entry = f.anyref();
+  b.i31Const(w.K_HDL);
+  b.globalGet(em.lay.hdlTableOff.get(hp.hdlIdx)!);
+  b.localGet(hf);
+  b.globalGet(em.lay.ctxG);
+  b.refCast(21, true); // outer: (ref null $HDLCTX) — null passes (top level)
+  b.localGet(kn);
+  b.structNew(21);
+  b.localSet(entry);
+  b.localGet(entry);
+  b.globalSet(em.lay.ctxG);
+  // The ret binder ($hret): the K_BND sentinel — frame slot (thunks inside
+  // the body reach it through the chain) + a local for inline resolves. The
+  // sentinel resolves through hctx at dispatch, so a resumed sub-run's
+  // completion reaches the fresh entry's kret (the resumer's k2) with no
+  // per-resume retargeting.
+  const bnd = f.anyref();
+  b.globalGet(em.lay.bndG);
+  b.localSet(bnd);
+  storeAt(wk, 0, hp.retSlot, bnd);
+  addLocal(wk.ts[0], t.ret, bnd);
+  // Body with the boundary sentinel as the ambient continuation: every
+  // value flows through the hctx boundary's Return entry. Thunks created
+  // inside the body rebind the ret binder to their kNext (the done-marker
+  // rule). kTerminal clears: cells installed inside must chain to the
+  // sentinel (their completions reach the boundary's ret path), not to the
+  // direct entry's terminal return.
   const saved = wk.kL;
   const savedRet = wk.retName;
   const savedTerm = wk.kTerminal;
-  wk.kL = hdl;
+  wk.kL = bnd; // a local holding the sentinel cell
   wk.kTerminal = false;
   wk.retName = t.ret;
   emitTerm(wk, t.body);
@@ -2677,16 +2651,14 @@ function emitRetResumeFn(em: Emit, f: Fn, slot: number): void {
   emitDispatch(em, f, v);
 }
 
-// The shared resume fn — its record layout and slice-splice mechanics are
+// The shared resume fn — its record layout and hctx re-consing are
 // IR-independent; the slice head is the perform's k-operand cell.
 export function emitResumeFn(em: Emit, rf: Fn): void {
   rf.em = em;
   tracePoint(em, rf, "resumeFn enter");
   {
     const b = rf.body;
-    const v = rf.anyref(), rec = rf.anyref(), slice = rf.anyref();
-    const copy = rf.anyref(), fresh = rf.anyref(), cur = rf.anyref();
-    const len = rf.i32(), j = rf.i32();
+    const v = rf.anyref(), rec = rf.anyref(), head = rf.typed(_T.RF[5]);
     const recSlot = (n: number): void => {
       b.localGet(rec);
       b.refCast(4, true);
@@ -2699,179 +2671,51 @@ export function emitResumeFn(em: Emit, rf: Fn): void {
     b.localGet(0);
     b.structGet(4, 0); // the capture record (env frame)
     b.localSet(rec);
-    recSlot(1);
-    b.localSet(slice);
-    recSlot(4);
-    i31of(b);
-    b.localSet(len);
-    b.localGet(slice);
-    b.refCast(5, true);
-    b.localGet(len);
-    b.refI31();
-    b.callFn(em.ix.fCapture);
-    b.localSet(copy);
+    // The paper's resumption: cons a fresh $HDLCTX onto hctx — the handler
+    // re-armed on top of the RESUMER's context — then dispatch the resumed
+    // value into the captured chain (rec[0], the live perform-site k cell,
+    // shared untouched). No slice copy, no splice, no off-chain rewrite;
+    // multi-shot resume just re-conses, and every cell in the sub-run that
+    // tails into the K_BND sentinel resolves through the fresh entry.
+    // rec[4] = the reversed chain of boundaries the perform forwarded over
+    // (record-private copies, innermost LAST). Re-cons them above the fresh
+    // entry: the sub-run stays lexically inside them, so its ops match them
+    // first and its completions re-enter their Return paths before reaching
+    // the fresh boundary (the paper's Mforward consing).
+    const fresh = rf.anyref(), prev = rf.anyref(), sn = rf.anyref();
     b.i31Const(w.K_HDL);
-    recSlot(2); // a = the matched handler's case table
-    recSlot(3); // b = the invocation's hframe copy
-    b.localGet(1); // next = the k this closure was invoked with
-    b.refCast(5, true); // $K.next is $K-typed
-    b.structNew(5);
+    recSlot(1); // the matched boundary's case table
+    recSlot(2); // the invocation's hfc
+    b.globalGet(em.lay.ctxG); // outer = the resumer's context
+    b.refCast(21, true);
+    b.localGet(1); // kret = the k this closure was invoked with
+    b.structNew(21);
     b.localSet(fresh);
-    // Splice the fresh HDL onto the copy's bottom: len-1 next-steps from
-    // the head (len ≥ 1 — the slice always starts at the perform's k cell).
-    b.localGet(copy);
-    b.localSet(cur);
-    b.i32Const(1);
-    b.localSet(j);
-    rf.walkLoop(
-      () => {
-        b.localGet(j);
-        b.localGet(len);
-        b.num(w.EQ);
-      },
-      () => {
-        cellGet(b, cur, 3);
-        b.localSet(cur);
-        b.localGet(j);
-        b.i32Const(1);
-        b.num(w.ADD);
-        b.localSet(j);
-      },
-    );
-    b.localGet(cur);
-    b.refCast(5, true);
     b.localGet(fresh);
-    b.refCast(5, true);
-    b.structSet(3);
-    // Off-chain cell rewrite: the interpreter's done marker short-circuits
-    // to the resuming run's k2 (pending outer resumptions are abandoned),
-    // so every K cell in the sub-run's frames whose next tails into a
-    // K_HDL OF THIS HANDLE — while-exit cells and other install-time cells
-    // off the captured next-chain — must tail into the fresh HDL instead;
-    // else a resumed sub-run completing through them halts at the original
-    // κ (or routes through a stale earlier fresh chain, looping forever).
-    // Handle identity = the case table (field a is shared by the original
-    // HDL and every fresh copy; fCapture's copies hide the original, and
-    // the splice only retargets copied cells).
-    // `copy` is the copied chain's HEAD cell (fCapture walks `next`).
-    const cel = rf.typed(_T.RF[5]);
-    const fr = rf.typed(_T.RF[4]), slots = rf.typed(_T.RF[1]);
-    const nxt = rf.anyref(), val = rf.anyref(), ck = rf.typed(_T.RF[5]);
-    const tab = rf.anyref();
-    const i2 = rf.i32(), slen = rf.i32(), s2 = rf.i32(), tst = rf.i32();
-    tracePoint(em, rf, "scan:enter", () => b.localGet(len));
-    recSlot(2);
-    b.localSet(tab); // this handle's case table: the HDL identity
-    b.localGet(copy);
-    b.refCast(5, true);
-    b.localSet(cel);
-    b.i32Const(0);
-    b.localSet(i2);
+    b.localSet(prev);
+    recSlot(4);
+    b.localSet(sn);
     rf.walkLoop(
+      () => { b.localIsNull(sn); },
       () => {
-        // exit when i2 >= len OR cel == null — an overshot len must not
-        // deref a null chain tail (amb.ef crashed struct.get-ing null).
-        b.localGet(i2); b.localGet(len); b.num(w.LTS);
-        b.localGet(cel); b.isNull(); b.num(w.EQZ); // cel non-null
-        b.num(w.AND);
-        b.num(w.EQZ);
-      },
-      () => {
-        b.localGet(cel);
-        b.structGet(5, 3); // save next before any rewrite of this cell
-        b.localSet(nxt);
-        b.localGet(cel);
-        b.structGet(5, 2); // the cell's frame (b field)
-        b.refCast(4, true);
-        b.localSet(fr);
-        rf.walkLoop(
-          () => { b.localIsNull(fr); },
-          () => {
-            b.localGet(fr);
-            b.structGet(4, 1);
-            b.localSet(slots);
-            b.localGet(slots);
-            b.arrayLen();
-            b.localSet(slen);
-            tracePoint(em, rf, "scan:frame", () => b.localGet(slen));
-            b.i32Const(0);
-            b.localSet(s2);
-            rf.walkLoop(
-              () => { b.localGet(s2); b.localGet(slen); b.num(w.LTS); b.num(w.EQZ); },
-              () => {
-                b.localGet(slots); b.localGet(s2); b.arrayGet(1);
-                b.localSet(val);
-                b.localGet(val);
-                b.refTest(5, false);
-                b.localSet(tst);
-                if (DBGTRACE) {
-                  b.localGet(tst);
-                  b.if();
-                  tracePoint(em, rf, "scan:kcell", () => b.i32Const(1));
-                  b.end();
-                }
-                b.localGet(tst);
-                b.if();
-                b.localGet(val);
-                b.refCast(5, false);
-                b.localSet(ck);
-                // Rewrite only when ck.NEXT is a K_HDL of this handle (same
-                // case table). Reading ck's OWN a field instead matched the
-                // handle's HDL cells themselves — retargeting the original
-                // HDL's next to the fresh cell severed the chain to OUTER
-                // handles (amb.ef's Emit became unhandled on resume).
-                b.localGet(ck);
-                b.structGet(5, 3);
-                b.localSet(nxt);
-                b.localGet(nxt);
-                b.refTest(5, false);
-                b.localSet(tst);
-                b.localGet(tst);
-                b.if();
-                b.localGet(nxt);
-                b.refCast(5, false);
-                b.structGet(5, 0);
-                b.i31Get();
-                b.i32Const(w.K_HDL);
-                b.num(w.EQ);
-                b.localSet(tst);
-                b.localGet(tst);
-                b.if();
-                b.localGet(nxt);
-                b.refCast(5, false);
-                b.structGet(5, 1);
-                b.refCast(w.EQREF, true); // ref.eq needs eqref on both sides
-                b.localGet(tab);
-                b.refCast(w.EQREF, true);
-                b.refEq();
-                b.localSet(tst);
-                b.localGet(tst);
-                b.if();
-                tracePoint(em, rf, "scan:rewrite", () => b.localGet(s2));
-                b.localGet(ck);
-                b.localGet(fresh);
-                b.refCast(5, true); // $K.next is (ref null $5)
-                b.structSet(3);
-                b.end();
-                b.end();
-                b.end();
-                b.end(); // closes the is-K-cell guard
-                b.localGet(s2); b.i32Const(1); b.num(w.ADD); b.localSet(s2);
-              },
-            );
-            b.localGet(fr);
-            b.structGet(4, 0);
-            b.localSet(fr);
-          },
-        );
-        b.localGet(nxt); // advance along the captured chain
-        b.refCast(5, true);
-        b.localSet(cel);
-        b.localGet(i2); b.i32Const(1); b.num(w.ADD); b.localSet(i2);
+        b.i31Const(w.K_HDL);
+        hdlGet(b, sn, 1); // tab (verbatim)
+        hdlGet(b, sn, 2); // hframe (verbatim)
+        b.localGet(prev); // outer = the chain built so far
+        b.refCast(21, true);
+        hdlGet(b, sn, 4); // kret (verbatim)
+        b.structNew(21);
+        b.localSet(prev);
+        hdlGet(b, sn, 3); // next skipped boundary (toward S1)
+        b.localSet(sn);
       },
     );
-    tracePoint(em, rf, "scan:done");
-    emitDispatch(em, rf, v, copy); // k = the closure's own k param
+    b.localGet(prev); // copyS1, or fresh when nothing was forwarded
+    b.globalSet(em.lay.ctxG);
+    recSlot(0);
+    b.refCast(5, true);
+    b.localSet(head);
+    emitDispatch(em, rf, v, head);
   }
   em.funcs.push(rf);
 }

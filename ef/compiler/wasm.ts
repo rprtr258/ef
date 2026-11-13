@@ -18,23 +18,27 @@
 // Effects: every `perform` (builtin or user-declared op) boxes its args
 // into an $ELEMS carrier, resolves the k-operand cell (the reified
 // continuation — the CPS IR already holds every "rest of computation" as
-// a named `letk` continuation), and walks the continuation chain for a
-// handler. With no handler in the chain the effect reaches the host
-// (which interprets it via the op table `compileWithOps` returns) and the
-// resumed value dispatches through the k cell. `handle` installs a K_HDL
-// continuation cell whose case table dispatches performed ops to per-case
-// T_KABI functions running over the handler's shared hframe. Resume as a
+// a named `letk` continuation), and walks the hctx boundary stack for a
+// handler (O(1) for the innermost; forwarding follows outer pointers, one
+// step per handler boundary — never the K-cell chain, so recursion depth
+// is invisible). With no handler the effect reaches the host (which
+// interprets it via the op table `compileWithOps` returns) and the
+// resumed value dispatches through the k cell. `handle` pushes a $HDLCTX
+// boundary {case table, hframe, outer, kret} onto the hctx global —
+// handler boundaries never sit in K-cell chains; the handled body's
+// cells chain to the K_BND sentinel, which dispatch resolves through
+// hctx at that moment. Performed ops dispatch to per-case T_KABI
+// functions running over the handler's invocation hframe. Resume as a
 // value: the
 // resume binder is a $CLO closure over the shared resume fn plus a
-// per-perform-site capture record {self-contained slice — its bottom's
-// next is null, so the record never reaches into the live chain or
-// earlier generations' records, which would retain every per-perform
-// O(depth) slice (O(n²) live cells over n performs); plus the matched
-// case table, the invocation's hframe copy and the slice length}; every
-// call copies the captured slice afresh, splices a fresh HDL {case table,
-// hframe, next = the k the closure was invoked with} onto the copy's
-// bottom by position, and dispatches the resumed value through that
-// chain (terminating at the caller's continuation).
+// per-perform-site capture record {the live perform-site k cell (the
+// shared slice head), the matched case table, the invocation's hframe
+// copy, the matched boundary, and the reversed chain of forwarded
+// boundaries}; every resume conses a fresh $HDLCTX entry (the paper's
+// resumption re-arming the handler on the resumer's context), re-chains
+// the forwarded boundaries above it, and dispatches the resumed value
+// into the captured chain — no slice copy, no splice, no off-chain
+// rewrite, O(1) per resume in recursion depth.
 //
 // Representation (WasmGC — every wasm operand value is an anyref):
 // - unit = ref.null any; bool = i31ref 0/1; number = $NUM {f64} (immutable
@@ -51,12 +55,12 @@
 //   (frame depth, slot); a slot read is struct.get $FRAME 1 + array.get.
 // - Continuations are $K cells {mut i31 kind, mut a, mut b, mut (ref null
 //   $K) next}: K_RET{a = i31
-//   thunk funcref index, b = frame}, K_HDL{a = $ELEMS case table of flat
-//   [opid, fnIdx, fsize, nparams] i31 quadruples (Return case = opid -1),
-//   b = hframe}. k = ref.null $K is the final return; the terminal cell —
+//   thunk funcref index, b = frame}, K_BND = the handler-boundary
+//   sentinel (a dead-end cell dispatch resolves through hctx). k =
+//   ref.null $K is the final return; the terminal cell —
 //   a shared K_RET whose fragment just returns its param — stands in for
 //   a direct-boundary function's never-set $ret wherever a synthesized
-//   cell or a tail-handle HDL would otherwise chain to null.
+//   cell would otherwise chain to null.
 // - Dual call ABI, one funcref table: classified-pure functions (empty
 //   effect row and no tail call to a suspending callee — cps.ts) compile
 //   to T_DABI ((ref null $FRAME)) -> anyref with no continuation operand;
@@ -69,11 +73,9 @@
 //   return_call/return_call_indirect.
 // - Mixed functions — row {} with internal handles — keep the direct
 //   boundary: their islands run over the ambient chain like any CPS
-//   region. A tail handle's HDL chains to the terminal cell instead of
-//   the never-set $ret, and a case fn is invoked with its exit k walked
-//   past same-table splice cells — a K_RET there (terminal or caller's)
-//   makes the case completion a plain return, delivering the island's
-//   value out of the direct entry.
+//   region. A tail handle's kret is the terminal cell instead of the
+//   never-set $ret, so a case fn's completion returns, delivering the
+//   island's value out of the direct entry.
 // - Static literals (nums, strings, bools, unit, builtin closures, PI,
 //   per-handle case tables) are immutable anyref globals, each initialized
 //   by a GC constant expression at instantiation; run() builds the global
