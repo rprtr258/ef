@@ -2,6 +2,7 @@
 
 import type {Pos} from "./lexer.ts";
 import {Parser, type Expr, type ExprID, type Item} from "./parser.ts";
+import {exprChildren, forEachBinder} from "./walk.ts";
 import {assertNever} from "./assert.ts";
 
 // Each pass is an (items, nodes) => LintIssue[]; add more passes to LINT_PASSES.
@@ -15,74 +16,23 @@ export function lint(src: string): LintIssue[] {
   return LINT_PASSES.flatMap(pass => pass(prog.items, prog.nodes));
 }
 
-// Visit every lambda in an expression. `fname` is the name of the enclosing
-// binding when the lambda is the value of a `let`, else null.
+// Visit every lambda in an expression, pre-order (exprChildren order).
+// `fname` is the name of the enclosing binding when the lambda is the value
+// of a `let`, else null.
 function* visitLambdas(
   id: ExprID,
   nodes: Expr[],
   fname: string | null,
 ): Generator<[lam: Expr & {t: "lambda"}, fname: string | null]> {
   const e = nodes[id];
-  switch (e.t) {
-  case "lambda":
-    yield [e, fname];
-    yield* visitLambdas(e.body, nodes, null);
-    return;
-  case "let":
-    yield* visitLambdas(e.val, nodes, nodes[e.val].t === "lambda" ? e.name : null);
-    return;
-  case "assign":
-    yield* visitLambdas(e.val, nodes, null);
-    return;
-  case "if":
-    yield* visitLambdas(e.c, nodes, null);
-    yield* visitLambdas(e.a, nodes, null);
-    yield* visitLambdas(e.b, nodes, null);
-    return;
-  case "while":
-    yield* visitLambdas(e.c, nodes, null);
-    yield* visitLambdas(e.body, nodes, null);
-    return;
-  case "perform":
-    for (const a of e.args)
-      yield* visitLambdas(a, nodes, null);
-    return;
-  case "app":
-    yield* visitLambdas(e.fn, nodes, null);
-    for (const a of e.args)
-      yield* visitLambdas(a, nodes, null);
-    return;
-  case "handle":
-    yield* visitLambdas(e.body, nodes, null);
-    for (const c of e.cases)
-      yield* visitLambdas(c.body, nodes, null);
-    return;
-  case "block":
-    for (const s of e.stmts)
-      yield* visitLambdas(s, nodes, null);
-    return;
-  case "arr":
-    for (const el of e.elems)
-      yield* visitLambdas(el, nodes, null);
-    return;
-  case "field":
-    yield* visitLambdas(e.obj, nodes, null);
-    return;
-  case "as":
-    yield* visitLambdas(e.e, nodes, null);
-    return;
-  case "dlet":
-    yield* visitLambdas(e.val, nodes, null);
-    return;
-  case "num":
-  case "str":
-  case "bool":
-  case "unit":
-  case "sym":
-    return;
-  default:
-    return assertNever(e);
-  }
+  if (e.t === "lambda") yield [e, fname];
+  // A lambda's body opens a fresh anonymous scope; a let whose value is a
+  // lambda names it; everything else descends nameless.
+  const child = e.t === "lambda"
+    ? null
+    : e.t === "let" && nodes[e.val].t === "lambda" ? e.name : null;
+  for (const k of exprChildren(e))
+    yield* visitLambdas(k, nodes, child);
 }
 
 // Which of `watch` names are referenced (free) in `e`, accounting for shadowing
@@ -94,27 +44,29 @@ function freeUses(id: ExprID, nodes: Expr[], watch: Set<string>): Set<string> {
     switch (e.t) {
     case "sym": if (w.has(e.v)) out.add(e.v); return;
     case "num": case "str": case "bool": case "unit": return;
+    // The shadowing rules below are the rule's semantics, not child order —
+    // each binder kind scopes differently (per-case for handles, siblings
+    // for block lets) — so those variants stay hand-written; the binder sets
+    // themselves come from forEachBinder.
     case "lambda": {
       const w2 = new Set(w);
-      for (const p of e.params) w2.delete(p.name);
+      forEachBinder(e, n => w2.delete(n));
       go(e.body, w2);
       return;
     }
-    case "let": { const w2 = new Set(w); w2.add(e.name); go(e.val, w2); return; }
-    case "dlet": {
+    case "let": {
+      // The let's own name is watched inside its val (recursive-let rule).
       const w2 = new Set(w);
-      for (const f of e.fields) w2.delete(f.name);
+      forEachBinder(e, n => w2.add(n));
       go(e.val, w2);
       return;
     }
-    case "assign": go(e.val, w); return;
-    case "if": go(e.c, w); go(e.a, w); go(e.b, w); return;
-    case "while": go(e.c, w); go(e.body, w); return;
-    case "perform": for (const a of e.args) go(a, w); return;
-    case "app": go(e.fn, w); for (const a of e.args) go(a, w); return;
-    case "arr": for (const el of e.elems) go(el, w); return;
-    case "field": go(e.obj, w); return;
-    case "as": go(e.e, w); return;
+    case "dlet": {
+      const w2 = new Set(w);
+      forEachBinder(e, n => w2.delete(n));
+      go(e.val, w2);
+      return;
+    }
     case "handle":
       go(e.body, w);
       for (const c of e.cases) {
@@ -125,6 +77,9 @@ function freeUses(id: ExprID, nodes: Expr[], watch: Set<string>): Set<string> {
       }
       return;
     case "block": {
+      // dlet field names bind only inside the dlet's own val — they do not
+      // shadow watched names for following siblings (checker-valid programs
+      // can't produce that shape; only unchecked lint inputs see it).
       const w2 = new Set(w);
       for (const s of e.stmts) {
         go(s, w2);
@@ -132,6 +87,11 @@ function freeUses(id: ExprID, nodes: Expr[], watch: Set<string>): Set<string> {
       }
       return;
     }
+    // No binder-introducing variants: every child sees the same scope.
+    case "assign": case "if": case "while": case "perform": case "app":
+    case "arr": case "field": case "as":
+      for (const k of exprChildren(e)) go(k, w);
+      return;
     default:
       return assertNever(e);
     }
@@ -141,8 +101,8 @@ function freeUses(id: ExprID, nodes: Expr[], watch: Set<string>): Set<string> {
 }
 
 // unused-arg: a function parameter never referenced in the body (scope-aware:
-// inner lambda params, let bindings, and handler-case params/resume
-// shadow the outer name and don't count as a use).
+// inner lambda params, let bindings, dlet fields, and handler-case
+// params/resume shadow the outer name and don't count as a use).
 function lintUnusedArgs(items: Item[], nodes: Expr[]): LintIssue[] {
   const issues: LintIssue[] = [];
   for (const it of items.filter(it => "e" in it))

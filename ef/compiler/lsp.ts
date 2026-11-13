@@ -34,6 +34,7 @@ import {Parser, type Alias, type ExprID, type Program, type TypeTok} from "./par
 import {showT, tFun, TANY, TypeError_, type Checked, type EffectSig, type Unifier} from "./types.ts";
 import {prepare} from "./pipeline.ts";
 import {builtinParamNames} from "./builtins.ts";
+import {forEachBinder} from "./walk.ts";
 import {ParseError, type Pos} from "./lexer.ts";
 
 // Parse errors carry the offending token's 1-based extent — underlined.
@@ -237,27 +238,15 @@ function hoverAt(src: string, line: number, col: number): Hover | null {
 type Binder = {name: string, pos: Pos, len: number};
 
 // All value binding sites — let names, destructuring fields, lambda params,
-// handler case params, and resume binders. The flat node slice is scanned
-// directly; no child traversal needed.
+// handler case params, and resume binders, per node in forEachBinder order
+// (nodes in slice order). The binder guard is inherited from walk.ts: a new
+// Expr variant must extend forEachBinder, which extends this list.
 function binders(prog: Program): Binder[] {
   const out: Binder[] = [];
-  for (const e of prog.nodes) {
-    if (e.t === "let" && e.pos !== undefined) {
-      out.push({name: e.name, pos: e.pos, len: e.name.length});
-    } else if (e.t === "dlet") {
-      for (const f of e.fields)
-        if (f.pos !== undefined) out.push({name: f.name, pos: f.pos, len: f.name.length});
-    } else if (e.t === "lambda") {
-      for (const p of e.params)
-        if (p.pos !== undefined) out.push({name: p.name, pos: p.pos, len: p.name.length});
-    } else if (e.t === "handle") {
-      for (const cse of e.cases) {
-        for (const p of cse.params)
-          if (p.pos !== undefined) out.push({name: p.name, pos: p.pos, len: p.name.length});
-        out.push({name: cse.resume, pos: cse.resumePos, len: cse.resume.length});
-      }
-    }
-  }
+  for (const e of prog.nodes)
+    forEachBinder(e, (name, pos) => {
+      if (pos !== undefined) out.push({name, pos, len: name.length});
+    });
   return out;
 }
 

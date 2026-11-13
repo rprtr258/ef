@@ -6,7 +6,9 @@ A TypeScript implementation of a small statically-typed language
 with **algebraic effects and effect handlers**, C/Go-flavored syntax, and a
 Hindley-Milner-flavoured type system with effect tracking.
 
-- Modules (all under `compiler/`, a bun workspace package): `lexer.ts`, `parser.ts`, `types.ts` (checker), `env.ts` (runtime
+- Modules (all under `compiler/`, a bun workspace package): `lexer.ts`, `parser.ts`, `walk.ts`
+  (the shared AST traversal — `exprChildren` child order + `forEachBinder` binder sites —
+  consumed by analysis, the checker's scanners, lint, and the LSP), `types.ts` (checker), `env.ts` (runtime
   values), `builtin_table.ts` (the declarative builtin table — pure rows
   (name, kind, checker sig); leaf module), `builtins.ts` (runtime impls for
   those rows; a new builtin is one row in builtin_table.ts plus one impl

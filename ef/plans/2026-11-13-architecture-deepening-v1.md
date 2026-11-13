@@ -234,9 +234,24 @@ semantics are encoded 4×. `parser.ts` `exprChildren` is the germ of the walker.
 
 **Verification:** `bun run ci`. **Commit:** `walk: checker walkers migrated`
 
-**Chunk 4.3 — lint + lsp migrated.**
-- [ ] Migrate `lint.ts`'s two walkers and `lsp.ts`'s `binders()` onto the walker (binder guard now
+**Chunk 4.3 — lint + lsp migrated.** ✅ landed (controller commits; log has the hash)
+- [x] Migrate `lint.ts`'s two walkers and `lsp.ts`'s `binders()` onto the walker (binder guard now
       inherited).
+- Landed shape: `visitLambdas` collapses onto walk.ts's `exprChildren` — a lambda is yielded with
+  the enclosing name, a let whose value is a lambda names it, everything else descends nameless;
+  the 14-arm child-order switch (and its local `assertNever` arm) is gone, exprChildren being the
+  exhaustiveness choke point. `freeUses` keeps its own exhaustive switch: the shadowing rules are
+  the rule's semantics, not child order (R3) — lambda/dlet binders and the let's recursive-let name
+  come from `forEachBinder`, handle case params + resume shadow only their own case body (kept
+  explicit; forEachBinder spans all cases), block lets are deleted for following siblings — while
+  the eight uniform-scope variants (assign/if/while/perform/app/arr/field/as) enumerate children
+  through `exprChildren`. `forEachBinder` now also passes each binder's name-token pos (undefined
+  only on parse-recovery binders; resume always has one), so lsp's `binders()` is a pure
+  forEachBinder scan over the node slice — same sites, same per-node order, binder guard
+  inherited.
+- Verified: `bun run ci` green (481 pass, 0 fail, incl. vscode LSP tests); `ef lint` output on all
+  62 examples byte-identical before/after, plus a pin file exercising every walker arm, issue
+  ordering, handler case-param/resume shadowing, and let/dlet sibling-scope quirks — identical.
 
 **Verification:** `bun run ci`. **Commit:** `walk: lint and lsp migrated`
 

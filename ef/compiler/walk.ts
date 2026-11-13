@@ -8,37 +8,44 @@
 // recurses through these helpers, so child order and binder positions are
 // each stated exactly once.
 //
-// Leaf module: imports only parser.ts (the AST) and assert.ts.
+// Leaf module: imports only parser.ts (the AST), lexer.ts (Pos), and
+// assert.ts.
 
+import type {Pos} from "./lexer.ts";
 import {exprChildren, type Expr, type ExprID, type Program} from "./parser.ts";
 import {assertNever} from "./assert.ts";
 
 export {exprChildren};
 
-// Call fn(name) for every name a node binds, in the checker's checkBind
+// Call fn(name, pos) for every name a node binds, in the checker's checkBind
 // order (types.ts): a lambda's params, a let's own name, a dlet's field
 // names, and a handler case's params (Return has one) then its resume
-// binder, case by case. Callers add the names to their scope before walking
+// binder, case by case. pos is the binder's name-token position when the
+// parser recorded one — undefined only on parse-recovery binders; the resume
+// binder always has one. Callers add the names to their scope before walking
 // the node's children — a binding is in scope in its own value (the
 // checker's recursive-let rule).
-export function forEachBinder(e: Expr, fn: (name: string) => void): void {
+export function forEachBinder(
+  e: Expr,
+  fn: (name: string, pos?: Pos) => void,
+): void {
   switch (e.t) {
     case "lambda":
       for (const p of e.params)
-        fn(p.name);
+        fn(p.name, p.pos);
       return;
     case "let":
-      fn(e.name);
+      fn(e.name, e.pos);
       return;
     case "dlet":
       for (const f of e.fields)
-        fn(f.name);
+        fn(f.name, f.pos);
       return;
     case "handle":
       for (const cse of e.cases) {
         for (const p of cse.params)
-          fn(p.name);
-        fn(cse.resume);
+          fn(p.name, p.pos);
+        fn(cse.resume, cse.resumePos);
       }
       return;
     case "assign": case "block": case "if": case "while": case "app":
