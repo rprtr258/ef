@@ -1,7 +1,7 @@
 {
-  // every rule at "error" except cycles: the compiler's eval⇄builtins and
-  // parser→types→analysis cycles are deliberate (runtime-only, entry-order
-  // safe — see AGENTS.md "Key design decisions")
+  // every rule at "error" except cycles: the compiler's eval⇄builtins,
+  // and parser→types→analysis cycles are deliberate
+  // (runtime-only, entry-order safe — see AGENTS.md "Key design decisions")
   "rules": {
     "files": "error",
     "dependencies": "error",

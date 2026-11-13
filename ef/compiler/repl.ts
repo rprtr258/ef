@@ -1,6 +1,5 @@
 import * as readline from "node:readline";
-import {newCtx, exec} from "./eval.ts";
-import {prepare} from "./pipeline.ts";
+import {runLine, newCtx} from "./eval.ts";
 import {show} from "./env.ts";
 import {showErr, showT} from "./types.ts";
 
@@ -14,10 +13,9 @@ export function repl(): void {
   const ctx = newCtx();
   const rl = readline.createInterface({input: process.stdin, output: process.stdout, prompt: "ef> "});
   const evalLine = (src: string): void => {
-    // prepare checks against ctx's accumulator; a type error throws here and
-    // leaves ctx.checked untouched.
-    const {prog, checked} = prepare(src, ctx.checked);
-    const {value, lastType, lastIsExpr} = exec(prog, ctx, checked);
+    // runLine prepares against ctx's accumulator (a type error throws and
+    // leaves ctx.checked untouched) and execs; the echo rule prints here.
+    const {value, lastType, lastIsExpr} = runLine(ctx, src);
     if (lastIsExpr && value !== null)
       console.log(show(value) + " : " + showT(lastType));
   };

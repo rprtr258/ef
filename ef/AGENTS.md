@@ -13,8 +13,10 @@ Hindley-Milner-flavoured type system with effect tracking.
   row here), `analysis.ts` (frontend passes: op discovery, builtin-ref
   tree-shaking; re-exports the builtin surface declared in builtin_table.ts
   — shared by the wasm backend, parser-types-only leaf module), `pipeline.ts`
-  (the preparation seam: prepare/Ctx/newCtx, shared unhandled-op gate;
-  consumed by both backends and the frontends), `cps.ts` (CPS
+  (the preparation seam: prepare + the staged prepareStaged, Ctx/newCtx, the
+  REPL's one-line runLine (prepare against the accumulator + exec, owned by
+  eval.ts), shared
+  unhandled-op gate; consumed by both backends and the frontends), `cps.ts` (CPS
   converter: checked AST → the shared CPS IR)), `cps_ir.ts` (the CPS IR node
   set + the multi-shot ANF/freeze discipline comments; leaf module),
   `cps_opt.ts` (optimization passes applied as the final stage of CPS
@@ -156,7 +158,8 @@ Hindley-Milner-flavoured type system with effect tracking.
    top-level `builtinInterps`, which is entry-order safe because it is
    derived in the same module as the `builtins` array), so every module
    initializes cleanly regardless of entry point. This module
-   also owns the pipeline shared by the REPL and `run`: `newCtx(interp?)`
+   also owns the REPL's one-line protocol the frontends share (`runLine`: prepare
+   against ctx's accumulator, then exec) alongside `run`: `newCtx(interp?)`
    seeds state (empty runtime env), `exec(prog, ctx, checked)` evaluates an
    already-checked program (`checked = checkProgram(prog, ctx.checked)`, so
    checking happens before the interpreter runs, once per line), applies
@@ -191,7 +194,7 @@ Hindley-Milner-flavoured type system with effect tracking.
    currently one rule (`unused-arg`).
 13. **Frontends** — `cli.ts` (`ef run|buildwasm|runwasm|types|lint <file>`,
     `ef repl`, `ef lsp`) and `repl.ts`
-   (line loop over `newCtx`/`exec`; bindings accumulate across lines).
+   (line loop over eval.ts's `runLine`; bindings accumulate across lines).
 ## Working rules
 
 - **`bun run ci` must pass** — host typecheck (`bun check`), eslint (which

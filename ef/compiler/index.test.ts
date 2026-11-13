@@ -3,8 +3,9 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {readFileSync, unlinkSync, existsSync, writeFileSync} from "node:fs";
 import {execSync} from "node:child_process";
-import {run, newCtx, exec, type Ctx} from "./eval.ts";
+import {run, newCtx} from "./eval.ts";
 import {prepare} from "./pipeline.ts";
+import {runLine} from "./eval.ts";
 import {showT, showErr, TypeError_} from "./types.ts";
 import {show, sliceElems, mkSlice, mkTup, type Slice, type Value} from "./env.ts";
 import {Parser} from "./parser.ts";
@@ -17,20 +18,12 @@ export function typeOf(src: string): string {
   return showT(prepare(src).checked.lastType);
 }
 
-// The REPL line protocol the exec tests share: prepare against ctx's
-// accumulator, then exec (repl.ts wraps the same two steps around its echo
-// rule).
-const execLine = (ctx: Ctx, src: string) => {
-  const {prog, checked} = prepare(src, ctx.checked);
-  return exec(prog, ctx, checked);
-};
-
 const tmpPath = (n: string) => join(tmpdir(), `ef-test-${process.pid}-${n}.txt`);
 
 test("exec drives a REPL session: bindings persist, lastType resolved", () => {
   const ctx = newCtx();
-  const l1 = execLine(ctx, "add :: fn(a: i64, b: i64): i64 { a + b };");
-  const l2 = execLine(ctx, "add(1, 2)");
+  const l1 = runLine(ctx, "add :: fn(a: i64, b: i64): i64 { a + b };");
+  const l2 = runLine(ctx, "add(1, 2)");
   expect(l1.value).toBe(null);
   expect(l1.lastIsExpr).toBe(false);
   expect(l2.value).toBe(3n);
@@ -937,9 +930,9 @@ k(s, 1)`)).toThrow();
 describe("Env seeding (exec binds referenced builtins per line)", () => {
   test("a later REPL line can reference a previously-unused builtin", () => {
     const ctx = newCtx();
-    execLine(ctx, `x :: 1;`);
+    runLine(ctx, `x :: 1;`);
     expect(ctx.env.vars.has("len")).toBe(false); // not referenced yet -> not bound
-    expect(execLine(ctx, `len([1, 2]);`).value).toBe(2n);
+    expect(runLine(ctx, `len([1, 2]);`).value).toBe(2n);
     expect(ctx.env.vars.has("len")).toBe(true);
   });
 
@@ -947,11 +940,11 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
     // prepare's acc reuses one top-level frame, so earlier lines' names
     // (and builtins) collide exactly like same-frame redeclarations.
     const ctx = newCtx();
-    execLine(ctx, `x :: 1;`);
+    runLine(ctx, `x :: 1;`);
     expect(() => prepare(`x := 2;`, ctx.checked)).toThrow("cannot redeclare 'x'");
     expect(() => prepare(`len :: 3;`, ctx.checked)).toThrow("cannot shadow builtin 'len'");
     // A rejected line leaves the accumulator untouched: x still reads as 1.
-    expect(execLine(ctx, `x`).value).toBe(1n);
+    expect(runLine(ctx, `x`).value).toBe(1n);
   });
 
   test("ef types prints symbols, then the program result type and effect row", () => {
@@ -982,7 +975,7 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
 // prepare's acc still records the name. The next line therefore
 // typechecks and then dies at runtime with "Unbound symbol".
 describe("REPL acc regression: bindings after wrapper continuations", () => {
-  const line = execLine;
+  const line = runLine;
 
   test("checker side keeps the binding (the divergence is runtime-only)", () => {
     const ctx = newCtx();

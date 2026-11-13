@@ -340,7 +340,7 @@ function runTop(out: Outcome, interp?: EffectInterp): Value {
 }
 
 // The ctx seam lives in pipeline.ts (prepared programs + runtime state);
-// re-exported for the REPL, the tests, the playground bridge, and bench.ts.
+// re-exported for the tests, the playground bridge, and bench.ts.
 export {newCtx, type Ctx};
 
 // exec: the pipeline the REPL and `run` share — evaluate an already-prepared
@@ -381,4 +381,15 @@ export function exec(prog: Program, ctx: Ctx, checked: Checked): {value: Value, 
 export function run(src: string, interp?: EffectInterp): Value {
   const {prog, checked} = prepare(src);
   return exec(prog, newCtx(interp), checked).value;
+}
+
+// runLine: the REPL's one-line protocol — prepare against ctx's checked
+// accumulator (a type error throws here and leaves ctx.checked untouched),
+// then exec (which assigns the accumulator and seeds the referenced
+// builtins). The caller applies the echo rule to the returned triple —
+// declarations print nothing. repl.ts and index.test.ts's line-driven exec
+// tests share it.
+export function runLine(ctx: Ctx, src: string): {value: Value, lastType: Type, lastIsExpr: boolean} {
+  const {prog, checked} = prepare(src, ctx.checked);
+  return exec(prog, ctx, checked);
 }

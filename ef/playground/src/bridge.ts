@@ -7,10 +7,10 @@
 
 import "./shim.ts";
 import {Parser, type Program, type Expr, type Alias} from "../../compiler/parser.ts";
-import {checkProgram, showT, type Type, type Effs, type EffectSig} from "../../compiler/types.ts";
+import {showT, type Checked, type Type, type Effs, type EffectSig} from "../../compiler/types.ts";
 import {lint} from "../../compiler/lint.ts";
 import {exec, newCtx} from "../../compiler/eval.ts";
-import {prepare, type EffectInterp} from "../../compiler/pipeline.ts";
+import {prepare, prepareStaged, type EffectInterp} from "../../compiler/pipeline.ts";
 import {num, show, type Cont, type Outcome, type Value} from "../../compiler/env.ts";
 import {KEYWORDS, ONE, TWO, lex} from "../../compiler/lexer.ts";
 import {collectEffectOps} from "../../compiler/analysis.ts";
@@ -56,9 +56,9 @@ export function browserInterp(out: (s: string) => void): EffectInterp {
 }
 
 // --- compile pipeline -----------------------------------------------------
-// parse() is the one remaining local parse composition: shared by the
-// problems/outline paths (which need the parse/check split prepare's single
-// throw cannot express) and buildWasm (parses once for ops collection).
+// parse() is buildWasm's local composition: it parses once for ops
+// collection, separately from compileWithOps's own parse+check (see the
+// wasm pipeline's OPT_PASSES seam).
 
 function parse(src: string): Program {
   return new Parser(src).parseProgram();
@@ -74,17 +74,9 @@ export type Problem = {stage: "parse" | "check" | "lint", msg: string, line: num
 // errors first (they block the rest), then type errors, then lint. Only lint
 // issues carry positions today — the checker's errors are bare messages.
 export function problems(src: string): Problem[] {
-  let prog: Program;
-  try {
-    prog = parse(src);
-  } catch (e) {
-    return [{stage: "parse", msg: errText(e), line: null}];
-  }
-  try {
-    checkProgram(prog);
-  } catch (e) {
-    return [{stage: "check", msg: errText(e), line: null}];
-  }
+  const staged = prepareStaged(src);
+  if (!staged.ok)
+    return [{stage: staged.stage, msg: errText(staged.error), line: null}];
   return lint(src).map((i) => ({
     stage: "lint" as const,
     msg: `${i.who}: unused argument ${i.argname}`,
@@ -198,14 +190,19 @@ function declLine(src: string, kw: "effect" | "type", name: string): number | nu
 }
 
 export function outline(src: string): OutlineItem[] {
-  const prog = parse(src);
+  const staged = prepareStaged(src);
+  // Parse errors propagate — the rail blanks the outline until it parses
+  // again (problems shows the error). A check error still outlines: names
+  // with typ null (problems shows the errors).
+  if (!staged.ok) {
+    if (staged.stage === "parse") throw staged.error;
+    return outlineItems(src, staged.prog, null);
+  }
+  return outlineItems(src, staged.prog, staged.checked);
+}
+
+function outlineItems(src: string, prog: Program, checked: Checked | null): OutlineItem[] {
   const items: OutlineItem[] = [];
-  // Types come from a checker run; a type error elsewhere in the file leaves
-  // typ null instead of blanking the outline (problems pane shows the errors).
-  let checked: ReturnType<typeof checkProgram> | null = null;
-  try {
-    checked = checkProgram(prog);
-  } catch { /* typ stays null */ }
   for (const it of prog.items) {
     if ("e" in it) {
       const e: Expr = prog.nodes[it.e];

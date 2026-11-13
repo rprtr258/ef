@@ -1,12 +1,12 @@
 // One program-preparation seam for the frontend's consumers in compiler/ —
 // both backends, the CLI's types view, the LSP, the REPL, and the tests
-// (the playground consumes it too, except its problems/outline paths, which
-// need the parse/check split prepare's single throw cannot express, and its
-// buildWasm path, which parses once for ops collection): parse,
-// then typecheck against an optional accumulator (the REPL accumulate
-// protocol). Consumers add their own passes on top of the returned pair:
-// eval seeds referenced builtins and drives the CPS term; wasm tree-shakes
-// and emits code.
+// (the playground consumes it too, except its buildWasm path, which parses
+// once for ops collection): parse, then typecheck against an optional
+// accumulator (the REPL accumulate protocol) — prepare throws,
+// prepareStaged reports the failing stage, runLine composes prepare + exec
+// into the one REPL line protocol. Consumers add their own passes on top of
+// the returned pair: eval seeds referenced builtins and drives the CPS term;
+// wasm tree-shakes and emits code.
 import {Parser, type Program} from "./parser.ts";
 import {checkProgram, type Checked} from "./types.ts";
 import {globalEnv, type Cont, type Env, type Outcome, type Value} from "./env.ts";
@@ -38,13 +38,40 @@ export function newCtx(interp?: EffectInterp): Ctx {
   };
 }
 
-// prepare: parse + typecheck. `acc` is the previous Checked for incremental
+// prepareStaged: prepare's non-throwing twin — the same two steps, but a
+// failure reports its stage instead of throwing. Consumers that need the
+// parse/check split use it (the playground's problems pane distinguishes the
+// two stages; its outline still lists names when checking fails). A check
+// failure still carries the parsed program (parse succeeded); a parse
+// failure has none.
+type Staged =
+  | {ok: true, prog: Program, checked: Checked}
+  | {ok: false, stage: "parse", error: unknown}
+  | {ok: false, stage: "check", error: unknown, prog: Program};
+
+export function prepareStaged(src: string, acc?: Checked): Staged {
+  let prog: Program;
+  try {
+    prog = new Parser(src).parseProgram();
+  } catch (error) {
+    return {ok: false, stage: "parse", error};
+  }
+  try {
+    return {ok: true, prog, checked: checkProgram(prog, acc)};
+  } catch (error) {
+    return {ok: false, stage: "check", error, prog};
+  }
+}
+
+// prepare: parse + typecheck, throwing on the first failure (the staged
+// variant's error rethrown). `acc` is the previous Checked for incremental
 // checking (REPL lines re-check against ctx.checked); a type error throws
 // here and leaves acc untouched. checked.unhandled carries the residual
 // top-level effect rows (the ops that reach the runner).
 export function prepare(src: string, acc?: Checked): {prog: Program, checked: Checked} {
-  const prog = new Parser(src).parseProgram();
-  return {prog, checked: checkProgram(prog, acc)};
+  const staged = prepareStaged(src, acc);
+  if (!staged.ok) throw staged.error;
+  return {prog: staged.prog, checked: staged.checked};
 }
 
 // The builtin effect surface (builtin_table.ts's effect rows — the same set

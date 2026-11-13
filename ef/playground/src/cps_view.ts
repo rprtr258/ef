@@ -3,8 +3,7 @@
 // defunctionalizes). One line per node; letk/handle/if nest their sub-terms
 // on the following lines, everything else flows into `rest` at the same
 // indentation. `fn $n` bodies are the lambdas' conversions (mkfn binds them).
-import {Parser} from "../../compiler/parser.ts";
-import {checkProgram} from "../../compiler/types.ts";
+import {prepare} from "../../compiler/pipeline.ts";
 import {toCps} from "../../compiler/cps.ts";
 import type {CAtom, CPrim, CTerm, CIr} from "../../compiler/cps_ir.ts";
 import {show} from "../../compiler/env.ts";
@@ -13,8 +12,7 @@ import {assertNever} from "../../compiler/assert.ts";
 const IND = "  ";
 
 export function showCps(src: string): string {
-  const prog = new Parser(src).parseProgram();
-  checkProgram(prog);
+  const {prog} = prepare(src);
   return showIr(toCps(prog));
 }
 

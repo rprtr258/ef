@@ -119,17 +119,25 @@ plan's chunk 2.4 now includes a staged-prepare variant and the remaining bridge 
 example fails with the static message. **Exit criteria:** one owner of the timing decision.
 **Commit:** `pipeline: unify unhandled-op fail-fast`
 
-**Chunk 2.4 — one line protocol.**
-- [ ] `pipeline.ts` exports `runLine(ctx, src)` → `{value, lastType, lastIsExpr}` (seed + exec +
+**Chunk 2.4 — one line protocol.** ✅ landed
+RunLine relocation (review MUST-FIX, controller decision): `runLine` lives in **eval.ts** next to
+`exec`, which it wraps — killing the pipeline⇄eval cycle the pipeline placement would have opened;
+repl.ts and index.test.ts consume it from eval.
+- [x] `pipeline.ts` exports `runLine(ctx, src)` → `{value, lastType, lastIsExpr}` (seed + exec +
       print contract). `repl.ts` and the hand-copied protocol in `index.test.ts` use it; delete the
       duplicate. (`cli.ts` repl path is delegation-only — no change expected.)
-- [ ] Mutation (added after chunk 2.1 review): migrate the playground's two remaining composers —
+- [x] Mutation (added after chunk 2.1 review): migrate the playground's two remaining composers —
       `playground/src/bridge.ts` (~8 sites) and `playground/src/cps_view.ts:16-17` — onto
       `pipeline.prepare`; smoke via the playground build. (bridge.ts also re-points its
       `EffectInterp` import in chunk 2.2.) Chunk-2.2 update: 4/7 sites migrated; the remaining
       problems/outline sites need prepare to expose stage info on failure — extend `prepare` with
       an additive staged variant (e.g. `prepare` keeps throwing; add a variant returning
       `{ok:false, stage:'parse'|'check', error}`) and finish the bridge migration in chunk 2.4.
+      Landed shape: `pipeline.prepareStaged(src, acc?)` — `{ok:true, prog, checked} |
+      {ok:false, stage:'parse', error} | {ok:false, stage:'check', error, prog}` (the check
+      branch carries the parsed program so outline still renders); `prepare` delegates to it and
+      rethrows. problems/outline/cps_view showCps consume the pipeline; buildWasm stays local
+      (parse-once-for-ops, documented in chunk 2.2) — the only remaining bridge composition.
 
 **Verification:** `bun run ci`; REPL session: define fn, use builtin, rebind error — behavior
 unchanged. **Commit:** `pipeline: single REPL line protocol`
