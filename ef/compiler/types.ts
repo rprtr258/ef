@@ -1,7 +1,6 @@
 import type {Expr, ExprID, Program, TypeTok} from "./parser";
 import {ParseError, type Pos} from "./lexer.ts";
-import {BUILTINS} from "./analysis.ts";
-import {builtins} from "./builtins.ts";
+import {BUILTINS, BUILTIN_TABLE} from "./builtin_table.ts";
 import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, TTYPE} from "./prims.ts";
 import {assertNever} from "./assert.ts";
 
@@ -493,11 +492,10 @@ export class Env {
   }
 }
 
-// Names no binding may take: analysis.ts's BUILTINS surface is the shared,
-// sync-tested list of everything an ef program can name — operators
-// (structural, not env-seeded) plus non-effect builtins. Read at module
-// init: analysis.ts is a leaf module, so this stays safe under the
-// eval⇄builtins import cycle (unlike reading builtins.ts's array here).
+// Names no binding may take: BUILTINS is the shared list of everything an
+// ef program can name — operators (structural, not env-seeded) plus
+// non-effect builtins. Read at module init from builtin_table.ts, a leaf —
+// init-order safe by construction.
 const BUILTIN_NAMES = new Set(BUILTINS.map(b => b.name));
 
 // No shadowing: a binding may not take any name reachable from its frame —
@@ -1364,10 +1362,11 @@ const STAMPED_OPS = new Set([...NUMOPS, ...CMPOPS, ...EQOPS, "+", "neg"]);
 // recorded type defaults to suspending. Effect-polymorphic native builtins
 // (map/each/flatmap) have effect-variable rows by construction, so the row
 // test alone already keeps them suspending — the kind check is a
-// belt-and-braces guard (read lazily: builtins.ts may be mid-init when
-// this module loads).
+// belt-and-braces guard.
+const NATIVE_BUILTINS = new Set(
+  BUILTIN_TABLE.filter(d => d.kind === "native").map(d => d.name));
+
 function stampSuspension(nodes: Expr[], uni: Unifier): void {
-  const nativeBuiltins = new Set(builtins.filter(b => b.kind === "native").map(b => b.name));
   for (const [id] of uni.nodeTypes) {
     const e = nodes[id];
     if (e.t !== "app") continue;
@@ -1378,7 +1377,7 @@ function stampSuspension(nodes: Expr[], uni: Unifier): void {
     if (ct !== undefined) {
       const rt = uni.res(ct);
       if (rt.tag === "fun" && rt.contCall !== true && rt.anyTaint !== true &&
-        !(fn.t === "sym" && nativeBuiltins.has(fn.v))) {
+        !(fn.t === "sym" && NATIVE_BUILTINS.has(fn.v))) {
         const er = uni.resEff(rt.effs);
         if (er instanceof Set && er.size === 0) sus = false;
       }
@@ -1421,10 +1420,9 @@ export function checkProgram(
     env = acc.env;
     effects = acc.effects;
   } else {
-    const bb = builtins;
-    effects = new Map<string, EffectSig>(bb.filter(b => b.kind === "effect").map(b => [b.name, b.sig]));
+    effects = new Map<string, EffectSig>(BUILTIN_TABLE.filter(b => b.kind === "effect").map(b => [b.name, b.sig]));
     env = new Env(null, uni);
-    for (const b of bb) {
+    for (const b of BUILTIN_TABLE) {
       if (b.kind !== "effect") {
         const bt = b.t;
         env.vars.set(b.name, typeof bt === "function" ? () => bt(uni) : bt);

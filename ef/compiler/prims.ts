@@ -1,6 +1,6 @@
-// prims: the primitive type constants, in their own leaf module so
-// builtins.ts can build its const table at load time without tripping the
-// types.ts ⇄ builtins.ts import cycle (type-only imports are erased).
+// prims: the primitive type constants, a leaf module — its only types.ts
+// import is type-only (erased at runtime), so builtin_table.ts can read
+// these constants at init time without loading the checker.
 import type {AnyT, Prim} from "./types.ts";
 
 // The six machine widths. Arithmetic between distinct widths is a type

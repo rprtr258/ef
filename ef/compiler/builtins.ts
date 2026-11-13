@@ -1,15 +1,12 @@
-// builtins: the one table describing every ef builtin.
-// Adding a builtin means adding one entry here.
+// builtins: the runtime half of the builtin table — impls for the
+// declarative rows in builtin_table.ts (plain closures, CPS natives, effect
+// interps). Adding a builtin means one entry there plus one impl row here.
 import {readFileSync, writeFileSync} from "node:fs";
 import {sleepSync} from "bun";
 import {apply} from "./eval.ts";
+import {BUILTIN_TABLE} from "./builtin_table.ts";
 import {num, show, asSlice, mkSlice, sliceElems, type Cont, type Outcome, type Value} from "./env.ts";
-import {
-  type Unifier,
-  tArr, tFun,
-  type EffectSig, type Type,
-} from "./types.ts";
-import {TI64, TANY, TBOOL, TF64, TFLOAT, TINT, TUNIT, TSTR} from "./prims.ts";
+import {type Unifier, type EffectSig, type Type} from "./types.ts";
 
 export type Builtin =
   // A plain builtin: lifted to a runtime native as `k(fn(...args))`. `t` is its
@@ -47,141 +44,155 @@ export type Builtin =
   }
 ;
 
-// The one shared table: polymorphic `t` thunks instantiate fresh vars per use,
-// so entries are immutable and safe to share across programs.
-export const builtins: Builtin[] = [
-    {kind: "fn", name: "not", t: tFun([TBOOL], TBOOL, new Set()), pnames: ["v"], fn: a => (a === false || a === null ? true : false)},
-    {kind: "fn", name: "sub", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64, TI64], tArr(a), new Set()); }, pnames: ["xs", "from", "to"], fn: (xs, fv, tv) => {
-      // Zero-copy view of [from, to): shares the backing, offset shifts.
-      const s = asSlice(xs);
-      const from = num(fv), to = num(tv);
-      if (from < 0 || to < from || to > s.len)
-        throw new Error(`sub: range [${from}, ${to}) out of bounds [0, ${s.len})`);
-      return mkSlice(s.data, s.off + from, to - from);
-    }},
-    {kind: "fn", name: "concat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), tArr(a)], tArr(a), new Set()); }, pnames: ["xs", "ys"], fn: (a, b) =>
-      // Append: always a fresh backing — the only way a slice grows, and it
-      // never aliases its operands.
-      mkSlice([...sliceElems(asSlice(a)), ...sliceElems(asSlice(b))])},
-    {kind: "fn", name: "flat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(tArr(a))], tArr(a), new Set()); }, pnames: ["xs"], fn: xs => {
-      const out: Value[] = [];
-      for (const inner of sliceElems(asSlice(xs))) {
-        // Scalar passthrough (JS flat parity — a resumed scalar can flow
-        // back through a map-like land path); slices contribute their window.
-        if (inner !== null && typeof inner === "object" && inner.tag === "slice")
-          out.push(...sliceElems(inner));
-        else out.push(inner);
-      }
-      return mkSlice(out);
-    }},
-    {kind: "fn", name: "len", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a)], TI64, new Set()); }, pnames: ["xs"], fn: xs => asSlice(xs).len},
-    {kind: "fn", name: "strlen", t: tFun([TSTR], TI64, new Set()), pnames: ["s"], fn: s => (s as string).length},
-    {kind: "native", name: "map", t: (u: Unifier) => {
-      const a = u.fresh(), b = u.fresh(), e = u.freshEff();
-      return tFun([tFun([a], b, e), tArr(a)], tArr(b), e);
-    }, pnames: ["f", "xs"], fn: (args, k) => {
-      const f = args[0]!;
-      const s = asSlice(args[1]);
-      const out = new Array<Value>(s.len);
-      function go(i: number): Outcome {
-        if (i >= s.len)
-          return k(mkSlice(out));
-        return apply(f, [s.data[s.off + i]!], v => { out[i] = v; return go(i + 1); });
-      }
-      return go(0);
-    }},
+// Impls keyed by builtin name, one row per table entry (analysis.test.ts's
+// IMPL_KEYS audit pins the name sets together per kind). Plain fns lift to
+// runtime natives as `k(fn(...args))`; values bind as the value itself;
+// natives and effect interps are CPS functions.
+const FN_IMPLS: Record<string, (...args: Value[]) => Value> = {
+  not: a => (a === false || a === null ? true : false),
+  sub: (xs, fv, tv) => {
+    // Zero-copy view of [from, to): shares the backing, offset shifts.
+    const s = asSlice(xs);
+    const from = num(fv), to = num(tv);
+    if (from < 0 || to < from || to > s.len)
+      throw new Error(`sub: range [${from}, ${to}) out of bounds [0, ${s.len})`);
+    return mkSlice(s.data, s.off + from, to - from);
+  },
+  concat: (a, b) =>
+    // Append: always a fresh backing — the only way a slice grows, and it
+    // never aliases its operands.
+    mkSlice([...sliceElems(asSlice(a)), ...sliceElems(asSlice(b))]),
+  flat: xs => {
+    const out: Value[] = [];
+    for (const inner of sliceElems(asSlice(xs))) {
+      // Scalar passthrough (JS flat parity — a resumed scalar can flow
+      // back through a map-like land path); slices contribute their window.
+      if (inner !== null && typeof inner === "object" && inner.tag === "slice")
+        out.push(...sliceElems(inner));
+      else out.push(inner);
+    }
+    return mkSlice(out);
+  },
+  len: xs => asSlice(xs).len,
+  strlen: s => (s as string).length,
+  cos: a => Math.cos(num(a)),
+  sin: a => Math.sin(num(a)),
+  abs: a => Math.abs(num(a)),
+  round: a => Math.round(num(a)),
+  sqrt: a => Math.sqrt(num(a)),
+  range: (a, b, c) => {
+    const s = num(a), e = num(b), st = num(c);
+    const n = st === 0 ? 0 : Math.max(0, Math.ceil((e - s) / st));
+    return mkSlice(Array.from({length: n}, (_, k) => s + k * st));
+  },
+  char: a => String.fromCodePoint(num(a) | 0),
+  number: a => parseFloat(a as string),
+  args: () => mkSlice(process.argv.slice(2)),
+  get: (xs, i) => {
+    const s = asSlice(xs);
+    const idx = num(i);
+    if (idx < 0 || idx >= s.len || !Number.isInteger(idx))
+      throw new Error(`get: index ${idx} out of bounds [0, ${s.len})`);
+    return s.data[s.off + idx]!;
+  },
+  set: (xs, i, v) => {
+    // Strictly in-window write through the view into the shared backing —
+    // growth is concat's job only.
+    const s = asSlice(xs);
+    const idx = num(i);
+    if (idx < 0 || idx >= s.len || !Number.isInteger(idx))
+      throw new Error(`set: index ${idx} out of bounds [0, ${s.len})`);
+    s.data[s.off + idx] = v;
+    return null;
+  },
+};
 
-    {kind: "value", name: "PI", t: TFLOAT, fn: Math.PI},
-    {kind: "fn", name: "cos", t: tFun([TFLOAT], TFLOAT, new Set()), pnames: ["x"], fn: a => Math.cos(num(a))},
-    {kind: "fn", name: "sin", t: tFun([TFLOAT], TFLOAT, new Set()), pnames: ["x"], fn: a => Math.sin(num(a))},
-    {kind: "fn", name: "abs", t: tFun([TFLOAT], TFLOAT, new Set()), pnames: ["x"], fn: a => Math.abs(num(a))},
-    {kind: "fn", name: "round", t: tFun([TF64], TI64, new Set()), pnames: ["x"], fn: a => Math.round(num(a))},
-    {kind: "fn", name: "sqrt", t: tFun([TFLOAT], TFLOAT, new Set()), pnames: ["x"], fn: a => Math.sqrt(num(a))},
-    // Builtins return concrete widths — range is (i64, i64, i64) -> [i64],
-    // so its output is never width-ambiguous. Elements are plain JS numbers;
-    // every read at an i64-typed site (get, callbacks) re-normalizes to BigInt.
-    {kind: "fn", name: "range", t: tFun([TI64, TI64, TI64], tArr(TI64), new Set()), pnames: ["from", "to", "step"], fn: (a, b, c) => {
-      const s = num(a), e = num(b), st = num(c);
-      const n = st === 0 ? 0 : Math.max(0, Math.ceil((e - s) / st));
-      return mkSlice(Array.from({length: n}, (_, k) => s + k * st));
-    }},
-    {kind: "fn", name: "char", t: tFun([TINT], TSTR, new Set()), pnames: ["code"], fn: a => String.fromCodePoint(num(a) | 0)},
-    {kind: "fn", name: "number", t: tFun([TSTR], TFLOAT, new Set()), pnames: ["s"], fn: a => parseFloat(a as string)},
-    {kind: "fn", name: "args", t: tFun([], tArr(TSTR), new Set()), fn: () => mkSlice(process.argv.slice(2))},
-    {kind: "fn", name: "get", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64], a, new Set()); }, pnames: ["xs", "i"], fn: (xs, i) => {
-      const s = asSlice(xs);
-      const idx = num(i);
-      if (idx < 0 || idx >= s.len || !Number.isInteger(idx))
-        throw new Error(`get: index ${idx} out of bounds [0, ${s.len})`);
-      return s.data[s.off + idx]!;
-    }},
-    {kind: "fn", name: "set", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64, a], TUNIT, new Set()); }, pnames: ["xs", "i", "v"], fn: (xs, i, v) => {
-      // Strictly in-window write through the view into the shared backing —
-      // growth is concat's job only.
-      const s = asSlice(xs);
-      const idx = num(i);
-      if (idx < 0 || idx >= s.len || !Number.isInteger(idx))
-        throw new Error(`set: index ${idx} out of bounds [0, ${s.len})`);
-      s.data[s.off + idx] = v;
-      return null;
-    }},
-    {kind: "native", name: "each", t: (u: Unifier) => {
-      const a = u.fresh(), b = u.fresh(), e = u.freshEff();
-      return tFun([tFun([a, TI64], b, e), tArr(a)], TUNIT, e);
-    }, pnames: ["f", "xs"], fn: (args, k) => {
-      const f = args[0]!, s = asSlice(args[1]);
-      function go(i: number): Outcome {
-        if (i >= s.len)
-          return k(null);
-        return apply(f, [s.data[s.off + i]!, i], () => go(i + 1));
-      }
-      return go(0);
-    }},
-    {kind: "native", name: "flatmap", t: (u: Unifier) => {
-      const a = u.fresh(), b = u.fresh(), e = u.freshEff();
-      return tFun([tFun([a, TI64], tArr(b), e), tArr(a)], tArr(b), e);
-    }, pnames: ["f", "xs"], fn: (args, k) => {
-      const f = args[0]!, s = asSlice(args[1]);
-      const acc: Value[] = [];
-      function go(i: number): Outcome {
-        if (i >= s.len)
-          return k(mkSlice(acc));
-        return apply(f, [s.data[s.off + i]!, i], v => {
-          acc.push(...sliceElems(asSlice(v)));
-          return go(i + 1);
-        });
-      }
-      return go(0);
-    }},
+const VALUE_IMPLS: Record<string, Value> = {PI: Math.PI};
 
-    // Builtin effects, interpreted by the runtime when left unhandled.
-    // `Read(path): string` reads a file; `Write(path, content): null` writes one.
-    // `Println(v: any): null` and `Out(s: string): null` are the console effects.
-    // User `effect` decls may add or override these.
-    {kind: "effect", name: "Read", sig: {params: [TSTR], ret: TSTR, names: ["path"]}, interp: (args, k) => k(readFileSync(args[0] as string, "utf8"))},
-    {kind: "effect", name: "Write", sig: {params: [TSTR, TSTR], ret: TUNIT, names: ["path", "content"]}, interp: (args, k) => {
-      writeFileSync(args[0] as string, args[1] as string);
-      return k(null);
-    }},
-    {kind: "effect", name: "Println", sig: {params: [TANY], ret: TUNIT, names: ["v"]}, interp: (args, k) => {
-      console.log(show(args[0] ?? null));
-      return k(null);
-    }},
-    {kind: "effect", name: "Out", sig: {params: [TSTR], ret: TUNIT, names: ["s"]}, interp: (args, k) => {
-      process.stdout.write(args[0] as string);
-      return k(null);
-    }},
-    // `Exit(code: int): unit` terminates the process by default (never resumes);
-    // `Wait(secs: int): unit` blocks for `secs` seconds then resumes with unit.
-    // Both are effects so a handler can intercept them.
-    {kind: "effect", name: "Exit", sig: {params: [TINT], ret: TUNIT, names: ["code"]}, interp: args => process.exit(num(args[0]))},
-    {kind: "effect", name: "Wait", sig: {params: [TINT], ret: TUNIT, names: ["secs"]}, interp: (args, k) => {
-      sleepSync(num(args[0]) * 1000);
-      return k(null);
-    }},
-    // `Random(): float` resumes with a random number in [0, 1).
-    {kind: "effect", name: "Random", sig: {params: [], ret: TFLOAT}, interp: (_args, k) => k(Math.random())},
-];
+const NATIVE_IMPLS: Record<string, (args: Value[], k: Cont) => Outcome> = {
+  map: (args, k) => {
+    const f = args[0]!;
+    const s = asSlice(args[1]);
+    const out = new Array<Value>(s.len);
+    function go(i: number): Outcome {
+      if (i >= s.len)
+        return k(mkSlice(out));
+      return apply(f, [s.data[s.off + i]!], v => { out[i] = v; return go(i + 1); });
+    }
+    return go(0);
+  },
+  each: (args, k) => {
+    const f = args[0]!, s = asSlice(args[1]);
+    function go(i: number): Outcome {
+      if (i >= s.len)
+        return k(null);
+      return apply(f, [s.data[s.off + i]!, i], () => go(i + 1));
+    }
+    return go(0);
+  },
+  flatmap: (args, k) => {
+    const f = args[0]!, s = asSlice(args[1]);
+    const acc: Value[] = [];
+    function go(i: number): Outcome {
+      if (i >= s.len)
+        return k(mkSlice(acc));
+      return apply(f, [s.data[s.off + i]!, i], v => {
+        acc.push(...sliceElems(asSlice(v)));
+        return go(i + 1);
+      });
+    }
+    return go(0);
+  },
+};
+
+// The builtin effects' default CPS interpretations — each calls k exactly
+// once and synchronously (Exit terminates the process and never calls k).
+// eval.ts's runTop consumes these directly for unhandled effects.
+const INTERPS: Record<string, (args: Value[], k: Cont) => Outcome> = {
+  Read: (args, k) => k(readFileSync(args[0] as string, "utf8")),
+  Write: (args, k) => {
+    writeFileSync(args[0] as string, args[1] as string);
+    return k(null);
+  },
+  Println: (args, k) => {
+    console.log(show(args[0] ?? null));
+    return k(null);
+  },
+  Out: (args, k) => {
+    process.stdout.write(args[0] as string);
+    return k(null);
+  },
+  Exit: args => process.exit(num(args[0])),
+  Wait: (args, k) => {
+    sleepSync(num(args[0]) * 1000);
+    return k(null);
+  },
+  Random: (_args, k) => k(Math.random()),
+};
+
+// Audit surface for analysis.test.ts: the impl keys per kind, so the test
+// can catch an impl row whose key has no matching table row — orphaned
+// dead code the `FN_IMPLS[d.name]` spreads above would silently skip.
+export const IMPL_KEYS: {
+  fn: string[], value: string[], native: string[], effect: string[],
+} = {
+  fn: Object.keys(FN_IMPLS),
+  value: Object.keys(VALUE_IMPLS),
+  native: Object.keys(NATIVE_IMPLS),
+  effect: Object.keys(INTERPS),
+};
+
+// The one shared runtime table: declarative rows from builtin_table.ts plus
+// the impls above, keyed by name. Polymorphic `t` thunks instantiate fresh
+// vars per use, so entries are immutable and safe to share across programs.
+export const builtins: Builtin[] = BUILTIN_TABLE.map((d): Builtin => {
+  switch (d.kind) {
+    case "fn": return {...d, fn: FN_IMPLS[d.name]};
+    case "value": return {...d, fn: VALUE_IMPLS[d.name]};
+    case "native": return {...d, fn: NATIVE_IMPLS[d.name]};
+    case "effect": return {...d, interp: INTERPS[d.name]};
+  }
+});
 
 // Direct-style default interpretation of the builtin effects, derived from
 // the CPS `interp` entries above: every builtin effect calls k exactly once

@@ -1,8 +1,8 @@
 // analysis.ts — frontend analysis passes over a parsed program, shared by
 // the wasm backend (tree-shaking, dead host-import elimination, op-table
 // seeding) and the interpreter (unhandled-op fail-fast, env seeding).
-// Nothing here emits bytecode or touches backend state: pure AST walks plus
-// the builtin-surface tables both backends agree on.
+// Nothing here emits bytecode or touches backend state: pure AST walks over
+// the builtin surface tables declared in builtin_table.ts.
 //
 // Interpreter wiring (implemented):
 // - Fail-fast unhandled ops: exec (eval.ts) rejects a program before
@@ -25,63 +25,13 @@
 
 import {exprChildren, type ExprID, type Program} from "./parser.ts";
 import {assertNever} from "./assert.ts";
+import {BUILTINS, OPERATOR_OPS} from "./builtin_table.ts";
 
-// Operators of the surface language. Shared with the wasm backend: the
-// checker stamps numeric operator sites with a concrete width (numKind), but
-// polymorphic/escape-hatch sites stay unstamped — the wasm backend must
-// then fall back to the operator's dynamic trampoline (see treeShakeBuiltins
-// and emitOperatorInline).
-export const OPERATOR_OPS = new Set(["+", "-", "*", "%", "neg", "<", ">", "<=", ">=", "==", "!=", "not"]);
-
-// Builtin effect op names in op-table order (= builtins.ts table order).
-// The wasm op table seeds these at opids 0..n-1; performed/handled program
-// ops intern after them. Deliberately a static list: analysis.ts stays a
-// leaf module (parser types only) so both backends can import it without
-// pulling in the evaluator — analysis.test.ts asserts this stays in sync
-// with builtins.ts.
-export const EFFECT_OPS: string[] =
-  ["Read", "Write", "Println", "Out", "Exit", "Wait", "Random"];
-
-// Every builtin ef programs can name (the interpreter's global env): the
-// checker's operators first (resolved structurally, no table entry), then
-// the non-effect builtins in builtins.ts table order. `params` is the
-// fixed-arity ABI both backends agree on: 0 for the value `PI` and 0-arg
-// `args`. analysis.test.ts asserts this stays in sync
-// with builtins.ts/env.ts.
-export const BUILTINS: {name: string, params: number}[] = [
-  {name: "+", params: 2},
-  {name: "-", params: 2},
-  {name: "*", params: 2},
-  {name: "%", params: 2},
-  {name: "neg", params: 1},
-  {name: "<", params: 2},
-  {name: ">", params: 2},
-  {name: "<=", params: 2},
-  {name: ">=", params: 2},
-  {name: "==", params: 2},
-  {name: "!=", params: 2},
-  {name: "not", params: 1},
-  {name: "sub", params: 3},
-  {name: "concat", params: 2},
-  {name: "flat", params: 1},
-  {name: "len", params: 1},
-  {name: "strlen", params: 1},
-  {name: "PI", params: 0},
-  {name: "cos", params: 1},
-  {name: "sin", params: 1},
-  {name: "abs", params: 1},
-  {name: "round", params: 1},
-  {name: "sqrt", params: 1},
-  {name: "range", params: 3},
-  {name: "char", params: 1},
-  {name: "number", params: 1},
-  {name: "args", params: 0},
-  {name: "get", params: 2},
-  {name: "set", params: 3},
-  {name: "map", params: 2},
-  {name: "each", params: 2},
-  {name: "flatmap", params: 2},
-];
+// The builtin-surface tables both backends agree on — pure data declared in
+// builtin_table.ts (a leaf module, so both backends import them without
+// pulling in the evaluator) and re-exported here for the analysis
+// consumers.
+export {BUILTINS, EFFECT_OPS, OPERATOR_OPS} from "./builtin_table.ts";
 
 // Whether any subtree of the program contains a perform node (any op, even
 // inside a handler's body or a case body — handlers don't prove

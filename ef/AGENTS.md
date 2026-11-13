@@ -7,9 +7,12 @@ with **algebraic effects and effect handlers**, C/Go-flavored syntax, and a
 Hindley-Milner-flavoured type system with effect tracking.
 
 - Modules (all under `compiler/`, a bun workspace package): `lexer.ts`, `parser.ts`, `types.ts` (checker), `env.ts` (runtime
-  values), `builtins.ts` (the one builtin table), `analysis.ts` (frontend
-  passes: builtin surface, op discovery, builtin-ref tree-shaking — shared
-  by the wasm backend, parser-types-only leaf module), `cps.ts` (CPS
+  values), `builtin_table.ts` (the declarative builtin table — pure rows
+  (name, kind, checker sig); leaf module), `builtins.ts` (runtime impls for
+  those rows; a new builtin is one row in builtin_table.ts plus one impl
+  row here), `analysis.ts` (frontend passes: op discovery, builtin-ref
+  tree-shaking; re-exports the builtin surface declared in builtin_table.ts
+  — shared by the wasm backend, parser-types-only leaf module), `cps.ts` (CPS
   converter: checked AST → the shared CPS IR), `cps_ir.ts` (the CPS IR node
   set + the multi-shot ANF/freeze discipline comments; leaf module),
   `cps_opt.ts` (optimization passes applied as the final stage of CPS
@@ -197,8 +200,10 @@ Hindley-Milner-flavoured type system with effect tracking.
   `devDependency`), and the test suite all clean.
 - **Tests are the spec's executable form.** When you change the language,
   update `index.test.ts` to match. Self-checks there must stay green.
-- **The single builtins table.** A new builtin is one entry in
-  `builtins.ts`; never seed it ad hoc into `checkProgram` or `globalEnv`.
+- **The single builtins table.** A new builtin is one row in
+  `builtin_table.ts` (declarative: name, kind, checker sig) plus one impl
+  row in `builtins.ts`; never seed it ad hoc into `checkProgram` or
+  `globalEnv`.
 
 ## When the language changes
 

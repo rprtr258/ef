@@ -1,11 +1,14 @@
-// analysis.ts — frontend passes shared by the wasm backend and (future)
-// interpreter consumers. The sync tests below are the contract keeping this
-// leaf module's static tables aligned with builtins.ts/env.ts; the behavior
-// tests pin the binding order the wasm tree-shake relies on.
+// analysis.ts — frontend passes shared by the wasm backend and the
+// interpreter. The static checks below pin builtin_table.ts's internal
+// consistency (sig shapes, arities, op order) and its agreement with the
+// runtime impls in builtins.ts; the behavior tests pin the binding order
+// the wasm tree-shake relies on.
 import {describe, expect, test} from "bun:test";
 import {Parser} from "./parser.ts";
 import {globalEnv} from "./env.ts";
-import {builtins, builtinParamNames} from "./builtins.ts";
+import {IMPL_KEYS, builtinParamNames} from "./builtins.ts";
+import {BUILTIN_TABLE} from "./builtin_table.ts";
+import {Unifier} from "./types.ts";
 import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, performsAnyOp} from "./analysis.ts";
 
 const refs = (src: string) => builtinRefs(new Parser(src).parseProgram());
@@ -13,9 +16,9 @@ const vals = (src: string) => builtinValueUses(new Parser(src).parseProgram());
 const ops = (src: string) => collectEffectOps(new Parser(src).parseProgram());
 const anyOp = (src: string) => performsAnyOp(new Parser(src).parseProgram());
 
-describe("analysis surface tables", () => {
-  test("EFFECT_OPS matches the builtin effect table exactly (order included)", () => {
-    expect(EFFECT_OPS).toEqual(builtins.filter(b => b.kind === "effect").map(b => b.name));
+describe("builtin_table (static checks)", () => {
+  test("EFFECT_OPS is pinned in op-table order (opids 0..n-1 before program ops)", () => {
+    expect(EFFECT_OPS).toEqual(["Read", "Write", "Println", "Out", "Exit", "Wait", "Random"]);
   });
 
   test("BUILTINS names == globalEnv bindings (operators + non-effect builtins)", () => {
@@ -24,13 +27,49 @@ describe("analysis surface tables", () => {
     expect([...surface].sort()).toEqual([...env].sort());
   });
 
-  test("BUILTINS arities spot checks", () => {
+  test("BUILTINS arities spot checks (operator rows included)", () => {
     const arity = (name: string) => BUILTINS.find(b => b.name === name)?.params;
     expect(arity("args")).toBe(0);
     expect(arity("PI")).toBe(0);
     expect(arity("neg")).toBe(1);
     expect(arity("range")).toBe(3);
     expect(arity("map")).toBe(2);
+  });
+
+  test("every effect row declares a concrete sig (params annotated, ret typed)", () => {
+    for (const d of BUILTIN_TABLE) {
+      if (d.kind !== "effect") continue;
+      // Parser sigs may leave parameters unannotated; builtin sigs must not.
+      expect(d.sig.params.every(p => p !== null)).toBe(true);
+      expect(d.sig.ret.tag).not.toBe("var");
+    }
+  });
+
+  test("every fn/native row's params matches its checker sig arity", () => {
+    const uni = new Unifier();
+    for (const d of BUILTIN_TABLE) {
+      if (d.kind !== "fn" && d.kind !== "native") continue;
+      const t = typeof d.t === "function" ? d.t(uni) : d.t;
+      if (t.tag !== "fun") throw new Error(`builtin ${d.name}: sig must be a fun type`);
+      expect(d.params).toBe(t.params.length);
+    }
+  });
+
+  test("pnames match the declared arity when present", () => {
+    for (const d of BUILTIN_TABLE) {
+      if (d.kind === "effect" || d.kind === "value" || d.pnames === undefined) continue;
+      expect(d.pnames.length).toBe(d.params);
+    }
+  });
+
+  test("impl keys and table rows cover each other per kind (no orphaned impls)", () => {
+    // builtins.ts derives the runtime entries by spreading `FN_IMPLS[d.name]`,
+    // so an orphaned or missing impl key fails silently there — the audit
+    // compares the key sets against the table directly, both directions.
+    for (const kind of ["fn", "value", "native", "effect"] as const) {
+      const tableNames = BUILTIN_TABLE.filter(d => d.kind === kind).map(d => d.name).sort();
+      expect([...IMPL_KEYS[kind]].sort()).toEqual(tableNames);
+    }
   });
 });
 
