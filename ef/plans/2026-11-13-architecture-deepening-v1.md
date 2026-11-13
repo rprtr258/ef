@@ -178,8 +178,13 @@ internals, wasm case labels) — those close in 3.3.
 **Verification:** `bun run ci`; deliberately diff one interpreter/wasm error pair in a test run.
 **Commit:** `ops: derived runtime error parity`
 
-**Chunk 3.3 — close the vocabulary: remaining operator-name sites.**
-- [ ] Migrate the remaining operator-name string sites onto `ops.ts`: `cps.ts` NUM_OPS (cps.ts:36),
+**Chunk 3.3 — close the vocabulary: remaining operator-name sites.** ✅ commit (see log)
+Discovered during this chunk (pre-existing, out of scope): wasm f32 `%` codegen is broken —
+the float-rem branch promotes only the first operand pair to f64, then feeds f32-plane locals to
+f64.mul/f64.sub → binaryen validation failure (wasm_term.ts float-rem branch). Silent when the
+call is tree-shaken away; interpreter is correct. Follow-up fix + reachable-call regression test
+needed.
+- [x] Migrate the remaining operator-name string sites onto `ops.ts`: `cps.ts` NUM_OPS (cps.ts:36),
       `eval.ts` `widthOp` name table (eval.ts:292,306), `wasm_term.ts` case labels (1303,1350),
       `wasm_module.ts` (157).
 
@@ -195,10 +200,16 @@ non-operator matches; knip green. **Commit:** `ops: close remaining operator-nam
 `types.ts` (3), `analysis.ts` (3), `lint.ts` (2), `lsp.ts` `binders()` (no guard). Scope/shadowing
 semantics are encoded 4×. `parser.ts` `exprChildren` is the germ of the walker.
 
-**Chunk 4.1 — walker module + analysis migration (pilot).**
-- [ ] New `compiler/walk.ts` (leaf over parser AST): `exprChildren`, `forEachBinder`, node-visitor
-      helper; `assertNever`-guarded; child order single-sourced (delegating to `exprChildren`).
-- [ ] Migrate `analysis.ts`'s three walkers onto it.
+**Chunk 4.1 — walker module + analysis migration (pilot).** ✅ commit (see log)
+- [x] New `compiler/walk.ts` (leaf over parser AST): `exprChildren` (re-exported from parser.ts —
+      the canonical child order stays there; parser owns the AST), `forEachBinder` (binder sites
+      matching the checker's `checkBind` order; assertNever-guarded), `visitExprs` (pre-order
+      visitor, boolean continue/stop).
+- [x] Migrate `analysis.ts`'s three walkers onto it: performsAnyOp/collectEffectOps via
+      `visitExprs` (op-interning pre-order preserved — wasm op-table order untouched);
+      classifyBuiltinRefs keeps its scope-threading recursion (per-variant scopes + callee
+      classification, not expressible generically) with binder enumeration delegated to
+      `forEachBinder`.
 
 **Verification:** `bun run ci`. **Commit:** `walk: shared traversal, analysis migrated`
 

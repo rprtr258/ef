@@ -468,7 +468,7 @@ a + b`)).toBe("6");
     expect(parity(`effect Op(): i64;
       handle { f :: fn(a: i64, b: i64): i64 { a + b }; f(Op!(), Op!()) }
       case Op() => k { k(3) }`)).toBe("6");
-  });
+  }, 20000); // parity() spawns both runners per assertion; tips over the 5s default under suite load
 
   test("mixed functions: row-{} body with an internal handle (direct boundary)", () => {
     // Island mid-body, result flows through the dret boundary to a pure call site.

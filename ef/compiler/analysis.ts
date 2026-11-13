@@ -23,7 +23,8 @@
 //   check rejects on, so it shows exactly what the runner must interpret
 //   (or the run fails on).
 
-import {exprChildren, type ExprID, type Program} from "./parser.ts";
+import {type ExprID, type Program} from "./parser.ts";
+import {exprChildren, forEachBinder, visitExprs} from "./walk.ts";
 import {assertNever} from "./assert.ts";
 import {BUILTINS, OPERATOR_OPS} from "./builtin_table.ts";
 
@@ -38,12 +39,15 @@ export {BUILTINS, EFFECT_OPS, NATIVE_BUILTINS, OPERATOR_OPS} from "./builtin_tab
 // non-performance). The wasm backend decides the ef_perform import's
 // liveness with this.
 export function performsAnyOp(prog: Program): boolean {
-  const walk = (id: ExprID): boolean => {
-    const e = prog.nodes[id];
-    if (e.t === "perform") return true;
-    return exprChildren(e).some(k => walk(k));
-  };
-  return prog.items.some(it => "e" in it && walk(it.e));
+  let found = false;
+  visitExprs(prog, (e) => {
+    if (e.t === "perform") {
+      found = true;
+      return false; // stop: one perform settles the boolean
+    }
+    return true;
+  });
+  return found;
 }
 
 // Ops the program performs or handles, in first-appearance AST order: a
@@ -58,36 +62,19 @@ export function performsAnyOp(prog: Program): boolean {
 // ops-minus-handled tracking; `ef ops` prints that instead.
 export function collectEffectOps(prog: Program): string[] {
   const ops: string[] = [];
-  const walk = (id: ExprID): void => {
-    const e = prog.nodes[id];
-    switch (e.t) {
-      case "perform":
-        if (!ops.includes(e.op))
-          ops.push(e.op);
-        break;
-      case "handle":
-        // Case ops intern before the body walk below (op-table order).
-        for (const cse of e.cases)
-          if (cse.op !== "Return" && !ops.includes(cse.op))
-            ops.push(cse.op);
-        break;
-      case "lambda": case "block": case "let": case "dlet": case "assign":
-      case "if": case "while": case "app": case "arr": case "field": case "as":
-        break; // children only — see exprChildren
-      case "sym":
-      case "num":
-      case "str":
-      case "bool":
-      case "unit":
-        break;
-      default:
-        assertNever(e);
+  visitExprs(prog, (e) => {
+    if (e.t === "perform") {
+      if (!ops.includes(e.op))
+        ops.push(e.op);
+    } else if (e.t === "handle") {
+      // Pre-order: the callback precedes the node's children, so case ops
+      // intern before ops performed in the body or the case bodies.
+      for (const cse of e.cases)
+        if (cse.op !== "Return" && !ops.includes(cse.op))
+          ops.push(cse.op);
     }
-    for (const k of exprChildren(e)) walk(k);
-  };
-  for (const it of prog.items)
-    if ("e" in it)
-      walk(it.e);
+    return true;
+  });
   return ops;
 }
 
@@ -133,7 +120,8 @@ function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<str
         }
         break;
       case "lambda": {
-        const s: Sc = {names: new Set(e.params.map(p => p.name)), parent: sc};
+        const s: Sc = {names: new Set(), parent: sc};
+        forEachBinder(e, n => s.names.add(n));
         walk(e.body, s);
         return;
       }
@@ -146,11 +134,10 @@ function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<str
       case "let":
         // The binding is already in sc before the value, mirroring emission:
         // `len :: len` reads the slot, not the builtin.
-        sc.names.add(e.name);
+        forEachBinder(e, n => sc.names.add(n));
         break;
       case "dlet":
-        for (const fd of e.fields)
-          sc.names.add(fd.name);
+        forEachBinder(e, n => sc.names.add(n));
         break;
       case "assign": case "if": case "while": case "arr": case "field":
       case "as": case "perform":
@@ -177,17 +164,9 @@ function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<str
       case "handle": {
         walk(e.body, sc);
         // Case bodies run over the handler's hframe scope: case params and
-        // the resume binder shadow outer bindings (Return has one param).
+        // the resume binder shadow outer bindings.
         const hs: Sc = {names: new Set(), parent: sc};
-        for (const cse of e.cases) {
-          if (cse.op === "Return") {
-            hs.names.add(cse.params[0].name);
-          } else {
-            for (const p of cse.params)
-              hs.names.add(p.name);
-          }
-          hs.names.add(cse.resume);
-        }
+        forEachBinder(e, n => hs.names.add(n));
         for (const cse of e.cases)
           walk(cse.body, hs);
         return;
