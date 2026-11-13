@@ -10,6 +10,7 @@ import {IMPL_KEYS, builtinParamNames} from "./builtins.ts";
 import {BUILTIN_TABLE} from "./builtin_table.ts";
 import {Unifier} from "./types.ts";
 import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, performsAnyOp} from "./analysis.ts";
+import {OP_NEG} from "./ops.ts";
 
 const refs = (src: string) => builtinRefs(new Parser(src).parseProgram());
 const vals = (src: string) => builtinValueUses(new Parser(src).parseProgram());
@@ -31,7 +32,7 @@ describe("builtin_table (static checks)", () => {
     const arity = (name: string) => BUILTINS.find(b => b.name === name)?.params;
     expect(arity("args")).toBe(0);
     expect(arity("PI")).toBe(0);
-    expect(arity("neg")).toBe(1);
+    expect(arity(OP_NEG)).toBe(1);
     expect(arity("range")).toBe(3);
     expect(arity("map")).toBe(2);
   });

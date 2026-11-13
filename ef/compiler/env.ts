@@ -1,6 +1,10 @@
 import {showT, type FunT} from "./types.ts";
 import type {CIr} from "./cps_ir.ts";
 import {builtins} from "./builtins.ts";
+import {
+  OP_ADD, OP_SUB, OP_MUL, OP_REM,
+  OP_EQ, OP_NE, OP_LT, OP_GT, OP_LE, OP_GE, OP_NEG,
+} from "./ops.ts";
 
 // --- Values (runtime) ---
 export type Closure = {
@@ -191,28 +195,28 @@ function builtinValue(b: Exclude<(typeof builtins)[number], {kind: "effect"}>): 
 // backends. (==/!= stay out of the wasm route: the wasm $eq helper
 // content-compares boxed strings, which JS `===` on Values cannot see.)
 export const OPS: [string, (a: Value, b: Value) => Value][] = [
-  ["+",  (a, b) =>
+  [OP_ADD,  (a, b) =>
     typeof a === "string" && typeof b === "string" ? a + b :
     eitherBig(a, b) ? asBig(a) + asBig(b) :
     typeof a === "number" && typeof b === "number" ? num(a) + num(b) :
     null],
-  ["-",  (a, b) => eitherBig(a, b) ? asBig(a) - asBig(b) : num(a) - num(b)],
-  ["*",  (a, b) => eitherBig(a, b) ? asBig(a) * asBig(b) : num(a) * num(b)],
+  [OP_SUB,  (a, b) => eitherBig(a, b) ? asBig(a) - asBig(b) : num(a) - num(b)],
+  [OP_MUL,  (a, b) => eitherBig(a, b) ? asBig(a) * asBig(b) : num(a) * num(b)],
   // `%` handles only unstamped (polymorphic) app nodes — width-stamped ones
   // are intercepted in eval.ts's widthOp with the ÷0 trap.
-  ["%",  (a, b) => eitherBig(a, b) ? asBig(a) % asBig(b) : num(a) % num(b)],
-  ["==", (a, b) => a === b],
-  ["!=", (a, b) => a !== b],
-  ["<",  (a, b) => eitherBig(a, b) ? asBig(a) <  asBig(b) : num(a) <  num(b)],
-  [">",  (a, b) => eitherBig(a, b) ? asBig(a) >  asBig(b) : num(a) >  num(b)],
-  ["<=", (a, b) => eitherBig(a, b) ? asBig(a) <= asBig(b) : num(a) <= num(b)],
-  [">=", (a, b) => eitherBig(a, b) ? asBig(a) >= asBig(b) : num(a) >= num(b)],
+  [OP_REM,  (a, b) => eitherBig(a, b) ? asBig(a) % asBig(b) : num(a) % num(b)],
+  [OP_EQ, (a, b) => a === b],
+  [OP_NE, (a, b) => a !== b],
+  [OP_LT,  (a, b) => eitherBig(a, b) ? asBig(a) <  asBig(b) : num(a) <  num(b)],
+  [OP_GT,  (a, b) => eitherBig(a, b) ? asBig(a) >  asBig(b) : num(a) >  num(b)],
+  [OP_LE, (a, b) => eitherBig(a, b) ? asBig(a) <= asBig(b) : num(a) <= num(b)],
+  [OP_GE, (a, b) => eitherBig(a, b) ? asBig(a) >= asBig(b) : num(a) >= num(b)],
 ];
 
 export function globalEnv(refs?: Set<string>): Env {
   const g = new Env(null);
   for (const [s, f] of OPS) g.vars.set(s, lift(f));
-  g.vars.set("neg", lift(a => typeof a === "bigint" ? -a : -num(a)));
+  g.vars.set(OP_NEG, lift(a => typeof a === "bigint" ? -a : -num(a)));
   // Named builtins and their impls come from the one table in builtins.ts.
   // With `refs`, only referenced builtins bind — exec seeds missing ones
   // incrementally per call, matching the wasm module's tree-shaken builtin

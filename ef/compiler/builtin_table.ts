@@ -1,12 +1,16 @@
 // builtin_table: the declarative builtin table — every builtin ef programs
 // can name as pure data: name, kind, checker signature, effect declaration.
-// Leaf module: runtime imports only prims.ts (itself a leaf), so any module
+// Leaf module: runtime imports only prims.ts and ops.ts (both leaves), so any module
 // can read the table at init time regardless of load order. Runtime impls
 // (closures, CPS natives, effect interps) live in builtins.ts; operator
 // implementations live in env.ts's OPS — the checker resolves operator apps
 // structurally, so operators are surface rows only.
 import type {EffectSig, Type, Unifier} from "./types.ts";
 import {TI64, TANY, TBOOL, TF64, TFLOAT, TINT, TUNIT, TSTR, tArr, tFun} from "./prims.ts";
+import {
+  OP_ADD, OP_SUB, OP_MUL, OP_REM, OP_NEG,
+  OP_LT, OP_GT, OP_LE, OP_GE, OP_EQ, OP_NE, OP_NOT,
+} from "./ops.ts";
 
 // Sig-construction helpers come from prims.ts (a leaf, like this module),
 // so the table and the checker share one definition without a
@@ -28,18 +32,18 @@ type BuiltinDecl =
 // only the name and fixed arity. `not` is both an operator row here and a
 // builtin fn below — env.ts binds it from builtins, not from OPS.
 const OPERATOR_ROWS: {name: string, params: number}[] = [
-  {name: "+", params: 2},
-  {name: "-", params: 2},
-  {name: "*", params: 2},
-  {name: "%", params: 2},
-  {name: "neg", params: 1},
-  {name: "<", params: 2},
-  {name: ">", params: 2},
-  {name: "<=", params: 2},
-  {name: ">=", params: 2},
-  {name: "==", params: 2},
-  {name: "!=", params: 2},
-  {name: "not", params: 1},
+  {name: OP_ADD, params: 2},
+  {name: OP_SUB, params: 2},
+  {name: OP_MUL, params: 2},
+  {name: OP_REM, params: 2},
+  {name: OP_NEG, params: 1},
+  {name: OP_LT, params: 2},
+  {name: OP_GT, params: 2},
+  {name: OP_LE, params: 2},
+  {name: OP_GE, params: 2},
+  {name: OP_EQ, params: 2},
+  {name: OP_NE, params: 2},
+  {name: OP_NOT, params: 1},
 ];
 
 // Shared with the wasm backend: the checker stamps numeric operator sites

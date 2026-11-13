@@ -5,6 +5,7 @@ import {
 } from "./types.ts";
 import {KEYWORDS, lex, ParseError, type Pos, type Tok} from "./lexer.ts";
 import {assertNever} from "./assert.ts";
+import {OP_NEG, OP_NOT} from "./ops.ts";
 
 // Type variables allocated by the parser: alias type parameters, and
 // arguments omitted from a parametric alias use. They live in a negative id
@@ -541,11 +542,11 @@ export class Parser {
     const p = this.pos();
     if (this.is("-")) {
       this.next();
-      return this.add({t: "app", fn: this.add({t: "sym", v: "neg"}), args: [this.parseUnary()], pos: p});
+      return this.add({t: "app", fn: this.add({t: "sym", v: OP_NEG}), args: [this.parseUnary()], pos: p});
     }
     if (this.is("!")) {
       this.next();
-      return this.add({t: "app", fn: this.add({t: "sym", v: "not"}), args: [this.parseUnary()], pos: p});
+      return this.add({t: "app", fn: this.add({t: "sym", v: OP_NOT}), args: [this.parseUnary()], pos: p});
     }
     return this.parsePostfix();
   }

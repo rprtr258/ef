@@ -1,6 +1,7 @@
 import type {Expr, ExprID, Program, TypeTok} from "./parser";
 import {ParseError, type Pos} from "./lexer.ts";
 import {BUILTINS, BUILTIN_TABLE, NATIVE_BUILTINS} from "./builtin_table.ts";
+import {ARITH_OPS, CMP_OPS, EQ_OPS, STAMPED_OPS, OP_ADD, OP_DIV, OP_NEG} from "./ops.ts";
 import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, TTYPE, tArr, tFun} from "./prims.ts";
 import {assertNever} from "./assert.ts";
 
@@ -592,16 +593,9 @@ function fieldIndex(name: string): number | null {
   return /^[0-9]+$/.test(name) ? Number(name) : null;
 }
 
-// Operators handled by special-casing in `infer` (strict numeric ops /
-// same-type
-// equality), not via the generic function-application path. `+` is NOT here —
-// it is overloaded with string concatenation (see `plusType`).
-const NUMOPS = new Set(["-", "*", "/", "%"]);
-const CMPOPS = new Set(["<", ">", "<=", ">="]);
-
-// Equality ops require both operands to share a type (untyped literals
-// flex, concrete widths are strict); cross-type comparisons like `"a" == 1` are rejected.
-const EQOPS = new Set(["==", "!="]);
+// Operator classifications (ARITH_OPS/CMP_OPS/EQ_OPS) are hosted in ops.ts.
+// The checker special-cases them in `infer` instead of the generic
+// function-application path; `+` is dispatched separately (see `plusType`).
 function isNum(t: Type): t is Prim {
   return t.tag === "prim" && NUMERIC_NAMES.has(t.name as NumName);
 }
@@ -624,7 +618,7 @@ function touchNumericVar(u: Unifier, t: Type): void {
 }
 
 const ANY_ARITH = "any is not a numeric width — concrete widths required for arithmetic";
-// `==` / `!=` are special-cased in `infer` (see EQOPS): they are NOT installed
+// `==` / `!=` are special-cased in `infer` (see EQ_OPS): they are NOT installed
 // as ordinary `(any, any) -> bool` function bindings, so they can't be used as
 // first-class values and can't silently compare unrelated types.
 
@@ -672,7 +666,7 @@ function plusType(u: Unifier, a: Type, b: Type): Type {
   const ra = u.res(a), rb = u.res(b);
   if (ra.tag === "any" || rb.tag === "any") throw new TypeError_(ANY_ARITH);
   const sa = isNum(ra), sb = isNum(rb);
-  if (sa && sb) return numericResult(u, ra, rb, "+");
+  if (sa && sb) return numericResult(u, ra, rb, OP_ADD);
   const stra = ra.tag === "prim" && ra.name === "string";
   const strb = rb.tag === "prim" && rb.name === "string";
   if (stra && strb) return TSTR;
@@ -1119,7 +1113,7 @@ function inferNode(
     case "app": {
       const fn = nodes[e.fn];
       // `+` is overloaded: strict numeric arithmetic or string concatenation.
-      if (fn.t === "sym" && fn.v === "+") {
+      if (fn.t === "sym" && fn.v === OP_ADD) {
         const at = infer(e.args[0], nodes, env, effs, effects);
         const bt = infer(e.args[1], nodes, env, effs, effects);
         const widened = plusType(env.uni, at, bt);
@@ -1135,7 +1129,7 @@ function inferNode(
       }
       // Numeric operators (- * / %) and comparisons (< > <= >=) widen int/float;
       // unary neg is handled below. Kept out of BINOPS so they get this logic.
-      if (fn.t === "sym" && (NUMOPS.has(fn.v) || CMPOPS.has(fn.v))) {
+      if (fn.t === "sym" && (ARITH_OPS.has(fn.v) || CMP_OPS.has(fn.v))) {
         const at = infer(e.args[0], nodes, env, effs, effects);
         const bt = infer(e.args[1], nodes, env, effs, effects);
         const widened = numeric(env.uni, at, bt, fn.v);
@@ -1153,21 +1147,21 @@ function inferNode(
           pinWildcard(env.uni, e.args[0], at, widened);
           pinWildcard(env.uni, e.args[1], bt, widened);
         }
-        if (CMPOPS.has(fn.v)) return TBOOL;
+        if (CMP_OPS.has(fn.v)) return TBOOL;
         // `/` is type-preserving: int/int -> int (truncated at runtime),
         // float/float -> float. The checker stamps the division's WIDTH on
         // the node so the evaluator/emitters pick truncation and the
         // signed/unsigned op variants.
-        if (fn.v === "/") {
+        if (fn.v === OP_DIV) {
           const rw = widthOf(env.uni.res(widened));
           e.div = rw !== null ? rw.w : "f64";
           return widened;
         }
         return widened;
       }
-      if (fn.t === "sym" && fn.v === "neg") {
+      if (fn.t === "sym" && fn.v === OP_NEG) {
         const at = infer(e.args[0], nodes, env, effs, effects);
-        const widened = numeric(env.uni, at, at, "neg");
+        const widened = numeric(env.uni, at, at, OP_NEG);
         const wo = widthOf(env.uni.res(widened));
         if (wo !== null) {
           e.numKind = wo.w;
@@ -1178,7 +1172,7 @@ function inferNode(
       // Equality: both operands must share a type (untyped literals flex,
       // concrete widths are strict — `i32 == i64` is an error). Cross-type
       // (`"a" == 1`) is a type error.
-      if (fn.t === "sym" && EQOPS.has(fn.v)) {
+      if (fn.t === "sym" && EQ_OPS.has(fn.v)) {
         const at = infer(e.args[0], nodes, env, effs, effects);
         const bt = infer(e.args[1], nodes, env, effs, effects);
         env.uni.unify(at, bt);
@@ -1304,7 +1298,7 @@ function selfBoxedWidth(nodes: Expr[], id: ExprID): boolean {
   if (n.t === "num" || n.t === "as") return true;
   if (n.t === "app") {
     const fn = nodes[n.fn];
-    return fn.t === "sym" && (NUMOPS.has(fn.v) || fn.v === "neg" || fn.v === "+");
+    return fn.t === "sym" && (ARITH_OPS.has(fn.v) || fn.v === OP_NEG || fn.v === OP_ADD);
   }
   return false;
 }
@@ -1342,11 +1336,6 @@ function stampNumKinds(nodes: Expr[], uni: Unifier): void {  for (const [id, t] 
   }
 }
 
-// Operator names the app case dispatches structurally (their callees never
-// reach `infer`, so they carry no callee type in nodeTypes and never get a
-// suspension stamp — the converter's own fast paths dispatch them).
-const STAMPED_OPS = new Set([...NUMOPS, ...CMPOPS, ...EQOPS, "+", "neg"]);
-
 // Suspension stamps: after all items are checked, classify every generic
 // call site by its callee's resolved FunT. `sus: false` — a dcall — requires
 // positive evidence: a FunT with neither marker and a concrete empty row.
@@ -1355,7 +1344,11 @@ const STAMPED_OPS = new Set([...NUMOPS, ...CMPOPS, ...EQOPS, "+", "neg"]);
 // recorded type defaults to suspending. Effect-polymorphic native builtins
 // (map/each/flatmap) have effect-variable rows by construction, so the row
 // test alone already keeps them suspending — the NATIVE_BUILTINS test below
-// is a belt-and-braces guard.
+// is a belt-and-braces guard. Operator apps the checker dispatched
+// structurally (STAMPED_OPS, hosted in ops.ts) skip the callee lookup: their
+// callees never reach `infer`, so they carry no callee type in nodeTypes and
+// never get a suspension stamp — the converter's own fast paths dispatch
+// them.
 function stampSuspension(nodes: Expr[], uni: Unifier): void {
   for (const [id] of uni.nodeTypes) {
     const e = nodes[id];
