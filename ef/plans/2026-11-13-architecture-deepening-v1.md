@@ -213,10 +213,24 @@ semantics are encoded 4×. `parser.ts` `exprChildren` is the germ of the walker.
 
 **Verification:** `bun run ci`. **Commit:** `walk: shared traversal, analysis migrated`
 
-**Chunk 4.2 — checker walkers migrated.**
-- [ ] Migrate the three `types.ts` walkers (careful: inferNode's traversal order is semantics —
+**Chunk 4.2 — checker walkers migrated.** ✅ landed (controller commits; log has the hash)
+- [x] Migrate the three `types.ts` walkers (careful: inferNode's traversal order is semantics —
       preserve exactly; if a walker needs custom order, it keeps its own switch and the plan chunk
       notes why).
+- Landed shape: `caseReferencesK` is a pure pre-order DFS through walk.ts's `exprChildren`
+  (stop at the first matching sym — its visited set is exactly `exprChildren`'s, and the result
+  is order-insensitive). `hasPerformOutsideLambdas` enumerates through `exprChildren` with two
+  explicit scope exclusions that are semantics, not order: a lambda's body (its performs land on
+  the lambda's own row) and a handle's case bodies (they run past the handler — only `body` is
+  on the handled spine); `perform` stays an early `true`. `inferNode` keeps its own exhaustive
+  switch: its per-variant logic interleaves unification, env extension, error anchoring, and
+  semToks recording with child inference — visit order is semantics (R3), nothing there is a
+  child-order restatement; types.ts's module comment records why it stays hand-written. Both
+  migrated scanners lose their local `assertNever` arms — `exprChildren` is the exhaustiveness
+  choke point for any new Expr variant.
+- Verified: `bun run ci` green (481 pass, 0 fail); knip green (no new exports on walk.ts);
+  `ef types` on examples/star.ef and examples/amb.ef byte-identical before/after, `ef run`
+  likewise (star's infinite animation compared as a 100 KB deterministic output prefix).
 
 **Verification:** `bun run ci`. **Commit:** `walk: checker walkers migrated`
 

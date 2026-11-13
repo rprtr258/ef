@@ -4,6 +4,14 @@ import {BUILTINS, BUILTIN_TABLE, NATIVE_BUILTINS} from "./builtin_table.ts";
 import {ARITH_OPS, CMP_OPS, EQ_OPS, STAMPED_OPS, OP_ADD, OP_DIV, OP_NEG} from "./ops.ts";
 import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, TTYPE, tArr, tFun} from "./prims.ts";
 import {assertNever} from "./assert.ts";
+import {exprChildren} from "./walk.ts";
+
+// Traversal arrangement: the pure structural scans (hasPerformOutsideLambdas,
+// caseReferencesK) enumerate children through walk.ts's exprChildren, so
+// child order is stated once. inferNode keeps its own exhaustive switch —
+// its per-variant logic interleaves unification, env extension, and error
+// anchoring with child inference, so its visit order is semantics, not
+// structure, and cannot go through a shared pre-order visitor.
 
 export type Type = Prim | ArrT | TupT | FunT | Var | AnyT;
 export type NumName = "i32" | "i64" | "u32" | "u64" | "f32" | "f64" | "int" | "float";
@@ -682,36 +690,16 @@ function plusType(u: Unifier, a: Type, b: Type): Type {
 // spine-gated resume typing in the handle case.
 
 // Does `root`'s spine — everything except lambda bodies, which run only when
-// invoked — perform any op? A lambda-internal perform (e.g. a HOF loop's
-// land) does not suspend the enclosing expression's evaluation spine.
+// Does `root`'s evaluation spine perform any op — everything except nested
+// lambda bodies (a lambda's performs land on the lambda's own row) and
+// handle case bodies (they run past the handler, so only `body` is on the
+// spine)? Children beyond those two exclusions are exactly exprChildren's.
 function hasPerformOutsideLambdas(nodes: Expr[], root: ExprID): boolean {
   const e = nodes[root];
-  switch (e.t) {
-    case "num": case "str": case "bool": case "unit": case "sym": case "lambda":
-      return false;
-    case "let": case "dlet": case "assign":
-      return hasPerformOutsideLambdas(nodes, e.val);
-    case "as":
-      return hasPerformOutsideLambdas(nodes, e.e);
-    case "if":
-      return hasPerformOutsideLambdas(nodes, e.c) || hasPerformOutsideLambdas(nodes, e.a) || hasPerformOutsideLambdas(nodes, e.b);
-    case "while":
-      return hasPerformOutsideLambdas(nodes, e.c) || hasPerformOutsideLambdas(nodes, e.body);
-    case "block":
-      return e.stmts.some(s => hasPerformOutsideLambdas(nodes, s));
-    case "perform":
-      return true;
-    case "handle":
-      return hasPerformOutsideLambdas(nodes, e.body);
-    case "app":
-      return hasPerformOutsideLambdas(nodes, e.fn) || e.args.some(a => hasPerformOutsideLambdas(nodes, a));
-    case "arr":
-      return e.elems.some(el => hasPerformOutsideLambdas(nodes, el));
-    case "field":
-      return hasPerformOutsideLambdas(nodes, e.obj);
-    default:
-      return assertNever(e);
-  }
+  if (e.t === "perform") return true;
+  if (e.t === "lambda") return false;
+  const kids = e.t === "handle" ? [e.body] : exprChildren(e);
+  return kids.some(id => hasPerformOutsideLambdas(nodes, id));
 }
 
 // Does the case body lexically reference the resume binder `name`? Any
@@ -719,37 +707,20 @@ function hasPerformOutsideLambdas(nodes: Expr[], root: ExprID): boolean {
 // shadowed — so the gate over-approximates referencing and can only fire
 // more, never less.
 function caseReferencesK(nodes: Expr[], name: string, root: ExprID): boolean {
-  const e = nodes[root];
-  switch (e.t) {
-    case "num": case "str": case "bool": case "unit":
+  let found = false;
+  // Pre-order DFS through exprChildren, stopping at the first occurrence.
+  const go = (id: ExprID): boolean => {
+    const e = nodes[id];
+    if (e.t === "sym" && e.v === name) {
+      found = true;
       return false;
-    case "sym":
-      return e.v === name;
-    case "lambda":
-      return caseReferencesK(nodes, name, e.body);
-    case "let": case "dlet": case "assign":
-      return caseReferencesK(nodes, name, e.val);
-    case "as":
-      return caseReferencesK(nodes, name, e.e);
-    case "if":
-      return caseReferencesK(nodes, name, e.c) || caseReferencesK(nodes, name, e.a) || caseReferencesK(nodes, name, e.b);
-    case "while":
-      return caseReferencesK(nodes, name, e.c) || caseReferencesK(nodes, name, e.body);
-    case "block":
-      return e.stmts.some(s => caseReferencesK(nodes, name, s));
-    case "perform":
-      return e.args.some(a => caseReferencesK(nodes, name, a));
-    case "handle":
-      return caseReferencesK(nodes, name, e.body) || e.cases.some(c => caseReferencesK(nodes, name, c.body));
-    case "app":
-      return caseReferencesK(nodes, name, e.fn) || e.args.some(a => caseReferencesK(nodes, name, a));
-    case "arr":
-      return e.elems.some(el => caseReferencesK(nodes, name, el));
-    case "field":
-      return caseReferencesK(nodes, name, e.obj);
-    default:
-      return assertNever(e);
-  }
+    }
+    for (const k of exprChildren(e))
+      if (!go(k)) return false;
+    return true;
+  };
+  go(root);
+  return found;
 }
 
 // infer: returns the type, side-effecting `effs` with performed effects.
