@@ -29,7 +29,9 @@
 // - statusbar.ts     — the bottom statusbar
 // - theme.ts         — monaco theme definition + light/dark application
 // - editor.ts        — monaco editor creation, ef line tokenizer
-// - output.ts        — output pane lines + output/problems tabs
+// - output.ts        — output pane lines + the panel tab strip
+// - views.ts          — AST/CPS/WAT views shown in place of the editor
+//                       (+ ast_view/cps_view printers)
 // - pipeline_card.ts — Pipeline card stage row (Lex/Parse/Check)
 // - tree.ts          — explorer tree (src/ + build/ rows)
 // - rail.ts          — BUILD / OUTLINE insight cards
@@ -51,6 +53,7 @@ import {renderStages} from "./pipeline_card.ts";
 import {renderBuildCard} from "./rail.ts";
 import {setupSplits} from "./splits.ts";
 import {els, state} from "./state.ts";
+import {setView} from "./views.ts";
 import {applyTheme, toggleTheme} from "./theme.ts";
 
 function boot(): void {
@@ -71,6 +74,12 @@ function boot(): void {
   setupPalette();
   els.tabOutput.addEventListener("click", () => setTab("output"));
   els.tabProblems.addEventListener("click", () => setTab("problems"));
+  // Editor-title view tabs: click to show, click again (or the filename) to
+  // return to the editor.
+  els.viewAst.addEventListener("click", () => setView(state.view === "ast" ? "editor" : "ast"));
+  els.viewCps.addEventListener("click", () => setView(state.view === "cps" ? "editor" : "cps"));
+  els.viewWat.addEventListener("click", () => setView(state.view === "wat" ? "editor" : "wat"));
+  els.crumbFile.addEventListener("click", () => setView("editor"));
 
   window.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {

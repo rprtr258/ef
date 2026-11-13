@@ -145,7 +145,10 @@ export function compile(src: string): Uint8Array<ArrayBuffer> {
 // compile + the effect op table (opid → name) the host needs to interpret
 // ef_perform calls. The table is built by the same discovery pass that emits
 // the code, so the wasm module and the host agree on op numbering.
-export function compileWithOps(src: string): {bytes: Uint8Array<ArrayBuffer>, ops: string[]} {
+// Parse → check → CPS → binaryen function bodies: everything both emissions
+// share, so the WAT text the playground shows is built by the same pipeline
+// as the shipped bytes.
+function pipeline(src: string): {mod: binaryen.Module, ops: string[], o: Opt, lay: Layout, funcs: Fn[]} {
   const prog = new Parser(src).parseProgram();
   // Check before the backend runs: rejects ill-typed programs and stamps the
   // runtime markers the phases read (`numKind` on literals, `div` on
@@ -170,7 +173,19 @@ export function compileWithOps(src: string): {bytes: Uint8Array<ArrayBuffer>, op
   const ix = assignIndices(ir, plan, o);
   const lay = layoutStatics(d, ix, o, plan);
   const funcs = emit(ir, d, o, ix, lay, plan);
-  return {bytes: buildModule(mod, o, lay, funcs), ops: [...d.effOpIds.keys()]};
+  return {mod, ops: [...d.effOpIds.keys()], o, lay, funcs};
+}
+
+export function compileWithOps(src: string): {bytes: Uint8Array<ArrayBuffer>, ops: string[]} {
+  const {mod, ops, o, lay, funcs} = pipeline(src);
+  return {bytes: buildModule(mod, o, lay, funcs), ops};
+}
+
+// The shipped module (post binaryen shrink, validated) as WAT text — the
+// playground's wasm view prints what build emits, not a parallel build.
+export function compileWat(src: string): string {
+  const {mod, o, lay, funcs} = pipeline(src);
+  return buildModule(mod, o, lay, funcs, true);
 }
 
 // The binaryen shrink pass runs inside buildModule (the module is built via

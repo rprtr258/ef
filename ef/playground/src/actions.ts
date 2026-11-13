@@ -13,6 +13,7 @@ import {liveProblems} from "./problems.ts";
 import {renderBuildCard, renderOpsStat, renderOutlineCard} from "./rail.ts";
 import {renderStatusbar} from "./statusbar.ts";
 import {renderTree} from "./tree.ts";
+import {renderInsp, renderWat} from "./views.ts";
 import {activeFile, els, saveProject, state} from "./state.ts";
 
 // Re-derive everything downstream of the source text.
@@ -23,6 +24,7 @@ function recompute(): void {
   renderOutlineCard();
   renderOpsStat();
   liveProblems();
+  renderInsp();
   refreshActions();
 }
 
@@ -47,6 +49,7 @@ export function openFile(name: string): void {
   els.crumbEntry.textContent = isEntry ? "entry" : "";
   els.crumbEntry.classList.toggle("entry-badge", isEntry);
   recompute();
+  if (state.view === "wat") renderWat(); // the view is open — compile the new file now
 }
 
 let debounce = 0;

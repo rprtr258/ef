@@ -179,10 +179,22 @@ body.splitting { user-select: none; }
   border-bottom: 1px solid var(--hair);
   background: var(--bg2);
 }
-#crumb-file { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; }
+#crumb-file { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; cursor: pointer; }
+#crumb-file:hover { color: var(--accent); }
+
+/* Editor-title view tabs (AST/CPS/WAT): quiet chips that light up when a
+   view replaces the editor */
+.vtab {
+  font: inherit; font-size: 11px;
+  background: transparent; border: 1px solid transparent; cursor: pointer;
+  color: var(--faint); padding: 1px 7px; border-radius: 99px;
+}
+.vtab:hover { color: var(--ink); }
+.vtab.on { color: var(--ink); font-weight: 600; border-color: var(--hair); background: var(--pane); }
 .chip { color: var(--faint); border: 1px solid var(--hair); border-radius: 99px; padding: 1px 8px; }
 
 #edhost { flex: 1; min-height: 0; }
+#viewhost { flex: 1; min-height: 0; }
 
 #panel {
   flex: none;

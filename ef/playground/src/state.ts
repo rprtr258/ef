@@ -6,12 +6,16 @@ const LS_KEY = "ef.playground.project.v1";
 export const THEME_KEY = "ef.playground.theme";
 
 export type Tab = "output" | "problems";
+// What the editor area shows: the ef source or one of the inspection views
+// (setView in views.ts owns the switching).
+export type View = "editor" | "ast" | "cps" | "wat";
 export type Theme = "light" | "dark";
 
 export type State = {
   project: Project,
   active: string,
   tab: Tab,
+  view: View,
   wasm: {bytes: Uint8Array} | null,
   buildMs: number | null, // last successful build's time (BUILD stats)
   runMs: number | null, // last successful run's time (RUN stats)
@@ -34,13 +38,18 @@ export const els = {
   crumbPos: $("#crumb-pos"),
   chip: $("#chip"),
   edhost: $("#edhost"),
+  viewhost: $("#viewhost"),
   splitPanel: $("#split-panel"),
   tabOutput: $("#tab-output"),
   tabProblems: $("#tab-problems"),
   tabProblemsCount: $("#tab-problems-count"),
+  viewAst: $("#view-ast"),
+  viewCps: $("#view-cps"),
+  viewWat: $("#view-wat"),
   buildStatus: $("#build-status"),
   clearBtn: $("#clear-btn"),
   out: $("#out"),
+  problems: $("#problems"),
   statBuildTime: $("#stat-build-time"),
   statSize: $("#stat-size"),
   statRunTime: $("#stat-run-time"),
@@ -64,6 +73,7 @@ export const state: State = {
   project: bootProject,
   active: bootProject.files[bootProject.files.length - 1].name,
   tab: "output",
+  view: "editor",
   wasm: null,
   buildMs: null,
   runMs: null,

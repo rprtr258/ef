@@ -35,11 +35,15 @@
         <div id="editor-head">
           <span id="crumb-file">main.ef</span>
           <span id="crumb-entry"></span>
+          <button id="view-ast" class="vtab" title="AST of the open file (click again for the editor)">AST</button>
+          <button id="view-cps" class="vtab" title="CPS IR of the open file (click again for the editor)">CPS</button>
+          <button id="view-wat" class="vtab" title="compiled WAT — the shipped module (click again for the editor)">WAT</button>
           <span class="spacer"></span>
           <span id="crumb-pos" class="dim">Ln 1, Col 1</span>
           <span id="chip" class="chip">Ctrl+↩ run · Ctrl+B build</span>
         </div>
         <div id="edhost"></div>
+        <div id="viewhost" class="hidden"></div>
 
         <div id="split-panel" class="split h" role="separator" aria-orientation="horizontal" tabindex="0" title="drag to resize"></div>
 

@@ -477,7 +477,9 @@ function staticInit(m: binaryen.Module, d: StaticDesc): binaryen.ExpressionRef {
   }
 }
 
-export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]): Uint8Array<ArrayBuffer> {
+export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]): Uint8Array<ArrayBuffer>;
+export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[], text: true): string;
+export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[], text?: boolean): Uint8Array<ArrayBuffer> | string {
   // import section
   for (let i = 0; i < o.liveImports.length; i++) {
     const n = o.liveImports[i];
@@ -537,6 +539,13 @@ export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]
     } else {
       throw new WasmError("binaryen: compiled module failed validation");
     }
+  }
+  if (text === true) {
+    // The WAT view renders exactly the shipped module: same shrink pass and
+    // validation gate, then binaryen's own text emitter.
+    const wat = m.emitText();
+    m.dispose();
+    return wat;
   }
   const bytes = m.emitBinary();
   m.dispose();
