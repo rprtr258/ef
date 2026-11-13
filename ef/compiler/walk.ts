@@ -17,6 +17,12 @@ import {assertNever} from "./assert.ts";
 
 export {exprChildren};
 
+// Node kinds with binder sites — the closed set the switch below classifies
+// (its assertNever forces every new Expr variant through here first).
+// Exported for types.ts's token-emission coverage guard: every kind is either
+// token-recorded there or listed as deliberately unrecorded.
+export type BinderKinds = "lambda" | "let" | "dlet" | "handle";
+
 // Call fn(name, pos) for every name a node binds, in the checker's checkBind
 // order (types.ts): a lambda's params, a let's own name, a dlet's field
 // names, and a handler case's params (Return has one) then its resume

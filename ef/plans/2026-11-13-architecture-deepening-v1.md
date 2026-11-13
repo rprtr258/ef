@@ -307,10 +307,27 @@ type_display.ts**, together with `showErr` + source caret rendering from types.t
 Landed shape after 5.1: the Unifier already carries no token fields — nodeTypes/semToks are
 per-call module holders (NODE_TYPES/SEM_TOKS) in types.ts. This chunk replaces the holders with
 a recorder.
-- [ ] Introduce a `TokenRecorder` passed through checking with one emission interface; the 5
+- [x] Introduce a `TokenRecorder` passed through checking with one emission interface; the 5
       inference sites become recorder calls; the NODE_TYPES/SEM_TOKS module holders are replaced by
       recorder state (or a recorder instance held by Checked). `lsp.ts` consumes the same output
       shape (semantic tokens unchanged — `lsp.test.ts`/`vscode` tests green).
+- Landed shape: a `TokenRecorder` class in types.ts (a checking concern; unify.ts stays LSP-free),
+  created per checkProgram call and threaded through `infer`/`inferNode`/`inferArr`/`inferWith`/
+  `pinWildcard` as a parameter alongside `effs`. It owns `nodeTypes` (`recordType`/`typeOf` —
+  infer's single record site plus the width pins), `semToks` (`recordTok` — the one emission
+  point; the resolved-kind classification lives there), and the effect-signature map
+  (`recordEffect` — `EffectSig.names` display names route through the same interface); it also
+  carries the checked node slice, replacing the PIN_NODES holder. Checked's shape is unchanged
+  (`semToks`/`nodeTypes` fields fed from the recorder), so lsp.ts is untouched. All three module
+  holders (NODE_TYPES/SEM_TOKS/PIN_NODES) are deleted; the only module-level mutable state left in
+  types.ts is `lamStack` (width-ambiguity tracking — chunk 5.4's stamps concern). New-variant
+  guard: walk.ts exports `BinderKinds` next to forEachBinder's assertNever switch, and types.ts's
+  `BinderCoverage` conditional collapses `TokKinds` to `never` — failing every recordTok call —
+  while a binder kind is neither in `TokBinders` (lambda/let/handle, the emitting arms) nor
+  `UnrecordedBinders` (dlet fields; the handle resume binder), so a new binder-bearing variant
+  fails to compile until it emits through its arm or is explicitly classified unrecorded.
+  Behavior identical: CI 481 pass before and after; index.test.ts semToks assertions + vscode LSP
+  tests green (tokens byte-identical — push order, kind classification, and pos guards unchanged).
 
 **Verification:** `bun run ci` + vscode LSP test (already inside the gate). **Commit:** `types: recorder interface for LSP tokens`
 

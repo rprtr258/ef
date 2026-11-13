@@ -76,9 +76,10 @@ Hindley-Milner-flavoured type system with effect tracking.
    rows, `Op!` performs, case labels) — the LSP's semantic-tokens source;
    failed alias attempts truncate their recordings on rewind.
 3. **`types.ts`** — the checker. `Type` union, the `Unifier` class (one instance per check: all
-   union-find/binding state lives there, carried in `Checked`; also records
-   `semToks` — value-identifier semantic tokens for the LSP, kind `function`/
-   `variable` by resolved type),
+   union-find/binding state lives there, carried in `Checked`), and a per-call `TokenRecorder`
+   threaded through checking that records `semToks` — value-identifier semantic tokens for the LSP,
+   kind `function`/`variable` by resolved type — plus per-node types and effect sigs, all carried
+   out on `Checked`.
    `unify`, `infer`, `infer`, and a checker `Env` whose values may be `Scheme` thunks
    (polymorphism). `checkProgram(prog, acc?): Checked` — `acc` is the
    previous result passed back to accumulate bindings (the REPL protocol);

@@ -9,7 +9,8 @@ import {
   type FunT, type NumName, type Prim, type Type, type TupT,
 } from "./unify.ts";
 import {assertNever} from "./assert.ts";
-import {exprChildren} from "./walk.ts";
+import type {Pos} from "./lexer.ts";
+import {exprChildren, type BinderKinds} from "./walk.ts";
 
 // Traversal arrangement: the pure structural scans (hasPerformOutsideLambdas,
 // caseReferencesK) enumerate children through walk.ts's exprChildren, so
@@ -55,15 +56,65 @@ function checkBind(env: Env, name: string): void {
       throw new TypeError_(`cannot shadow '${name}'`);
 }
 
-// Per-checkProgram-call state that is checking output, not unifier state:
-// the type recorded per checked node (the width/suspension stamp post-passes
-// read it after all items are checked; the LSP reads per-node types off the
-// returned Checked) and the value-identifier tokens for the LSP. Reassigned
-// per call: REPL lines share the unifier but not the node slice, so per-line
-// types must not leak across lines' ExprID spaces, and a returned Checked
-// keeps its own map/array alive via its own reference.
-const NODE_TYPES: {current: Map<ExprID, Type>} = {current: new Map()};
-const SEM_TOKS: {current: TypeTok[]} = {current: []};
+// Token emission coverage (compile-time): every kind from walk.ts's
+// BinderKinds — the assertNever-guarded binder-site enumeration — is
+// classified here as token-recorded (TokBinders, enforced at the recordTok
+// call sites via the kind argument) or deliberately unrecorded
+// (UnrecordedBinders: dlet field binders keep the bare element type — and
+// within already-recorded kinds, individual binder sites may simply not
+// emit, e.g. the handle resume binder `k`, never an expression identifier;
+// classification is per kind, not per site). While a binder kind is
+// recordTok call fails to compile: a new binder-bearing node variant —
+// already forced into forEachBinder by its assertNever — must classify its
+// binders there, then emit through its inferNode arm (or land in
+// UnrecordedBinders).
+type TokBinders = "lambda" | "let" | "handle";
+type UnrecordedBinders = "dlet";
+type BinderCoverage =
+  [Exclude<BinderKinds, TokBinders | UnrecordedBinders>] extends [never] ? TokBinders : never;
+// Kinds at the recordTok call sites: the emitting binder kinds plus `sym` —
+// the one identifier-use site (a reference records wherever it appears, not
+// only at binders).
+type TokKinds = BinderCoverage | "sym";
+
+// Per-checkProgram-call recording of checking output that is not unifier
+// state: the type recorded per checked node (the width/suspension stamp
+// post-passes read it after all items are checked; the LSP reads per-node
+// types off the returned Checked), the value-identifier tokens for the LSP,
+// and the effect signatures (their display-only param names feed the same
+// hover surface). Created per call and threaded through inference alongside
+// `effs`: REPL lines share the unifier and the effect map but not the node
+// slice, so per-line types must not leak across lines' ExprID spaces, and a
+// returned Checked keeps its own recordings alive via its own reference.
+class TokenRecorder {
+  readonly nodeTypes = new Map<ExprID, Type>();
+  readonly semToks: TypeTok[] = [];
+  constructor(
+    readonly nodes: Expr[],        // the checked slice (pin's self-box lookups)
+    private readonly uni: Unifier, // token classification resolves first
+    private readonly effects: Map<string, EffectSig>,
+  ) {}
+
+  // Every checked node's inferred type lands here exactly once (infer's
+  // single site); width pins may overwrite — the map holds each node's
+  // final stamp.
+  recordType(id: ExprID, t: Type): void { this.nodeTypes.set(id, t); }
+  typeOf(id: ExprID): Type | undefined { return this.nodeTypes.get(id); }
+
+  // One emission point for value-identifier tokens: a resolved fn type
+  // highlights `function`, anything else `variable`. Positionless binders
+  // (parse recovery) record nothing. `kind` carries the emitting node kind
+  // for the coverage guard above; it drives nothing at runtime.
+  recordTok(_kind: TokKinds, pos: Pos | undefined, name: string, t: Type): void {
+    if (pos === undefined) return;
+    const rt = this.uni.res(t);
+    this.semToks.push({pos, len: name.length, name, kind: rt.tag === "fun" ? "function" : "variable"});
+  }
+
+  // Effect signature registration (checker-fresh param types + the parser's
+  // display names) through the same emission point as the token streams.
+  recordEffect(name: string, sig: EffectSig): void { this.effects.set(name, sig); }
+}
 
 // Infer an `[...]` literal. With an `expected` tuple, elements are checked
 // against the tuple's field types (named-tuple construction). Without one,
@@ -76,6 +127,7 @@ function inferArr(
   env: Env,
   effs: Set<string>,
   effects: Map<string, EffectSig>,
+  rec: TokenRecorder,
 ): Type {
   const e = nodes[id];
   if (e.t !== "arr") throw new Error("inferArr: not an array literal");
@@ -89,13 +141,13 @@ function inferArr(
       // Propagate the tuple expectation into a nested `[...]` literal so that
       // `m: [[f,f,f],...] = [[1,2,3],...]` builds inner tuples, not arrays.
       const et = (nodes[el].t === "arr" && env.uni.res(ft).tag === "tup")
-        ? inferArr(el, nodes, env.uni.res(ft) as TupT, env, effs, effects)
-        : infer(el, nodes, env, effs, effects);
+        ? inferArr(el, nodes, env.uni.res(ft) as TupT, env, effs, effects, rec)
+        : infer(el, nodes, env, effs, effects, rec);
       env.uni.unify(et, ft);
     }
     return expected;
   }
-  const elemTs = e.elems.map(a => infer(a, nodes, env, effs, effects));
+  const elemTs = e.elems.map(a => infer(a, nodes, env, effs, effects, rec));
   const snap = env.uni.checkpoint();
   try {
     const elem = env.uni.fresh();
@@ -121,26 +173,26 @@ function stampArrKind(e: Expr & {t: "arr"}, kind: "arr" | "tup"): void {
 // lambda bodies (return type), so a declared `[f,f,f]` return flows into a
 // `[x, y, z]` body literal. Both call sites (lambda retTyp, block tail)
 // guard on the expectation being a resolved tup, so `expected` is a TupT.
-function inferWith(id: ExprID, nodes: Expr[], expected: TupT, env: Env, effs: Set<string>, effects: Map<string, EffectSig>): Type {
+function inferWith(id: ExprID, nodes: Expr[], expected: TupT, env: Env, effs: Set<string>, effects: Map<string, EffectSig>, rec: TokenRecorder): Type {
   const e = nodes[id];
   if (e.t === "arr")
-    return inferArr(id, nodes, expected, env, effs, effects);
+    return inferArr(id, nodes, expected, env, effs, effects, rec);
   if (e.t === "block") {
     const n = env.extend();
     let last: Type = TUNIT;
     for (let i = 0; i < e.stmts.length; i++)
       last = i === e.stmts.length - 1
-        ? inferWith(e.stmts[i], nodes, expected, n, effs, effects)
-        : infer(e.stmts[i], nodes, n, effs, effects);
+        ? inferWith(e.stmts[i], nodes, expected, n, effs, effects, rec)
+        : infer(e.stmts[i], nodes, n, effs, effects, rec);
     return last;
   }
   if (e.t === "lambda" && e.retTyp !== null) {
     const saved = e.retTyp;
     e.retTyp = expected;
-    try { return infer(id, nodes, env, effs, effects); }
+    try { return infer(id, nodes, env, effs, effects, rec); }
     finally { e.retTyp = saved; }
   }
-  return infer(id, nodes, env, effs, effects);
+  return infer(id, nodes, env, effs, effects, rec);
 }
 
 // Parse a `.N` numeric field name into an index, or null if `name` isn't numeric.
@@ -236,7 +288,6 @@ function plusType(u: Unifier, a: Type, b: Type): Type {
 // Resume-delivery rule (see AGENTS.md "resume k type"): both walks drive the
 // spine-gated resume typing in the handle case.
 
-// Does `root`'s spine — everything except lambda bodies, which run only when
 // Does `root`'s evaluation spine perform any op — everything except nested
 // lambda bodies (a lambda's performs land on the lambda's own row) and
 // handle case bodies (they run past the handler, so only `body` is on the
@@ -272,8 +323,8 @@ function caseReferencesK(nodes: Expr[], name: string, root: ExprID): boolean {
 
 // infer: returns the type, side-effecting `effs` with performed effects.
 // `id` indexes into the program's flat node slice `nodes`. Every node's
-// inferred type is recorded in `NODE_TYPES`; after checking completes, a
-// post-pass stamps each node whose type resolves to a numeric width with
+// inferred type is recorded on the recorder (`rec.nodeTypes`); after checking
+// completes, a post-pass stamps each node whose type resolves to a numeric width with
 // `numKind` (concrete widths as-is, untyped int/float literals defaulted to
 // i64/f64). The evaluator normalizes each node's value to that width's
 // runtime representation (i32/u32/f32/f64: JS number, i64/u64: BigInt) and
@@ -284,9 +335,10 @@ function infer(
   env: Env,
   effs: Set<string>,
   effects: Map<string, EffectSig>,
+  rec: TokenRecorder,
 ): Type {
-  const t = inferNode(id, nodes, env, effs, effects);
-  NODE_TYPES.current.set(id, t);
+  const t = inferNode(id, nodes, env, effs, effects, rec);
+  rec.recordType(id, t);
   return t;
 }
 
@@ -296,6 +348,7 @@ function inferNode(
   env: Env,
   effs: Set<string>,
   effects: Map<string, EffectSig>,
+  rec: TokenRecorder,
 ): Type {
   const e = nodes[id];
   try {
@@ -309,13 +362,9 @@ function inferNode(
       if (s === undefined)
         throw new TypeError_("Unbound: " + e.v);
       const t = typeof s === "function" ? s() : s;
-      // Value-identifier highlighting: a resolved fn type → `function`,
-      // anything else → `variable`. Operator desugar syms never reach here
+      // Value-identifier highlighting: operator desugar syms never reach here
       // (the app case handles them without inferring the callee node).
-      if (e.pos !== undefined) {
-        const rt = env.uni.res(t);
-        SEM_TOKS.current.push({pos: e.pos, len: e.v.length, name: e.v, kind: rt.tag === "fun" ? "function" : "variable"});
-      }
+      rec.recordTok("sym", e.pos, e.v, t);
       return t;
     }
     case "lambda": {
@@ -347,8 +396,8 @@ function inferNode(
       try {
         const rt = e.retTyp !== null ? env.uni.res(e.retTyp) : null;
         ret = rt !== null && rt.tag === "tup"
-          ? inferWith(e.body, nodes, rt, n, innerEffs, effects)
-          : infer(e.body, nodes, n, innerEffs, effects);
+          ? inferWith(e.body, nodes, rt, n, innerEffs, effects, rec)
+          : infer(e.body, nodes, n, innerEffs, effects, rec);
       } finally {
         if (ctx.unann.size > 0) {
           lamStack.pop();
@@ -370,9 +419,9 @@ function inferNode(
           (rt2.name === "int" || rt2.name === "float")) {
           const bodyE = nodes[e.body];
           const tail = bodyE.t === "block" ? bodyE.stmts[bodyE.stmts.length - 1] : e.body;
-          const tailT = env.uni.res(NODE_TYPES.current.get(tail) ?? TUNIT);
+          const tailT = env.uni.res(rec.typeOf(tail) ?? TUNIT);
           if (tailT.tag === "prim" && tailT.name === rt2.name && selfBoxedWidth(nodes, tail))
-            NODE_TYPES.current.set(tail, dt);
+            rec.recordType(tail, dt);
         }
       }
       // Effect annotation is optional: if `! { ... }` is omitted, the
@@ -390,9 +439,7 @@ function inferNode(
       // unannotated param used as a callee resolves to a FunT by now.
       for (let i = 0; i < e.params.length; i++) {
         const p = e.params[i];
-        if (p.pos === undefined) continue;
-        const pt = env.uni.res(ps[i]);
-        SEM_TOKS.current.push({pos: p.pos, len: p.name.length, name: p.name, kind: pt.tag === "fun" ? "function" : "variable"});
+        rec.recordTok("lambda", p.pos, p.name, ps[i]);
       }
       return ft;
     }
@@ -410,20 +457,19 @@ function inferNode(
       // A tuple annotation on an `[...]` literal makes it a tuple even when its
       // elements would otherwise unify homogeneously (e.g. `p: [float, float] = [1.0, 2.0]`).
       const vt = (e.typ !== null && env.uni.res(e.typ).tag === "tup" && nodes[e.val].t === "arr")
-        ? inferArr(e.val, nodes, env.uni.res(e.typ) as TupT, env, effs, effects)
-        : infer(e.val, nodes, env, effs, effects);
+        ? inferArr(e.val, nodes, env.uni.res(e.typ) as TupT, env, effs, effects, rec)
+        : infer(e.val, nodes, env, effs, effects, rec);
       env.uni.unify(declared, vt);
       const rt = env.uni.res(declared);
-      if (e.pos !== undefined)
-        SEM_TOKS.current.push({pos: e.pos, len: e.name.length, name: e.name, kind: rt.tag === "fun" ? "function" : "variable"});
+      rec.recordTok("let", e.pos, e.name, declared);
       // Pin a wildcard-typed value literal to the binding's concrete width:
       // `x: i32 = 2147483647` boxes the literal as $I32 (wrapping at its
       // own node, matching the interpreter's per-node normalization).
       const rw = widthOf(rt);
       if (rw !== null && rw.concrete && nodes[e.val].t === "num") {
-        const vt2 = env.uni.res(NODE_TYPES.current.get(e.val) ?? TUNIT);
+        const vt2 = env.uni.res(rec.typeOf(e.val) ?? TUNIT);
         if (vt2.tag === "prim" && (vt2.name === "int" || vt2.name === "float"))
-          NODE_TYPES.current.set(e.val, rt);
+          rec.recordType(e.val, rt);
       }
       // The lambda's stamped type is final: its parameter variables have been
       // bound (or not), so deep-resolve it — display never needs the unifier.
@@ -445,13 +491,13 @@ function inferNode(
       return TUNIT;
     }
     case "arr":
-      return inferArr(id, nodes, null, env, effs, effects);
+      return inferArr(id, nodes, null, env, effs, effects, rec);
     // `@as(expr, T)`: the one explicit numeric cast. Numeric widths only;
     // float -> int truncates toward zero, bool -> numeric gives 0/1, and
     // everything else is value-preserving (an f32 target rounds via the
     // node's generic f32 stamp; i32 -> i64 and f32 -> f64 are no-ops).
     case "as": {
-      const at = env.uni.res(infer(e.e, nodes, env, effs, effects));
+      const at = env.uni.res(infer(e.e, nodes, env, effs, effects, rec));
       const target = e.typ;
       if (target.tag !== "prim" || target.name === "int" || target.name === "float" || !NUMERIC_NAMES.has(target.name as NumName))
         throw new TypeError_(`@as: target must be a numeric width (i32 i64 u32 u64 f32 f64), got ${showT(target)}`);
@@ -468,7 +514,7 @@ function inferNode(
     // `obj.x` / `obj.0`: resolve the field index from the (tuple or array)
     // element type and stamp it on the node for the evaluator.
     case "field": {
-      const ot = env.uni.res(infer(e.obj, nodes, env, effs, effects));
+      const ot = env.uni.res(infer(e.obj, nodes, env, effs, effects, rec));
       if (ot.tag === "arr") {
         const idx = fieldIndex(e.name);
         if (idx === null)
@@ -496,7 +542,7 @@ function inferNode(
     }
     // `[a, b] := val;` — destructure a tuple (or array) into bindings.
     case "dlet": {
-      const vt = env.uni.res(infer(e.val, nodes, env, effs, effects));
+      const vt = env.uni.res(infer(e.val, nodes, env, effs, effects, rec));
       if (vt.tag === "tup") {
         e.shape = "tup";
         if (vt.fields.length !== e.fields.length)
@@ -526,17 +572,17 @@ function inferNode(
       return TUNIT;
     }
     case "if": {
-      const c = infer(e.c, nodes, env, effs, effects);
+      const c = infer(e.c, nodes, env, effs, effects, rec);
       env.uni.unify(c, TBOOL);
-      const a = infer(e.a, nodes, env, effs, effects);
-      const b = infer(e.b, nodes, env, effs, effects);
+      const a = infer(e.a, nodes, env, effs, effects, rec);
+      const b = infer(e.b, nodes, env, effs, effects, rec);
       env.uni.unify(a, b);
       return env.uni.res(a);
     }
     case "while": {
-      const c = infer(e.c, nodes, env, effs, effects);
+      const c = infer(e.c, nodes, env, effs, effects, rec);
       env.uni.unify(c, TBOOL);
-      infer(e.body, nodes, env, effs, effects);
+      infer(e.body, nodes, env, effs, effects, rec);
       return TUNIT;
     }
     case "assign": {
@@ -549,7 +595,7 @@ function inferNode(
       if (!fr.muts.has(e.name))
         throw new TypeError_(`cannot assign to const '${e.name}' (declare with := to make it mutable)`);
       const cur = fr.vars.get(e.name)!;
-      const vt = infer(e.val, nodes, env, effs, effects);
+      const vt = infer(e.val, nodes, env, effs, effects, rec);
       // Unify against the declared type so `guess: float` keeps its type.
       env.uni.unify(typeof cur === "function" ? cur() : cur, vt);
       return TUNIT;
@@ -557,7 +603,7 @@ function inferNode(
     case "block": {
       const n = env.extend();
       let last: Type = TUNIT;
-      for (const s of e.stmts) last = infer(s, nodes, n, effs, effects);
+      for (const s of e.stmts) last = infer(s, nodes, n, effs, effects, rec);
       return last;
     }
     case "perform": {
@@ -566,14 +612,14 @@ function inferNode(
         throw new TypeError_(`Unknown effect: ${e.op} (declare with: effect ${e.op}(...);)`);
       if (e.args.length !== sig.params.length)
         throw new TypeError_(`effect ${e.op}: ${sig.params.length} args, got ${e.args.length}`);
-      const argTs = e.args.map(a => infer(a, nodes, env, effs, effects));
+      const argTs = e.args.map(a => infer(a, nodes, env, effs, effects, rec));
       for (let i = 0; i < sig.params.length; i++) env.uni.unify(sig.params[i] ?? TANY, argTs[i]);
       effs.add(e.op);
       return sig.ret;
     }
     case "handle": {
       const bodyEffs = new Set<string>();
-      const bodyT = infer(e.body, nodes, env, bodyEffs, effects);
+      const bodyT = infer(e.body, nodes, env, bodyEffs, effects, rec);
       // Spine-gated resume typing: with no Return case and no perform on the
       // body's spine, every resumption runs the body to completion, so the
       // value k delivers is the body's completion — its boundary value, or a
@@ -591,18 +637,14 @@ function inferNode(
           checkBind(n, c.params[0].name);
           const bt = env.uni.res(bodyT);
           n.vars.set(c.params[0].name, bt);
-          if (c.params[0].pos !== undefined)
-            SEM_TOKS.current.push({pos: c.params[0].pos, len: c.params[0].name.length, name: c.params[0].name, kind: bt.tag === "fun" ? "function" : "variable"});
+          rec.recordTok("handle", c.params[0].pos, c.params[0].name, bt);
         } else {
           for (let i = 0; i < c.params.length; i++) {
             const cp = c.params[i];
             checkBind(n, cp.name);
             const pt = sig!.params[i] ?? TANY;
             n.vars.set(cp.name, pt);
-            if (cp.pos !== undefined) {
-              const rpt = env.uni.res(pt);
-              SEM_TOKS.current.push({pos: cp.pos, len: cp.name.length, name: cp.name, kind: rpt.tag === "fun" ? "function" : "variable"});
-            }
+            rec.recordTok("handle", cp.pos, cp.name, pt);
           }
         }
         // resume: (sig.ret) -> resultT ; Return's resume is identity over bodyT
@@ -615,7 +657,7 @@ function inferNode(
         // resumes past it), so their performed effects forward to the
         // ambient row — an op they perform unhandled must remain tracked
         // (a fresh set here would let effects escape untracked).
-        const ct = infer(c.body, nodes, n, effs, effects);
+        const ct = infer(c.body, nodes, n, effs, effects, rec);
         if (resultT === null)
           resultT = ct;
         else
@@ -632,24 +674,24 @@ function inferNode(
       const fn = nodes[e.fn];
       // `+` is overloaded: strict numeric arithmetic or string concatenation.
       if (fn.t === "sym" && fn.v === OP_ADD) {
-        const at = infer(e.args[0], nodes, env, effs, effects);
-        const bt = infer(e.args[1], nodes, env, effs, effects);
+        const at = infer(e.args[0], nodes, env, effs, effects, rec);
+        const bt = infer(e.args[1], nodes, env, effs, effects, rec);
         const widened = plusType(env.uni, at, bt);
         // The numeric `+` stamps and pins exactly like the other arithmetic
         // ops (the string case leaves no width to stamp).
         const wo = widthOf(env.uni.res(widened));
         if (wo !== null) {
           e.numKind = wo.w;
-          pinWildcard(env.uni, e.args[0], at, widened);
-          pinWildcard(env.uni, e.args[1], bt, widened);
+          pinWildcard(env.uni, rec, e.args[0], at, widened);
+          pinWildcard(env.uni, rec, e.args[1], bt, widened);
         }
         return widened;
       }
       // Numeric operators (- * / %) and comparisons (< > <= >=) widen int/float;
       // unary neg is handled below. Kept out of BINOPS so they get this logic.
       if (fn.t === "sym" && (ARITH_OPS.has(fn.v) || CMP_OPS.has(fn.v))) {
-        const at = infer(e.args[0], nodes, env, effs, effects);
-        const bt = infer(e.args[1], nodes, env, effs, effects);
+        const at = infer(e.args[0], nodes, env, effs, effects, rec);
+        const bt = infer(e.args[1], nodes, env, effs, effects, rec);
         const widened = numeric(env.uni, at, bt, fn.v);
         // Stamp the COMPUTE width (the operand width; the result type would
         // be bool for comparisons) — the evaluator's widthOp coerces both
@@ -662,8 +704,8 @@ function inferNode(
           // this op, so their runtime representation is the op's width (the
           // wasm backend boxes them as statics of this shape; a literal
           // wider than the op width wraps here exactly like at the op).
-          pinWildcard(env.uni, e.args[0], at, widened);
-          pinWildcard(env.uni, e.args[1], bt, widened);
+          pinWildcard(env.uni, rec, e.args[0], at, widened);
+          pinWildcard(env.uni, rec, e.args[1], bt, widened);
         }
         if (CMP_OPS.has(fn.v)) return TBOOL;
         // `/` is type-preserving: int/int -> int (truncated at runtime),
@@ -678,12 +720,12 @@ function inferNode(
         return widened;
       }
       if (fn.t === "sym" && fn.v === OP_NEG) {
-        const at = infer(e.args[0], nodes, env, effs, effects);
+        const at = infer(e.args[0], nodes, env, effs, effects, rec);
         const widened = numeric(env.uni, at, at, OP_NEG);
         const wo = widthOf(env.uni.res(widened));
         if (wo !== null) {
           e.numKind = wo.w;
-          pinWildcard(env.uni, e.args[0], at, widened);
+          pinWildcard(env.uni, rec, e.args[0], at, widened);
         }
         return widened;
       }
@@ -691,8 +733,8 @@ function inferNode(
       // concrete widths are strict — `i32 == i64` is an error). Cross-type
       // (`"a" == 1`) is a type error.
       if (fn.t === "sym" && EQ_OPS.has(fn.v)) {
-        const at = infer(e.args[0], nodes, env, effs, effects);
-        const bt = infer(e.args[1], nodes, env, effs, effects);
+        const at = infer(e.args[0], nodes, env, effs, effects, rec);
+        const bt = infer(e.args[1], nodes, env, effs, effects, rec);
         env.uni.unify(at, bt);
         // Numeric equality is stamped with the compute width too (concrete
         // side wins between a width and a wildcard literal; float beats int
@@ -708,20 +750,20 @@ function inferNode(
         const flexW = ea !== null && ea.concrete ? ea.w : eb !== null && eb.concrete ? eb.w : null;
         if (flexW !== null) {
           const prim = WIDTH_PRIMS[flexW];
-          pinWildcard(env.uni, e.args[0], at, prim);
-          pinWildcard(env.uni, e.args[1], bt, prim);
+          pinWildcard(env.uni, rec, e.args[0], at, prim);
+          pinWildcard(env.uni, rec, e.args[1], bt, prim);
         }
         return TBOOL;
       }
-      const ft = infer(e.fn, nodes, env, effs, effects);
+      const ft = infer(e.fn, nodes, env, effs, effects, rec);
       const fr = env.uni.res(ft);
       // When the callee is a known function, an `[...]` literal argument
       // passed against a tuple parameter type is inferred as that tuple
       // (mirroring the `name: [..] = [...]` special case).
       const argTs = e.args.map((a, i) => {
         if (nodes[a].t === "arr" && fr.tag === "fun" && i < fr.params.length && env.uni.res(fr.params[i]).tag === "tup")
-          return inferArr(a, nodes, env.uni.res(fr.params[i]) as TupT, env, effs, effects);
-        return infer(a, nodes, env, effs, effects);
+          return inferArr(a, nodes, env.uni.res(fr.params[i]) as TupT, env, effs, effects, rec);
+        return infer(a, nodes, env, effs, effects, rec);
       });
       const ret = env.uni.fresh();
       if (fr.tag === "fun") {
@@ -809,17 +851,15 @@ function selfBoxedWidth(nodes: Expr[], id: ExprID): boolean {
   return false;
 }
 
-const PIN_NODES: {current: Expr[]} = {current: []};
-
-function pinWildcard(u: Unifier, argId: ExprID, at: Type, widened: Type): void {
+function pinWildcard(u: Unifier, rec: TokenRecorder, argId: ExprID, at: Type, widened: Type): void {
   const rt = u.res(at);
   if (rt.tag !== "prim" || (rt.name !== "int" && rt.name !== "float")) return;
   // Fresh wildcard instances (untyped literals) always box at their stamp.
   // A shared wildcard (e.g. a builtin signature's TFLOAT, or an operator's
   // TINT result) is pinnable only when the node boxes at its own stamp.
-  if (!u.wilds.has(rt) && !selfBoxedWidth(PIN_NODES.current, argId)) return;
+  if (!u.wilds.has(rt) && !selfBoxedWidth(rec.nodes, argId)) return;
   const w = widthOf(u.res(widened));
-  if (w !== null) NODE_TYPES.current.set(argId, u.res(widened));
+  if (w !== null) rec.recordType(argId, u.res(widened));
 }
 
 // Width stamps: after all items are checked, stamp every node whose type
@@ -827,7 +867,8 @@ function pinWildcard(u: Unifier, argId: ExprID, at: Type, widened: Type): void {
 // int/float literals defaulted to i64/f64 (literal defaulting, not width
 // conversion). Unstamped nodes (type still an unbound var — polymorphic
 // uses) compute by value-based dispatch at runtime.
-function stampNumKinds(nodes: Expr[], uni: Unifier): void {  for (const [id, t] of NODE_TYPES.current) {
+function stampNumKinds(nodes: Expr[], uni: Unifier, nodeTypes: Map<ExprID, Type>): void {
+  for (const [id, t] of nodeTypes) {
     const rt = uni.res(t);
     let w: NumName | null = null;
     if (rt.tag === "prim") {
@@ -855,14 +896,14 @@ function stampNumKinds(nodes: Expr[], uni: Unifier): void {  for (const [id, t] 
 // callees never reach `infer`, so they carry no callee type in nodeTypes and
 // never get a suspension stamp — the converter's own fast paths dispatch
 // them.
-function stampSuspension(nodes: Expr[], uni: Unifier): void {
-  for (const [id] of NODE_TYPES.current) {
+function stampSuspension(nodes: Expr[], uni: Unifier, nodeTypes: Map<ExprID, Type>): void {
+  for (const [id] of nodeTypes) {
     const e = nodes[id];
     if (e.t !== "app") continue;
     const fn = nodes[e.fn];
     if (fn.t === "sym" && STAMPED_OPS.has(fn.v)) continue;
     let sus = true;
-    const ct = NODE_TYPES.current.get(e.fn);
+    const ct = nodeTypes.get(e.fn);
     if (ct !== undefined) {
       const rt = uni.res(ct);
       if (rt.tag === "fun" && rt.contCall !== true && rt.anyTaint !== true &&
@@ -903,9 +944,6 @@ export function checkProgram(
   acc?: Checked,
 ): Checked {
   const uni = acc?.uni ?? new Unifier();
-  NODE_TYPES.current = new Map();
-  SEM_TOKS.current = [];
-  PIN_NODES.current = prog.nodes;
   let env: Env;
   let effects: Map<string, EffectSig>;
   if (acc !== undefined) {
@@ -922,8 +960,10 @@ export function checkProgram(
     }
   }
 
+  // The per-call recorder over this call's node slice (see TokenRecorder).
+  const rec = new TokenRecorder(prog.nodes, uni, effects);
   for (const it of prog.items.filter(it => "effect" in it))
-    effects.set(it.effect, {params: it.sig.params.map(t => t ?? uni.fresh()), ret: it.sig.ret, names: it.sig.names});
+    rec.recordEffect(it.effect, {params: it.sig.params.map(t => t ?? uni.fresh()), ret: it.sig.ret, names: it.sig.names});
 
   let lastType: Type = TUNIT;
   // One shared sink for all items: infer only ever ADDS residuals to the
@@ -931,10 +971,10 @@ export function checkProgram(
   // before forwarding), so a program-wide unhandled-op set falls out.
   const unhandled = new Set<string>();
   for (const it of prog.items.filter(it => "e" in it))
-    lastType = infer(it.e, prog.nodes, env, unhandled, effects);
+    lastType = infer(it.e, prog.nodes, env, unhandled, effects, rec);
 
-  stampNumKinds(prog.nodes, uni);
-  stampSuspension(prog.nodes, uni);
+  stampNumKinds(prog.nodes, uni, rec.nodeTypes);
+  stampSuspension(prog.nodes, uni, rec.nodeTypes);
 
-  return {env, effects, uni, lastType: uni.deepRes(lastType), unhandled, semToks: SEM_TOKS.current, nodeTypes: NODE_TYPES.current};
+  return {env, effects, uni, lastType: uni.deepRes(lastType), unhandled, semToks: rec.semToks, nodeTypes: rec.nodeTypes};
 }
