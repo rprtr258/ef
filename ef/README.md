@@ -53,18 +53,18 @@ bun compiler/cli.ts repl                            # interactive REPL; bindings
 
 `ef run` typechecks first, then evaluates; the last expression's value is
 printed. Full command table (`buildwasm`, `types`, `lint`), the wasm target,
-and REPL details: [CLI & REPL](docs/content/cli.md). To open ef in the
+and REPL details: [CLI & REPL](docs/content/spec/cli.md). To open ef in the
 browser: `cd playground && bun run dev`.
 
 ## Documentation
 
 - [Language spec](docs/content/spec/index.md) — the complete spec: syntax, typing
   rules, builtins, semantics, examples on disk. **The source of truth.**
-- [CLI & REPL](docs/content/cli.md) · [Linter](docs/content/lint.md)
-- [Compiler internals](docs/content/dev/pipeline.md) — per-phase walkthrough:
+- [CLI & REPL](docs/content/spec/cli.md) · [Linter](docs/content/spec/lint.md)
+- [Compiler internals](docs/content/dev/index.md) — per-phase walkthrough:
   lexer → parser → checker → interpreter / wasm backend.
 
-> **⚠ When the language changes**, update [the spec](docs/content/spec.md)
+> **⚠ When the language changes**, update [the spec](docs/content/spec/index.md)
 > (and this README's opening if the change is user-visible).
 
 

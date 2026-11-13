@@ -12,7 +12,9 @@ Hindley-Milner-flavoured type system with effect tracking.
   values), `builtin_table.ts` (the declarative builtin table — pure rows
   (name, kind, checker sig); leaf module), `builtins.ts` (runtime impls for
   those rows; a new builtin is one row in builtin_table.ts plus one impl
-  row here), `analysis.ts` (frontend passes: op discovery, builtin-ref
+  row here — and for fn/native/value kinds reachable from wasm code, a
+  case in wasm_module.ts's `emitBuiltins` switch, whose default throws
+  `internal: builtin <name> not implemented`), `analysis.ts` (frontend passes: op discovery, builtin-ref
   tree-shaking; re-exports the builtin surface declared in builtin_table.ts
   — shared by the wasm backend, parser-types-only leaf module), `pipeline.ts`
   (the preparation seam: prepare + the staged prepareStaged, Ctx/newCtx, the
@@ -94,13 +96,15 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
 4. **`env.ts`** — runtime `Value`s, `Outcome`/`Cont` (CPS plumbing), runtime
    `Env`, `globalEnv(refs?)` / `seedBuiltins(env, refs)` (operator natives
    + builtin bindings, optionally scoped to referenced builtins), `show`.
-5. **`builtins.ts`** — the single table of builtins; adding a builtin means
-   adding one entry here. Three kinds: `fn` (plain, lifted to a native),
-   `native` (CPS — calls ef closures: `map`/`each`/`flatmap`), `effect`
-   (checker `sig` + default host interpretation for
+5. **`builtins.ts`** — runtime impls for the declarative rows in
+   `builtin_table.ts` (kind-keyed impl records; `builtins()` derives fresh
+   per-program entries and throws at module init on a table row with no
+   impl row). Three kinds: `fn` (plain, lifted to a native), `native`
+   (CPS — calls ef closures: `map`/`each`/`flatmap`), `effect` (checker
+   `sig` + default host interpretation for
    `Read`/`Write`/`Println`/`Out`/`Exit`/`Wait`/`Random`). Operators
-   (`+ - * / % == neg` ...) stay in `env.ts`: the checker special-cases them
-   structurally, and no honest type signature exists for them.
+   (`+ - * / % == neg` ...) stay in `env.ts`: the checker special-cases
+   them structurally, and no honest type signature exists for them.
 6. **`analysis.ts`** — frontend analysis passes over a parsed program, a
    parser-types-only leaf module importable by both backends (module init
    order is order-independent — see the eval⇄builtins note under
@@ -221,11 +225,12 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
 
 ## When the language changes
 
-**⚠ Update `README.md` to match.** The README describes the language in general
-terms followed by a full spec (syntax, types, semantics, builtins). Any change
-to syntax, types, effects, handlers, or builtins must be reflected in the
-README. Keep the "full spec" section the source of truth for grammar and
-typing rules.
+**⚠ Update the docs to match.** The language spec lives at
+`docs/content/spec/index.md` (README links to it as **the source of
+truth**): syntax, types, semantics, and the §4 builtins tables — a new or
+changed builtin needs its row there. Any user-visible change also updates
+the README's opening, and compiler-internal changes update
+`docs/content/dev/`.
 
 ## Key design decisions (don't accidentally undo)
 
