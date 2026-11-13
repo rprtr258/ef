@@ -689,11 +689,20 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
         break;
       }
       if (name === OP_REM) {
-        const x = unbox(0), y = unbox(1), t = f.f64();
-        if (isF32) { b.localGet(x); b.num(w.F64_PROMOTE); b.localGet(y); b.num(w.F64_PROMOTE); }
-        else { b.localGet(x); b.localGet(y); }
-        b.num(w.FDIV); b.num(w.FTRUNC); b.localSet(t);
-        b.localGet(x); b.localGet(y); b.localGet(t); b.num(w.FMUL); b.num(w.FSUB);
+        const x = unbox(0), y = unbox(1);
+        let xs = x, ys = y;
+        if (isF32) {
+          // The whole computation runs in the f64 plane (like the
+          // interpreter's raw f64 `%`), so the f32 operands must live in
+          // f64 locals before FMUL/FSUB consume them.
+          const x64 = f.f64(), y64 = f.f64();
+          b.localGet(x); b.num(w.F64_PROMOTE); b.localSet(x64);
+          b.localGet(y); b.num(w.F64_PROMOTE); b.localSet(y64);
+          xs = x64; ys = y64;
+        }
+        const t = f.f64();
+        b.localGet(xs); b.localGet(ys); b.num(w.FDIV); b.num(w.FTRUNC); b.localSet(t);
+        b.localGet(xs); b.localGet(ys); b.localGet(t); b.num(w.FMUL); b.num(w.FSUB);
         if (isF32) b.num(w.F32_DEMOTE);
       } else {
         const x = unbox(0), y = unbox(1);

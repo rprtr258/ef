@@ -251,6 +251,11 @@ describe("wasm backend", () => {
     expect(parity("@as(0.5, f32) < @as(0.7, f32)")).toBe("true");
     // f32 division is f32-precision (no int truncation).
     expect(parity("@as(1.0, f32) / @as(3.0, f32)")).toBe("0.3333333432674408");
+    // f32 rem runs in the f64 plane and frounds at the site; the module
+    // must validate (parity compiles + runs it, catching opcode type
+    // mismatches binaryen rejects).
+    expect(parity("@as(7.5, f32) % @as(2.0, f32)")).toBe("1.5");
+    expect(parity("r :: fn(x: f32, y: f32): f32 { x % y }; r(@as(7.3, f32), @as(2.0, f32))")).toBe("1.3000001907348633");
   });
 
   test("i32/u32 wraparound: native mod-2^32 ops, comparisons, @as", () => {
