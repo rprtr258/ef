@@ -109,11 +109,11 @@ plan's chunk 2.4 now includes a staged-prepare variant and the remaining bridge 
 **Verification:** `bun run ci`. **Commit:** `pipeline: one EffectInterp interface`
 
 **Chunk 2.3 — one unhandled-op decision point.**
-- [ ] `pipeline.ts` owns the fail-fast check from `checked.unhandled`; `eval.exec` calls it
+- [x] `pipeline.ts` owns the fail-fast check from `checked.unhandled`; `eval.exec` calls it
       unchanged. Give the wasm entry the same static check (matching message via the vocabulary
       from Step 3 if available, else current wording) — flip wasm's behavior to fail-fast before
       execution; update `wasm.test.ts` where mid-run throws become static diagnostics.
-- [ ] README spec section: state the unified timing; `docs/content` pages that describe it.
+- [x] README spec section: state the unified timing; `docs/content` pages that describe it.
 
 **Verification:** `bun run ci` (includes wasm.test.ts); manual `ef runwasm` on an unhandled-op
 example fails with the static message. **Exit criteria:** one owner of the timing decision.
@@ -154,13 +154,13 @@ literals. `wasm_host.ts` `ef_fail` hardcodes the interpreter's exact throw strin
 `%` semantics are split between `env.ts` and `eval.ts`.
 
 **Chunk 3.1 — create `compiler/ops.ts` leaf; migrate declaration sites.**
-- [ ] `ops.ts` (leaf): operator name/type constants, trapping-prim classification, runtime error
+- [x] `ops.ts` (leaf): operator name/type constants, trapping-prim classification, runtime error
       message constructors (`errDivByZero()`, `errIndexOOB()`, `errUnhandled(...)`, …).
-- [ ] Pre-decided `%` split-brain resolution (controller decision): `eval.ts` **keeps the numeric
+- [x] Pre-decided `%` split-brain resolution (controller decision): `eval.ts` **keeps the numeric
       dispatch** (`widthOp`, eval.ts:269 — the checker stamp lands there); `ops.ts` hosts only the
       vocabulary it consults. `env.ts`'s OPS `%` entry (env.ts:203) and eval's widthOp both derive
       their names from `ops.ts`; delete the split.
-- [ ] Migrate `analysis.ts`, `parser.ts`, `types.ts`, `env.ts` to import names from it (no behavior
+- [x] Migrate `analysis.ts`, `parser.ts`, `types.ts`, `env.ts` to import names from it (no behavior
       change; `OPERATOR_OPS` derived).
 
 **Verification:** `bun run ci`.
@@ -170,9 +170,9 @@ internals, wasm case labels) — those close in 3.3.
 **Commit:** `ops: single operator vocabulary (declarations)`
 
 **Chunk 3.2 — runtime messages derived, parity by construction.**
-- [ ] `eval.ts` and `wasm_host.ts` both emit messages via `ops.ts` constructors; delete wasm_host's
+- [x] `eval.ts` and `wasm_host.ts` both emit messages via `ops.ts` constructors; delete wasm_host's
       hardcoded copies. `wasm.test.ts` parity assertions unchanged.
-- [ ] `cps_opt.ts` `throwFree` and `cps_ir.ts` comments reference the classification instead of
+- [x] `cps_opt.ts` `throwFree` and `cps_ir.ts` comments reference the classification instead of
       restating which prims trap.
 
 **Verification:** `bun run ci`; deliberately diff one interpreter/wasm error pair in a test run.
