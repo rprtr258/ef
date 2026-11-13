@@ -11,6 +11,7 @@ import {Parser, type Program} from "./parser.ts";
 import {checkProgram, type Checked} from "./types.ts";
 import {globalEnv, type Cont, type Env, type Outcome, type Value} from "./env.ts";
 import {EFFECT_OPS} from "./builtin_table.ts";
+import {errUnhandled} from "./ops.ts";
 
 // An effect interpreter: ops it knows map to host actions; unknown ops fall
 // through to the builtin table's default interpretation. The one interface
@@ -85,10 +86,11 @@ const BUILTIN_EFFECTS = new Set(EFFECT_OPS);
 // matching handler in its subtree (the checker's residual row: ops-minus-
 // handled matching through calls) that is neither a builtin effect nor
 // covered by the runner's interp override would only surface mid-run, after
-// earlier side effects. The message matches the runners' runtime backstops
-// (runTop / wasm_host's hostFor).
+// earlier side effects. The message is ops.ts's errUnhandled — the same
+// constructor the runners' runtime backstops throw (runTop / wasm_host's
+// hostFor).
 export function rejectUnhandled(checked: Checked, interp?: EffectInterp): void {
   for (const op of checked.unhandled)
     if (!BUILTIN_EFFECTS.has(op) && interp?.[op] === undefined)
-      throw new Error("Unhandled effect: " + op);
+      throw new Error(errUnhandled(op));
 }

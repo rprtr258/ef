@@ -1,10 +1,11 @@
 // ops.ts — the vocabulary's spellings and trap texts are load-bearing:
-// tests across the suite assert them, and the wasm host must emit the same
-// trap strings as the interpreter. Pinning them here keeps the derived
+// tests across the suite assert them, and the interpreter and the wasm host
+// both throw the same trap strings. Pinning them here keeps the derived
 // call sites (parser desugaring, checker sets, runtime messages) honest.
-// The err* constructors and TRAPPING_OPS gain their production call sites in
-// plan chunk 3.2 (eval.ts / wasm_host.ts / builtins.ts / pipeline.ts throw
-// sites); until then this test is their only consumer.
+// Production consumers of this file's exports: eval.ts's traps,
+// wasm_host.ts's hostFor/ef_fail, builtins.ts's impls, pipeline.ts's
+// rejectUnhandled, cps_opt.ts's throwFree; this test pins the vocabulary
+// itself.
 import {describe, expect, test} from "bun:test";
 import {
   ARITH_OPS, CMP_OPS, EQ_OPS, STAMPED_OPS, TRAPPING_OPS,

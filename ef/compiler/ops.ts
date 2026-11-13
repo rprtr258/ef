@@ -46,8 +46,8 @@ export const STAMPED_OPS: ReadonlySet<string> =
 export const TRAPPING_OPS: ReadonlySet<string> = new Set([OP_DIV, OP_REM]);
 
 // Runtime trap-message constructors. The exact strings are load-bearing:
-// tests assert them, and the wasm host must emit the same texts as the
-// interpreter (parity by construction once both call these).
+// tests assert them, and the interpreter and the wasm host both throw these
+// (parity by construction).
 export function errDivByZero(): string {
   return "integer divide by zero";
 }

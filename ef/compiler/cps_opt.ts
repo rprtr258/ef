@@ -40,12 +40,14 @@
 // image would have restored.
 //
 // Dead binding drop: a temp bound by `bind` (atoms cannot throw) or by `let`
-// over a throw-free prim (arr/tup allocation, @as — only `field` and
-// div/rem `op` prims trap) with zero uses in its region is dropped.
-// Statement-position discarded values leave exactly these shapes; dead
-// trapping prims keep their binding so the throw survives.
+// over a throw-free prim (allocation, @as, and op prims outside ops.ts's
+// TRAPPING_OPS — the only operators that can trap) with zero uses in its
+// region is dropped. Statement-position discarded values leave exactly these
+// shapes; dead trapping prims (field reads, TRAPPING_OPS ops) keep their
+// binding so the throw survives.
 
 import {assertNever} from "./assert.ts";
+import {TRAPPING_OPS} from "./ops.ts";
 import type {CAtom, CIr, CPrim, CTerm} from "./cps_ir.ts";
 
 const isTemp = (name: string): boolean => name.startsWith("$");
@@ -295,9 +297,11 @@ function dropDeadBinds(root: CTerm, capts: Set<string>): [term: CTerm, changed: 
   const uses = varUseCounts(root);
   const frozen = freezeNames(root);
   const changed = {v: false};
-  // Throw-free prims: allocation and @as. field and div/rem op prims can
-  // trap, so their dead bindings stay.
-  const throwFree = (p: CPrim): boolean => p.t === "arr" || p.t === "as";
+  // Throw-free prims: allocation, @as, and operator prims outside ops.ts's
+  // TRAPPING_OPS (div/rem — the only operators that can trap). A field read
+  // or a trapping op prim can throw, so their dead bindings stay.
+  const throwFree = (p: CPrim): boolean =>
+    p.t === "arr" || p.t === "as" || (p.t === "op" && !TRAPPING_OPS.has(p.op));
   const dead = (name: string): boolean =>
     isTemp(name) && (uses.get(name) ?? 0) === 0 && !frozen.has(name) && !capts.has(name);
   const rw = (t: CTerm): CTerm => {

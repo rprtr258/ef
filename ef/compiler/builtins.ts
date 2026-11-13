@@ -6,6 +6,7 @@ import {sleepSync} from "bun";
 import {apply} from "./eval.ts";
 import {BUILTIN_TABLE} from "./builtin_table.ts";
 import {num, show, asSlice, mkSlice, sliceElems, type Cont, type Outcome, type Value} from "./env.ts";
+import {errIndexOOB, errSubRangeOOB} from "./ops.ts";
 import {type Unifier, type EffectSig, type Type} from "./types.ts";
 
 export type Builtin =
@@ -55,7 +56,7 @@ const FN_IMPLS: Record<string, (...args: Value[]) => Value> = {
     const s = asSlice(xs);
     const from = num(fv), to = num(tv);
     if (from < 0 || to < from || to > s.len)
-      throw new Error(`sub: range [${from}, ${to}) out of bounds [0, ${s.len})`);
+      throw new Error(errSubRangeOOB(from, to, s.len));
     return mkSlice(s.data, s.off + from, to - from);
   },
   concat: (a, b) =>
@@ -92,7 +93,7 @@ const FN_IMPLS: Record<string, (...args: Value[]) => Value> = {
     const s = asSlice(xs);
     const idx = num(i);
     if (idx < 0 || idx >= s.len || !Number.isInteger(idx))
-      throw new Error(`get: index ${idx} out of bounds [0, ${s.len})`);
+      throw new Error(errIndexOOB("get", idx, s.len));
     return s.data[s.off + idx]!;
   },
   set: (xs, i, v) => {
@@ -101,7 +102,7 @@ const FN_IMPLS: Record<string, (...args: Value[]) => Value> = {
     const s = asSlice(xs);
     const idx = num(i);
     if (idx < 0 || idx >= s.len || !Number.isInteger(idx))
-      throw new Error(`set: index ${idx} out of bounds [0, ${s.len})`);
+      throw new Error(errIndexOOB("set", idx, s.len));
     s.data[s.off + idx] = v;
     return null;
   },

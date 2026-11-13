@@ -16,6 +16,7 @@ import {prepare, newCtx, rejectUnhandled, type Ctx, type EffectInterp} from "./p
 import {toCps, RET} from "./cps.ts";
 import type {CAtom, CIr, CPrim, CTerm} from "./cps_ir.ts";
 import {assertNever} from "./assert.ts";
+import {errDivByZero, errIndexOOB, errIntOverflow, errUnhandled} from "./ops.ts";
 import {builtinInterps} from "./builtins.ts";
 
 function isNative(v: Value): v is Native {
@@ -228,7 +229,7 @@ function evalPrim(p: CPrim, env: Env): Value {
         return o.elems[idx];
       const s = asSlice(o);
       if (idx < 0 || idx >= s.len || !Number.isInteger(idx))
-        throw new Error(`.${p.name}: index ${idx} out of bounds [0, ${s.len})`);
+        throw new Error(errIndexOOB("." + p.name, idx, s.len));
       return s.data[s.off + idx];
     }
     default:
@@ -272,12 +273,12 @@ function widthOp(op: string, a: Value, b: Value | undefined, nk: string): Value 
   if (op === "/" || op === "%") {
     if (big || nk === "i32" || nk === "u32") {
       const ba = toBig(a), bb = toBig(b!);
-      if (bb === 0n) throw new Error("integer divide by zero");
+      if (bb === 0n) throw new Error(errDivByZero());
       if (op === "/" && bb === -1n) {
         // Signed-width overflow: INT_MIN ÷ -1 has no in-width result (wasm
         // div_s traps). Unsigned widths can't hold INT_MIN — no trap.
         const min = nk === "i32" ? -(1n << 31n) : nk === "i64" ? -(1n << 63n) : null;
-        if (min !== null && ba === min) throw new Error("integer overflow");
+        if (min !== null && ba === min) throw new Error(errIntOverflow());
       }
       return op === "/" ? ba / bb : ba % bb;
     }
@@ -334,7 +335,7 @@ function runTop(out: Outcome, interp?: EffectInterp): Value {
       continue;
     }
     if (!(out.op in builtinInterps))
-      throw new Error("Unhandled effect: " + out.op);
+      throw new Error(errUnhandled(out.op));
     out = builtinInterps[out.op](out.args, out.k);
   }
 }

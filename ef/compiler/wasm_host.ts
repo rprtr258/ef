@@ -11,6 +11,7 @@ import type {EffectInterp} from "./pipeline.ts";
 import {compileWithOps} from "./wasm.ts";
 import {DBGTRACE, TRACE_SITES} from "./wasm_tables.ts";
 import {assertNever} from "./assert.ts";
+import {errDivByZero, errIndexOOB, errIntOverflow, errSubRangeOOB, errUnhandled} from "./ops.ts";
 
 // The accessor ABI: exported accessor functions — the only way JS can touch
 // GC structs. hostBox/hostUnbox rebuild interpreter Values through them; the
@@ -156,7 +157,7 @@ export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[]
     const custom = interp?.[op];
     if (custom !== undefined) return custom;
     const bi = (builtinEffectHosts as Record<string, ((args: Value[]) => Value) | undefined>)[op];
-    if (bi === undefined) throw new Error("Unhandled effect: " + op);
+    if (bi === undefined) throw new Error(errUnhandled(op));
     return (args, k) => k(bi(args));
   };
   const mod = new WebAssembly.Module(bytes);
@@ -183,18 +184,19 @@ export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[]
     ef_binop: (op: number, a: unknown, bv: unknown) =>
       hostBox(ex(), OPS[op][1](hostUnbox(ex(), a), hostUnbox(ex(), bv))),
     ef_fail: (code: number, name: unknown, a: number, b: number, c: number) => {
-      // Codes carry the interpreter's exact error messages for parity; c is
-      // the third number sub's message needs (from, to, len).
-      if (code === 1) throw new Error(`get: index ${a} out of bounds [0, ${b})`);
-      if (code === 5) throw new Error(`sub: range [${a}, ${b}) out of bounds [0, ${c})`);
-      if (code === 6) throw new Error(`set: index ${a} out of bounds [0, ${b})`);
+      // Codes select the ops.ts trap constructor — both runtimes throw the
+      // same texts (parity by construction); c is the third number sub's
+      // message needs (from, to, len).
+      if (code === 1) throw new Error(errIndexOOB("get", a, b));
+      if (code === 5) throw new Error(errSubRangeOOB(a, b, c));
+      if (code === 6) throw new Error(errIndexOOB("set", a, b));
       // The i32/u32 division guards (emitFail at the
       // / and % sites) reuse this channel; codes 3/4 carry the interpreter's
       // exact trap messages (eval.ts widthOp) for parity. Code 2 is the
       // named field-access OOB (falls to the default template).
-      if (code === 3) throw new Error("integer divide by zero");
-      if (code === 4) throw new Error("integer overflow");
-      throw new Error(`.${hostStr(ex(), name)}: index ${a} out of bounds [0, ${b})`);
+      if (code === 3) throw new Error(errDivByZero());
+      if (code === 4) throw new Error(errIntOverflow());
+      throw new Error(errIndexOOB("." + hostStr(ex(), name), a, b));
     },
     ef_trace: (site: number, val: number) => {
       // Ring buffer of the last entered emission sites (EFTRACE=1 only;

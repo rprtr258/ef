@@ -83,7 +83,8 @@ export type CTerm =
   // resume never sees a later activation's re-binding of the same temp
   // (multi-shot frozen accs; source named variables stay live by design).
   | {t: "letk", name: string, param: string, norm?: string, freeze?: {name: string, val: CAtom}[], body: CTerm, rest: CTerm}
-  // Bind a primitive result (never suspends, may throw: ÷0, index OOB).
+  // Bind a primitive result (never suspends; may throw — a field read, or an
+  // op prim whose operator is in ops.ts's TRAPPING_OPS).
   | {t: "let", name: string, rhs: CPrim, rest: CTerm}
   // Bind an already-computed atom to a name (source `let`, block temps).
   | {t: "bind", name: string, val: CAtom, rest: CTerm}
