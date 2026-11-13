@@ -326,7 +326,7 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.localSet(loc);
         };
         const abs = (loc: number): void => {
-          const neg = f.i32(), flip = f.i64();
+          const neg = f.i32(), flip = f.i64(), xored = f.i64();
           b.localGet(loc);
           b.i64Const(0n);
           b.num(w.I64_LTS);
@@ -341,12 +341,14 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.localGet(flip);
           b.localGet(loc);
           b.num(w.I64_XOR);
+          b.localSet(xored);
           b.localGet(neg);
           b.if(0x7e);
           b.i64Const(1n);
           b.els();
           b.i64Const(0n);
           b.end();
+          b.localGet(xored);
           b.num(w.I64_ADD);
           b.localSet(loc);
         };
@@ -358,11 +360,9 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         b.localGet(s);
         b.num(w.I64_SUB);
         b.localSet(span);
-        b.localGet(span);
         abs(span);
         b.localGet(stepv);
         b.localSet(mag);
-        b.localGet(mag);
         abs(mag);
         // dirOK = step != 0 && (step > 0) == (e > s)
         b.localGet(stepv);

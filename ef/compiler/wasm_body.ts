@@ -1,7 +1,8 @@
-// Function-body emission primitives of the wasm backend: Buf (the streaming
-// bytecode→binaryen assembler) and Fn (one function's emitter: locals, frame
-// slots, scope tracking). The design doc for the whole backend
-// lives at the top of wasm.ts.
+// Function-body emission primitives of the wasm backend: Buf (the push/pop
+// operand-stack-to-binaryen assembler — emitters juggle a wasm-style
+// operand stack, Buf lowers each consumed statement into the AST) and Fn
+// (one function's emitter: locals, frame slots, scope tracking). The
+// design doc for the whole backend lives at the top of wasm.ts.
 import binaryen from "binaryen";
 import {ValueRef, _T, WasmError} from "./wasm_types.ts";
 import {DBGEMIT, MOD, SIGS, STRUCT_FIELDS, vt} from "./wasm_tables.ts";
@@ -29,7 +30,6 @@ type ScopeRec = {
   cond?: binaryen.ExpressionRef,  // if: the popped condition
   arm?: binaryen.ExpressionRef,   // if: then-branch (built at ELSE)
   mark?: number,                  // if: ops depth at arm start
-  spill?: number[],               // block/loop: leaked operand spill locals
   dead: boolean,                  // unreachable / after br — drops everything
 };
 
@@ -89,11 +89,6 @@ export class Buf {
   private scopes: ScopeRec[] = [{kind: "fn", label: "", result: 0x40, extra: 0, stmts: [], dead: false}];
   // Operand stack — mirrors the wasm operand stack the emitters juggle.
   ops: binaryen.ExpressionRef[] = [];
-  // Spill reloads waiting to be consumed (LIFO — byte-stack order: the
-  // reloads are the deepest entries, so pops reach them only after ops
-  // drains). Reloads live OUTSIDE ops so a result-scope's trailing-value
-  // capture never mistakes one for its own result.
-  private pending: number[] = [];
   private labelN = 0;
 
   constructor(public fn: Fn) {}
@@ -114,14 +109,8 @@ export class Buf {
   }
   pop(): binaryen.ExpressionRef {
     if (this.dead()) return MOD.unreachable(); // dead code: value never used
-    if (this.ops.length === 0) {
-    if (this.pending.length === 0)
+    if (this.ops.length === 0)
       throw new WasmError(`internal: operand stack underflow (fn ${this.fn.fid} scopes [${this.scopes.map((s) => s.kind + ":" + s.label).join(", ")}]) ${(new Error().stack ?? "").split("\n").slice(2, 9).join(" | ")}`);
-      const t = this.pending.pop()!;
-      if (DBGEMIT)
-        console.error(`pop  f${this.fn.fid}(idx${this.fn.idx}) d=-1 reload=${t}`);
-      return MOD.local.get(t, this.localType(t));
-    }
     if (DBGEMIT)
       console.error(`pop  f${this.fn.fid}(idx${this.fn.idx}) d=${this.ops.length - 1} t=${binaryen.getExpressionType(this.ops[this.ops.length - 1])}`);
     return this.ops.pop()!;
@@ -145,9 +134,6 @@ export class Buf {
         console.error(`markDead f${this.fn.fid} ${sc.kind}:${sc.label} drop id=${binaryen.getExpressionId(d)} t=${binaryen.getExpressionType(d)}`);
       sc.stmts.push(MOD.drop(d));
     }
-    // pending reloads survive: they are the pre-block leaked operands whose
-    // consumers are later (still-live) code — the byte world's stack keeps
-    // them across a dead block.
   }
 
   private label(): string { return `L${this.labelN++}`; }
@@ -339,42 +325,29 @@ export class Buf {
   }
 
   private openScope(kind: "block" | "loop" | "if", result: number, extra = 0): void {
+    // Scope contract: operands never park across a scope boundary. A
+    // binaryen AST cannot flow a value through a nested block, and the
+    // parked expression would silently move to its consumer's position
+    // (after the scope) — emitters park in an explicit local instead:
+    // localSet before the scope opens, localGet after it closes.
+    if (this.ops.length > 0 && !this.dead())
+      throw new WasmError(`internal: operand parked across ${kind} in f${this.fn.fid}(idx${this.fn.idx}) — park it in a local @${(new Error().stack ?? "").split("\n").slice(3, 6).join(" | ")}`);
     const sc: ScopeRec = {
       kind, label: this.label(), result, extra,
       stmts: [], mark: this.ops.length, dead: this.dead(),
     };
     if (DBGEMIT)
       console.error(`open f${this.fn.fid} ${kind} ${sc.label} res=${result} ops=${this.ops.length} bornDead=${sc.dead}`);
-    // The emitters park operand-stack values ACROSS block/loop boundaries
-    // (e.g. the handler-found index in emitPerform). binaryen AST cannot
-    // flow a value through a void block, so spills mirror what the binary
-    // reader does: set each leaked value to a fresh local inside the scope,
-    // reload after it closes (see END). If-arms never consume leaks, so ifs
-    // need no spilling.
-    if ((kind === "block" || kind === "loop") && !sc.dead && this.ops.length > 0) {
-      sc.spill = this.ops.splice(0).map((v) => {
-        const tmp = this.fn.typed(binaryen.getExpressionType(v));
-        sc.stmts.push(MOD.local.set(tmp, v));
-        return tmp;
-      });
-      sc.mark = 0;
-    }
     this.scopes.push(sc);
   }
 
   // A closed scope is a statement (void) or a value (its blocktype has a
   // result). The scope's own expression appends UNCONDITIONALLY: a dead
   // scope still closes (its structure is the live path — e.g. a loop whose
-  // body contains a br exiting an outer block). Spilled leaks reload via
-  // push(), which drops them in a dead parent.
+  // body contains a br exiting an outer block).
   private finishScope(sc: ScopeRec, e: binaryen.ExpressionRef): void {
     if (sc.result === 0x40) this.top().stmts.push(e);
     else this.ops.push(e);
-    if (sc.spill !== undefined) {
-      // Reloads wait in pending (byte order); pop() drains them once ops
-      // is empty — exactly matching how the byte world's stack behaved.
-      this.pending.push(...sc.spill);
-    }
   }
 
   // --- instruction emit methods ---------------------------------------------
@@ -482,27 +455,11 @@ export class Buf {
     if (this.scopes.length !== 1)
       throw new WasmError("internal: unbalanced function body");
     const sc = this.top();
-    // A diverging fn's trailing value may be a pre-scope leak sitting in
-    // pending (the byte world's stale stack entry — its finish popped it
-    // as the fn result).
-    if (this.ops.length === 0 && this.pending.length > 0 && SIGS[this.fn.typeIdx].r !== null) {
-      const t = this.pending.pop()!;
-      if (DBGEMIT)
-        console.error(`finishBody f${this.fn.fid} idx=${this.fn.idx} PENDING t=${t} stmts=[${sc.stmts.map((e) => binaryen.getExpressionId(e)).join(",")}]`);
-      return MOD.block(null, [...sc.stmts, MOD.local.get(t, this.localType(t))], vt(SIGS[this.fn.typeIdx].r));
-    }
-    // Leftover pending reloads are the byte world's stale stack entries
-    // below the fn's trailing value: pure local.gets the byte emitter left
-    // on its stack across a tail call/unreachable fn end. Drop them.
-    if (this.ops.length > 1 || (this.pending.length > 0 && this.ops.length !== 1)) {
+    if (this.ops.length > 1) {
       if (DBGEMIT)
         console.error("finish f" + String(this.fn.fid), "idx", this.fn.idx, "typeIdx", this.fn.typeIdx,
-          "ops:", this.ops.map(o => binaryen.getExpressionType(o)), "pending:", this.pending);
-      throw new WasmError(`internal: leftover operands at fn end (fn ${this.fn.idx}, ${this.ops.length} ops, ${this.pending.length} pending)`);
-    }
-    while (this.pending.length > 0) {
-      const t = this.pending.pop()!;
-      sc.stmts.push(MOD.drop(MOD.local.get(t, this.localType(t))));
+          "ops:", this.ops.map(o => binaryen.getExpressionType(o)));
+      throw new WasmError(`internal: leftover operands at fn end (fn ${this.fn.idx}, ${this.ops.length} ops)`);
     }
     const val = this.ops.pop();
     const sig = SIGS[this.fn.typeIdx];
@@ -549,7 +506,7 @@ export class Fn {
   f64(): number { return this.typed(binaryen.f64); }
   f32(): number { return this.typed(binaryen.f32); }
   anyref(): number { return this.typed(binaryen.anyref); }
-  // Precise-type local (spill slots keep GC ref types exact).
+  // Precise-type local (GC ref locals keep their exact ref types).
   typed(t: binaryen.Type): number {
     this.locals.push(t);
     return this.params + this.locals.length - 1;

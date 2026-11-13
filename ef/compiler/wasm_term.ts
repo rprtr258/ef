@@ -2507,7 +2507,6 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   b.num(w.ADD);
   b.refI31();
   b.arraySet();
-  b.localGet(hfc);
   // k = the matched handler's own continuation, walked past K_HDL cells:
   // on a resumed perform the found hdl is a chain copy whose next is the
   // fresh splice cell — the case body's completion ($xit = kNext) must
@@ -2523,6 +2522,7 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
     b.localSet(t1);
     b.localGet(t1);
   }));
+  b.localGet(hfc);
   b.localGet(ckn);
   b.localGet(fnIdx);
   tracePoint(em, f, `f${f.fid} perform:dispatch`, () => {

@@ -116,7 +116,11 @@ import {type TermPlan} from "./wasm_term.ts";
 
 // The binary format layer is gone: Buf's emit methods build binaryen AST
 // directly (wasm_body.ts); opcode constants survive only as the data keys
-// of the numeric-op tables (BIN_OPS/UN_OPS, CMP_OPS, ladder defOps).
+// of the numeric-op tables (BIN_OPS/UN_OPS, CMP_OPS, ladder defOps). Buf's
+// scope contract: operands never park across a block/loop/if boundary — a
+// parked expression would silently move to its consumer's position after
+// the scope — so emitters spill to explicit locals instead (localSet
+// before the scope, localGet after); Buf throws on violations.
 //
 // Module map (strictly layered, no import cycles):
 // - wasm_types.ts   — WasmGC shape types, ValueRef/StaticDesc (leaf)

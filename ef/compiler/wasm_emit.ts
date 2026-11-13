@@ -322,7 +322,7 @@ export function emitHelpers(em: Emit): Fn[] {
         b.readBoxPayload(10);
         b.end();
       };
-      const pa = eq.i64(), pb = eq.i64();
+      const pa = eq.i64(), pb = eq.i64(), bitsEq = eq.i32();
       readWide(0);
       b.localSet(pa);
       readWide(1);
@@ -331,6 +331,7 @@ export function emitHelpers(em: Emit): Fn[] {
       b.localGet(pa);
       b.localGet(pb);
       b.num(w.I64_EQ);
+      b.localSet(bitsEq);
       // signedNeg: whichever operand sits in an $I64 box reads as a signed
       // BigInt — a negative one is never === the unsigned reinterpretation.
       b.localGet(0);
@@ -351,6 +352,7 @@ export function emitHelpers(em: Emit): Fn[] {
       b.end();
       b.end();
       b.num(w.EQZ);
+      b.localGet(bitsEq);
       b.num(w.AND);
       b.localSet(res);
       b.els();
@@ -888,11 +890,14 @@ export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
     b.localGet(nparams); b.i32Const(1); b.num(w.ADD);
     b.localGet(v);
     b.arraySet();
+    const hf = f.typed(_T.RF[4]);
     cellFrame(b, k);
+    b.localSet(hf);
     const kn = f.typed(_T.RF[5]);
     cellGet(b, k, 3);
     b.localSet(kn);
     skipSameTableSplices(f, kn, tbl);
+    b.localGet(hf);
     b.localGet(kn);
     b.localGet(fnIdx);
     b.callIndirect(w.T_KABI, true);
