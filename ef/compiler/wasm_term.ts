@@ -46,7 +46,7 @@ import {BUILTINS} from "./analysis.ts";
 import {DBGTRACE, mapLikeFrameWords, numSig} from "./wasm_tables.ts";
 import {type CIr, type CTerm, type CAtom, type CPrim, type CFn} from "./cps_ir.ts";
 import {type Buf, Fn} from "./wasm_body.ts";
-import {type Emit, emitDispatch, emitCaseScan, selectBool, emitFail, i31of, makeRestThunk, cellGet, CMP_OPS, emitCallClosure, emitDirectEntryCall, emitNumericEntryCall, rebox, boxShapeOf, planeLocal, reboxCallResult, tracePoint} from "./wasm_emit.ts";
+import {type Emit, emitDispatch, emitCaseScan, selectBool, emitFail, i31of, makeRestThunk, cellGet, CMP_OPS, emitCallClosure, emitDirectEntryCall, emitNumericEntryCall, rebox, boxShapeOf, planeLocal, reboxCallResult, skipSameTableSplices, tracePoint} from "./wasm_emit.ts";
 import {analyzeDevirt, classifySlots, numericEntries, type Devirt, type NumEntry} from "./wasm_devirt.ts";
 import type {Type} from "./types.ts";
 
@@ -994,40 +994,40 @@ function emitFieldRead(wk: Walk, o: number, idx: number, name: string): number {
     b.refCast(1, true);
     b.arrayLen();
     b.i32Const(idx);
-    b.u8(w.LEU);
+    b.num(w.LEU);
     b.if();
     emitFail(wk.em, f, 2, wk.em.lay.strStatics.get(name) ?? null,
       f.constF64(idx),
-      () => { b.localGet(blk); b.refCast(1, true); b.arrayLen(); b.u8(w.CONV_I32); },
+      () => { b.localGet(blk); b.refCast(1, true); b.arrayLen(); b.num(w.CONV_I32); },
       f.constF64(0));
-    b.u8(w.END);
+    b.end();
     b.localGet(blk);
     b.refCast(1, true);
     b.i32Const(idx);
     b.arrayGet(1);
   }
-  b.u8(w.ELSE);
+  b.els();
   {
     const d = f.anyref(), off = f.i32(), len = f.i32();
     b.localGet(o);
     f.unboxSlice(d, off, len);
     b.localGet(len);
     b.i32Const(idx);
-    b.u8(w.LEU);
+    b.num(w.LEU);
     b.if();
     emitFail(wk.em, f, 2, wk.em.lay.strStatics.get(name) ?? null,
       f.constF64(idx),
-      () => { b.localGet(len); b.u8(w.CONV_I32); },
+      () => { b.localGet(len); b.num(w.CONV_I32); },
       f.constF64(0));
-    b.u8(w.END);
+    b.end();
     b.localGet(d);
     b.refCast(1, true);
     b.localGet(off);
     b.i32Const(idx);
-    b.u8(w.ADD);
+    b.num(w.ADD);
     b.arrayGet(1);
   }
-  b.u8(w.END);
+  b.end();
   b.localSet(res);
   return res;
 }
@@ -1047,39 +1047,39 @@ function emitAsPrim(wk: Walk, p: CPrim & {t: "as"}): number {
     b.localGet(v);
     b.readBoxPayload(0);
     if (targetW === "u32") {
-      b.u8(w.TRUNC_F64_U);
+      b.num(w.TRUNC_F64_U);
       const t = f.i32();
       b.localSet(t);
       b.localGet(t);
       b.structNew(8);
     } else if (targetW === "i32") {
-      b.u8(w.TRUNC_F64);
+      b.num(w.TRUNC_F64);
       const t = f.i32();
       b.localSet(t);
       b.localGet(t);
       b.structNew(7);
     } else if (targetW === "u64") {
-      b.u8(w.TRUNC_F64_U);
-      b.u8(w.I64_EXTEND_I32_U);
+      b.num(w.TRUNC_F64_U);
+      b.num(w.I64_EXTEND_I32_U);
       const t = f.i64();
       b.localSet(t);
       b.localGet(t);
       b.structNew(10);
     } else if (targetW === "i64") {
-      b.u8(w.TRUNC_F64);
-      b.u8(w.I64_EXTEND_I32_S);
+      b.num(w.TRUNC_F64);
+      b.num(w.I64_EXTEND_I32_S);
       const t = f.i64();
       b.localSet(t);
       b.localGet(t);
       b.structNew(9);
     } else if (targetW === "f32") {
-      b.u8(w.CONV_F32_I32);
+      b.num(w.CONV_F32_I32);
       const t = f.f32();
       b.localSet(t);
       b.localGet(t);
       b.structNew(11);
     } else {
-      b.u8(w.FTRUNC);
+      b.num(w.FTRUNC);
       b.callFn(em.ix.fBox);
     }
   } else if (p.asKind === "boolnum") {
@@ -1098,25 +1098,25 @@ function emitAsPrim(wk: Walk, p: CPrim & {t: "as"}): number {
       b.localGet(t);
       b.structNew(8);
     } else if (targetW === "i64") {
-      b.u8(w.I64_EXTEND_I32_S);
+      b.num(w.I64_EXTEND_I32_S);
       const t = f.i64();
       b.localSet(t);
       b.localGet(t);
       b.structNew(9);
     } else if (targetW === "u64") {
-      b.u8(w.I64_EXTEND_I32_U);
+      b.num(w.I64_EXTEND_I32_U);
       const t = f.i64();
       b.localSet(t);
       b.localGet(t);
       b.structNew(10);
     } else if (targetW === "f32") {
-      b.u8(w.CONV_F32_I32);
+      b.num(w.CONV_F32_I32);
       const t = f.f32();
       b.localSet(t);
       b.localGet(t);
       b.structNew(11);
     } else {
-      b.u8(w.CONV_I32); // f64 (default/undefined target)
+      b.num(w.CONV_I32); // f64 (default/undefined target)
       b.callFn(em.ix.fBox);
     }
   } else {
@@ -1203,35 +1203,35 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
         b.localSet(bv);
         b.localGet(a); b.refTest(0, false);
         b.localGet(bv); b.refTest(0, false);
-        b.u8(w.AND);
-        b.u8(w.IF); b.u8(rawW === undefined ? w.ANYREF : 0x7c); // f64 valtype
+        b.num(w.AND);
+        b.if(rawW === undefined ? w.ANYREF : 0x7c); // f64 valtype
         b.localGet(a); b.readBoxPayload(0);
         b.localGet(bv); b.readBoxPayload(0);
-        b.u8(w.FADD);
+        b.num(w.FADD);
         if (rawW === undefined) b.callFn(em.ix.fBox);
-        b.u8(w.ELSE);
+        b.els();
         if (rawW === undefined) {
           b.localGet(a); b.refTest(2, false);
           b.localGet(bv); b.refTest(2, false);
-          b.u8(w.AND);
-          b.u8(w.IF); b.u8(w.ANYREF);
+          b.num(w.AND);
+          b.if(w.ANYREF);
           f.emitStrCat(a, bv);
-          b.u8(w.ELSE); b.refNull(w.ANYREF);
-          b.u8(w.END);
+          b.els(); b.refNull(w.ANYREF);
+          b.end();
         } else {
           // A typed numeric destination (every arg numerically stamped)
           // makes the string arm statically impossible; unreachable keeps
           // the if/else arms type-consistent with the f64 result.
-          b.u8(w.UNREACHABLE);
+          b.unreachable();
         }
-        b.u8(w.END);
+        b.end();
         break;
       }
       {
         const x = unbox(0), y = unbox(1);
         b.localGet(x);
         b.localGet(y);
-        b.u8(isF32 ? w.F32_ADD : isWide ? w.I64_ADD : w.ADD);
+        b.num(isF32 ? w.F32_ADD : isWide ? w.I64_ADD : w.ADD);
         boxW();
       }
       break;
@@ -1240,7 +1240,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
       const x = unbox(0), y = unbox(1);
       b.localGet(x);
       b.localGet(y);
-      b.u8(name === "-"
+      b.num(name === "-"
         ? (isF32 ? w.F32_SUB : isNarrow ? w.SUB : isWide ? w.I64_SUB : w.FSUB)
         : (isF32 ? w.F32_MUL : isNarrow ? w.MUL : isWide ? w.I64_MUL : w.FMUL));
       boxW();
@@ -1253,25 +1253,25 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
         // via ef_fail — rem by -1 is fine, REMS of INT_MIN by -1 is 0).
         const x = unbox(0), y = unbox(1);
         b.localGet(y);
-        b.u8(isWide ? w.I64_EQZ : w.EQZ);
-        b.u8(w.IF); b.u8(0x40);
+        b.num(isWide ? w.I64_EQZ : w.EQZ);
+        b.if(0x40);
         emitFail(em, f, 3, null, f.constF64(0), f.constF64(0), f.constF64(0));
-        b.u8(w.END);
+        b.end();
         if (name === "/" && (isI32 || isI64)) {
           b.localGet(y);
           if (isWide) b.i64Const(-1n); else b.i32Const(-1);
-          b.u8(isWide ? w.I64_EQ : w.EQ);
+          b.num(isWide ? w.I64_EQ : w.EQ);
           b.localGet(x);
           if (isWide) b.i64Const(-(2n ** 63n)); else b.i32Const(-2147483648);
-          b.u8(isWide ? w.I64_EQ : w.EQ);
-          b.u8(w.AND);
-          b.u8(w.IF); b.u8(0x40);
+          b.num(isWide ? w.I64_EQ : w.EQ);
+          b.num(w.AND);
+          b.if(0x40);
           emitFail(em, f, 4, null, f.constF64(0), f.constF64(0), f.constF64(0));
-          b.u8(w.END);
+          b.end();
         }
         b.localGet(x);
         b.localGet(y);
-        b.u8(name === "/"
+        b.num(name === "/"
           ? (isI32 ? w.DIVS : isU32 ? w.DIVU : isI64 ? w.I64_DIVS : w.I64_DIVU)
           : (isI32 ? w.REMS : isU32 ? w.REMU : isI64 ? w.I64_REMS : w.I64_REMU));
         boxW();
@@ -1279,20 +1279,20 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
       }
       if (name === "%") {
         const x = unbox(0), y = unbox(1), t = f.f64();
-        if (isF32) { b.localGet(x); b.u8(w.F64_PROMOTE); b.localGet(y); b.u8(w.F64_PROMOTE); }
+        if (isF32) { b.localGet(x); b.num(w.F64_PROMOTE); b.localGet(y); b.num(w.F64_PROMOTE); }
         else { b.localGet(x); b.localGet(y); }
-        b.u8(w.FDIV); b.u8(w.FTRUNC); b.localSet(t);
-        b.localGet(x); b.localGet(y); b.localGet(t); b.u8(w.FMUL); b.u8(w.FSUB);
-        if (isF32) b.u8(w.F32_DEMOTE);
+        b.num(w.FDIV); b.num(w.FTRUNC); b.localSet(t);
+        b.localGet(x); b.localGet(y); b.localGet(t); b.num(w.FMUL); b.num(w.FSUB);
+        if (isF32) b.num(w.F32_DEMOTE);
       } else {
         const x = unbox(0), y = unbox(1);
         if (isF32) {
           // The interpreter computes float / in f64 and frounds the result
           // (the site's norm) — promote, divide, demote for the f32 box.
-          b.localGet(x); b.u8(w.F64_PROMOTE);
-          b.localGet(y); b.u8(w.F64_PROMOTE);
-          b.u8(w.FDIV); b.u8(w.F32_DEMOTE);
-        } else { b.localGet(x); b.localGet(y); b.u8(w.FDIV); }
+          b.localGet(x); b.num(w.F64_PROMOTE);
+          b.localGet(y); b.num(w.F64_PROMOTE);
+          b.num(w.FDIV); b.num(w.F32_DEMOTE);
+        } else { b.localGet(x); b.localGet(y); b.num(w.FDIV); }
       }
       boxW();
       break;
@@ -1300,13 +1300,13 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
     case "neg": {
       const x = unbox(0);
       if (isF32) {
-        b.localGet(x); b.u8(w.F32_NEG);
+        b.localGet(x); b.num(w.F32_NEG);
       } else if (isNarrow) {
-        b.i32Const(0); b.localGet(x); b.u8(w.SUB);
+        b.i32Const(0); b.localGet(x); b.num(w.SUB);
       } else if (isWide) {
-        b.i64Const(0n); b.localGet(x); b.u8(w.I64_SUB);
+        b.i64Const(0n); b.localGet(x); b.num(w.I64_SUB);
       } else {
-        b.localGet(x); b.u8(w.FNEG);
+        b.localGet(x); b.num(w.FNEG);
       }
       boxW();
       break;
@@ -1316,7 +1316,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
       selectBool(em, f, () => {
         b.localGet(x);
         b.localGet(y);
-        b.u8(CMP_OPS[name][wkName]);
+        b.num(CMP_OPS[name][wkName]);
       });
       break;
     }
@@ -1325,11 +1325,11 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
         const x = unbox(0), y = unbox(1);
         selectBool(em, f, () => {
           b.localGet(x); b.localGet(y);
-          b.u8(isF32 ? w.F32_EQ : isWide ? w.I64_EQ : w.EQ);
+          b.num(isF32 ? w.F32_EQ : isWide ? w.I64_EQ : w.EQ);
         });
         if (name === "!=") {
           i31of(b);
-          b.u8(w.EQZ);
+          b.num(w.EQZ);
           selectBool(em, f);
         }
         break;
@@ -1339,7 +1339,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
       b.callFn(em.ix.fEq);
       if (name === "!=") {
         i31of(b);
-        b.u8(w.EQZ);
+        b.num(w.EQZ);
         selectBool(em, f);
       }
       break;
@@ -1347,7 +1347,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
     case "not": {
       pushAtom(wk, p.args[0]);
       b.callFn(em.ix.fTruthy);
-      b.u8(w.EQZ);
+      b.num(w.EQZ);
       selectBool(em, f);
       break;
     }
@@ -1478,7 +1478,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
       b.localSet(siteF);
       wk.labels.push({name: t.name, openDepth: wk.depth, isLoop: p.isLoop === true, param: t.param});
       if (p.isLoop === true) {
-        b.u8(w.LOOP); b.u8(0x40);
+        b.loop(0x40);
         wk.depth++;
         b.localGet(siteF);
         b.localSet(0); // each iteration re-enters at the site frame
@@ -1486,15 +1486,15 @@ function emitTerm(wk: Walk, t: CTerm): void {
         emitTerm(wk, t.rest);
         wk.labels.pop();
         wk.depth--;
-        b.u8(w.END);
-        b.u8(0x00); // unreachable: the body/rest dispatch away, never fall through
+        b.end();
+        b.unreachable(); // unreachable: the body/rest dispatch away, never fall through
       } else {
-        b.u8(w.BLOCK); b.u8(0x40);
+        b.block(0x40);
         wk.depth++;
         emitTerm(wk, t.rest);
         wk.labels.pop();
         wk.depth--;
-        b.u8(w.END);
+        b.end();
         b.localGet(siteF);
         b.localSet(0); // the br lands here: run the body at the site frame
         emitTerm(wk, t.body); // then the body dispatches away
@@ -1602,7 +1602,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
         } else {
           emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "k", kL: kref.local}, st);
         }
-        b.u8(w.RETURN); // the dispatch's null-k yield: the site's value
+        b.ret(); // the dispatch's null-k yield: the site's value
         break;
       }
       // Unknown callee kind: the $CLO flag picks the entry ABI. A direct
@@ -1636,21 +1636,21 @@ function emitTerm(wk: Walk, t: CTerm): void {
         const rv = reboxCallResult(em, f, exp.r);
         b.localGet(rv);
         b.localSet(v);
-        b.u8(w.ELSE);
+        b.els();
         const vb = emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "raw"});
         b.localGet(vb);
         b.localSet(v);
-        b.u8(w.END);
+        b.end();
         emitDispatch(em, f, v, kref.local);
       } else {
         emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "k", kL: kref.local});
       }
-      b.u8(w.RETURN); // the dispatch's null-k yield: the site's value
-      b.u8(w.ELSE);
+      b.ret(); // the dispatch's null-k yield: the site's value
+      b.els();
       emitCallClosure(f, fc, t.args.length, argEmit, {tail: true, kL: kref.local});
-      b.u8(w.END);
+      b.end();
       wk.depth--;
-      b.u8(w.UNREACHABLE); // both arms diverge (tail call / the dispatch's return)
+      b.unreachable(); // both arms diverge (tail call / the dispatch's return)
       break;
     }
     case "perform":
@@ -1665,14 +1665,14 @@ function emitTerm(wk: Walk, t: CTerm): void {
       b.localSet(cond);
       b.localGet(cond);
       b.callFn(em.ix.fTruthy);
-      b.u8(w.IF); b.u8(0x40);
+      b.if(0x40);
       wk.depth++;
       emitTerm(wk, t.a);
-      b.u8(w.ELSE);
+      b.els();
       emitTerm(wk, t.b);
       wk.depth--;
-      b.u8(w.END);
-      b.u8(0x00); // unreachable: both arms dispatch away
+      b.end();
+      b.unreachable(); // unreachable: both arms dispatch away
       break;
     }
     case "scope": {
@@ -1729,8 +1729,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
         const r = resolveT(wk.ts, kref.param);
         if (r === null) throw new WasmError(`internal: letk param ${kref.param} unbound at jump`);
         storeAt(wk, r.d, r.i, v);
-        b.u8(w.BR);
-        b.lebU(wk.depth - kref.openDepth - 1);
+        b.br(wk.depth - kref.openDepth - 1);
         break;
       }
       emitDispatch(em, f, v, kref.local);
@@ -1747,7 +1746,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
       else pushAtom(wk, t.v);
       b.localSet(v);
       b.localGet(v);
-      b.u8(w.RETURN);
+      b.ret();
       break;
     }
     case "dret": {
@@ -1768,7 +1767,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
         emitDispatch(em, f, v, wk.kL);
         break;
       }
-      b.u8(w.RETURN);
+      b.ret();
       break;
     }
     case "dcall": {
@@ -1927,11 +1926,11 @@ function emitTerm(wk: Walk, t: CTerm): void {
           const rv = reboxCallResult(em, f, exp.r);
           b.localGet(rv);
           b.localSet(r);
-          b.u8(w.ELSE);
+          b.els();
           const rb = emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "raw"});
           b.localGet(rb);
           b.localSet(r);
-          b.u8(w.END);
+          b.end();
         } else {
           const rb = emitDirectEntryCall(em, f, fc, t.args.length, argEmit, {kind: "raw"});
           b.localGet(rb);
@@ -1954,7 +1953,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
           emitDispatch(em, f, r, cell);
         }
       }
-      b.u8(w.ELSE);
+      b.els();
       // CPS entry (resume binder, any-smuggled closure): the land-cell path —
       // the cell's frame is F_n (allocated here), next the ambient chain
       // (null in a direct body: the completion's dret returns the value).
@@ -1964,9 +1963,9 @@ function emitTerm(wk: Walk, t: CTerm): void {
       emitDcallThunk(wk, thunk, t, p);
       const cell = f.retCell(thunk.idx, () => cellNextE(wk, b), fpN2);
       emitCallClosure(f, fc, t.args.length, argEmit, {tail: true, kL: cell});
-      b.u8(w.END);
+      b.end();
       wk.depth--;
-      b.u8(w.UNREACHABLE); // both arms diverge (tail call / the rest's own tail)
+      b.unreachable(); // both arms diverge (tail call / the rest's own tail)
       break;
     }
     default:
@@ -2167,9 +2166,7 @@ function rawIndirectCall(wk: Walk, fc: number, args: CAtom[], numfn: number, exp
   b.structGet(6, 1); // (ref null $FRAME) — the entry's frame operand
   for (const a of args) pushRawAtom(wk, a);
   b.localGet(numfn);
-  b.u8(w.CALL_INDIRECT);
-  b.lebU(expected);
-  b.lebU(0);
+  b.callIndirect(expected, false);
 }
 
 // Numeric-entry tag test over a closure value: numfn (table index + 1)
@@ -2180,9 +2177,9 @@ function pushNumericMatch(f: Fn, fc: number, expected: number): {numfn: number} 
   const numfn = f.i32(), numsig = f.i32();
   b.localGet(fc); b.refCast(6, true); b.structGet(6, 4); b.i31Get(); b.localSet(numfn);
   b.localGet(fc); b.refCast(6, true); b.structGet(6, 5); b.i31Get(); b.localSet(numsig);
-  b.localGet(numfn); b.u8(w.EQZ); b.u8(w.EQZ); // numfn != 0
-  b.localGet(numsig); b.i32Const(expected); b.u8(w.EQ);
-  b.u8(w.AND);
+  b.localGet(numfn); b.num(w.EQZ); b.num(w.EQZ); // numfn != 0
+  b.localGet(numsig); b.i32Const(expected); b.num(w.EQ);
+  b.num(w.AND);
   return {numfn};
 }
 
@@ -2270,7 +2267,7 @@ function emitDlet(wk: Walk, t: CTerm & {t: "dlet"}, v: number): void {
       storeAt(wk, 0, wk.ts[0].slots.get(t.fields[i])!, tmp);
     }
   }
-  b.u8(w.ELSE);
+  b.els();
   {
     const d = f.anyref(), off = f.i32(), len = f.i32();
     b.localGet(v);
@@ -2280,14 +2277,14 @@ function emitDlet(wk: Walk, t: CTerm & {t: "dlet"}, v: number): void {
       b.refCast(1, true);
       b.localGet(off);
       b.i32Const(i);
-      b.u8(w.ADD);
+      b.num(w.ADD);
       b.arrayGet(1);
       const tmp = f.anyref();
       b.localSet(tmp);
       storeAt(wk, 0, wk.ts[0].slots.get(t.fields[i])!, tmp);
     }
   }
-  b.u8(w.END);
+  b.end();
 }
 
 // ---------------------------------------------------------------------------
@@ -2345,7 +2342,7 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
       tracePoint(em, f, "walk:kind", () => b.localGet(knd));
       b.localGet(knd);
       b.i32Const(w.K_HDL);
-      b.u8(w.EQ);
+      b.num(w.EQ);
       b.if();
       tracePoint(em, f, "walk:K_HDL");
       cellGet(b, kL, 1);
@@ -2369,27 +2366,26 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
         b.localSet(hdl); // remember the matching handler cell
       }));
       b.localGet(found);
-      b.u8(w.BR_IF);
-      b.lebU(2); // matched handler → leave the walk
-      b.u8(w.END);
+      b.brIf(2); // matched handler → leave the walk
+      b.end();
       if (DBGTRACE) {
         // K_RET only: field a = the thunk funcref (i31) — identifies the
         // letk (an HDL's field 1 is a table ref, not an i31).
         b.localGet(knd);
-        b.u8(w.EQZ);
+        b.num(w.EQZ);
         b.if();
         tracePoint(em, f, "walk:fn", () => {
           cellGet(b, kL, 1);
           b.refCast(w.I31REF, false);
           b.i31Get();
         });
-        b.u8(w.END);
+        b.end();
       }
       cellGet(b, kL, 3);
       b.localSet(kL);
       b.localGet(steps);
       b.i32Const(1);
-      b.u8(w.ADD);
+      b.num(w.ADD);
       b.localSet(steps);
       tracePoint(em, f, "walk:step", () => b.localGet(steps));
     },
@@ -2429,7 +2425,7 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   b.refCast(5, true);
   b.localGet(steps);
   b.i32Const(1);
-  b.u8(w.ADD);
+  b.num(w.ADD);
   b.refI31();
   tr("perform:preCapture");
   b.callFn(em.ix.fCapture);
@@ -2508,7 +2504,7 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   b.i32Const(4);
   b.localGet(steps);
   b.i32Const(1);
-  b.u8(w.ADD);
+  b.num(w.ADD);
   b.refI31();
   b.arraySet();
   b.localGet(hfc);
@@ -2516,65 +2512,29 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   // on a resumed perform the found hdl is a chain copy whose next is the
   // fresh splice cell — the case body's completion ($xit = kNext) must
   // reach the resume's k2 directly, exactly like the interpreter's
-  // per-run kOuter, not re-enter the fresh cell's Return scan. A null
-  // next is the tail handle's direct boundary: the case completion's
-  // null-k dispatch returns the value to the direct entry, so the walk
-  // exits before dereferencing.
+  // per-run kOuter, not re-enter the fresh cell's Return scan.
   const ckn = f.typed(_T.RF[5]);
-  const ckx = f.i32();
   cellGet(b, hdl, 3);
   b.localSet(ckn);
-  f.walkLoop(
-    () => {
-      // ckx = 1 (exit) iff ckn is null (the tail handle's direct boundary —
-      // the case completion's null-k dispatch returns to the entry) or ckn
-      // is not a same-table K_HDL splice cell.
-      b.localGet(ckn);
-      b.u8(0xd1); // ref.is_null
-      b.localSet(ckx);
-      b.localGet(ckx);
-      b.u8(w.EQZ);
-      b.if();
-      cellGet(b, ckn, 0); b.i31Get();
-      b.i32Const(w.K_HDL); b.u8(w.EQ); b.u8(w.EQZ);
-      b.localSet(ckx);
-      b.localGet(ckx);
-      b.u8(w.EQZ);
-      b.if();
-      cellGet(b, ckn, 1); b.refCast(w.EQREF, true);
-      b.localGet(tbl); b.refCast(w.EQREF, true);
-      b.refEq(); b.u8(w.EQZ);
-      b.localSet(ckx);
-      b.u8(w.END);
-      b.u8(w.END);
-      b.localGet(ckx);
-    },
-    () => {
-      cellGet(b, ckn, 3);
-      b.localSet(ckn);
-      tracePoint(em, f, `f${f.fid} cknhop`, () => {
-        const t1 = f.i32();
-        b.localGet(ckn);
-        b.u8(0xd1);
-        b.localSet(t1);
-        b.localGet(t1);
-      });
-    },
-  );
+  skipSameTableSplices(f, ckn, tbl, () => tracePoint(em, f, `f${f.fid} cknhop`, () => {
+    const t1 = f.i32();
+    b.localGet(ckn);
+    b.isNull();
+    b.localSet(t1);
+    b.localGet(t1);
+  }));
   b.localGet(ckn);
   b.localGet(fnIdx);
   tracePoint(em, f, `f${f.fid} perform:dispatch`, () => {
     // val = ref.is_null(ckn) — the case completion target's nullness
     const t1 = f.i32();
     b.localGet(ckn);
-    b.u8(0xd1); // ref.is_null
+    b.isNull(); // ref.is_null
     b.localSet(t1);
     b.localGet(t1);
   });
-  b.u8(w.RETURN_CALL_INDIRECT);
-  b.lebU(w.T_KABI);
-  b.lebU(0);
-  b.u8(w.ELSE);
+  b.callIndirect(w.T_KABI, true);
+  b.els();
   tr("perform:noHandler");
   // No handler: the host interprets the op and the value flows to the
   // reified continuation (the k cell).
@@ -2585,8 +2545,8 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   b.localSet(v);
   emitDispatch(em, f, v, kref.local);
   b.drop(); // the null-k path's block result; dead here (cell is non-null)
-  b.u8(w.END);
-  b.u8(0x00); // unreachable: both arms end in a tail call
+  b.end();
+  b.unreachable(); // unreachable: both arms end in a tail call
 }
 
 // ---------------------------------------------------------------------------
@@ -2645,7 +2605,7 @@ function emitHandleT(wk: Walk, t: AHandle): void {
   wk.kL = saved;
   wk.retName = savedRet;
   wk.kTerminal = savedTerm;
-  b.u8(0x00); // unreachable: the body's dispatch tail-calls away
+  b.unreachable(); // unreachable: the body's dispatch tail-calls away
 }
 
 // Case fns (T_KABI over the hframe): the exit binder is the k param; op
@@ -2767,14 +2727,14 @@ export function emitResumeFn(em: Emit, rf: Fn): void {
       () => {
         b.localGet(j);
         b.localGet(len);
-        b.u8(w.EQ);
+        b.num(w.EQ);
       },
       () => {
         cellGet(b, cur, 3);
         b.localSet(cur);
         b.localGet(j);
         b.i32Const(1);
-        b.u8(w.ADD);
+        b.num(w.ADD);
         b.localSet(j);
       },
     );
@@ -2811,10 +2771,10 @@ export function emitResumeFn(em: Emit, rf: Fn): void {
       () => {
         // exit when i2 >= len OR cel == null — an overshot len must not
         // deref a null chain tail (amb.ef crashed struct.get-ing null).
-        b.localGet(i2); b.localGet(len); b.u8(w.LTS);
-        b.localGet(cel); b.u8(0xd1); b.u8(w.EQZ); // cel non-null
-        b.u8(w.AND);
-        b.u8(w.EQZ);
+        b.localGet(i2); b.localGet(len); b.num(w.LTS);
+        b.localGet(cel); b.isNull(); b.num(w.EQZ); // cel non-null
+        b.num(w.AND);
+        b.num(w.EQZ);
       },
       () => {
         b.localGet(cel);
@@ -2837,7 +2797,7 @@ export function emitResumeFn(em: Emit, rf: Fn): void {
             b.i32Const(0);
             b.localSet(s2);
             rf.walkLoop(
-              () => { b.localGet(s2); b.localGet(slen); b.u8(w.LTS); b.u8(w.EQZ); },
+              () => { b.localGet(s2); b.localGet(slen); b.num(w.LTS); b.num(w.EQZ); },
               () => {
                 b.localGet(slots); b.localGet(s2); b.arrayGet(1);
                 b.localSet(val);
@@ -2848,7 +2808,7 @@ export function emitResumeFn(em: Emit, rf: Fn): void {
                   b.localGet(tst);
                   b.if();
                   tracePoint(em, rf, "scan:kcell", () => b.i32Const(1));
-                  b.u8(w.END);
+                  b.end();
                 }
                 b.localGet(tst);
                 b.if();
@@ -2873,7 +2833,7 @@ export function emitResumeFn(em: Emit, rf: Fn): void {
                 b.structGet(5, 0);
                 b.i31Get();
                 b.i32Const(w.K_HDL);
-                b.u8(w.EQ);
+                b.num(w.EQ);
                 b.localSet(tst);
                 b.localGet(tst);
                 b.if();
@@ -2892,11 +2852,11 @@ export function emitResumeFn(em: Emit, rf: Fn): void {
                 b.localGet(fresh);
                 b.refCast(5, true); // $K.next is (ref null $5)
                 b.structSet(3);
-                b.u8(w.END);
-                b.u8(w.END);
-                b.u8(w.END);
-                b.u8(w.END); // closes the is-K-cell guard
-                b.localGet(s2); b.i32Const(1); b.u8(w.ADD); b.localSet(s2);
+                b.end();
+                b.end();
+                b.end();
+                b.end(); // closes the is-K-cell guard
+                b.localGet(s2); b.i32Const(1); b.num(w.ADD); b.localSet(s2);
               },
             );
             b.localGet(fr);
@@ -2907,7 +2867,7 @@ export function emitResumeFn(em: Emit, rf: Fn): void {
         b.localGet(nxt); // advance along the captured chain
         b.refCast(5, true);
         b.localSet(cel);
-        b.localGet(i2); b.i32Const(1); b.u8(w.ADD); b.localSet(i2);
+        b.localGet(i2); b.i32Const(1); b.num(w.ADD); b.localSet(i2);
       },
     );
     tracePoint(em, rf, "scan:done");

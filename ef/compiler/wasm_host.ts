@@ -5,7 +5,7 @@
 // implements the host imports, including effects that reach the host with
 // no matching handler (builtins.ts's builtinEffectHosts, optionally
 // overridden per-op through the `interp` argument).
-import {type Value, show, asSlice, mkSlice, mkTup, sliceElems} from "./env.ts";
+import {type Value, OPS, asSlice, mkSlice, mkTup, show, sliceElems} from "./env.ts";
 import {builtinEffectHosts} from "./builtins.ts";
 import {compileWithOps} from "./wasm.ts";
 import {DBGTRACE, TRACE_SITES} from "./wasm_tables.ts";
@@ -157,6 +157,10 @@ export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[]
     ef_args: () => hostBox(ex(), mkSlice(process.argv.slice(2))),
     ef_cos: (v: unknown) => hostBox(ex(), Math.cos(ex().__num(v))),
     ef_sin: (v: unknown) => hostBox(ex(), Math.sin(ex().__num(v))),
+    // Operator values (checker-unstamped sites) apply the interpreter's own
+    // closure — the wasm trampoline just names the op (index into OPS).
+    ef_binop: (op: number, a: unknown, bv: unknown) =>
+      hostBox(ex(), OPS[op][1](hostUnbox(ex(), a), hostUnbox(ex(), bv))),
     ef_fail: (code: number, name: unknown, a: number, b: number, c: number) => {
       // Codes carry the interpreter's exact error messages for parity; c is
       // the third number sub's message needs (from, to, len).

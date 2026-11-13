@@ -126,6 +126,16 @@ describe("wasm backend", () => {
     expect(() => runWasm("(fn(x: any): any { x * 1 })(\"s\")")).toThrow(); // "*" is always numeric: slotF64 traps on the cast
   });
 
+  test("unstamped operator sites apply the interpreter's own operators via ef_binop", () => {
+    // Sites the checker leaves unstamped — string `+` and string
+    // comparisons — call the operator's trampoline, which routes through
+    // the ef_binop host import: the interpreter's own operator closure
+    // runs, so value- and error-parity hold by construction.
+    expect(parity("\"a\" + \"b\"")).toBe("\"ab\"");
+    expect(parity("Println!(\"a\" < \"b\")")).toBe("ERR: Expected number, got \"a\"");
+    expect(parity("Println!(\"z\" > \"b\")")).toBe("ERR: Expected number, got \"z\"");
+  });
+
   test("comparisons and equality", () => {
     expect(parity("if (3 < 5) { 10 } else { 20 }")).toBe("10");
     expect(parity("\"ab\" == \"ab\"")).toBe("true");

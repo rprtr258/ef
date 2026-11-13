@@ -588,6 +588,8 @@ function dropDeadHostImports(prog: Program, o: Opt): void {
     n === "ef_perform" ? performsAnyOp(prog) :
     n === "ef_fail" ? true :
     n === "ef_trace" ? DBGTRACE :
+    n === "ef_binop" ? o.usedBuiltins.has("+") || o.usedBuiltins.has("<") ||
+      o.usedBuiltins.has(">") || o.usedBuiltins.has("<=") || o.usedBuiltins.has(">=") :
     Object.hasOwn(BUILTIN_IMPORTS, n) &&
       o.usedBuiltins.has(BUILTIN_IMPORTS[n]));
   if (DBGEMIT)

@@ -30,9 +30,6 @@ export const I64_EXTEND_I32_S = 0xac, I64_EXTEND_I32_U = 0xad, I64_EQZ = 0x50; /
 export const F32_DEMOTE = 0xb6, F64_PROMOTE = 0xbb; // f32.demote_f64, f64.promote_f32 —
 // the explicit f64 <-> f32 conversions (@as and the operand-width adaptation
 // in $numf64/$f32of); no implicit per-node round-trip exists anymore.
-export const CALL = 0x10, CALL_INDIRECT = 0x11, RETURN_CALL = 0x12, RETURN_CALL_INDIRECT = 0x13, SELECT = 0x1b;
-export const BR = 0x0c, BR_IF = 0x0d, IF = 0x04, ELSE = 0x05, END = 0x0b, LOOP = 0x03, BLOCK = 0x02;
-export const RETURN = 0x0f, UNREACHABLE = 0x00;
 
 
 // --- WasmGC substrate -------------------------------------------------------
@@ -40,12 +37,6 @@ export const RETURN = 0x0f, UNREACHABLE = 0x00;
 // Abstract heap types are single valtype bytes, never passed through the sleb
 // writer; a concrete (ref null $t) would be 0x63 <sleb $t> (not needed yet).
 export const ANYREF = 0x6e, EQREF = 0x6d, I31REF = 0x6c;
-
-// GC opcodes: 0xFB-prefixed instructions carry a sub-opcode (single byte for
-// the values here) followed by typeidx/heaptype immediates. REF_NULL/REF_EQ/
-// SELECT_TYPED are plain (unprefixed) opcodes; SELECT_TYPED takes a vec of
-// valtypes instead of the untyped 0x1b form.
-export const GC = 0xfb;
 
 // --- module-level constants -------------------------------------------------
 
@@ -77,6 +68,9 @@ export const T_RUN = 7, T_PERFORM = 9, T_FAIL = 10, T_STRNUM = 11,
 // functions take their activation frame (params + body binds over the
 // captured env) and RETURN the boxed result; no continuation operand.
 export const T_DABI = 30;
+// Operator-value application: (i32 op id, anyref, anyref) -> anyref — the
+// host import applies the interpreter's own operator closure (env.ts OPS).
+export const T_BINOP = 31;
 // Numeric direct-ABI signature base: ((ref null $FRAME), w1..wn) -> wr with
 // every operand a plain valtype. Indices are interned on demand by
 // wasm_tables.ts's numSig; emitters and $CLO tag checks derive them only
@@ -89,6 +83,7 @@ export function impType(n: string): number {
   if (n === "ef_fail") return T_FAIL;
   if (n === "ef_args") return T_RUN;
   if (n === "ef_trace") return T_TRACE;
+  if (n === "ef_binop") return T_BINOP;
   return T_STRNUM;
 }
 

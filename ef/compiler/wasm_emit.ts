@@ -93,7 +93,7 @@ const entryI31 = (b: Buf, tbl: number, ent: number, off: number): void => {
   b.localGet(tbl);
   b.refCast(1, true);
   b.localGet(ent);
-  if (off !== 0) { b.i32Const(off); b.u8(w.ADD); }
+  if (off !== 0) { b.i32Const(off); b.num(w.ADD); }
   b.arrayGet(1);
   i31of(b);
 };
@@ -127,18 +127,18 @@ export function emitCaseScan(f: Fn, tbl: number, want: () => void, onMatch?: () 
   const found = f.i32(), fnIdx = f.i32(), fsz = f.i32(),
     nparams = f.i32(), ent = f.i32();
   const nL = f.i32();
-  b.localGet(tbl); b.refCast(1, true); b.arrayLen(); b.i32Const(4); b.u8(w.DIVU);
+  b.localGet(tbl); b.refCast(1, true); b.arrayLen(); b.i32Const(4); b.num(w.DIVU);
   b.localSet(nL);
   b.i32Const(0);
   b.localSet(found);
   f.loop(() => {
     b.localGet(nL);
   }, i => {
-    b.localGet(i); b.i32Const(4); b.u8(w.MUL);
+    b.localGet(i); b.i32Const(4); b.num(w.MUL);
     b.localSet(ent);
     entryI31(b, tbl, ent, 0);
     want();
-    b.u8(w.EQ);
+    b.num(w.EQ);
     b.if();
     b.i32Const(1);
     b.localSet(found);
@@ -146,9 +146,8 @@ export function emitCaseScan(f: Fn, tbl: number, want: () => void, onMatch?: () 
     entryI31(b, tbl, ent, 2); b.localSet(fsz);
     entryI31(b, tbl, ent, 3); b.localSet(nparams);
     if (onMatch !== undefined) onMatch();
-    b.u8(w.BR);
-    b.lebU(2); // exit the scan
-    b.u8(w.END);
+    b.br(2); // exit the scan
+    b.end();
   });
   return {found, fnIdx, fsz, nparams};
 }
@@ -159,8 +158,8 @@ function unboxArm(b: Buf, ret: number, ht: number, ops: number[], at = 0, nullab
   b.if(ret);
   b.localGet(at);
   b.readBoxPayload(ht);
-  for (const op of ops) b.u8(op);
-  b.u8(w.ELSE);
+  for (const op of ops) b.num(op);
+  b.els();
 }
 
 // The shape of one adaptive unbox ladder: the arm list (box shape +
@@ -179,8 +178,8 @@ export function ladderBody(b: Buf, spec: LadderSpec): void {
   for (const [shape, ops] of spec.arms) unboxArm(b, spec.ret, shape, ops);
   b.localGet(0); // default: trap (non-number)
   b.readBoxPayload(0);
-  for (const op of spec.defOps) b.u8(op);
-  for (let i = 0; i < spec.arms.length; i++) b.u8(w.END);
+  for (const op of spec.defOps) b.num(op);
+  for (let i = 0; i < spec.arms.length; i++) b.end();
 }
 
 const ladderFn = (em: Emit, spec: LadderSpec): Fn => {
@@ -209,16 +208,16 @@ export function emitHelpers(em: Emit): Fn[] {
     b.localIsNull(0); // ref.is_null
     b.if(0x7f);
     b.i32Const(0);
-    b.u8(w.ELSE);
+    b.els();
     b.localGet(0);
     b.refTest(w.I31REF, true); // ref.test (ref null i31)
     b.if(0x7f);
     b.localGet(0);
     i31of(b); // i31.get_u
-    b.u8(w.ELSE);
+    b.els();
     b.i32Const(1);
-    b.u8(w.END);
-    b.u8(w.END);
+    b.end();
+    b.end();
   }
   // $eq(a: anyref, b: anyref) -> anyref bool: JS === — nums by f64
   // payload, bools by i31 payload, strings by i16 content, slices/tuples/
@@ -239,18 +238,18 @@ export function emitHelpers(em: Emit): Fn[] {
     // null ladder: equal nulls → true, one null → false.
     b.localIsNull(0);
     b.localIsNull(1);
-    b.u8(w.EQ);
+    b.num(w.EQ);
     b.if(0x7f);
     b.localIsNull(0);
-    b.u8(w.ELSE);
+    b.els();
     b.i32Const(0);
-    b.u8(w.END);
+    b.end();
     b.localSet(res);
     // one null, one not: the ladder answered (false).
     b.localIsNull(0);
     b.localIsNull(1);
-    b.u8(w.EQ);
-    b.u8(w.EQZ);
+    b.num(w.EQ);
+    b.num(w.EQZ);
     b.localSet(decided);
     // bool == bool: i31 payloads (the shape test is computed once and
     // reused for the decided flag below).
@@ -258,7 +257,7 @@ export function emitHelpers(em: Emit): Fn[] {
     b.refTest(w.I31REF, true);
     b.localGet(1);
     b.refTest(w.I31REF, true);
-    b.u8(w.AND);
+    b.num(w.AND);
     b.localSet(both);
     b.localGet(both);
     b.if();
@@ -266,14 +265,14 @@ export function emitHelpers(em: Emit): Fn[] {
     i31of(b);
     b.localGet(1);
     i31of(b);
-    b.u8(w.EQ);
+    b.num(w.EQ);
     b.localSet(res);
     // decided: the bool path answered.
     b.localGet(both);
     b.localGet(decided);
-    b.u8(w.OR); // i32.or
+    b.num(w.OR); // i32.or
     b.localSet(decided);
-    b.u8(w.END);
+    b.end();
     // Numeric equality matches the interpreter's JS === on values exactly
     // (any-typed sites land here; same-width sites are decided statically):
     //   wide ($I64/$U64) vs wide — same shape: bitwise i64.eq (equal bits
@@ -292,8 +291,8 @@ export function emitHelpers(em: Emit): Fn[] {
       const shapeBit = (v: number, shapes: number[], bit: number, extra?: number): void => {
         b.localGet(v);
         b.refTest(shapes[0], true);
-        for (let i = 1; i < shapes.length; i++) { b.localGet(v); b.refTest(shapes[i], true); b.u8(w.OR); }
-        if (extra !== undefined) { b.localGet(extra); b.u8(w.OR); }
+        for (let i = 1; i < shapes.length; i++) { b.localGet(v); b.refTest(shapes[i], true); b.num(w.OR); }
+        if (extra !== undefined) { b.localGet(extra); b.num(w.OR); }
         b.localSet(bit);
       };
       const aW = eq.i32(), bW = eq.i32(), aN = eq.i32(), bN = eq.i32();
@@ -304,15 +303,15 @@ export function emitHelpers(em: Emit): Fn[] {
       // Both numeric? the numeric ladder answers (decided = 1).
       b.localGet(aN);
       b.localGet(bN);
-      b.u8(w.AND);
+      b.num(w.AND);
       b.if();
       b.i32Const(1);
       b.localGet(decided);
-      b.u8(w.OR);
+      b.num(w.OR);
       b.localSet(decided);
       b.localGet(aW);
       b.localGet(bW);
-      b.u8(w.AND);
+      b.num(w.AND);
       b.if();
       // wide vs wide: payloads (the raw bits), then the mixed-shape rule.
       // readWide leaves v's raw i64 payload on the stack ($I64 box or the
@@ -321,7 +320,7 @@ export function emitHelpers(em: Emit): Fn[] {
         unboxArm(b, 0x7e, 9, [], v, true); // $I64 payload; else $U64
         b.localGet(v);
         b.readBoxPayload(10);
-        b.u8(w.END);
+        b.end();
       };
       const pa = eq.i64(), pb = eq.i64();
       readWide(0);
@@ -331,7 +330,7 @@ export function emitHelpers(em: Emit): Fn[] {
       // res = bits equal AND the signed side (if any) is non-negative.
       b.localGet(pa);
       b.localGet(pb);
-      b.u8(w.I64_EQ);
+      b.num(w.I64_EQ);
       // signedNeg: whichever operand sits in an $I64 box reads as a signed
       // BigInt — a negative one is never === the unsigned reinterpretation.
       b.localGet(0);
@@ -339,48 +338,48 @@ export function emitHelpers(em: Emit): Fn[] {
       b.if(0x7f);
       b.localGet(pa);
       b.i64Const(0n);
-      b.u8(w.I64_LTS);
-      b.u8(w.ELSE);
+      b.num(w.I64_LTS);
+      b.els();
       b.localGet(1);
       b.refTest(9, true);
       b.if(0x7f);
       b.localGet(pb);
       b.i64Const(0n);
-      b.u8(w.I64_LTS);
-      b.u8(w.ELSE);
+      b.num(w.I64_LTS);
+      b.els();
       b.i32Const(0);
-      b.u8(w.END);
-      b.u8(w.END);
-      b.u8(w.EQZ);
-      b.u8(w.AND);
+      b.end();
+      b.end();
+      b.num(w.EQZ);
+      b.num(w.AND);
       b.localSet(res);
-      b.u8(w.ELSE);
+      b.els();
       // not both wide: exactly one wide → BigInt is never === a Number;
       // both f64-family → adaptive reads + f64 compare (Number ===).
       b.localGet(aW);
       b.localGet(bW);
-      b.u8(w.OR);
+      b.num(w.OR);
       b.if();
       b.i32Const(0);
       b.localSet(res);
-      b.u8(w.ELSE);
+      b.els();
       // f64-family vs f64-family: adaptive reads + f64 compare.
       b.localGet(0);
       b.callFn(em.ix.fNum64);
       b.localGet(1);
       b.callFn(em.ix.fNum64);
-      b.u8(w.FEQ);
+      b.num(w.FEQ);
       b.localSet(res);
-      b.u8(w.END);
-      b.u8(w.END);
-      b.u8(w.END);
+      b.end();
+      b.end();
+      b.end();
     }
     // str == str: i16 content.
     b.localGet(0);
     b.refTest(2, true);
     b.localGet(1);
     b.refTest(2, true);
-    b.u8(w.AND);
+    b.num(w.AND);
     b.if();
     const la = eq.i32(), lb = eq.i32();
     b.localGet(0);
@@ -393,7 +392,7 @@ export function emitHelpers(em: Emit): Fn[] {
     b.localSet(lb);
     b.localGet(la);
     b.localGet(lb);
-    b.u8(w.EQ);
+    b.num(w.EQ);
     b.localSet(res);
     eq.loop(() => {
       b.localGet(la);
@@ -407,16 +406,16 @@ export function emitHelpers(em: Emit): Fn[] {
       b.refCast(2, true);
       b.localGet(i);
       b.arrayGet(2);
-      b.u8(w.EQ);
-      b.u8(w.AND);
+      b.num(w.EQ);
+      b.num(w.AND);
       b.localSet(res);
     });
-    b.u8(w.END);
+    b.end();
     // Mixed/same-shape-arr/clo → identity (both operands cast through
     // (ref null eq); a nullable cast accepts null but the null ladder
     // already left). Only runs when no typed path answered.
     b.localGet(decided);
-    b.u8(w.EQZ);
+    b.num(w.EQZ);
     b.if();
     b.localGet(0);
     b.refCast(w.EQREF, true);
@@ -424,7 +423,7 @@ export function emitHelpers(em: Emit): Fn[] {
     b.refCast(w.EQREF, true);
     b.refEq();
     b.localSet(res);
-    b.u8(w.END);
+    b.end();
     b.localGet(res);
     b.refI31();
   }
@@ -468,7 +467,7 @@ export function emitHelpers(em: Emit): Fn[] {
     capture.walkLoop(
       () => {
         b.localGet(n);
-        b.u8(w.EQZ);
+        b.num(w.EQZ);
       },
       () => {
         // cell = a fresh copy of cur with next = null.
@@ -483,20 +482,20 @@ export function emitHelpers(em: Emit): Fn[] {
         b.if();
         b.localGet(cell);
         b.localSet(head);
-        b.u8(w.ELSE);
+        b.els();
         b.localGet(prev);
         b.refCast(5, true);
         b.localGet(cell);
         b.refCast(5, true); // the local is anyref; struct.set needs the exact $K type
         b.structSet(3); // prev.next = cell
-        b.u8(w.END);
+        b.end();
         b.localGet(cell);
         b.localSet(prev);
         cellGet(b, cur, 3);
         b.localSet(cur);
         b.localGet(n);
         b.i32Const(1);
-        b.u8(w.SUB);
+        b.num(w.SUB);
         b.localSet(n);
       },
     );
@@ -597,8 +596,8 @@ export function emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: nu
     b.i32Const(argc);
     b.localGet(fs);
     b.i32Const(argc);
-    b.u8(w.GTU);
-    b.u8(w.SELECT);
+    b.num(w.GTU);
+    b.select();
     b.localSet(maxL);
     b.localGet(maxL);
     b.arrayNew(1);
@@ -619,12 +618,9 @@ export function emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: nu
     // above are shared with the generic path.
     if (direct === undefined) {
       b.localGet(idx);
-      b.u8(tail ? w.RETURN_CALL_INDIRECT : w.CALL_INDIRECT);
-      b.lebU(w.T_DABI);
-      b.lebU(0);
+      b.callIndirect(w.T_DABI, tail);
     } else {
-      b.u8(tail ? w.RETURN_CALL : w.CALL);
-      b.lebU(direct.idx);
+      b.callFn(direct.idx, tail);
     }
     if (tail) return undefined;
     const r = f.anyref();
@@ -649,12 +645,9 @@ export function emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: nu
   } else b.refNull(5); // k=0 (ref.null $K): the callee's dispatch returns its value inline
   if (direct === undefined) {
     b.localGet(idx);
-    b.u8(tail || land ? w.RETURN_CALL_INDIRECT : w.CALL_INDIRECT); // noSplit land calls tail too (see above)
-    b.lebU(w.T_KABI);
-    b.lebU(0);
+    b.callIndirect(w.T_KABI, tail || land);
   } else {
-    b.u8(tail || land ? w.RETURN_CALL : w.CALL); // direct: fn index is static, not a stack operand
-    b.lebU(direct.idx);
+    b.callFn(direct.idx, tail || land);
   }
   return undefined;
 }
@@ -700,8 +693,8 @@ export function emitDirectEntryCall(
   }
   b.localGet(fs); b.i32Const(argc);
   b.localGet(fs); b.i32Const(argc);
-  b.u8(w.GTU);
-  b.u8(w.SELECT);
+  b.num(w.GTU);
+  b.select();
   b.localSet(maxL);
   b.localGet(maxL);
   b.arrayNew(1);
@@ -718,23 +711,17 @@ export function emitDirectEntryCall(
   if (deliver.kind === "tail") {
     if (st === undefined) {
       b.localGet(idx);
-      b.u8(w.RETURN_CALL_INDIRECT);
-      b.lebU(w.T_DABI);
-      b.lebU(0);
+      b.callIndirect(w.T_DABI, true);
     } else {
-      b.u8(w.RETURN_CALL);
-      b.lebU(st.idx);
+      b.callFn(st.idx, true);
     }
     return -1;
   }
   if (st === undefined) {
     b.localGet(idx);
-    b.u8(w.CALL_INDIRECT);
-    b.lebU(w.T_DABI);
-    b.lebU(0);
+    b.callIndirect(w.T_DABI, false);
   } else {
-    b.u8(w.CALL);
-    b.lebU(st.idx);
+    b.callFn(st.idx);
   }
   const v = f.anyref();
   b.localSet(v);
@@ -772,8 +759,7 @@ export function emitNumericEntryCall(
   b.localGet(cf);
   b.refCast(4, true);
   for (let k = 0; k < argc; k++) argRaw(k);
-  b.u8(w.CALL);
-  b.lebU(num.funcref);
+  b.callFn(num.funcref);
   // rawRet (a typed destination slot at the entry's return width) parks
   // the raw valtype in its plane local — no rebox round trip; the caller
   // stores it with raw: true.
@@ -813,29 +799,65 @@ export function tracePoint(em: Emit, f: Fn, label: string, pushVal?: () => void)
   b.callFn(imp);
 }
 
+// Walk the $K chain from local `kn` until the cell is NOT a same-table
+// splice cell: exits with kn = the first non-splice next (null at the tail
+// handle's direct boundary — exit before dereferencing; the case fn's
+// completion null-k-yields to the direct entry). A foreign nested handle's
+// HDL on the chain is a legitimate scan target and stops the walk —
+// skipping it would sever the completion's path into that handle.
+export function skipSameTableSplices(f: Fn, kn: number, tbl: number, stepTrace?: () => void): void {
+  const b = f.body;
+  const knx = f.i32();
+  f.walkLoop(
+    () => {
+      b.localGet(kn);
+      b.isNull(); // ref.is_null
+      b.localSet(knx);
+      b.localGet(knx);
+      b.num(w.EQZ);
+      b.if();
+      cellGet(b, kn, 0); b.i31Get();
+      b.i32Const(w.K_HDL); b.num(w.EQ); b.num(w.EQZ);
+      b.localSet(knx); // 1 = exit (not a K_HDL)
+      b.localGet(knx);
+      b.num(w.EQZ);
+      b.if();
+      cellGet(b, kn, 1); b.refCast(w.EQREF, true);
+      b.localGet(tbl); b.refCast(w.EQREF, true);
+      b.refEq(); b.num(w.EQZ); // 1 = exit (a foreign handle's HDL)
+      b.localSet(knx);
+      b.end();
+      b.end();
+      b.localGet(knx);
+    },
+    () => {
+      cellGet(b, kn, 3);
+      b.localSet(kn);
+      stepTrace?.();
+    },
+  );
+}
+
 export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
   const b = f.body;
   const kind = () => { cellGet(b, k, 0); b.i31Get(); };
-  b.u8(w.BLOCK);
-  b.u8(w.ANYREF); // block (result anyref)
+  b.block(w.ANYREF); // block (result anyref)
   b.loop();
   b.localIsNull(k); // ref.is_null: final return → the value itself
   b.if();
   tracePoint(em, f, `d f${f.fid}(idx${f.idx}) null-k`);
   b.localGet(v);
-  b.u8(w.BR); b.lebU(2); // leave the block with v
-  b.u8(w.END);
-  kind(); b.i32Const(w.K_RET); b.u8(w.EQ);
+  b.br(2); // leave the block with v
+  b.end();
+  kind(); b.i32Const(w.K_RET); b.num(w.EQ);
   b.if();
   tracePoint(em, f, `d f${f.fid}(idx${f.idx}) K_RET`);
   cellFrame(b, k);
   b.localGet(v);
   cellGet(b, k, 3);
   cellGet(b, k, 1); i31of(b);
-  b.u8(w.RETURN_CALL_INDIRECT);
-  b.lebU(w.T_III_I);
-  b.lebU(0);
-  b.u8(w.END);
+  b.callIndirect(w.T_III_I, true);
+  b.end();
   // K_HDL: scan the case table at k.a (a $ELEMS of flat [opid, fnIdx,
   // fsize, nparams] i31 quadruples; the Return case, opid -1, goes last).
   // Only kind==K_HDL scans. The scan is emitted only when the program
@@ -844,7 +866,7 @@ export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
   // program's scan is dead code — skipping it drops a nested scan loop
   // (plus ~30 instructions of table probing) from every dispatch site.
   if (em.d.hasHandle) {
-    kind(); b.i32Const(w.K_HDL); b.u8(w.EQ);
+    kind(); b.i32Const(w.K_HDL); b.num(w.EQ);
     b.if();
     tracePoint(em, f, `d f${f.fid}(idx${f.idx}) K_HDL`);
     const tbl = f.anyref();
@@ -863,62 +885,27 @@ export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
     // completion — so skip splice cells here; the first run's κ (a K_RET)
     // is reached unchanged.
     cellFrame(b, k); b.structGet(4, 1);
-    b.localGet(nparams); b.i32Const(1); b.u8(w.ADD);
+    b.localGet(nparams); b.i32Const(1); b.num(w.ADD);
     b.localGet(v);
     b.arraySet();
     cellFrame(b, k);
     const kn = f.typed(_T.RF[5]);
-    const knx = f.i32();
     cellGet(b, k, 3);
     b.localSet(kn);
-    f.walkLoop(
-      () => {
-        // Skip only THIS handle's splice cells (same case table): a foreign
-        // nested handle's HDL on the chain is a legitimate scan target —
-        // skipping it severs the completion's path into that handle. A null
-        // next is the tail handle's direct boundary: exit before
-        // dereferencing — the case fn's completion null-k-yields to the
-        // direct entry.
-        b.localGet(kn);
-        b.u8(0xd1); // ref.is_null
-        b.localSet(knx);
-        b.localGet(knx);
-        b.u8(w.EQZ);
-        b.if();
-        cellGet(b, kn, 0); b.i31Get();
-        b.i32Const(w.K_HDL); b.u8(w.EQ); b.u8(w.EQZ);
-        b.localSet(knx); // 1 = exit (not a K_HDL)
-        b.localGet(knx);
-        b.u8(w.EQZ);
-        b.if();
-        cellGet(b, kn, 1); b.refCast(w.EQREF, true);
-        b.localGet(tbl); b.refCast(w.EQREF, true);
-        b.refEq(); b.u8(w.EQZ); // 1 = exit (a foreign handle's HDL)
-        b.localSet(knx);
-        b.u8(w.END);
-        b.u8(w.END);
-        b.localGet(knx);
-      },
-      () => {
-        cellGet(b, kn, 3);
-        b.localSet(kn);
-      },
-    );
+    skipSameTableSplices(f, kn, tbl);
     b.localGet(kn);
     b.localGet(fnIdx);
-    b.u8(w.RETURN_CALL_INDIRECT);
-    b.lebU(w.T_KABI);
-    b.lebU(0);
-    b.u8(w.END);
-    b.u8(w.END); // kind==K_HDL guard
+    b.callIndirect(w.T_KABI, true);
+    b.end();
+    b.end(); // kind==K_HDL guard
   }
   // No Return case: k = k.next and dispatch again.
   cellGet(b, k, 3);
   b.localSet(k);
-  b.u8(w.BR); b.lebU(0);
-  b.u8(w.END); // loop
-  b.u8(0x00); // unreachable: the loop exits only through the k==0 branch
-  b.u8(w.END); // block
+  b.br(0);
+  b.end(); // loop
+  b.unreachable(); // unreachable: the loop exits only through the k==0 branch
+  b.end(); // block
 }
 
 // Calls ef_fail(code, name, a, b, c); the import throws, so unreachable.
@@ -934,7 +921,7 @@ export function emitFail(em: Emit, f: Fn, code: number, nameG: number | null, pu
   pushB();
   pushC();
   b.callFn(em.o.impIdx.get("ef_fail")!);
-  b.u8(0x00); // unreachable
+  b.unreachable(); // unreachable
 }
 
 // true/false i31 selected by the i32 condition emitted by emitCond.

@@ -114,8 +114,9 @@ import {emitBuiltins, emitInits, emitTightMaps} from "./wasm_module.ts";
 import {type CIr} from "./cps_ir.ts";
 import {type TermPlan} from "./wasm_term.ts";
 
-// The binary format layer is gone: Buf interprets the emitters' stack-machine
-// instruction stream directly into binaryen AST (wasm_body.ts).
+// The binary format layer is gone: Buf's emit methods build binaryen AST
+// directly (wasm_body.ts); opcode constants survive only as the data keys
+// of the numeric-op tables (BIN_OPS/UN_OPS, CMP_OPS, ladder defOps).
 //
 // Module map (strictly layered, no import cycles):
 // - wasm_types.ts   — WasmGC shape types, ValueRef/StaticDesc (leaf)

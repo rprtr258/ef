@@ -185,25 +185,34 @@ function builtinValue(b: Exclude<(typeof builtins)[number], {kind: "effect"}>): 
   return b.kind === "fn" ? lift(b.fn) : {tag: "native", fn: b.fn};
 }
 
-export function globalEnv(refs?: Set<string>): Env {
-  const g = new Env(null);
-  const bin = (s: string, f: (a: Value, b: Value) => Value) => g.vars.set(s, lift(f));
-  bin("+",  (a, b) =>
+// The arithmetic/comparison operators as data: globalEnv lifts them into
+// the runtime env, and the wasm host's ef_binop import calls the same
+// closures, so an operator reached as a value (a checker-unstamped site —
+// string `+`, string comparisons) has identical semantics in both
+// backends. (==/!= stay out of the wasm route: the wasm $eq helper
+// content-compares boxed strings, which JS `===` on Values cannot see.)
+export const OPS: [string, (a: Value, b: Value) => Value][] = [
+  ["+",  (a, b) =>
     typeof a === "string" && typeof b === "string" ? a + b :
     eitherBig(a, b) ? asBig(a) + asBig(b) :
     typeof a === "number" && typeof b === "number" ? num(a) + num(b) :
-    null);
-  bin("-",  (a, b) => eitherBig(a, b) ? asBig(a) - asBig(b) : num(a) - num(b));
-  bin("*",  (a, b) => eitherBig(a, b) ? asBig(a) * asBig(b) : num(a) * num(b));
+    null],
+  ["-",  (a, b) => eitherBig(a, b) ? asBig(a) - asBig(b) : num(a) - num(b)],
+  ["*",  (a, b) => eitherBig(a, b) ? asBig(a) * asBig(b) : num(a) * num(b)],
   // `%` handles only unstamped (polymorphic) app nodes — width-stamped ones
   // are intercepted in eval.ts's widthOp with the ÷0 trap.
-  bin("%",  (a, b) => eitherBig(a, b) ? asBig(a) % asBig(b) : num(a) % num(b));
-  bin("==", (a, b) => a === b);
-  bin("!=", (a, b) => a !== b);
-  bin("<",  (a, b) => eitherBig(a, b) ? asBig(a) <  asBig(b) : num(a) <  num(b));
-  bin(">",  (a, b) => eitherBig(a, b) ? asBig(a) >  asBig(b) : num(a) >  num(b));
-  bin("<=", (a, b) => eitherBig(a, b) ? asBig(a) <= asBig(b) : num(a) <= num(b));
-  bin(">=", (a, b) => eitherBig(a, b) ? asBig(a) >= asBig(b) : num(a) >= num(b));
+  ["%",  (a, b) => eitherBig(a, b) ? asBig(a) % asBig(b) : num(a) % num(b)],
+  ["==", (a, b) => a === b],
+  ["!=", (a, b) => a !== b],
+  ["<",  (a, b) => eitherBig(a, b) ? asBig(a) <  asBig(b) : num(a) <  num(b)],
+  [">",  (a, b) => eitherBig(a, b) ? asBig(a) >  asBig(b) : num(a) >  num(b)],
+  ["<=", (a, b) => eitherBig(a, b) ? asBig(a) <= asBig(b) : num(a) <= num(b)],
+  [">=", (a, b) => eitherBig(a, b) ? asBig(a) >= asBig(b) : num(a) >= num(b)],
+];
+
+export function globalEnv(refs?: Set<string>): Env {
+  const g = new Env(null);
+  for (const [s, f] of OPS) g.vars.set(s, lift(f));
   g.vars.set("neg", lift(a => typeof a === "bigint" ? -a : -num(a)));
   // Named builtins and their impls come from the one table in builtins.ts.
   // With `refs`, only referenced builtins bind — exec seeds missing ones

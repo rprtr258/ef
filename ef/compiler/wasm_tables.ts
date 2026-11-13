@@ -32,6 +32,8 @@ export const HOST_IMPORTS = [
   "ef_perform", "ef_fail",
   ...Object.keys(BUILTIN_IMPORTS),
   "ef_trace",
+  // operator values (checker-unstamped sites: string `+`, comparisons)
+  "ef_binop",
 ];
 
 // debug emitter tracing: run with DBGEMIT=1 to log split/thunk internals
@@ -55,6 +57,7 @@ export const SIGS: Record<number, {p: (number | number[])[], r: number | number[
   [w.T_PERFORM]: {p: [0x7f, w.ANYREF], r: w.ANYREF},    // ef_perform
   [w.T_FAIL]: {p: [0x7f, w.ANYREF, 0x7c, 0x7c, 0x7c], r: null}, // ef_fail
   [w.T_STRNUM]: {p: [w.ANYREF], r: w.ANYREF},           // ef_char/number/cos/sin
+  [w.T_BINOP]: {p: [0x7f, w.ANYREF, w.ANYREF], r: w.ANYREF}, // ef_binop
   [12]: {p: [0x7f], r: w.ANYREF},                   // __mk_bool/__str_new/__arr_new/__tup_new
   [w.T_BOX]: {p: [0x7c], r: w.ANYREF},                // fBox, __mk_num
   [w.T_TRUTHY]: {p: [w.ANYREF], r: 0x7f},             // fTruthy, __tag/__str_len/__arr_len/__tup_len

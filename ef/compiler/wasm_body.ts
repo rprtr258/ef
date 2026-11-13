@@ -95,9 +95,6 @@ export class Buf {
   // capture never mistakes one for its own result.
   private pending: number[] = [];
   private labelN = 0;
-  // Pending stream instruction awaiting raw immediates (b.u8(w.CALL) +
-  // b.lebU(idx) and friends): opcode, GC sub-opcode, remaining immediates.
-  private pend: {op: number, gc: number, need: ("bt" | "lebU")[], got: number[]} | null = null;
 
   constructor(public fn: Fn) {}
 
@@ -205,174 +202,131 @@ export class Buf {
     return MOD.block(label, body, rt);
   }
 
-  // --- raw byte-stream interface (unchanged call sites feed these) --------
+  // --- instruction methods (direct construction; immediates are args) ------
 
-  u8(n: number): this {
-    if (this.pend === null) {
-      this.pend = {op: n, gc: -1, need: this.needs(n, -1), got: []};
-      if (this.pend.need.length === 0) this.complete(); // immediate-less op
-      return this;
-    }
-    if (this.pend.gc === -1 && this.pend.op === w.GC) {
-      this.pend.gc = n;
-      this.pend.need = this.needs(n, n);
-      if (this.pend.need.length === 0) this.complete();
-      return this;
-    }
-    const need = this.pend.need[0];
-    if (need !== "bt") throw new WasmError(`internal: unexpected u8 for ${this.pend.op}`);
-    this.pend.got.push(n);
-    this.pend.need.shift();
-    if (n === 0x63) { this.pend.need.unshift("bt"); return this; } // ref-typeidx follows
-    this.complete();
-    return this;
-  }
-
-  lebU(n: number): this {
-    if (this.pend === null || this.pend.need[0] !== "lebU")
-      throw new WasmError(`internal: unexpected lebU (op ${this.pend?.op ?? "none"})`);
-    this.pend.got.push(n);
-    this.pend.need.shift();
-    if (this.pend.need.length === 0)
-      this.complete();
-    return this;
-  }
-
-  // Immediates a stream opcode needs (before its completion handler runs).
-  private needs(op: number, gc: number): ("bt" | "lebU")[] {
-    if (gc >= 0)
-      return []; // GC ops never reach the stream (emit methods bypass it)
-    switch (op) {
-      case w.BLOCK: case w.LOOP: case w.IF: return ["bt"];
-      case w.CALL: case w.RETURN_CALL: case w.BR: case w.BR_IF: return ["lebU"];
-      case w.CALL_INDIRECT: case w.RETURN_CALL_INDIRECT: return ["lebU", "lebU"];
-      default: return [];
-    }
-  }
-
-  // A stream instruction's immediates are complete — build it.
-  private complete(): void {
-    const {op, gc, got} = this.pend!;
-    this.pend = null;
-    if (gc >= 0) throw new WasmError("internal: GC op reached the stream");
+  end(): void {
+    const sc = this.scopes.pop()!;
     if (DBGEMIT)
-      console.error(`insn f${this.fn.fid} ${op.toString(16)} [${got.join(",")}]`);
-    switch (op) {
-      case w.BLOCK: this.openScope("block", got); return;
-      case w.LOOP: this.openScope("loop", got); return;
-      case w.IF: {
-        const cond = this.pop();
-        this.openScope("if", got);
-        this.top().cond = cond;
-        if (DBGEMIT)
-          console.error(`IF f${this.fn.fid} stack=[${this.scopes.map((s) => s.kind.slice(0, 2) + ":" + s.label).join(",")}]`);
-        return;
+      console.error(`END f${this.fn.fid} pop=${sc.kind}:${sc.label} res=${sc.result} stmts=${sc.stmts.length} dead=${sc.dead} ids=[${sc.stmts.map((s) => String(binaryen.getExpressionId(s))).join(",")}] stack=[${this.scopes.map((s) => s.kind.slice(0, 2) + ":" + s.label).join(",")}]`);
+    if (sc.kind === "if") {
+      if (sc.arm === undefined) {
+        // if without ELSE: the scope state is the then-branch.
+        const thenArm = this.branch(sc);
+        this.finishScope(sc, MOD.if(sc.cond!, thenArm));
+      } else {
+        this.finishScope(sc, MOD.if(sc.cond!, sc.arm, this.branch(sc)));
       }
-      case w.ELSE: {
-        const sc = this.top();
-        if (DBGEMIT)
-          console.error(`ELSE f${this.fn.fid} top=${sc.kind}:${sc.label} arm=${sc.arm !== undefined}`);
-        if (sc.kind !== "if" || sc.arm !== undefined) throw new WasmError("internal: misplaced ELSE");
-        sc.arm = this.branch(sc);
-        sc.stmts = [];
-        sc.mark = this.ops.length;
-        sc.dead = false;
-        return;
-      }
-      case w.END: {
-        const sc = this.scopes.pop()!;
-        if (DBGEMIT)
-          console.error(`END f${this.fn.fid} pop=${sc.kind}:${sc.label} res=${sc.result} stmts=${sc.stmts.length} dead=${sc.dead} ids=[${sc.stmts.map((s) => String(binaryen.getExpressionId(s))).join(",")}] stack=[${this.scopes.map((s) => s.kind.slice(0, 2) + ":" + s.label).join(",")}]`);
-        if (sc.kind === "if") {
-          if (sc.arm === undefined) {
-            // if without ELSE: the scope state is the then-branch.
-            const thenArm = this.branch(sc);
-            this.finishScope(sc, MOD.if(sc.cond!, thenArm));
-          } else {
-            this.finishScope(sc, MOD.if(sc.cond!, sc.arm, this.branch(sc)));
-          }
-          return;
-        }
-        if (sc.kind === "loop") {
-          if (sc.stmts.length === 0) throw new WasmError("internal: empty loop");
-          this.finishScope(sc,
-            MOD.loop(sc.label, sc.stmts.length === 1 ? sc.stmts[0] : MOD.block(null, sc.stmts)));
-          return;
-        }
-        this.finishScope(sc, this.branch(sc, sc.label));
-        return;
-      }
-      case w.BR: {
-        const t = this.brTarget(got[0]);
-        const val = t.result === 0x40 ? undefined : this.pop();
-        // markDead BEFORE pushing the br: leaked-operand drops belong before
-        // the terminator (they execute in the byte world; after the br they
-        // would be dead code). Deadness is innermost-only: the rest of the
-        // CURRENT scope is dead; enclosing scopes stay live — their code
-        // runs whenever the br is not taken.
-        this.markDead();
-        this.top().stmts.push(val === undefined ? MOD.br(t.label) : MOD.br(t.label, undefined, val));
-        return;
-      }
-      case w.BR_IF: {
-        const cond = this.pop(); // cond sits on top of any br value
-        const t = this.brTarget(got[0]);
-        const val = t.result === 0x40 ? undefined : this.pop();
-        this.stmt(val === undefined ? MOD.br_if(t.label, cond) : MOD.br_if(t.label, cond, val));
-        return;
-      }
-      case w.CALL: case w.RETURN_CALL: {
-        const sig = sigOf(this.fn.em!, got[0]);
-        const args = sig.ps.map(() => this.pop()).reverse();
-        const call = op === w.RETURN_CALL
-          ? MOD.return_call(`f${got[0]}`, args, sig.r ?? binaryen.none)
-          : MOD.call(`f${got[0]}`, args, sig.r ?? binaryen.none);
-        this.callResult(op, call, sig);
-        return;
-      }
-      case w.CALL_INDIRECT: case w.RETURN_CALL_INDIRECT: {
-        const [typeIdx, tableIdx] = got;
-        if (tableIdx !== 0) throw new WasmError("internal: call_indirect table != 0");
-        const sigT = SIGS[typeIdx] as {p: (number | number[])[], r: number | number[] | null} | undefined;
-        if (sigT === undefined) throw new WasmError(`internal: no sig for type ${typeIdx}`);
-        const sig = {ps: sigT.p.map((t) => vt(t)), r: sigT.r === null ? null : vt(sigT.r)};
-        const idxExpr = this.pop();
-        const args = sig.ps.map(() => this.pop()).reverse();
-        const call = op === w.CALL_INDIRECT
-          ? MOD.call_indirect("t0", idxExpr, args, binaryen.createType(sig.ps), sig.r ?? binaryen.none)
-          : MOD.return_call_indirect("t0", idxExpr, args, binaryen.createType(sig.ps), sig.r ?? binaryen.none);
-        this.callResult(op, call, sig);
-        return;
-      }
-      case w.RETURN: {
-        const sig = SIGS[this.fn.typeIdx];
-        const rv = sig.r === null ? undefined : this.pop(); // pop while alive
-        // markDead FIRST so leaked-operand drops land BEFORE the return —
-        // the byte world's stack keeps them as live expressions before the
-        // terminator; after it they would be unreachable dead code.
-        this.markDead();
-        this.top().stmts.push(rv === undefined ? MOD.return() : MOD.return(rv));
-        return;
-      }
-      case w.UNREACHABLE:
-        this.markDead();
-        this.top().stmts.push(MOD.unreachable());
-        return;
-      case w.SELECT: {
-        const cond = this.pop(), v2 = this.pop(), v1 = this.pop();
-        this.push(MOD.select(cond, v1, v2));
-        return;
-      }
-      case 0xd1: this.push(MOD.ref.is_null(this.pop())); return;
-      default: this.numeric(op);
+      return;
     }
+    if (sc.kind === "loop") {
+      if (sc.stmts.length === 0) throw new WasmError("internal: empty loop");
+      this.finishScope(sc,
+        MOD.loop(sc.label, sc.stmts.length === 1 ? sc.stmts[0] : MOD.block(null, sc.stmts)));
+      return;
+    }
+    this.finishScope(sc, this.branch(sc, sc.label));
+  }
+
+  // Flip the current if to its else-arm.
+  els(): void {
+    const sc = this.top();
+    if (DBGEMIT)
+      console.error(`ELSE f${this.fn.fid} top=${sc.kind}:${sc.label} arm=${sc.arm !== undefined}`);
+    if (sc.kind !== "if" || sc.arm !== undefined) throw new WasmError("internal: misplaced ELSE");
+    sc.arm = this.branch(sc);
+    sc.stmts = [];
+    sc.mark = this.ops.length;
+    sc.dead = false;
+  }
+
+  br(d: number): void {
+    const t = this.brTarget(d);
+    const val = t.result === 0x40 ? undefined : this.pop();
+    // markDead BEFORE pushing the br: leaked-operand drops belong before
+    // the terminator (they execute before the br; after it they would be
+    // dead code). Deadness is innermost-only: the rest of the CURRENT
+    // scope is dead; enclosing scopes stay live — their code runs whenever
+    // the br is not taken.
+    this.markDead();
+    this.top().stmts.push(val === undefined ? MOD.br(t.label) : MOD.br(t.label, undefined, val));
+  }
+
+  brIf(d: number): void {
+    const cond = this.pop(); // cond sits on top of any br value
+    const t = this.brTarget(d);
+    const val = t.result === 0x40 ? undefined : this.pop();
+    this.stmt(val === undefined ? MOD.br_if(t.label, cond) : MOD.br_if(t.label, cond, val));
+  }
+
+  ret(): void {
+    const sig = SIGS[this.fn.typeIdx];
+    const rv = sig.r === null ? undefined : this.pop(); // pop while alive
+    // markDead FIRST so leaked-operand drops land BEFORE the return —
+    // the byte world's stack keeps them as live expressions before the
+    // terminator; after it they would be unreachable dead code.
+    this.markDead();
+    this.top().stmts.push(rv === undefined ? MOD.return() : MOD.return(rv));
+  }
+
+  unreachable(): void {
+    this.markDead();
+    this.top().stmts.push(MOD.unreachable());
+  }
+
+  // Pop cond, v2, v1 → select (binaryen's select is numeric-only; the
+  // anyref alternative is selectBool in wasm_emit.ts).
+  select(): void {
+    const cond = this.pop(), v2 = this.pop(), v1 = this.pop();
+    this.push(MOD.select(cond, v1, v2));
+  }
+
+  // ref.is_null of the top operand.
+  isNull(): void { this.push(MOD.ref.is_null(this.pop())); }
+
+  // Direct call to the helper/trampoline at funcref index idx; tail makes
+  // it a return_call (a statement — the callee's result is bottom-typed).
+  callFn(idx: number, tail = false): void {
+    const sig = sigOf(this.fn.em!, idx);
+    const args = sig.ps.map(() => this.pop()).reverse();
+    const call = tail
+      ? MOD.return_call(`f${idx}`, args, sig.r ?? binaryen.none)
+      : MOD.call(`f${idx}`, args, sig.r ?? binaryen.none);
+    this.callResult(tail, call, sig);
+  }
+
+  // Indirect call on the popped funcref (table 0).
+  callIndirect(typeIdx: number, tail = false): void {
+    const sigT = SIGS[typeIdx] as {p: (number | number[])[], r: number | number[] | null} | undefined;
+    if (sigT === undefined) throw new WasmError(`internal: no sig for type ${typeIdx}`);
+    const sig = {ps: sigT.p.map((t) => vt(t)), r: sigT.r === null ? null : vt(sigT.r)};
+    const idxExpr = this.pop();
+    const args = sig.ps.map(() => this.pop()).reverse();
+    const call = tail
+      ? MOD.return_call_indirect("t0", idxExpr, args, binaryen.createType(sig.ps), sig.r ?? binaryen.none)
+      : MOD.call_indirect("t0", idxExpr, args, binaryen.createType(sig.ps), sig.r ?? binaryen.none);
+    this.callResult(tail, call, sig);
+  }
+
+  // Numeric ops + conversions (all immediate-less): table dispatch
+  // (BIN_OPS/UN_OPS above). Opcodes are the tables' data keys — emitters
+  // select them at emit time (CMP_OPS rows, ladder defOps arrays).
+  num(op: number): void {
+    const bin = BIN_OPS[op];
+    if (bin !== undefined) {
+      const r = this.pop(), l = this.pop();
+      this.push(bin(l, r));
+      return;
+    }
+    const un = UN_OPS[op];
+    if (un === undefined) throw new WasmError(`internal: unknown opcode 0x${op.toString(16)}`);
+    this.push(un(this.pop()));
   }
 
   // call vs return_call: both pop args; direct calls push a result unless
   // the target is void; return-calls (direct and indirect) are statements —
   // they never return.
-  private callResult(op: number, call: binaryen.ExpressionRef, sig: {r: binaryen.Type | null}): void {
-    if (op === w.RETURN_CALL || op === w.RETURN_CALL_INDIRECT) {
+  private callResult(tail: boolean, call: binaryen.ExpressionRef, sig: {r: binaryen.Type | null}): void {
+    if (tail) {
       // The byte world pushed the callee's result bytes even for tail calls
       // (stack-polymorphic unreachable): code after the tail call stays
       // stack-typed (e.g. a following local.set consumes it). Bottom-typed
@@ -384,13 +338,13 @@ export class Buf {
     else this.push(call);
   }
 
-  private openScope(kind: "block" | "loop" | "if", got: number[]): void {
+  private openScope(kind: "block" | "loop" | "if", result: number, extra = 0): void {
     const sc: ScopeRec = {
-      kind, label: this.label(), result: got[0], extra: got[1] ?? 0,
+      kind, label: this.label(), result, extra,
       stmts: [], mark: this.ops.length, dead: this.dead(),
     };
     if (DBGEMIT)
-      console.error(`open f${this.fn.fid} ${kind} ${sc.label} res=${got[0]} ops=${this.ops.length} bornDead=${sc.dead}`);
+      console.error(`open f${this.fn.fid} ${kind} ${sc.label} res=${result} ops=${this.ops.length} bornDead=${sc.dead}`);
     // The emitters park operand-stack values ACROSS block/loop boundaries
     // (e.g. the handler-found index in emitPerform). binaryen AST cannot
     // flow a value through a void block, so spills mirror what the binary
@@ -423,20 +377,6 @@ export class Buf {
     }
   }
 
-  // MVP numeric ops + f64 ops + conversions (all immediate-less): table
-  // dispatch (BIN_OPS/UN_OPS above).
-  private numeric(op: number): void {
-    const bin = BIN_OPS[op];
-    if (bin !== undefined) {
-      const r = this.pop(), l = this.pop();
-      this.push(bin(l, r));
-      return;
-    }
-    const un = UN_OPS[op];
-    if (un === undefined) throw new WasmError(`internal: unknown opcode 0x${op.toString(16)}`);
-    this.push(un(this.pop()));
-  }
-
   // --- instruction emit methods ---------------------------------------------
 
   i32Const(n: number): void { this.push(MOD.i32.const(n)); }
@@ -445,10 +385,8 @@ export class Buf {
   f32Const(x: number): void { this.push(MOD.f32.const(x)); }
   // Box a small int (K-cell tags, bools): i31.new of a constant.
   i31Const(v: number): void { this.i32Const(v); this.refI31(); }
-  // ref.is_null of local i (0xd1).
-  localIsNull(i: number): void { this.localGet(i); this.u8(0xd1); }
-  // Direct call to the helper/trampoline at funcref index idx.
-  callFn(idx: number): void { this.u8(w.CALL); this.lebU(idx); }
+  // ref.is_null of local i.
+  localIsNull(i: number): void { this.localGet(i); this.isNull(); }
   // Numeric-box payload read: cast to the box shape's (ref ht), read field 0.
   readBoxPayload(ht: number): void { this.refCast(ht, false); this.structGet(ht, 0); }
   localGet(i: number): void { this.push(MOD.local.get(i, this.localType(i))); }
@@ -456,11 +394,17 @@ export class Buf {
   drop(): void { this.stmt(MOD.drop(this.pop())); }
   globalGet(gi: number, t: binaryen.Type = binaryen.anyref): void { this.push(MOD.global.get(`g${gi}`, t)); }
   globalSet(gi: number): void { this.stmt(MOD.global.set(`g${gi}`, this.pop())); }
-  // Control-scope openers: opcode + blocktype immediate in one call
-  // (0x40 void, 0x7f i32, 0x7e i64, 0x6e anyref).
-  block(bt = 0x40): void { this.u8(w.BLOCK); this.u8(bt); }
-  loop(bt = 0x40): void { this.u8(w.LOOP); this.u8(bt); }
-  if(bt = 0x40): void { this.u8(w.IF); this.u8(bt); }
+  // Control-scope openers: blocktype in the call (0x40 void, 0x7f i32,
+  // 0x7e i64, 0x6e anyref).
+  block(bt = 0x40): void { this.openScope("block", bt); }
+  loop(bt = 0x40): void { this.openScope("loop", bt); }
+  if(bt = 0x40): void {
+    const cond = this.pop();
+    this.openScope("if", bt);
+    this.top().cond = cond;
+    if (DBGEMIT)
+      console.error(`IF f${this.fn.fid} stack=[${this.scopes.map((s) => s.kind.slice(0, 2) + ":" + s.label).join(",")}]`);
+  }
   structNew(t: number): void {
     const sig = STRUCT_FIELDS[t];
     if (typeof sig === "undefined")
@@ -510,7 +454,7 @@ export class Buf {
     this.refTest(ht, false);
     this.localGet(y);
     this.refTest(ht, false);
-    this.u8(w.AND);
+    this.num(w.AND);
     this.if(0x6e);
   }
   // Push the f64 payload of the `ht` box in local `x` (localGet + cast +
@@ -535,7 +479,7 @@ export class Buf {
   // Finish the function body: close any open scopes (none expected) and wrap
   // the statement list, with a trailing operand as the function result.
   finish(): binaryen.ExpressionRef {
-    if (this.scopes.length !== 1 || this.pend !== null)
+    if (this.scopes.length !== 1)
       throw new WasmError("internal: unbalanced function body");
     const sc = this.top();
     // A diverging fn's trailing value may be a pre-scope leak sitting in
@@ -674,7 +618,7 @@ export class Fn {
     const res = this.anyref();
     body.localGet(a); body.refCast(2, true); body.arrayLen();
     body.localGet(b); body.refCast(2, true); body.arrayLen();
-    body.u8(w.ADD);
+    body.num(w.ADD);
     body.arrayNew(2);
     body.localSet(res);
     // copy a then b (b starts at unit offset la)
@@ -706,18 +650,16 @@ export class Fn {
     b.loop();
     b.localGet(i);
     pushN();
-    b.u8(w.GEU);
-    b.u8(w.BR_IF);
-    b.lebU(1);
+    b.num(w.GEU);
+    b.brIf(1);
     iter(i);
     b.localGet(i);
     b.i32Const(1);
-    b.u8(w.ADD);
+    b.num(w.ADD);
     b.localSet(i);
-    b.u8(w.BR);
-    b.lebU(0);
-    b.u8(w.END);
-    b.u8(w.END);
+    b.br(0);
+    b.end();
+    b.end();
   }
 
   // Pointer-walk loop: BLOCK { LOOP { cond; br_if out; body; br; } } —
@@ -728,13 +670,11 @@ export class Fn {
     b.block();
     b.loop();
     cond();
-    b.u8(w.BR_IF);
-    b.lebU(1);
+    b.brIf(1);
     body();
-    b.u8(w.BR);
-    b.lebU(0);
-    b.u8(w.END);
-    b.u8(w.END);
+    b.br(0);
+    b.end();
+    b.end();
   }
 
   // Viewland pointer: pushes (arrayref, off + i) of element i (local) of
@@ -744,7 +684,7 @@ export class Fn {
     this.body.refCast(1, true);
     this.body.localGet(i);
     this.body.localGet(off);
-    this.body.u8(w.ADD);
+    this.body.num(w.ADD);
   }
 
   // Pushes (arrayref, index) of element i (local) of raw $ELEMS local
