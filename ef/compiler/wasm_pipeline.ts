@@ -291,6 +291,17 @@ export function optimize(prog: Program): Opt {
 
 export function assignIndices(ir: CIr, plan: TermPlan, o: Opt): Indices {
   const reg = new IndexRegistrar(o.liveImports.length);
+  // Shared fragments, created context-free before the ix literal (bodies are
+  // attached at their emit sites); their registration positions pin them
+  // relative to the registered blocks — identityRet precedes the case-fn
+  // block (emitCaseFns' pass 0 pushes it there), resumeFn follows the
+  // ret-resume block, terminalRet precedes the builtins.
+  const identityRet = new Fn(2);
+  const resumeFn = new Fn(2);
+  // The terminal-return fragment (direct-fn dcall fallbacks chain here):
+  // a T_III_I thunk that just returns its param (local 1) — the completion's
+  // value unwinds as each fragment's result.
+  const terminalRet = new Fn(3);
   const ix: Indices = {
     funcRefTypes: reg.funcRefTypes,
     reg,
@@ -304,9 +315,9 @@ export function assignIndices(ir: CIr, plan: TermPlan, o: Opt): Indices {
     fI64of: 0,
     fU64of: 0,
     numFn: new Map(),
-    identityRet: undefined!,
-    resumeFn: undefined!,
-    terminalRet: undefined!,
+    identityRet,
+    resumeFn,
+    terminalRet,
     builtinFnIdx: new Map(),
     helpers: [],
     cfnFns: [],
@@ -318,20 +329,11 @@ export function assignIndices(ir: CIr, plan: TermPlan, o: Opt): Indices {
   };
   registerHelpers(reg, ix);
   registerCfns(reg, ix, ir, plan);
-  // Shared default-Return fragment — created here context-free, body
-  // attached by emitCaseFns. It precedes the case-fn block, exactly where
-  // emitCaseFns' pass 0 pushes it.
-  ix.identityRet = new Fn(2);
-  reg.register("identityRet", ix.identityRet, w.T_KABI);
+  reg.register("identityRet", identityRet, w.T_KABI);
   registerCaseFns(reg, ix, plan);
   registerRetResumes(reg, ix, plan);
-  ix.resumeFn = new Fn(2);
-  reg.register("resumeFn", ix.resumeFn, w.T_KABI);
-  // The terminal-return fragment (direct-fn dcall fallbacks chain here):
-  // a T_III_I thunk that just returns its param (local 1) — the completion's
-  // value unwinds as each fragment's result.
-  ix.terminalRet = new Fn(3);
-  reg.register("terminalRet", ix.terminalRet, w.T_III_I);
+  reg.register("resumeFn", resumeFn, w.T_KABI);
+  reg.register("terminalRet", terminalRet, w.T_III_I);
   registerBuiltins(reg, ix, o);
   return ix;
 }

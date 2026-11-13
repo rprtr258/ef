@@ -500,7 +500,7 @@ export function emitBuiltins(em: Emit): Fn[] {
 // The devirt pass's per-site tight map/each/flatmap loop fns: registered by
 // the dcall/call emitters (which may run in CFns or the main term — always
 // before this), bodies emitted now that the shared trampolines' helpers
-// exist. Runs after emitMainTerm, before the thunks land in the fn list.
+// exist. Runs after emitMain, before the thunks land in the fn list.
 export function emitTightMaps(em: Emit): void {
   for (const tm of em.tightMaps) emitMapLike(em, tm.f, tm.name, tm.cb);
 }
@@ -699,9 +699,10 @@ function emitMapLike(em: Emit, f: Fn, name: string, cb?: {idx: number, fsize: nu
 
 // run (allocates the global frame, calls main with k = null) and the
 // 12 host accessors (JS cannot read GC fields directly). Appended after
-// main; each registers through the registrar at its push position.
-export function emitInits(em: Emit): void {
-  const mainIdx = em.reg.register("main", em.mainFn, w.T_KABI);
+// main; each registers through the registrar at its push position. mainFn
+// is the program-term function returned by emitMain.
+export function emitInits(em: Emit, mainFn: Fn): void {
+  const mainIdx = em.reg.register("main", mainFn, w.T_KABI);
   const run = new Fn(0, em);
   em.reg.register("run", run, w.T_RUN);
   {

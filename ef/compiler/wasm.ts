@@ -108,7 +108,7 @@ import {prepare, rejectUnhandled, type EffectInterp} from "./pipeline.ts";
 import {toCps} from "./cps.ts";
 import {bindMOD} from "./wasm_tables.ts";
 import {buildModule, discover, layoutStatics, optimize, assignIndices, type Discovery, type Indices, type Layout, type Opt} from "./wasm_pipeline.ts";
-import {planIr, emitCfns, emitCaseFns, emitRetResumes, emitResumeFn, emitTerminalRet, emitMain as emitMainTerm} from "./wasm_term.ts";
+import {planIr, emitCfns, emitCaseFns, emitRetResumes, emitResumeFn, emitTerminalRet, emitMain} from "./wasm_term.ts";
 import {Fn} from "./wasm_body.ts";
 import {type Emit, emitHelpers} from "./wasm_emit.ts";
 import {emitBuiltins, emitInits, emitTightMaps} from "./wasm_module.ts";
@@ -237,13 +237,14 @@ function emit(ir: CIr, d: Discovery, o: Opt, ix: Indices, lay: Layout, plan: Ter
     funcs: [],
     thunks: [],
     tightMaps: [],
-    mainFn: undefined!,
   };
   // Helpers (right after the live imports), CFns, case fns + ret resumes,
-  // the shared resume fn, builtin trampolines, then main (last; run/
-  // accessors follow in buildModule). Thunks (letk continuations + map-like
-  // land cells) are appended after the builtins — makeRestThunk registers
-  // them at creation.
+  // the shared resume fn, the terminal ret, builtin trampolines, tight-map
+  // bodies, thunks, then main (last; run/accessors follow in buildModule).
+  // Thunks (letk continuations + map-like land cells) are appended after the
+  // builtins — makeRestThunk registers them at creation. funcs/thunks/
+  // tightMaps are the emitters' mutable accumulators; every other field is
+  // final at construction.
   em.funcs.push(...emitHelpers(em));
   emitCfns(em, ir, plan);
   emitCaseFns(em, plan);
@@ -251,10 +252,10 @@ function emit(ir: CIr, d: Discovery, o: Opt, ix: Indices, lay: Layout, plan: Ter
   emitResumeFn(em, ix.resumeFn);
   emitTerminalRet(em, ix.terminalRet);
   em.funcs.push(...emitBuiltins(em));
-  emitMainTerm(em, ir, plan);
+  const mainFn = emitMain(em, ir, plan);
   emitTightMaps(em);
   em.funcs.push(...em.thunks);
-  em.funcs.push(em.mainFn);
-  emitInits(em);
+  em.funcs.push(mainFn);
+  emitInits(em, mainFn);
   return em.funcs;
 }

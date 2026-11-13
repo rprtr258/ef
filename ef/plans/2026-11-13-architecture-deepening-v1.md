@@ -401,9 +401,24 @@ shows more than renumbering/renaming, stop and reassess before committing.
 **Exit criteria:** one writer of index state. **Commit:** `wasm: index registrar`
 
 **Chunk 6.2 — Emit context constructed once.**
-- [ ] `Emit` fields are set at construction (wasm.ts:227 `emit()`) by the pipeline/registrar;
+- [x] `Emit` fields are set at construction (wasm.ts:227 `emit()`) by the pipeline/registrar;
       `undefined!` deferred fields gone; init order no longer caller-visible. `wasm_module.ts`'s
       second index convention migrated to registrar calls.
+
+      Landed: `Emit.mainFn` is gone — `emitMain` (wasm_term.ts) returns the program-term fn,
+      which wasm.ts's `emit()` pushes last and hands to `emitInits(em, mainFn)` explicitly;
+      `Emit.plan` is final at construction (the vestigial
+      `(em as Emit & {plan?: TermPlan}).plan = plan` re-assignment in `emitCfns` removed).
+      Remaining mutable `Emit` fields are emitters' owned accumulators (`funcs`/`thunks`/
+      `tightMaps` — pushed into by the emit sequence, never deferred-init). The same sweep
+      cleared `Indices`' three `undefined!` deferred fragments (`identityRet`/`resumeFn`/
+      `terminalRet`): `assignIndices` now constructs them before the `Indices` literal and
+      registers them at their former positions (registration order == fn-list order is
+      unchanged). WAT byte-identical on examples/amb.ef (same sha256). The
+      `wasm_module.ts` second-index-convention half of this box (emitters read
+      `em.mainFn`-free index state via registrar calls) was already completed in 6.1 —
+      routing `emitInits`' main/run/accessors through `em.reg` — so this chunk's only
+      wasm_module change is `emitInits(em, mainFn)` taking the main fn as a parameter.
 
 **Verification:** `bun run ci`. **Commit:** `wasm: Emit constructed once`
 

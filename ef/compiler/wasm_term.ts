@@ -2730,7 +2730,6 @@ export function emitResumeFn(em: Emit, rf: Fn): void {
 // ret resumes are emitted into em.funcs in plan order — the caller (wasm.ts)
 // sequences: helpers → this → builtins → thunks → main.
 export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
-  (em as Emit & {plan?: TermPlan}).plan = plan;
   for (let i = 0; i < ir.funcs.length; i++) {
     const fn = ir.funcs[i];
     const base = plan.cfnBase.get(i)!;
@@ -2944,8 +2943,9 @@ export function emitRetResumes(em: Emit, plan: TermPlan): void {
 }
 
 // The program term over the global frame; halt returns the program result
-// (run() is the only non-tail caller in the chain).
-export function emitMain(em: Emit, ir: CIr, plan: TermPlan): void {
+// (run() is the only non-tail caller in the chain). Returns the main fn for
+// the caller (wasm.ts) to push last and hand to emitInits.
+export function emitMain(em: Emit, ir: CIr, plan: TermPlan): Fn {
   const f = new Fn(2, em);
   f.em = em;
   const wk: Walk = {
@@ -2953,7 +2953,7 @@ export function emitMain(em: Emit, ir: CIr, plan: TermPlan): void {
     esc: analyzeEscapes(ir.term), labels: [], depth: 0, tloc: new Map(),
   };
   emitTerm(wk, ir.term);
-  em.mainFn = f;
+  return f;
 }
 
 // The main fn's frame-size provider for run() (emitInits).

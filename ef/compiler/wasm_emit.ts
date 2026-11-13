@@ -38,10 +38,9 @@ export type Emit = {
   // direct callbacks): created by wasm_term.ts at the call site, bodies
   // filled by emitTightMaps (emitMapLike lives above wasm_term's layer).
   tightMaps: {f: Fn, name: string, cb: {idx: number, fsize: number}}[],
-  // The IR plan (scopes, escapes, handle registry) — set by wasm.ts's emit.
+  // The IR plan (scopes, escapes, handle registry) — supplied at
+  // construction by wasm.ts's emit.
   plan: TermPlan,
-  // The program-term function (set by emitMain; run's call target).
-  mainFn: Fn,
 };
 export const i31of = (b: Buf): void => { b.refCast(w.I31REF, false); b.i31Get(); };
 
