@@ -264,24 +264,42 @@ recording (5 inference sites: semToks kinds + nodeTypes + EffectSig.names), back
 (numKind/arrKind/sus/div/checkLamWidths), and display (showT/showErr/caret renderer). `Unifier`
 carries LSP fields today.
 
-**Chunk 5.1 — extract unifier core.**
-- [ ] New `compiler/unify.ts` (leaf): `Type` union, `Unifier` (no LSP/token fields), `unify`,
-      generalization. `types.ts` re-exports for compatibility at this chunk.
+**Chunk 5.1 — extract unifier core.** ✅ landed
+- [x] New `compiler/unify.ts` (leaf over prims.ts): `Type` union + shapes (`NumName`, `Prim`,
+      `ArrT`, `TupField`, `TupT`, `Effs`, `FunT`, `Var`, `AnyT`; `EffVar`/`Scheme`/`Snapshot` stay
+      module-private — no importers, knip), the name sets (`INT_NAMES`/`FLOAT_NAMES`/
+      `NUMERIC_NAMES`), `widthOf`, `Unifier` (no LSP/token fields), `unify`, generalization
+      (`Scheme`, `generalize`, the checker `Env`), plus `showT`/`TypeError_`/`TypeMismatch` (the
+      unifier's failure paths format types; 5.2 relocates display). `tTup` joined tArr/tFun in
+      prims.ts. No re-exports: every consumer imports unify.ts/prims.ts directly (parser, lsp,
+      cps, wasm_term/wasm_devirt, eval, builtins, builtin_table, env, cli, repl, cps_ir, tests,
+      playground). `nodeTypes`/`semToks` left Unifier for per-call state in types.ts
+      (`NODE_TYPES`/`SEM_TOKS` holders, reset per checkProgram like PIN_NODES); `Checked` gains
+      `nodeTypes` so lsp.ts reads `checked.nodeTypes` (per-Checked map — a REPL line's Checked no
+      longer aliases the next line's map). Behavior identical: CI 481 pass before and after.
 
 **Verification:** `bun run ci`. **Commit:** `types: extract unification core`
 - Compat re-export note: `types.ts` re-exports only if consumers still import from it; migrate all
   consumers in the same chunk instead (knip forbids orphan re-exports).
 
 **Chunk 5.2 — extract display.**
-- [ ] New `compiler/type_display.ts`: `showT`, `showErr`, source caret rendering. Checkers' error
-      paths call it; output bytes identical (tests assert messages).
+Landed shape after 5.1: `showT` (and `TypeError_`) live in **unify.ts** (moved there for cycle
+reasons — unify's failure paths format types); this chunk moves them **out of unify.ts into
+type_display.ts**, together with `showErr` + source caret rendering from types.ts.
+- [ ] New `compiler/type_display.ts`: `showT` (from unify.ts), `showErr` + source caret rendering
+      (from types.ts). Checkers'/unifier's error paths call it; output bytes identical (tests
+      assert messages).
 
 **Verification:** `bun run ci`. **Commit:** `types: extract display`
 
 **Chunk 5.3 — structured semantic-token recording.**
+Landed shape after 5.1: the Unifier already carries no token fields — nodeTypes/semToks are
+per-call module holders (NODE_TYPES/SEM_TOKS) in types.ts. This chunk replaces the holders with
+a recorder.
 - [ ] Introduce a `TokenRecorder` passed through checking with one emission interface; the 5
-      inference sites become recorder calls; `Unifier` loses token fields. `lsp.ts` consumes the
-      same output shape (semantic tokens unchanged — `lsp.test.ts`/`vscode` tests green).
+      inference sites become recorder calls; the NODE_TYPES/SEM_TOKS module holders are replaced by
+      recorder state (or a recorder instance held by Checked). `lsp.ts` consumes the same output
+      shape (semantic tokens unchanged — `lsp.test.ts`/`vscode` tests green).
 
 **Verification:** `bun run ci` + vscode LSP test (already inside the gate). **Commit:** `types: recorder interface for LSP tokens`
 

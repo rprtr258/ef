@@ -1,8 +1,8 @@
 // prims: the primitive type constants and the shared type-shape
-// constructors, a leaf module — its only types.ts import is type-only
-// (erased at runtime), so builtin_table.ts and types.ts both read these at
-// init time without a runtime dependency between them.
-import type {AnyT, ArrT, Effs, FunT, Prim, Type} from "./types.ts";
+// constructors, a leaf module — its unify.ts import is type-only (erased at
+// runtime), so builtin_table.ts and types.ts read these at init time without
+// a runtime dependency on the checker.
+import type {AnyT, ArrT, Effs, FunT, Prim, TupField, TupT, Type} from "./unify.ts";
 
 // The six machine widths. Arithmetic between distinct widths is a type
 // error; @as converts.
@@ -26,10 +26,10 @@ export const TUNIT: Prim = {tag: "prim", name: "unit"};
 export const TTYPE: Prim = {tag: "prim", name: "type"};
 export const TANY: AnyT = {tag: "any"};
 
-// The type-shape constructors both the checker and the builtin table use —
-// one definition here because prims is a leaf: a runtime import of these
-// from types.ts into builtin_table.ts would tie table init to checker
-// init, and the two modules read each other's exports.
+// The type-shape constructors the checker, the unifier, and the builtin
+// table use — one definition here because prims is a leaf: a runtime import
+// of these from unify.ts/types.ts into builtin_table.ts would tie table init
+// to checker init, and those modules read each other's exports.
 export function tArr(elem: Type): ArrT { return {tag: "arr", elem}; }
 export function tFun(params: Type[], ret: Type, effs: Effs, marks?: {contCall?: true, anyTaint?: true}): FunT {
   const ft: FunT = {tag: "fun", params, ret, effs};
@@ -37,3 +37,4 @@ export function tFun(params: Type[], ret: Type, effs: Effs, marks?: {contCall?: 
   if (marks?.anyTaint === true) ft.anyTaint = true;
   return ft;
 }
+export function tTup(fields: TupField[]): TupT { return {tag: "tup", fields}; }

@@ -8,7 +8,8 @@
 // continuation for value delivery, and the term's explicit continuations are
 // what the wasm backend defunctionalizes in stage 2.
 
-import {type Checked, type Type} from "./types.ts";
+import type {Checked} from "./types.ts";
+import type {Type} from "./unify.ts";
 import {Env, show, asSlice, mkSlice, mkTup, sliceElems, type Cont, type Native, type Outcome, type Value, num, seedBuiltins, type Closure} from "./env.ts";
 import {builtinRefs} from "./analysis.ts";
 import type {Program} from "./parser.ts";

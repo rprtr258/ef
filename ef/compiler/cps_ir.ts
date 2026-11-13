@@ -42,7 +42,7 @@
 // `$`-prefixed names are converter-generated and can never collide with
 // source identifiers (the lexer only allows [A-Za-z0-9_]).
 
-import type {FunT} from "./types.ts";
+import type {FunT} from "./unify.ts";
 import type {Value} from "./env.ts";
 
 // Operand: literal or variable read. `stamp` = the checker's numeric-width

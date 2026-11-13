@@ -52,7 +52,7 @@ import {type CIr, type CTerm, type CAtom, type CPrim, type CFn} from "./cps_ir.t
 import {type Buf, Fn} from "./wasm_body.ts";
 import {type Emit, emitDispatch, emitCaseScan, selectBool, emitFail, i31of, makeRestThunk, hdlGet, CMP_OPS, emitCallClosure, emitDirectEntryCall, emitNumericEntryCall, rebox, boxShapeOf, planeLocal, reboxCallResult, tracePoint} from "./wasm_emit.ts";
 import {analyzeDevirt, classifySlots, numericEntries, type Devirt, type NumEntry} from "./wasm_devirt.ts";
-import type {Type} from "./types.ts";
+import type {Type} from "./unify.ts";
 
 // ---------------------------------------------------------------------------
 // Static scope: frame-slot resolution mirroring the interpreter's Env chain.

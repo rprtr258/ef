@@ -7,7 +7,8 @@ import {apply} from "./eval.ts";
 import {BUILTIN_TABLE} from "./builtin_table.ts";
 import {num, show, asSlice, mkSlice, sliceElems, type Cont, type Outcome, type Value} from "./env.ts";
 import {errIndexOOB, errSubRangeOOB} from "./ops.ts";
-import {type Unifier, type EffectSig, type Type} from "./types.ts";
+import {type Unifier, type Type} from "./unify.ts";
+import type {EffectSig} from "./types.ts";
 
 export type Builtin =
   // A plain builtin: lifted to a runtime native as `k(fn(...args))`. `t` is its

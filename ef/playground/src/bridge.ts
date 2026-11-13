@@ -7,7 +7,8 @@
 
 import "./shim.ts";
 import {Parser, type Program, type Expr, type Alias} from "../../compiler/parser.ts";
-import {showT, type Checked, type Type, type Effs, type EffectSig} from "../../compiler/types.ts";
+import {showT, type Effs, type Type} from "../../compiler/unify.ts";
+import type {Checked, EffectSig} from "../../compiler/types.ts";
 import {lint} from "../../compiler/lint.ts";
 import {exec, newCtx} from "../../compiler/eval.ts";
 import {prepare, prepareStaged, type EffectInterp} from "../../compiler/pipeline.ts";

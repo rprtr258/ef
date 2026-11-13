@@ -17,7 +17,7 @@
 
 import {BUILTINS, NATIVE_BUILTINS} from "./analysis.ts";
 import type {CAtom, CFn, CIr, CTerm} from "./cps_ir.ts";
-import {widthOf, type Type} from "./types.ts";
+import {widthOf, type Type} from "./unify.ts";
 import {numSig} from "./wasm_tables.ts";
 import type {TLevel} from "./wasm_term.ts";
 

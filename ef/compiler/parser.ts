@@ -1,8 +1,11 @@
 import {
-  type FunT, type Type, type EffectSig, type Var, type TupField, type NumName,
+  type FunT, type NumName, type TupField, type Type, type Var,
+} from "./unify.ts";
+import {
   TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TUNIT, TANY, TTYPE,
   tArr, tTup, tFun,
-} from "./types.ts";
+} from "./prims.ts";
+import type {EffectSig} from "./types.ts";
 import {KEYWORDS, lex, ParseError, type Pos, type Tok} from "./lexer.ts";
 import {assertNever} from "./assert.ts";
 import {OP_NEG, OP_NOT} from "./ops.ts";

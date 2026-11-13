@@ -2,7 +2,12 @@ import type {Expr, ExprID, Program, TypeTok} from "./parser";
 import {ParseError, type Pos} from "./lexer.ts";
 import {BUILTINS, BUILTIN_TABLE, NATIVE_BUILTINS} from "./builtin_table.ts";
 import {ARITH_OPS, CMP_OPS, EQ_OPS, STAMPED_OPS, OP_ADD, OP_DIV, OP_NEG} from "./ops.ts";
-import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, TTYPE, tArr, tFun} from "./prims.ts";
+import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, tArr, tFun, tTup} from "./prims.ts";
+import {
+  FLOAT_NAMES, INT_NAMES, NUMERIC_NAMES,
+  Env, TypeError_, Unifier, showT, widthOf,
+  type FunT, type NumName, type Prim, type Type, type TupT,
+} from "./unify.ts";
 import {assertNever} from "./assert.ts";
 import {exprChildren} from "./walk.ts";
 
@@ -12,45 +17,6 @@ import {exprChildren} from "./walk.ts";
 // its per-variant logic interleaves unification, env extension, and error
 // anchoring with child inference, so its visit order is semantics, not
 // structure, and cannot go through a shared pre-order visitor.
-
-export type Type = Prim | ArrT | TupT | FunT | Var | AnyT;
-export type NumName = "i32" | "i64" | "u32" | "u64" | "f32" | "f64" | "int" | "float";
-export type Prim = { tag: "prim", name: NumName | "string" | "bool" | "unit" | "type" };
-// "int" / "float" are the untyped numeric-literal types (produced only by
-// num literals): `1` accepts any numeric context and defaults to i64, `1.5`
-// any float context and defaults to f64. They are not writable in source.
-const INT_NAMES = new Set<NumName>(["i32", "i64", "u32", "u64"]);
-const FLOAT_NAMES = new Set<NumName>(["f32", "f64"]);
-const NUMERIC_NAMES = new Set<NumName>([...INT_NAMES, ...FLOAT_NAMES, "int", "float"]);
-export type ArrT = { tag: "arr", elem: Type };
-// Tuples: a fixed-arity record. `name` is null for unnamed fields (`[int, float]`)
-// or a label for named fields (`[x: float, y: float]`). Names are structural only
-// for field access; unification compares arity + positional types, not names.
-export type TupField = { name: string | null, type: Type };
-export type TupT = { tag: "tup", fields: TupField[] };
-// Effect rows: a concrete `Set<string>` of performed effects, or an
-// unbound effect variable (row polymorphism). Effect variables unify by
-// union-find; a variable unifies with a concrete set by binding to it; two
-// concrete sets unify by equality. This lets higher-order builtins be
-// effect-polymorphic: `map : ((a) -> b ! e, [a]) -> [b] ! e` for a fresh `e`.
-export type EffVar = { tag: "effvar", id: number };
-export type Effs = Set<string> | EffVar;
-export type FunT = { tag: "fun", params: Type[], ret: Type, effs: Effs,
-  // Suspension markers discovered during checking — data, not constraints.
-  // `contCall`: the FunT is a resume binder's type; invoking it re-enters
-  // captured CPS machinery and can suspend (multi-shot). `anyTaint`: an
-  // `any` unified into this position (unify is a no-op for `any`, so the
-  // row alone cannot vouch for purity). Both force sites typed by this
-  // FunT to stay suspending.
-  contCall?: true,
-  anyTaint?: true,
-};
-export type Var = { tag: "var", id: number };
-export type AnyT = { tag: "any" };
-
-export {TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TUNIT, TANY, TTYPE};
-export {tArr, tFun};
-export function tTup(fields: TupField[]): TupT { return {tag: "tup", fields}; }
 
 // Effect declaration: parameter types + the type the resumed continuation
 // yields. Parser-produced sigs may leave parameters unannotated (`null`) —
@@ -64,380 +30,6 @@ export type EffectSig = {
   // names render the bare type as before.
   names?: string[],
 };
-
-// The unifier: ALL mutable unification state in one object — the type-variable
-// union-find, the substitution map `binds`, and the effect-row union-find.
-// One instance per checking session, created by `checkProgram` and carried
-// across REPL lines inside `Checked`. `Type` values are plain data; every
-// resolver below is a method, so independent `checkProgram` calls (tests!) never
-// share state. Effect rows are a concrete `Set<string>` of performed effects,
-// or an unbound effect variable (row polymorphism): a variable unifies with a
-// concrete set by binding to it; two concrete sets unify by equality. This
-// lets higher-order builtins be effect-polymorphic:
-// `map : ((a) -> b ! e, [a]) -> [b] ! e` for a fresh `e`.
-export class Unifier {
-  parent = new Map<number, number>();
-  n = 0;
-  binds = new Map<number, Type>();
-  effParent = new Map<number, number>();
-  effBinds = new Map<number, Set<string>>();
-  effCounter = 0;
-  // Inferred type per node for the CURRENT checkProgram call — the width
-  // stamp post-pass reads it after all items are checked (a node's width can
-  // only be resolved once the whole program has unified). Reset per call:
-  // REPL lines share the unifier but not the node slice, so per-line types
-  // must not leak across lines' ExprID spaces.
-  nodeTypes = new Map<ExprID, Type>();
-  // Value-identifier tokens (kind function/variable) recorded at sym uses and
-  // binder sites during the CURRENT checkProgram call — the LSP merges them
-  // with the parser's typeToks. Reassigned per call like nodeTypes: REPL
-  // lines share the unifier, and a previous line's Checked keeps the old
-  // array alive via its own reference.
-  semToks: TypeTok[] = [];
-  // Fresh per-literal wildcard prims (newWild) and the concrete width each
-  // flexed to at unify time — a literal's numKind stamp is its flex, not the
-  // i64/f64 default. Keyed by instance identity; the shared TINT/TFLOAT
-  // singletons are never in `wilds`, so unifying against them never records.
-  wilds = new Set<Prim>();
-  wildFlex = new Map<Prim, NumName>();
-
-  newWild(name: "int" | "float"): Prim {
-    const p: Prim = {tag: "prim", name};
-    this.wilds.add(p);
-    return p;
-  }
-
-  fresh(): Var {
-    const id = this.n++;
-    this.parent.set(id, id);
-    return {tag: "var", id};
-  }
-  // Record that a fresh wildcard literal took a concrete numeric width in
-  // this unification (no-op for the shared TINT/TFLOAT singletons).
-  rememberFlex(wild: Prim, concrete: NumName): void {
-    if (this.wilds.has(wild)) this.wildFlex.set(wild, concrete);
-  }
-  freshEff(): EffVar {
-    const id = this.effCounter++;
-    this.effParent.set(id, id);
-    return {tag: "effvar", id};
-  }
-  // Union-find find with path compression. An unknown id (possible for
-  // parser-allocated alias type parameters, which use a separate negative id
-  // space) is its own root.
-  find(id: number): number {
-    let r = id;
-    for (;;) {
-      const p = this.parent.get(r);
-      if (p === undefined || p === r) break;
-      r = p;
-    }
-    for (;;) {
-      const p = this.parent.get(id);
-      if (p === undefined || p === r) break;
-      this.parent.set(id, r);
-      id = p;
-    }
-    return r;
-  }
-  effFind(id: number): number {
-    let r = id;
-    for (;;) {
-      const p = this.effParent.get(r);
-      if (p === undefined || p === r) break;
-      r = p;
-    }
-    for (;;) {
-      const p = this.effParent.get(id);
-      if (p === undefined || p === r) break;
-      this.effParent.set(id, r);
-      id = p;
-    }
-    return r;
-  }
-  // Resolve a type variable: follow the union-find and any binding.
-  res(t: Type): Type {
-    if (t.tag !== "var")
-      return t;
-    const r = this.find(t.id);
-    const b = this.binds.get(r);
-    return b !== undefined ? this.res(b) : {tag: "var", id: r};
-  }
-  // Resolve an effect row: follow the union-find; if bound, return the
-  // concrete set (sets are always ground). Unbound → the canonical variable.
-  resEff(e: Effs): Effs {
-    if (e instanceof Set) return e;
-    const r = this.effFind(e.id);
-    const b = this.effBinds.get(r);
-    return b ?? {tag: "effvar", id: r};
-  }
-  // Deeply resolve every type/effect variable in `t`. Displayed types
-  // (`showT`, closure types stamped on lambda nodes) are always deep-resolved,
-  // so display never needs the unifier.
-  deepRes(t: Type): Type {
-    const r = this.res(t);
-    if (r.tag === "arr") return tArr(this.deepRes(r.elem));
-    if (r.tag === "tup") return tTup(r.fields.map(f => ({name: f.name, type: this.deepRes(f.type)})));
-    if (r.tag === "fun")
-      return tFun(r.params.map(p => this.deepRes(p)), this.deepRes(r.ret), this.resEff(r.effs),
-        r.contCall === true || r.anyTaint === true ? {contCall: r.contCall, anyTaint: r.anyTaint} : undefined);
-    return r;
-  }
-
-  // Speculative-unification checkpoint: snapshot the union-find + effect state
-  // so a homogenization attempt (`[a, b]` as array vs tuple) can be rolled
-  // back on failure without corrupting the types inferred for the elements.
-  // ponytail: O(n) per snapshot; fine for literal-sized element lists, not loops.
-  checkpoint(): Snapshot {
-    return {
-      parent: new Map(this.parent), n: this.n, binds: new Map(this.binds),
-      effParent: new Map(this.effParent), effBinds: new Map(this.effBinds),
-      effCounter: this.effCounter,
-    };
-  }
-  restore(s: Snapshot): void {
-    this.parent = s.parent; this.n = s.n; this.binds = s.binds;
-    this.effParent = s.effParent; this.effBinds = s.effBinds;
-    this.effCounter = s.effCounter;
-  }
-
-  // Unify two effect rows. var+var union; var+set binds; set+set requires
-  // equality — except the empty set `∅` is the polymorphic bottom: a function
-  // typed `... ! ∅` performs no effects and may be used wherever *any* effect
-  // set is expected (it is refined to the other set). This keeps unannotated
-  // HOF parameters flexible without let-generalization.
-  unifyEff(a: Effs, b: Effs): void {
-    const ra = this.resEff(a), rb = this.resEff(b);
-    if (!(ra instanceof Set) && !(rb instanceof Set)) {
-      this.effParent.set(this.effFind(ra.id), this.effFind(rb.id));
-      return;
-    }
-    if (!(ra instanceof Set)) { this.effBinds.set(this.effFind(ra.id), rb as Set<string>); return; }
-    if (!(rb instanceof Set)) { this.effBinds.set(this.effFind(rb.id), ra); return; }
-    if (ra.size === 0) return; // ∅ unifies with anything (refine to rb)
-    if (rb.size === 0) return;
-    if (ra.size !== rb.size || ![...ra].every(op => rb.has(op)))
-      throw new TypeError_(
-        `effect mismatch: { ${[...ra].join(", ")} } ≠ { ${[...rb].join(", ")} }`);
-  }
-
-  occurs(id: number, t: Type): boolean {
-    switch (t.tag) {
-      case "var": return this.find(t.id) === id;
-      case "arr": return this.occurs(id, t.elem);
-      case "tup": return t.fields.some(f => this.occurs(id, f.type));
-      case "fun": return t.params.some(p => this.occurs(id, p)) || this.occurs(id, t.ret);
-      default: return false;
-    }
-  }
-
-  bindVar(id: number, t: Type): void {
-    const r = this.find(id);
-    if (this.occurs(r, t))
-      throw new TypeError_("recursive type");
-    this.binds.set(r, t);
-  }
-
-  // True if `t` contains an `any` (the absorbing escape type). Used to warn
-  // when `any` is *inferred* (e.g. from indexing an `[any]`) rather than
-  // explicitly written, so silent escapes are visible. `res` is
-  // applied so bound type variables are resolved before checking.
-  containsAny(t: Type): boolean {
-    const r = this.res(t);
-    if (r.tag === "any") return true;
-    if (r.tag === "arr") return this.containsAny(r.elem);
-    if (r.tag === "tup") return r.fields.some(f => this.containsAny(f.type));
-    if (r.tag === "fun") return r.params.some(p => this.containsAny(p)) || this.containsAny(r.ret);
-    return false;
-  }
-
-  warnInferredAny(name: string, t: Type): void {
-    console.warn(
-      `warning: \`${name}\` inferred as \`${showT(this.deepRes(t))}\` (contains \`any\`); ` +
-      `add an explicit annotation to silence`,
-    );
-  }
-
-  typeMismatch(actual: Type, expected: Type, name?: string): TypeMismatch {
-    const a = showT(this.deepRes(actual)), e = showT(this.deepRes(expected));
-    const lhs = name !== undefined ? `${name} : ${a}` : `got      : ${a}`;
-    return new TypeMismatch(`Type mismatch:\n${lhs}\nexpected : ${e}`);
-  }
-
-  unify(a: Type, b: Type): void {
-    const ra = this.res(a), rb = this.res(b);
-    if (ra.tag === "any" || rb.tag === "any") {
-      // `any` flowing into a function-typed position erases the row evidence
-      // at every site typed by that FunT — the marker keeps suspension
-      // stamping conservative (stampSuspension reads it).
-      if (ra.tag === "fun") ra.anyTaint = true;
-      if (rb.tag === "fun") rb.anyTaint = true;
-      return;
-    }
-    if (ra.tag === "var" && rb.tag === "var") {
-      this.parent.set(this.find(ra.id), this.find(rb.id));
-      return;
-    }
-    if (ra.tag === "var") { this.bindVar(ra.id, rb); return; }
-    if (rb.tag === "var") { this.bindVar(rb.id, ra); return; }
-    if (ra.tag === "prim" && rb.tag === "prim") {
-      // Numeric compatibility: untyped literals are wildcards — `1` accepts
-      // any numeric context, `1.5` only float contexts (f32/f64, or the
-      // untyped-int side of mixed literal arithmetic). Concrete widths are
-      // strict: i32 ~ i64 is a type error, use @as to convert.
-      const an = ra.name as NumName, bn = rb.name as NumName;
-      if (an === bn) return;                               // exact: i32 ~ i32, string ~ string, ...
-      if (an === "int" && NUMERIC_NAMES.has(bn)) { this.rememberFlex(ra, bn); return; }   // `1` -> any numeric
-      if (bn === "int" && NUMERIC_NAMES.has(an)) { this.rememberFlex(rb, an); return; }
-      if (an === "float" && (bn === "float" || FLOAT_NAMES.has(bn))) { this.rememberFlex(ra, bn); return; }  // `1.5` -> f32/f64
-      if (bn === "float" && (an === "float" || FLOAT_NAMES.has(an))) { this.rememberFlex(rb, an); return; }
-      throw this.typeMismatch(ra, rb);
-    }
-    if (ra.tag === "arr" && rb.tag === "arr") { this.unify(ra.elem, rb.elem); return; }
-    if (ra.tag === "tup" && rb.tag === "tup") {
-      if (ra.fields.length !== rb.fields.length)
-        throw new TypeError_(`tuple arity ${ra.fields.length} ≠ ${rb.fields.length}`);
-      for (let i = 0; i < ra.fields.length; i++) this.unify(ra.fields[i].type, rb.fields[i].type);
-      return;
-    }
-    if (ra.tag === "fun" && rb.tag === "fun") {
-      if (ra.params.length !== rb.params.length)
-        throw new TypeError_(`arity ${ra.params.length} ≠ ${rb.params.length}`);
-      for (let i = 0; i < ra.params.length; i++) this.unify(ra.params[i], rb.params[i]);
-      this.unify(ra.ret, rb.ret);
-      this.unifyEff(ra.effs, rb.effs);
-      return;
-    }
-    throw this.typeMismatch(ra, rb);
-  }
-
-  // Collect the free type- and effect-variable roots of a type into `tvs`/`evs`.
-  collectVars(t: Type, tvs: Set<number>, evs: Set<number>): void {
-    const r = this.res(t);
-    if (r.tag === "var") tvs.add(this.find(r.id));
-    else if (r.tag === "arr") this.collectVars(r.elem, tvs, evs);
-    else if (r.tag === "tup") for (const f of r.fields) this.collectVars(f.type, tvs, evs);
-    else if (r.tag === "fun") {
-      for (const p of r.params) this.collectVars(p, tvs, evs);
-      this.collectVars(r.ret, tvs, evs);
-      const er = this.resEff(r.effs);
-      if (!(er instanceof Set)) evs.add(this.effFind(er.id));
-    }
-  }
-
-  // Rebuild `t` substituting the given type/effect var roots with fresh copies.
-  copyScheme(t: Type, tm: Map<number, Type>, em: Map<number, Effs>): Type {
-    const r = this.res(t);
-    switch (r.tag) {
-      case "var": return tm.get(this.find(r.id)) ?? r;
-      case "arr": return tArr(this.copyScheme(r.elem, tm, em));
-      case "tup": return tTup(r.fields.map(f => ({name: f.name, type: this.copyScheme(f.type, tm, em)})));
-      case "fun":
-        return tFun(
-          r.params.map(p => this.copyScheme(p, tm, em)),
-          this.copyScheme(r.ret, tm, em),
-          this.copyEff(r.effs, em),
-          r.contCall === true || r.anyTaint === true ? {contCall: r.contCall, anyTaint: r.anyTaint} : undefined,
-        );
-      default: return r;
-    }
-  }
-
-  copyEff(e: Effs, em: Map<number, Effs>): Effs {
-    const r = this.resEff(e);
-    return r instanceof Set ? r : (em.get(this.effFind(r.id)) ?? r);
-  }
-
-  // HM let-generalization: abstract the type/effect vars of `t` that are not
-  // free in the environment. Returns a concrete `Type` (nothing to generalize)
-  // or a `Scheme` thunk that instantiates fresh copies per use. Builtins are
-  // already stored as such thunks; user `let` gets the same treatment.
-  generalize(env: Env, t: Type): Type | Scheme {
-    const envTvs = new Set<number>();
-    const envEvs = new Set<number>();
-    for (let e: Env | null = env; e !== null; e = e.parent)
-      for (const v of e.vars.values())
-        if (typeof v !== "function")
-          this.collectVars(v, envTvs, envEvs);
-    const tvs = new Set<number>();
-    const evs = new Set<number>();
-    this.collectVars(t, tvs, evs);
-    const gtvs = [...tvs].filter(id => !envTvs.has(id));
-    const gevs = [...evs].filter(id => !envEvs.has(id));
-    if (gtvs.length === 0 && gevs.length === 0) return this.res(t);
-    return () => {
-      const tm = new Map<number, Type>();
-      const em = new Map<number, Effs>();
-      for (const id of gtvs)
-        tm.set(id, this.fresh());
-      for (const id of gevs)
-        em.set(id, this.freshEff());
-      return this.copyScheme(t, tm, em);
-    };
-  }
-}
-
-// Snapshot of a `Unifier`'s state, for speculative unification (see checkpoint).
-type Snapshot = {
-  parent: Map<number, number>, n: number,
-  binds: Map<number, Type>,
-  effParent: Map<number, number>, effBinds: Map<number, Set<string>>,
-  effCounter: number,
-};
-
-// Format a type for display. Expects a *deep-resolved* type (see
-// `Unifier.deepRes`): any variable shown is a genuinely unbound one.
-// Type variables display as letters (a, b, ..., z, a1, b1, ...) in order of
-// first appearance, so the same variable always prints the same letter.
-// `pnames` optionally names the top-level fun's params (`x: T`); nested fun
-// types stay anonymous (names exist only for the hovered signature).
-// `varNames` pre-assigns variable ids to names before the first-appearance
-// letters (alias tparams print under their declared names).
-export function showT(t: Type, pnames?: (string | null)[], varNames?: Map<number, string>): string {
-  const names = varNames ?? new Map<number, string>();
-  const go = (t: Type, pns?: (string | null)[]): string => {
-    switch (t.tag) {
-      case "prim": return t.name === "int" ? "i64" : t.name === "float" ? "f64" : t.name;
-      case "arr": return "[" + go(t.elem) + "]";
-      case "tup":
-        return "[" + t.fields.map(f =>
-          f.name === null ? go(f.type) : f.name + ": " + go(f.type)).join(", ") + "]";
-      case "any": return "any";
-      case "var": {
-        let n = names.get(t.id);
-        if (n === undefined) {
-          const i = names.size;
-          const l = String.fromCharCode(97 + (i % 26));
-          n = i < 26 ? l : `${l}${Math.floor(i / 26)}`;
-          names.set(t.id, n);
-        }
-        return n;
-      }
-      case "fun": {
-        const ps = t.params.map((p, i) => {
-          const n = pns !== undefined && i < pns.length ? pns[i] : null;
-          return (n !== null && n !== "_" ? n + ": " : "") + go(p);
-        }).join(", ");
-        const e = t.effs instanceof Set
-          ? (t.effs.size > 0 ? " ! { " + [...t.effs].join(", ") + " }" : "")
-          : ` ! { e${t.effs.id} }`;
-        return "(" + ps + ") -> " + go(t.ret) + e;
-      }
-    }
-  };
-  return go(t, pnames);
-}
-
-export class TypeError_ extends Error {
-  // 1-based source position of the innermost expression being checked when
-  // the error was thrown (set by infer's wrapper; undefined for whole-program
-  // failures with no single blame site). Display sites read it directly: the
-  // LSP anchors its diagnostic there; showErr prefixes it for the REPL.
-  pos?: Pos;
-}
-// A unification failure — kept distinct so the app-call catch can rethrow it
-// annotated with the callee's name (typeMismatch).
-class TypeMismatch extends TypeError_ {}
 
 // Render an error for the line-oriented frontends (REPL, CLI): ef errors
 // carry a structured 1-based pos (ParseError's token start, TypeError_'s
@@ -464,36 +56,6 @@ function srcLine(src: string, pos: Pos): string {
   return `${ln} | ${text}\n${gut} | ${" ".repeat(pos.col - 1)}^`;
 }
 
-type Scheme = () => Type; // polymorphic type scheme, instantiated fresh per use
-
-export class Env {
-  vars = new Map<string, Type | Scheme>();
-  // Names bound mutable in this frame (`:=` / `: T =` / `[a, b] :=`). Assign
-  // resolves against the innermost frame binding the name and requires it here.
-  muts = new Set<string>();
-  constructor(public parent: Env | null, public uni: Unifier) {}
-  lookup(name: string): Type | Scheme | undefined {
-    let e: Env | null = this.parent;
-    if (this.vars.has(name))
-      return this.vars.get(name);
-    while (e !== null) {
-      if (e.vars.has(name))
-        return e.vars.get(name);
-      e = e.parent;
-    }
-    return undefined;
-  }
-  // Resolved lookup: instantiate scheme thunks and deep-resolve — always a
-  // concrete, displayable type.
-  lookupResolved(name: string): Type {
-    const t = this.lookup(name)!;
-    return this.uni.deepRes(typeof t === "function" ? t() : t);
-  }
-  extend(): Env {
-    return new Env(this, this.uni);
-  }
-}
-
 // Names no binding may take: BUILTINS is the shared list of everything an
 // ef program can name — operators (structural, not env-seeded) plus
 // non-effect builtins. Read at module init from builtin_table.ts, a leaf —
@@ -517,6 +79,16 @@ function checkBind(env: Env, name: string): void {
     if (p.vars.has(name))
       throw new TypeError_(`cannot shadow '${name}'`);
 }
+
+// Per-checkProgram-call state that is checking output, not unifier state:
+// the type recorded per checked node (the width/suspension stamp post-passes
+// read it after all items are checked; the LSP reads per-node types off the
+// returned Checked) and the value-identifier tokens for the LSP. Reassigned
+// per call: REPL lines share the unifier but not the node slice, so per-line
+// types must not leak across lines' ExprID spaces, and a returned Checked
+// keeps its own map/array alive via its own reference.
+const NODE_TYPES: {current: Map<ExprID, Type>} = {current: new Map()};
+const SEM_TOKS: {current: TypeTok[]} = {current: []};
 
 // Infer an `[...]` literal. With an `expected` tuple, elements are checked
 // against the tuple's field types (named-tuple construction). Without one,
@@ -725,7 +297,7 @@ function caseReferencesK(nodes: Expr[], name: string, root: ExprID): boolean {
 
 // infer: returns the type, side-effecting `effs` with performed effects.
 // `id` indexes into the program's flat node slice `nodes`. Every node's
-// inferred type is recorded in `uni.nodeTypes`; after checking completes, a
+// inferred type is recorded in `NODE_TYPES`; after checking completes, a
 // post-pass stamps each node whose type resolves to a numeric width with
 // `numKind` (concrete widths as-is, untyped int/float literals defaulted to
 // i64/f64). The evaluator normalizes each node's value to that width's
@@ -739,7 +311,7 @@ function infer(
   effects: Map<string, EffectSig>,
 ): Type {
   const t = inferNode(id, nodes, env, effs, effects);
-  env.uni.nodeTypes.set(id, t);
+  NODE_TYPES.current.set(id, t);
   return t;
 }
 
@@ -767,7 +339,7 @@ function inferNode(
       // (the app case handles them without inferring the callee node).
       if (e.pos !== undefined) {
         const rt = env.uni.res(t);
-        env.uni.semToks.push({pos: e.pos, len: e.v.length, name: e.v, kind: rt.tag === "fun" ? "function" : "variable"});
+        SEM_TOKS.current.push({pos: e.pos, len: e.v.length, name: e.v, kind: rt.tag === "fun" ? "function" : "variable"});
       }
       return t;
     }
@@ -823,9 +395,9 @@ function inferNode(
           (rt2.name === "int" || rt2.name === "float")) {
           const bodyE = nodes[e.body];
           const tail = bodyE.t === "block" ? bodyE.stmts[bodyE.stmts.length - 1] : e.body;
-          const tailT = env.uni.res(env.uni.nodeTypes.get(tail) ?? TUNIT);
+          const tailT = env.uni.res(NODE_TYPES.current.get(tail) ?? TUNIT);
           if (tailT.tag === "prim" && tailT.name === rt2.name && selfBoxedWidth(nodes, tail))
-            env.uni.nodeTypes.set(tail, dt);
+            NODE_TYPES.current.set(tail, dt);
         }
       }
       // Effect annotation is optional: if `! { ... }` is omitted, the
@@ -845,7 +417,7 @@ function inferNode(
         const p = e.params[i];
         if (p.pos === undefined) continue;
         const pt = env.uni.res(ps[i]);
-        env.uni.semToks.push({pos: p.pos, len: p.name.length, name: p.name, kind: pt.tag === "fun" ? "function" : "variable"});
+        SEM_TOKS.current.push({pos: p.pos, len: p.name.length, name: p.name, kind: pt.tag === "fun" ? "function" : "variable"});
       }
       return ft;
     }
@@ -868,15 +440,15 @@ function inferNode(
       env.uni.unify(declared, vt);
       const rt = env.uni.res(declared);
       if (e.pos !== undefined)
-        env.uni.semToks.push({pos: e.pos, len: e.name.length, name: e.name, kind: rt.tag === "fun" ? "function" : "variable"});
+        SEM_TOKS.current.push({pos: e.pos, len: e.name.length, name: e.name, kind: rt.tag === "fun" ? "function" : "variable"});
       // Pin a wildcard-typed value literal to the binding's concrete width:
       // `x: i32 = 2147483647` boxes the literal as $I32 (wrapping at its
       // own node, matching the interpreter's per-node normalization).
       const rw = widthOf(rt);
       if (rw !== null && rw.concrete && nodes[e.val].t === "num") {
-        const vt2 = env.uni.res(env.uni.nodeTypes.get(e.val) ?? TUNIT);
+        const vt2 = env.uni.res(NODE_TYPES.current.get(e.val) ?? TUNIT);
         if (vt2.tag === "prim" && (vt2.name === "int" || vt2.name === "float"))
-          env.uni.nodeTypes.set(e.val, rt);
+          NODE_TYPES.current.set(e.val, rt);
       }
       // The lambda's stamped type is final: its parameter variables have been
       // bound (or not), so deep-resolve it — display never needs the unifier.
@@ -1045,7 +617,7 @@ function inferNode(
           const bt = env.uni.res(bodyT);
           n.vars.set(c.params[0].name, bt);
           if (c.params[0].pos !== undefined)
-            env.uni.semToks.push({pos: c.params[0].pos, len: c.params[0].name.length, name: c.params[0].name, kind: bt.tag === "fun" ? "function" : "variable"});
+            SEM_TOKS.current.push({pos: c.params[0].pos, len: c.params[0].name.length, name: c.params[0].name, kind: bt.tag === "fun" ? "function" : "variable"});
         } else {
           for (let i = 0; i < c.params.length; i++) {
             const cp = c.params[i];
@@ -1054,7 +626,7 @@ function inferNode(
             n.vars.set(cp.name, pt);
             if (cp.pos !== undefined) {
               const rpt = env.uni.res(pt);
-              env.uni.semToks.push({pos: cp.pos, len: cp.name.length, name: cp.name, kind: rpt.tag === "fun" ? "function" : "variable"});
+              SEM_TOKS.current.push({pos: cp.pos, len: cp.name.length, name: cp.name, kind: rpt.tag === "fun" ? "function" : "variable"});
             }
           }
         }
@@ -1237,18 +809,6 @@ function checkLamWidths(u: Unifier, lam: Expr & {unannParams?: {name: string, id
   }
 }
 
-// The numeric width of a resolved type: concrete widths as-is, untyped
-// int/float literals defaulted to i64/f64 (literal defaulting, not width
-// conversion). null for non-numeric types.
-export function widthOf(t: Type): {w: NumName, concrete: boolean} | null {
-  if (t.tag !== "prim") return null;
-  const n = t.name as NumName;
-  if (INT_NAMES.has(n) || FLOAT_NAMES.has(n)) return {w: n, concrete: true};
-  if (n === "int") return {w: "i64", concrete: false};
-  if (n === "float") return {w: "f64", concrete: false};
-  return null;
-}
-
 // Pin a wildcard-typed operand node's recorded type to the op's compute
 // width: the operand's type only reached this width by flexing, so its
 // runtime representation is the op's width (the wasm backend boxes pinned
@@ -1284,7 +844,7 @@ function pinWildcard(u: Unifier, argId: ExprID, at: Type, widened: Type): void {
   // TINT result) is pinnable only when the node boxes at its own stamp.
   if (!u.wilds.has(rt) && !selfBoxedWidth(PIN_NODES.current, argId)) return;
   const w = widthOf(u.res(widened));
-  if (w !== null) u.nodeTypes.set(argId, u.res(widened));
+  if (w !== null) NODE_TYPES.current.set(argId, u.res(widened));
 }
 
 // Width stamps: after all items are checked, stamp every node whose type
@@ -1292,7 +852,7 @@ function pinWildcard(u: Unifier, argId: ExprID, at: Type, widened: Type): void {
 // int/float literals defaulted to i64/f64 (literal defaulting, not width
 // conversion). Unstamped nodes (type still an unbound var — polymorphic
 // uses) compute by value-based dispatch at runtime.
-function stampNumKinds(nodes: Expr[], uni: Unifier): void {  for (const [id, t] of uni.nodeTypes) {
+function stampNumKinds(nodes: Expr[], uni: Unifier): void {  for (const [id, t] of NODE_TYPES.current) {
     const rt = uni.res(t);
     let w: NumName | null = null;
     if (rt.tag === "prim") {
@@ -1321,13 +881,13 @@ function stampNumKinds(nodes: Expr[], uni: Unifier): void {  for (const [id, t] 
 // never get a suspension stamp — the converter's own fast paths dispatch
 // them.
 function stampSuspension(nodes: Expr[], uni: Unifier): void {
-  for (const [id] of uni.nodeTypes) {
+  for (const [id] of NODE_TYPES.current) {
     const e = nodes[id];
     if (e.t !== "app") continue;
     const fn = nodes[e.fn];
     if (fn.t === "sym" && STAMPED_OPS.has(fn.v)) continue;
     let sus = true;
-    const ct = uni.nodeTypes.get(e.fn);
+    const ct = NODE_TYPES.current.get(e.fn);
     if (ct !== undefined) {
       const rt = uni.res(ct);
       if (rt.tag === "fun" && rt.contCall !== true && rt.anyTaint !== true &&
@@ -1355,6 +915,9 @@ export type Checked = {
   // Value-identifier semantic tokens recorded during this call (kind
   // function/variable) — the LSP merges them with the parser's typeToks.
   semToks: TypeTok[],
+  // Inferred type per node from this call — the LSP's per-node type source
+  // (hover); the width/suspension stamps were already applied to the nodes.
+  nodeTypes: Map<ExprID, Type>,
 };
 
 // checkProgram: typecheck `prog`. `acc` is the previous result — the REPL
@@ -1365,8 +928,8 @@ export function checkProgram(
   acc?: Checked,
 ): Checked {
   const uni = acc?.uni ?? new Unifier();
-  uni.nodeTypes = new Map();
-  uni.semToks = [];
+  NODE_TYPES.current = new Map();
+  SEM_TOKS.current = [];
   PIN_NODES.current = prog.nodes;
   let env: Env;
   let effects: Map<string, EffectSig>;
@@ -1398,5 +961,5 @@ export function checkProgram(
   stampNumKinds(prog.nodes, uni);
   stampSuspension(prog.nodes, uni);
 
-  return {env, effects, uni, lastType: uni.deepRes(lastType), unhandled, semToks: uni.semToks};
+  return {env, effects, uni, lastType: uni.deepRes(lastType), unhandled, semToks: SEM_TOKS.current, nodeTypes: NODE_TYPES.current};
 }

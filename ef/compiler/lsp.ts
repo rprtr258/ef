@@ -31,7 +31,9 @@ import {
   type SemanticTokensParams,
 } from "vscode-languageserver/node";
 import {Parser, type Alias, type ExprID, type Program, type TypeTok} from "./parser.ts";
-import {showT, tFun, TANY, TypeError_, type Checked, type EffectSig, type Unifier} from "./types.ts";
+import {showT, TypeError_, type Unifier} from "./unify.ts";
+import {tFun, TANY} from "./prims.ts";
+import type {Checked, EffectSig} from "./types.ts";
 import {prepare} from "./pipeline.ts";
 import {builtinParamNames} from "./builtins.ts";
 import {forEachBinder} from "./walk.ts";
@@ -143,14 +145,14 @@ function hoverText(prog: Program, checked: Checked, id: ExprID, c: Pos): string 
   const e = prog.nodes[id], uni = checked.uni;
   if (e.t === "sym") {
     const names = fnPNames(prog, e.v);
-    const nt = uni.nodeTypes.get(id);
+    const nt = checked.nodeTypes.get(id);
     if (nt !== undefined) return `${e.v} : ${showT(uni.deepRes(nt), names)}`;
     // Callee syms the checker never infers (structural operators like `+`):
     // env lookup.
     return checked.env.lookup(e.v) === undefined
       ? null : `${e.v} : ${showT(checked.env.lookupResolved(e.v), names)}`;
   }
-  const nt = uni.nodeTypes.get(id);
+  const nt = checked.nodeTypes.get(id);
   if (nt === undefined) return null;
   // Performs display the op's signature (function-style), not just the result
   // the perform expression evaluates to — same info as hovering the op name.
@@ -165,14 +167,14 @@ function hoverText(prog: Program, checked: Checked, id: ExprID, c: Pos): string 
     for (const cse of e.cases) {
       if (cse.resumePos.line !== c.line ||
           c.col < cse.resumePos.col || cse.resumePos.col + cse.resume.length <= c.col) continue;
-      const bt = uni.nodeTypes.get(cse.body);
-      const argT = cse.op === "Return" ? uni.nodeTypes.get(e.body) : checked.effects.get(cse.op)?.ret;
+      const bt = checked.nodeTypes.get(cse.body);
+      const argT = cse.op === "Return" ? checked.nodeTypes.get(e.body) : checked.effects.get(cse.op)?.ret;
       if (bt === undefined || argT === undefined) return null;
       return `${cse.resume} : (${showT(uni.deepRes(argT))}) -> ${showT(uni.deepRes(bt))}`;
     }
   }
   if (e.t === "let" || e.t === "assign" || e.t === "dlet") {
-    const vt = uni.nodeTypes.get(e.val);
+    const vt = checked.nodeTypes.get(e.val);
     if (vt === undefined) return null;
     const lam = prog.nodes[e.val];
     const s = showT(uni.deepRes(vt), lam.t === "lambda" ? lam.params.map(p => p.name) : undefined);
@@ -183,7 +185,7 @@ function hoverText(prog: Program, checked: Checked, id: ExprID, c: Pos): string 
 
 // Hover: the innermost checked subexpression whose source extent covers the
 // cursor — nodes carry a start pos and `prog.ends` the exclusive end, and the
-// checker records every inferred node's type in `uni.nodeTypes`. Candidates
+// checker records every inferred node's type in `checked.nodeTypes`. Candidates
 // also include untyped sym nodes (display falls through to the env for those).
 function hoverAt(src: string, line: number, col: number): Hover | null {
   let prog: Program, checked: Checked;
@@ -216,7 +218,7 @@ function hoverAt(src: string, line: number, col: number): Hover | null {
   for (let id = 0; id < prog.nodes.length; id++) {
     const e = prog.nodes[id];
     if (e.pos === undefined || !posLE(e.pos, c) || !posLT(c, prog.ends[id])) continue;
-    if (checked.uni.nodeTypes.has(id) || e.t === "sym") cands.push(id);
+    if (checked.nodeTypes.has(id) || e.t === "sym") cands.push(id);
   }
   // Innermost first: greatest start, then smallest extent.
   cands.sort((a, b) => {

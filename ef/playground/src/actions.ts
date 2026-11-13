@@ -4,7 +4,7 @@
 // output) and Build (emit main.wasm).
 import {buildWasm, ExitSignal, isEntryFile, runWasmProgram} from "./bridge.ts";
 import {show} from "../../compiler/env.ts";
-import {showT} from "../../compiler/types.ts";
+import {showT} from "../../compiler/unify.ts";
 import {editor, refreshTokens} from "./editor.ts";
 import {fmtBytes, fmtMs} from "./format.ts";
 import {outLine, clearOutput, setTab} from "./output.ts";

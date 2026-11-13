@@ -8,7 +8,7 @@ import {Parser} from "./parser.ts";
 import {globalEnv} from "./env.ts";
 import {IMPL_KEYS, builtinParamNames} from "./builtins.ts";
 import {BUILTIN_TABLE} from "./builtin_table.ts";
-import {Unifier} from "./types.ts";
+import {Unifier} from "./unify.ts";
 import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, performsAnyOp} from "./analysis.ts";
 import {OP_NEG} from "./ops.ts";
 

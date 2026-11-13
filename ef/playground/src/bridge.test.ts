@@ -1,5 +1,5 @@
 import {describe, expect, test} from "bun:test";
-import {showT} from "../../compiler/types.ts";
+import {showT} from "../../compiler/unify.ts";
 
 import {
   buildWasm, browserInterp, interpret, isEntryFile, outline, problems,

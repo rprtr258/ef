@@ -17,7 +17,7 @@
 
 import type {Expr, ExprID, Program} from "./parser.ts";
 import type {CAtom, CCase, CFn, CIr, CPrim, CTerm} from "./cps_ir.ts";
-import {widthOf, type Type} from "./types.ts";
+import {widthOf, type Type} from "./unify.ts";
 import {optimizeCps} from "./cps_opt.ts";
 import {BUILTINS} from "./analysis.ts";
 import {assertNever} from "./assert.ts";

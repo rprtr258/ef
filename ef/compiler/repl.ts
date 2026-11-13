@@ -1,7 +1,8 @@
 import * as readline from "node:readline";
 import {runLine, newCtx} from "./eval.ts";
 import {show} from "./env.ts";
-import {showErr, showT} from "./types.ts";
+import {showT} from "./unify.ts";
+import {showErr} from "./types.ts";
 
 // repl: an interactive read-eval-print loop. Pipeline state (Ctx: runtime env
 // + type env + effect signatures) persists across lines, so `let`/`effect`
