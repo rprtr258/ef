@@ -5,17 +5,13 @@
 // (closures, CPS natives, effect interps) live in builtins.ts; operator
 // implementations live in env.ts's OPS — the checker resolves operator apps
 // structurally, so operators are surface rows only.
-import type {Effs, EffectSig, FunT, Type, Unifier} from "./types.ts";
-import {TI64, TANY, TBOOL, TF64, TFLOAT, TINT, TUNIT, TSTR} from "./prims.ts";
+import type {EffectSig, Type, Unifier} from "./types.ts";
+import {TI64, TANY, TBOOL, TF64, TFLOAT, TINT, TUNIT, TSTR, tArr, tFun} from "./prims.ts";
 
-// Sig-construction helpers, local so the table has no runtime dependency on
-// types.ts (type-only imports above are erased; types.ts's tFun/tArr are
-// the public constructors and these mirror their object shapes — the
-// FunT-typed returns keep the shapes in sync). Builtin sigs never need
-// tFun's contCall/anyTaint marks.
-const tArr = (elem: Type): Type => ({tag: "arr", elem});
-const tFun = (params: Type[], ret: Type, effs: Effs): FunT =>
-  ({tag: "fun", params, ret, effs});
+// Sig-construction helpers come from prims.ts (a leaf, like this module),
+// so the table and the checker share one definition without a
+// builtin_table⇄types runtime cycle. Builtin sigs never need tFun's
+// contCall/anyTaint marks.
 
 // One declarative builtin row. `t` is the checker signature — a thunk for
 // polymorphic builtins (fresh vars per use); `params` is the fixed-arity
@@ -111,6 +107,15 @@ export const BUILTIN_TABLE: readonly BuiltinDecl[] = [
       return tFun([tFun([a, TI64], tArr(b), e), tArr(a)], tArr(b), e);
     }, params: 2, pnames: ["f", "xs"]},
 ];
+
+// The native builtins — the rows whose trampoline calls an ef closure
+// mid-flight (map/each/flatmap today), so every consumer must treat their
+// call sites as suspension points. Derived here — the set is exactly the
+// table's `kind: "native"` rows — so a new native row joins the checker's
+// suspension stamping, the wasm devirtualizer's callback edges and the
+// wasm trampoline frame layout with no second hand-maintained list.
+export const NATIVE_BUILTINS: ReadonlySet<string> = new Set(
+  BUILTIN_TABLE.filter(d => d.kind === "native").map(d => d.name));
 
 // Every builtin ef programs can name (the interpreter's global env): the
 // checker's operators first (resolved structurally, no table entry), then

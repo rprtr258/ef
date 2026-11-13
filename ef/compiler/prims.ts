@@ -1,7 +1,8 @@
-// prims: the primitive type constants, a leaf module — its only types.ts
-// import is type-only (erased at runtime), so builtin_table.ts can read
-// these constants at init time without loading the checker.
-import type {AnyT, Prim} from "./types.ts";
+// prims: the primitive type constants and the shared type-shape
+// constructors, a leaf module — its only types.ts import is type-only
+// (erased at runtime), so builtin_table.ts and types.ts both read these at
+// init time without a runtime dependency between them.
+import type {AnyT, ArrT, Effs, FunT, Prim, Type} from "./types.ts";
 
 // The six machine widths. Arithmetic between distinct widths is a type
 // error; @as converts.
@@ -24,3 +25,15 @@ export const TUNIT: Prim = {tag: "prim", name: "unit"};
 // produces it, so it never reaches the evaluator or the wasm backend.
 export const TTYPE: Prim = {tag: "prim", name: "type"};
 export const TANY: AnyT = {tag: "any"};
+
+// The type-shape constructors both the checker and the builtin table use —
+// one definition here because prims is a leaf: a runtime import of these
+// from types.ts into builtin_table.ts would tie table init to checker
+// init, and the two modules read each other's exports.
+export function tArr(elem: Type): ArrT { return {tag: "arr", elem}; }
+export function tFun(params: Type[], ret: Type, effs: Effs, marks?: {contCall?: true, anyTaint?: true}): FunT {
+  const ft: FunT = {tag: "fun", params, ret, effs};
+  if (marks?.contCall === true) ft.contCall = true;
+  if (marks?.anyTaint === true) ft.anyTaint = true;
+  return ft;
+}

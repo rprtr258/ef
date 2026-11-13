@@ -31,18 +31,18 @@ init order must become order-independent (see AGENTS.md note on `analysis.ts`).
 re-export added here must either keep every consumer migrated in the same chunk or be tagged
 `@public`.
 
-**Chunk 1.1 — split table from impls.**
-- [ ] Create `compiler/builtin_table.ts`: a leaf module (imports nothing from compiler/) holding the
+**Chunk 1.1 — split table from impls.** ✅ commit 81369be4
+- [x] Create `compiler/builtin_table.ts`: a leaf module (imports nothing from compiler/) holding the
       declarative builtin table — names, kinds, checker `sig`s, effect declarations, default-host
       descriptions — as pure data. Derive static surface exports here: `BUILTINS`, `EFFECT_OPS`
       (order-pinned), `builtinRefs` seed list.
-- [ ] `builtins.ts` keeps the runtime construction (closures, native CPS impls, `builtinInterps`,
+- [x] `builtins.ts` keeps the runtime construction (closures, native CPS impls, `builtinInterps`,
       `builtinEffectHosts`) and imports the table from `builtin_table.ts`.
-- [ ] `analysis.ts` drops its hand-copied tables and re-exports/derives from `builtin_table.ts`;
+- [x] `analysis.ts` drops its hand-copied tables and re-exports/derives from `builtin_table.ts`;
       the "module init order is order-independent" comment contract now holds by construction.
-- [ ] `types.ts` imports the surface directly from `builtin_table.ts`; delete the lazy-read guard
+- [x] `types.ts` imports the surface directly from `builtin_table.ts`; delete the lazy-read guard
       and any "mid-init" comments.
-- [ ] `analysis.test.ts`: replace table-sync assertions with type-level/static checks that remain
+- [x] `analysis.test.ts`: replace table-sync assertions with type-level/static checks that remain
       meaningful (e.g. every effect op in the table has a declared ret type; order stability).
 
 **Verification:** `bun run ci`; `bun compiler/cli.ts run examples/star.ef` output unchanged;
@@ -50,11 +50,14 @@ re-export added here must either keep every consumer migrated in the same chunk 
 **Exit criteria:** no import cycle touching `builtin_table.ts`; hand-copied tables gone;
 no compat re-export without remaining importers (knip green). **Commit:** `builtins: split table into leaf builtin_table.ts`
 
-**Chunk 1.2 — derive both effect-host shapes from one table.**
-- [ ] `builtinInterps` (eval-side) and `builtinEffectHosts` (wasm-side) become derived exports of
+**Chunk 1.2 — derive both effect-host shapes from one table.** ✅ commit (see log)
+Scope note: also carries two controller-directed additions from the chunk-1.1 quality review —
+NATIVE_BUILTINS single-sourced from the table (wasm_devirt/wasm_tables consume it) and tFun/tArr
+moved to prims.ts (shared leaf constructors).
+- [x] `builtinInterps` (eval-side) and `builtinEffectHosts` (wasm-side) become derived exports of
       the table/impls pair so a new builtin effect cannot forget a host; the "k called exactly once"
       soundness comment moves to the one derivation point.
-- [ ] Tests keep interpreter↔wasm parity (`examples.test.ts`) green unchanged.
+- [x] Tests keep interpreter↔wasm parity (`examples.test.ts`) green unchanged.
 
 **Verification:** `bun run ci`. **Exit criteria:** adding a builtin = one entry + (if effectful) one
 row; grep shows no second hand-maintained op list. **Commit:** `builtins: derive effect hosts`

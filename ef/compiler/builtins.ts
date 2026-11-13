@@ -145,9 +145,9 @@ const NATIVE_IMPLS: Record<string, (args: Value[], k: Cont) => Outcome> = {
   },
 };
 
-// The builtin effects' default CPS interpretations — each calls k exactly
-// once and synchronously (Exit terminates the process and never calls k).
-// eval.ts's runTop consumes these directly for unhandled effects.
+// The builtin effects' default CPS interpretations. eval.ts's runTop
+// consumes these directly for unhandled effects; the host derivation below
+// derives the wasm-side direct shape from them.
 const INTERPS: Record<string, (args: Value[], k: Cont) => Outcome> = {
   Read: (args, k) => k(readFileSync(args[0] as string, "utf8")),
   Write: (args, k) => {
@@ -172,7 +172,8 @@ const INTERPS: Record<string, (args: Value[], k: Cont) => Outcome> = {
 
 // Audit surface for analysis.test.ts: the impl keys per kind, so the test
 // can catch an impl row whose key has no matching table row — orphaned
-// dead code the `FN_IMPLS[d.name]` spreads above would silently skip.
+// dead code the lookups in `builtins` would never reach. The reverse gap
+// (a table row with no impl row) throws at init in `builtins` below.
 export const IMPL_KEYS: {
   fn: string[], value: string[], native: string[], effect: string[],
 } = {
@@ -182,41 +183,46 @@ export const IMPL_KEYS: {
   effect: Object.keys(INTERPS),
 };
 
+// An impl lookup must resolve: a table row with no impl row throws here at
+// module init, so adding a builtin cannot forget its host row.
+function impl<T>(row: T | undefined, name: string): T {
+  if (row === undefined) throw new Error(`builtin ${name}: missing impl row in builtins.ts`);
+  return row;
+}
+
 // The one shared runtime table: declarative rows from builtin_table.ts plus
 // the impls above, keyed by name. Polymorphic `t` thunks instantiate fresh
 // vars per use, so entries are immutable and safe to share across programs.
 export const builtins: Builtin[] = BUILTIN_TABLE.map((d): Builtin => {
   switch (d.kind) {
-    case "fn": return {...d, fn: FN_IMPLS[d.name]};
-    case "value": return {...d, fn: VALUE_IMPLS[d.name]};
-    case "native": return {...d, fn: NATIVE_IMPLS[d.name]};
-    case "effect": return {...d, interp: INTERPS[d.name]};
+    case "fn": return {...d, fn: impl(FN_IMPLS[d.name], d.name)};
+    case "value": return {...d, fn: impl(VALUE_IMPLS[d.name], d.name)};
+    case "native": return {...d, fn: impl(NATIVE_IMPLS[d.name], d.name)};
+    case "effect": return {...d, interp: impl(INTERPS[d.name], d.name)};
   }
 });
 
-// Direct-style default interpretation of the builtin effects, derived from
-// the CPS `interp` entries above: every builtin effect calls k exactly once
-// and synchronously, so the wrapper just unwraps the outcome (Exit never
-// returns). Used by the wasm host boundary (wasm.ts), where there are no
-// continuations to resume; runTop consumes the CPS interps directly.
-export const builtinEffectHosts: Record<string, (args: Value[]) => Value> =
-  Object.fromEntries(builtins
-    .filter(b => b.kind === "effect")
-    .map(b => [b.name, (args: Value[]): Value => {
-      const out = b.interp(args, v => ({tag: "done", value: v}));
-      if (out.tag !== "done")
-        throw new Error(`builtin effect ${b.name} suspended`);
-      return out.value;
-    }]));
-
-// The builtin effects' default CPS interpretations by op name — identity
-// over the effect entries — consumed by eval.ts's runTop for unhandled
-// effects. Top-level const is entry-order safe only because it lives in the
-// same module as the `builtins` array (a same-module read always follows
-// the array's initialization; deriving this in eval.ts instead would be
-// TDZ-sensitive there, since builtins.ts imports eval.ts back).
+// The builtin effects' two host shapes, derived here from the effect rows
+// of `builtins` (table rows × the INTERPS impls above): `builtinInterps` is
+// the CPS shape eval.ts's runTop consumes for unhandled effects;
+// `builtinEffectHosts` is the direct shape the wasm host boundary consumes
+// (wasm.ts — no continuations to resume there). Soundness of the direct
+// shape: every INTERPS interp calls k exactly once and synchronously (Exit
+// terminates the process instead of calling k), so the wrapper only ever
+// unwraps an already-delivered outcome. Both consts are entry-order safe
+// because they live in the same module as the `builtins` array they read
+// (deriving them in eval.ts instead would be TDZ-sensitive there, since
+// builtins.ts imports eval.ts back).
+const effectRows = builtins.filter(b => b.kind === "effect");
 export const builtinInterps: Record<string, (args: Value[], k: Cont) => Outcome> =
-  Object.fromEntries(builtins.filter(b => b.kind === "effect").map(b => [b.name, b.interp]));
+  Object.fromEntries(effectRows.map(b => [b.name, b.interp]));
+export const builtinEffectHosts: Record<string, (args: Value[]) => Value> =
+  Object.fromEntries(effectRows.map(b => [b.name, (args: Value[]): Value => {
+    const out = b.interp(args, v => ({tag: "done", value: v}));
+    if (out.tag !== "done")
+      throw new Error(`builtin effect ${b.name} suspended`);
+    return out.value;
+  }]));
 
 // Display-only param names for a builtin fn (LSP hover). Names live on the
 // entries themselves so adding a builtin stays a one-entry change; this is

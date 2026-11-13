@@ -63,9 +63,10 @@ describe("builtin_table (static checks)", () => {
   });
 
   test("impl keys and table rows cover each other per kind (no orphaned impls)", () => {
-    // builtins.ts derives the runtime entries by spreading `FN_IMPLS[d.name]`,
-    // so an orphaned or missing impl key fails silently there — the audit
-    // compares the key sets against the table directly, both directions.
+    // builtins.ts's `builtins` derivation throws at module init on a table
+    // row with no impl row; this audit pins the orphaned direction — an
+    // impl row whose key matches no table row is silently dead there — and
+    // re-checks coverage as a test-level backstop.
     for (const kind of ["fn", "value", "native", "effect"] as const) {
       const tableNames = BUILTIN_TABLE.filter(d => d.kind === kind).map(d => d.name).sort();
       expect([...IMPL_KEYS[kind]].sort()).toEqual(tableNames);

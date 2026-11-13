@@ -2,18 +2,21 @@
 // signatures, valtype decoding and the binaryen module binding. The
 // design doc for the whole backend lives at the top of wasm.ts.
 import binaryen from "binaryen";
+import {NATIVE_BUILTINS} from "./analysis.ts";
 import {WasmError, _T} from "./wasm_types.ts";
 import * as w from "./wasm_consts.ts";
 
-// map/each/flatmap invoke user callbacks, so they are called land-style:
+// The native builtins invoke user callbacks, so they are called land-style:
 // the builtin loops through per-iteration thunks instead of an inline wasm
-// loop.
-const MAP_LIKE = new Set(["map", "each", "flatmap"]);
+// loop. The name set is builtin_table.ts's `kind: "native"` rows.
 // Extra entry-frame words a map-like builtin needs beyond its args: the
 // result/tmp array (except each). The loop index does not live here — each
 // iteration's land cell carries a fresh frame holding it (emitMapLike), so
 // a captured cell stays a complete resume acc.
-export const mapLikeFrameWords = (name: string): number => name === "each" ? 0 : MAP_LIKE.has(name) ? 1 : 0;
+// Every native builtin except each currently is map-like, so the NATIVE_BUILTINS
+// key matches the map-like set; a new non-map-like native (e.g. a callback-taking
+// sortWith) must re-key this, not reuse it.
+export const mapLikeFrameWords = (name: string): number => name === "each" ? 0 : NATIVE_BUILTINS.has(name) ? 1 : 0;
 
 // Operators compile inline at call sites stamped with a concrete width (like
 // the checker-stamped `/`): operands unbox to their width right in the

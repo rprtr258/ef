@@ -1,7 +1,7 @@
 import type {Expr, ExprID, Program, TypeTok} from "./parser";
 import {ParseError, type Pos} from "./lexer.ts";
-import {BUILTINS, BUILTIN_TABLE} from "./builtin_table.ts";
-import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, TTYPE} from "./prims.ts";
+import {BUILTINS, BUILTIN_TABLE, NATIVE_BUILTINS} from "./builtin_table.ts";
+import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, TTYPE, tArr, tFun} from "./prims.ts";
 import {assertNever} from "./assert.ts";
 
 export type Type = Prim | ArrT | TupT | FunT | Var | AnyT;
@@ -40,15 +40,8 @@ export type Var = { tag: "var", id: number };
 export type AnyT = { tag: "any" };
 
 export {TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TUNIT, TANY, TTYPE};
-
-export function tArr(elem: Type): ArrT { return {tag: "arr", elem}; }
+export {tArr, tFun};
 export function tTup(fields: TupField[]): TupT { return {tag: "tup", fields}; }
-export function tFun(params: Type[], ret: Type, effs: Effs, marks?: {contCall?: true, anyTaint?: true}): FunT {
-  const ft: FunT = {tag: "fun", params, ret, effs};
-  if (marks?.contCall === true) ft.contCall = true;
-  if (marks?.anyTaint === true) ft.anyTaint = true;
-  return ft;
-}
 
 // Effect declaration: parameter types + the type the resumed continuation
 // yields. Parser-produced sigs may leave parameters unannotated (`null`) —
@@ -1361,11 +1354,8 @@ const STAMPED_OPS = new Set([...NUMOPS, ...CMPOPS, ...EQOPS, "+", "neg"]);
 // `any`, anyTaint, contCall) stays a suspending `call`; a callee with no
 // recorded type defaults to suspending. Effect-polymorphic native builtins
 // (map/each/flatmap) have effect-variable rows by construction, so the row
-// test alone already keeps them suspending — the kind check is a
-// belt-and-braces guard.
-const NATIVE_BUILTINS = new Set(
-  BUILTIN_TABLE.filter(d => d.kind === "native").map(d => d.name));
-
+// test alone already keeps them suspending — the NATIVE_BUILTINS test below
+// is a belt-and-braces guard.
 function stampSuspension(nodes: Expr[], uni: Unifier): void {
   for (const [id] of uni.nodeTypes) {
     const e = nodes[id];

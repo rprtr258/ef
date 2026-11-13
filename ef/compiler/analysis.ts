@@ -31,7 +31,7 @@ import {BUILTINS, OPERATOR_OPS} from "./builtin_table.ts";
 // builtin_table.ts (a leaf module, so both backends import them without
 // pulling in the evaluator) and re-exported here for the analysis
 // consumers.
-export {BUILTINS, EFFECT_OPS, OPERATOR_OPS} from "./builtin_table.ts";
+export {BUILTINS, EFFECT_OPS, NATIVE_BUILTINS, OPERATOR_OPS} from "./builtin_table.ts";
 
 // Whether any subtree of the program contains a perform node (any op, even
 // inside a handler's body or a case body — handlers don't prove

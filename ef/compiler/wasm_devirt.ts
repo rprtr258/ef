@@ -15,16 +15,11 @@
 // internal handles — performs inside its islands), so every gate here is
 // computed from the IR shape itself, never from `direct` alone.
 
-import {BUILTINS} from "./analysis.ts";
+import {BUILTINS, NATIVE_BUILTINS} from "./analysis.ts";
 import type {CAtom, CFn, CIr, CTerm} from "./cps_ir.ts";
 import {widthOf, type Type} from "./types.ts";
 import {numSig} from "./wasm_tables.ts";
 import type {TLevel} from "./wasm_term.ts";
-
-// The CPS-native builtins (the ones whose trampolines call ef closures).
-// Mirrors builtins.ts's `kind: "native"` entries — the wasm backend already
-// special-cases exactly these in directBuiltin/emitMapLike.
-const NATIVE_BUILTINS: ReadonlySet<string> = new Set(["map", "each", "flatmap"]);
 
 // Facts for one dcall/call site.
 type SiteInfo = {
