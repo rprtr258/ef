@@ -12,7 +12,7 @@ import {type Checked, type Type} from "./types.ts";
 import {Env, show, asSlice, mkSlice, mkTup, sliceElems, type Cont, type Native, type Outcome, type Value, num, seedBuiltins, type Closure} from "./env.ts";
 import {builtinRefs} from "./analysis.ts";
 import type {Program} from "./parser.ts";
-import {prepare, newCtx, type Ctx} from "./pipeline.ts";
+import {prepare, newCtx, type Ctx, type EffectInterp} from "./pipeline.ts";
 import {toCps, RET} from "./cps.ts";
 import type {CAtom, CIr, CPrim, CTerm} from "./cps_ir.ts";
 import {assertNever} from "./assert.ts";
@@ -316,10 +316,6 @@ function widthOp(op: string, a: Value, b: Value | undefined, nk: string): Value 
     default: return x >= y; // >=
   }
 }
-
-// An effect interpreter: ops it knows map to host actions; unknown ops fall
-// through to the builtin table's default interpretation.
-export type EffectInterp = Partial<Record<string, (args: Value[], k: Cont) => Outcome>>;
 
 // Unhandled builtin effects fall through to the one table's default
 // interpretation, keyed by op name (builtins.ts `builtinInterps`). The map

@@ -5,7 +5,7 @@ import {readFileSync, readdirSync, writeFileSync} from "node:fs";
 import binaryen from "binaryen";
 import {run} from "./eval.ts";
 import {BIN_FEATURES, compile} from "./wasm.ts";
-import {prepare} from "./pipeline.ts";
+import {prepare, type EffectInterp} from "./pipeline.ts";
 import {discover, optimize, assignIndices, layoutStatics} from "./wasm_pipeline.ts";
 import {toCps} from "./cps.ts";
 import {planIr} from "./wasm_term.ts";
@@ -395,7 +395,7 @@ a + b`)).toBe("6");
     parity("effect Foo(n: i64): i64; Foo!(1) + 2");
     // One-shot interp injection overrides the default interpretation.
     // i64 args unbox to BigInt at the host boundary.
-    expect(show(runWasm("effect Foo(n: i64): i64; Foo!(21) * 2", {Foo: args => Number(args[0]) + 1}))).toBe("44");
+    expect(show(runWasm("effect Foo(n: i64): i64; Foo!(21) * 2", {Foo: (args, k) => k(Number(args[0]) + 1)}))).toBe("44");
   });
 
   test("handlers: user ops, resume, deep nesting, multi-shot", () => {
@@ -494,10 +494,10 @@ a + b`)).toBe("6");
   test("interp injection overrides builtin effects (Read mock)", () => {
     const p = join(tmpdir(), `ef-wasm-mock-${process.pid}.txt`);
     const src = `Read!("${p}")`;
-    // Interpreter interp entries are CPS (they resume a continuation); the
-    // wasm host boundary is direct style (it returns the resumed value).
+    // Both runners take the canonical CPS interp: k delivers the resumed
+    // value (the wasm host adapts its delivery to the perform site).
     expect(show(run(src, {Read: (_args, k) => k("mocked")}))).toBe("\"mocked\"");
-    expect(show(runWasm(src, {Read: () => "mocked"}))).toBe("\"mocked\"");
+    expect(show(runWasm(src, {Read: (_args, k) => k("mocked")}))).toBe("\"mocked\"");
   });
 });
 
@@ -1165,20 +1165,20 @@ describe("wasm host boundary (wasm_host.ts)", () => {
     for (const [src, expected, interp] of [
       // Custom interps returning tuples/slices exercise the tup and arr box
       // branches; the results unbox back through the matching arms.
-      ["effect Make(): [i64, i64]; f :: fn(): i64 { t: [i64, i64] :: Make!(); t.0 + t.1 }; f()", "3", {Make: () => mkTup([1, 2])}],
-      ["effect Roll(): [i64]; Roll!()", "[5, 6]", {Roll: () => mkSlice([5, 6])}],
+      ["effect Make(): [i64, i64]; f :: fn(): i64 { t: [i64, i64] :: Make!(); t.0 + t.1 }; f()", "3", {Make: (_args, k) => k(mkTup([1, 2]))}],
+      ["effect Roll(): [i64]; Roll!()", "[5, 6]", {Roll: (_args, k) => k(mkSlice([5, 6]))}],
       // The typed slot forces the $U32 box; a bare @as at top level rides
       // the unstamped pass-through and crosses as an f64 num box instead.
       ["u: u32 :: 4000000000; u", "4000000000", undefined],
       ["\"hi there\"", "\"hi there\"", undefined],
       ["id :: fn(x: i64): i64 { x }; id", "[fn]", undefined],
-    ] as [string, string, Record<string, (args: Value[]) => Value> | undefined][]) {
+    ] as [string, string, EffectInterp | undefined][]) {
       expect(show(runWasm(src, interp))).toBe(expected);
     }
   });
 
   test("unboxable interp results are rejected with the box error", () => {
-    expect(() => runWasm("effect Foo(n: i64): i64; Foo!(1)", {Foo: () => ({tag: "fn"} as Value)}))
+    expect(() => runWasm("effect Foo(n: i64): i64; Foo!(1)", {Foo: (_args, k) => k({tag: "fn"} as Value)}))
     .toThrow(/cannot box value \[fn\]/);
   });
 

@@ -82,7 +82,7 @@ function runOne(mode: "run" | "runwasm", example: string, args: string[]): RunRe
           })
         : runWasm(src, {
             Exit: a => { throw new ExitSignal(num(a[0])); },
-            Random: () => rand(),
+            Random: (_a, k) => k(rand()),
           });
     } catch (e) {
       if (e instanceof ExitSignal) return {stdout: chunks.join(""), code: e.code};

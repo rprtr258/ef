@@ -205,8 +205,8 @@ export const builtins: Builtin[] = BUILTIN_TABLE.map((d): Builtin => {
 // The builtin effects' two host shapes, derived here from the effect rows
 // of `builtins` (table rows × the INTERPS impls above): `builtinInterps` is
 // the CPS shape eval.ts's runTop consumes for unhandled effects;
-// `builtinEffectHosts` is the direct shape the wasm host boundary consumes
-// (wasm.ts — no continuations to resume there). Soundness of the direct
+// `builtinEffectHosts` is the direct shape wasm_host.ts's hostFor adapter
+// wraps into deliveries ((args, k) => k(bi(args))). Soundness of the direct
 // shape: every INTERPS interp calls k exactly once and synchronously (Exit
 // terminates the process instead of calling k), so the wrapper only ever
 // unwraps an already-delivered outcome. Both consts are entry-order safe

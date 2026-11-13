@@ -30,7 +30,7 @@ views of the same table:
 | View | Shape | Consumer |
 |------|-------|----------|
 | `builtinInterps` | CPS: `(args, k) => Outcome` | `runTop` — interpreter side ([Interpreter](eval.md)) |
-| `builtinEffectHosts` | direct-style: `(args) => Value` (unwraps the single synchronous `k` call) | the wasm host boundary ([Module & host](wasm/module.md)) |
+| `builtinEffectHosts` | direct-style: `(args) => Value` (unwraps the single synchronous `k` call) | wasm_host.ts's `hostFor` adapter ([Module & host](wasm/module.md)) |
 
 | Effect | Default behaviour | Knob |
 |--------|-------------------|------|

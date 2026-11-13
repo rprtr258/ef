@@ -9,12 +9,13 @@ import "./shim.ts";
 import {Parser, type Program, type Expr, type Alias} from "../../compiler/parser.ts";
 import {checkProgram, showT, type Type, type Effs, type EffectSig} from "../../compiler/types.ts";
 import {lint} from "../../compiler/lint.ts";
-import {exec, newCtx, type EffectInterp} from "../../compiler/eval.ts";
+import {exec, newCtx} from "../../compiler/eval.ts";
+import {prepare, type EffectInterp} from "../../compiler/pipeline.ts";
 import {num, show, type Cont, type Outcome, type Value} from "../../compiler/env.ts";
 import {KEYWORDS, ONE, TWO, lex} from "../../compiler/lexer.ts";
 import {collectEffectOps} from "../../compiler/analysis.ts";
 import {compileWithOps} from "../../compiler/wasm.ts";
-import {runModule, type EffectInterp as WasmInterp} from "../../compiler/wasm_host.ts";
+import {runModule} from "../../compiler/wasm_host.ts";
 
 // --- effect interpretation ------------------------------------------------
 
@@ -54,35 +55,10 @@ export function browserInterp(out: (s: string) => void): EffectInterp {
   };
 }
 
-// Sync effect interpretation for the wasm run path — the wasm host calls
-// hosts with plain args → Value (no CPS). Same contract as browserInterp:
-// Out!/Println! stream to the output pane, Exit! raises ExitSignal, Wait!
-// busy-waits, Random! is Math.random; Read!/Write! fall through to the
-// bundle-time stubs ("unavailable in browser").
-function browserWasmInterp(out: (s: string) => void): WasmInterp {
-  return {
-    Out: (args) => {
-      const s = args[0];
-      out(typeof s === "string" ? s : show(s));
-      return null;
-    },
-    Println: (args) => {
-      out(show(args[0]) + "\n");
-      return null;
-    },
-    Exit: (args) => {
-      throw new ExitSignal(num(args[0]));
-    },
-    Wait: (args) => {
-      const until = Date.now() + num(args[0]);
-      while (Date.now() < until) {} // busy-wait, mirroring the builtin default
-      return null;
-    },
-    Random: () => Math.random(),
-  };
-}
-
 // --- compile pipeline -----------------------------------------------------
+// parse() is the one remaining local parse composition: shared by the
+// problems/outline paths (which need the parse/check split prepare's single
+// throw cannot express) and buildWasm (parses once for ops collection).
 
 function parse(src: string): Program {
   return new Parser(src).parseProgram();
@@ -122,7 +98,7 @@ export function problems(src: string): Problem[] {
 // callers wanting a best-effort row should catch (cross-file references make
 // a single file uncheckable on its own).
 export function topLevelEffs(src: string): string[] {
-  return [...checkProgram(parse(src)).unhandled];
+  return [...prepare(src).checked.unhandled];
 }
 
 export type RunResult = {value: Value, type: Type, ops: string[]};
@@ -132,8 +108,7 @@ export type RunResult = {value: Value, type: Type, ops: string[]};
 // `ops` is a parse-time byproduct: performed/handled ops in first-appearance
 // order — the same list a build reports.
 export function interpret(src: string, out: (s: string) => void): RunResult {
-  const prog = parse(src);
-  const checked = checkProgram(prog); // reject type errors before exec runs
+  const {prog, checked} = prepare(src); // rejects parse/type errors before exec runs
   const r = exec(prog, newCtx(browserInterp(out)), checked);
   return {value: r.value, type: r.lastType, ops: collectEffectOps(prog)};
 }
@@ -152,13 +127,13 @@ export async function buildWasm(src: string): Promise<{bytes: Uint8Array, ops: s
 // the V8 stack on deep continuation chains (e.g. naive fib) — wasm tail
 // calls are O(1) stack in every WasmGC engine. Throws on parse/type errors;
 // ExitSignal unwinds `Exit!`; wasm traps (index OOB) surface as plain
-// Errors. The extra parse is the ops/typecheck byproduct source;
+// Errors. prepare's checked is the ops/type byproduct source;
 // compileWithOps parses and checks its own fresh copy.
 export function runWasmProgram(src: string, out: (s: string) => void): RunResult {
-  const prog = parse(src);
-  const type = checkProgram(prog).lastType;
+  const {prog, checked} = prepare(src);
+  const type = checked.lastType;
   const {bytes, ops} = compileWithOps(src);
-  const value = runModule(bytes, ops, browserWasmInterp(out));
+  const value = runModule(bytes, ops, browserInterp(out));
   return {value, type, ops: collectEffectOps(prog)};
 }
 
@@ -272,18 +247,13 @@ export function outline(src: string): OutlineItem[] {
 // don't matter. A file with a parse or check error simply isn't an entry —
 // never throws.
 export function isEntryFile(src: string): boolean {
-  let prog: Program;
   try {
-    prog = parse(src);
-  } catch {
-    return false;
-  }
-  const last = prog.items[prog.items.length - 1];
-  if (prog.items.length === 0 || !("e" in last)) return false;
-  if (prog.nodes[last.e].t === "let") return false;
-  // lastType is the checker-resolved type of the last top-level expression.
-  try {
-    const t = checkProgram(prog).lastType;
+    const {prog, checked} = prepare(src);
+    const last = prog.items[prog.items.length - 1];
+    if (prog.items.length === 0 || !("e" in last)) return false;
+    if (prog.nodes[last.e].t === "let") return false;
+    // lastType is the checker-resolved type of the last top-level expression.
+    const t = checked.lastType;
     return t.tag === "prim" && t.name === "unit";
   } catch {
     return false;

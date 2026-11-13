@@ -5,8 +5,9 @@
 // implements the host imports, including effects that reach the host with
 // no matching handler (builtins.ts's builtinEffectHosts, optionally
 // overridden per-op through the `interp` argument).
-import {type Value, OPS, asSlice, mkSlice, mkTup, show, sliceElems} from "./env.ts";
+import {type Cont, type Outcome, type Value, OPS, asSlice, mkSlice, mkTup, show, sliceElems} from "./env.ts";
 import {builtinEffectHosts} from "./builtins.ts";
+import type {EffectInterp} from "./pipeline.ts";
 import {compileWithOps} from "./wasm.ts";
 import {DBGTRACE, TRACE_SITES} from "./wasm_tables.ts";
 import {assertNever} from "./assert.ts";
@@ -134,10 +135,6 @@ function hostStr(ex: Accessors, v: unknown): string {
   return s;
 }
 
-// Host-side effect interpretation for a compiled module: per-op sync
-// replacements for builtinEffectHosts (the wasm host's CPS-free interp shape).
-export type EffectInterp = Partial<Record<string, (args: Value[]) => Value>>;
-
 export function runWasm(src: string, interp?: EffectInterp): Value {
   const {bytes, ops} = compileWithOps(src);
   return runModule(bytes, ops, interp);
@@ -150,17 +147,29 @@ export function runWasm(src: string, interp?: EffectInterp): Value {
 const traceBuf: number[] = [];
 
 export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[], interp?: EffectInterp): Value {
+  // The boundary's host-interpreter, in the canonical EffectInterp shape:
+  // user interps first, then builtinEffectHosts adapted to it — a direct
+  // host's returned Value flows through the delivery continuation k.
+  const hostFor = (op: string): ((args: Value[], k: Cont) => Outcome) => {
+    const custom = interp?.[op];
+    if (custom !== undefined) return custom;
+    const bi = (builtinEffectHosts as Record<string, ((args: Value[]) => Value) | undefined>)[op];
+    if (bi === undefined) throw new Error("Unhandled effect: " + op);
+    return (args, k) => k(bi(args));
+  };
   const mod = new WebAssembly.Module(bytes);
   const imports = {
     ef_perform: (opid: number, args: unknown) => {
       const op = (ops as (string | undefined)[])[opid];
       if (op === undefined) throw new Error(`wasm host: unknown effect opid ${opid}`);
       const argv = sliceElems(asSlice(hostUnbox(ex(), args)));
-      const custom = interp?.[op];
-      if (custom !== undefined) return hostBox(ex(), custom(argv));
-      const bi = (builtinEffectHosts as Record<string, ((args: Value[]) => Value) | undefined>)[op];
-      if (bi === undefined) throw new Error("Unhandled effect: " + op);
-      return hostBox(ex(), bi(argv));
+      // eval.ts's runTop driver: loop until a host delivers a value, then
+      // box it back into the paused module. The delivery k is the only
+      // bridge across the boundary — one done outcome per perform, so the
+      // boxed value is the resumed value at the perform site.
+      let out = hostFor(op)(argv, (v) => ({tag: "done", value: v}));
+      while (out.tag === "eff") out = hostFor(out.op)(out.args, out.k);
+      return hostBox(ex(), out.value);
     },
     ef_char: (v: unknown) => hostBox(ex(), String.fromCodePoint(ex().__num(v) | 0)),
     ef_number: (v: unknown) => hostBox(ex(), parseFloat(hostStr(ex(), v))),

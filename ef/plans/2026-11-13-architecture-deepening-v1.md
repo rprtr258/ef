@@ -93,16 +93,18 @@ seeding stays in exec so rejected lines leave the accumulator untouched and REPL
 **Exit criteria:** `grep -rn "checkProgram(" ef/compiler --include='*.ts'` returns only
 `pipeline.ts` and `types.ts` (the definition). **Commit:** `pipeline: one prepare seam`
 
-**Chunk 2.2 — one EffectInterp interface.**
-- [ ] Pre-decided shape (controller decision): the **CPS shape is canonical** —
-      `(args: Value[], k: Cont) => Outcome` (eval.ts:321) — because it is the general form. Move it
-      to `pipeline.ts` (or a leaf `effect_interp.ts`); eval's host implementations keep it as-is.
-- [ ] `wasm_host.ts`'s direct-style `(args) => Value` hosts get an internal adapter (wrap the
+**Chunk 2.2 — one EffectInterp interface.** ✅ commit (see log)
+Landed shape (controller-acked): type-only import edges resolved by holding the definition in
+pipeline.ts and the hostFor adapter in wasm_host.ts; bridge.ts migrated where it is a pure
+import/behavior re-point (4/7 sites; problems/outline/buildWasm keep local composition — the
+plan's chunk 2.4 now includes a staged-prepare variant and the remaining bridge sites).
+- [x] Canonical `EffectInterp`
+- [x] `wasm_host.ts`'s direct-style hosts get an internal adapter (wrap the
       returned `Value` delivery into the k/Outcome plumbing) — the wasm host's public surface
       changes only internally; `builtinEffectHosts` wiring is updated to produce adapted hosts.
-- [ ] Delete the second same-named type; `wasm.test.ts` injected overrides are the at-risk call
+- [x] Delete the second same-named type; `wasm.test.ts` injected overrides are the at-risk call
       sites — they are part of the verification net for this chunk.
-- [ ] `examples.test.ts` seeded `Random!`/`Exit!` overrides keep passing unchanged.
+- [x] `examples.test.ts` seeded `Random!`/`Exit!` overrides keep passing unchanged.
 
 **Verification:** `bun run ci`. **Commit:** `pipeline: one EffectInterp interface`
 
@@ -124,7 +126,10 @@ example fails with the static message. **Exit criteria:** one owner of the timin
 - [ ] Mutation (added after chunk 2.1 review): migrate the playground's two remaining composers —
       `playground/src/bridge.ts` (~8 sites) and `playground/src/cps_view.ts:16-17` — onto
       `pipeline.prepare`; smoke via the playground build. (bridge.ts also re-points its
-      `EffectInterp` import in chunk 2.2.)
+      `EffectInterp` import in chunk 2.2.) Chunk-2.2 update: 4/7 sites migrated; the remaining
+      problems/outline sites need prepare to expose stage info on failure — extend `prepare` with
+      an additive staged variant (e.g. `prepare` keeps throwing; add a variant returning
+      `{ok:false, stage:'parse'|'check', error}`) and finish the bridge migration in chunk 2.4.
 
 **Verification:** `bun run ci`; REPL session: define fn, use builtin, rebind error — behavior
 unchanged. **Commit:** `pipeline: single REPL line protocol`

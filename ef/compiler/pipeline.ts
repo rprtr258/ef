@@ -1,14 +1,22 @@
 // One program-preparation seam for the frontend's consumers in compiler/ —
 // both backends, the CLI's types view, the LSP, the REPL, and the tests
-// (the playground still composes parse+check itself; see plan chunk 2.4): parse,
+// (the playground consumes it too, except its problems/outline paths, which
+// need the parse/check split prepare's single throw cannot express, and its
+// buildWasm path, which parses once for ops collection): parse,
 // then typecheck against an optional accumulator (the REPL accumulate
 // protocol). Consumers add their own passes on top of the returned pair:
 // eval seeds referenced builtins and drives the CPS term; wasm tree-shakes
 // and emits code.
 import {Parser, type Program} from "./parser.ts";
 import {checkProgram, type Checked} from "./types.ts";
-import {globalEnv, type Env} from "./env.ts";
-import type {EffectInterp} from "./eval.ts";
+import {globalEnv, type Cont, type Env, type Outcome, type Value} from "./env.ts";
+
+// An effect interpreter: ops it knows map to host actions; unknown ops fall
+// through to the builtin table's default interpretation. The one interface
+// for both backends' runners — eval.ts's runTop consumes it directly; the
+// wasm host (wasm_host.ts) adapts builtins.ts's builtinEffectHosts — each a
+// sync Value delivery — to it at its boundary.
+export type EffectInterp = Partial<Record<string, (args: Value[], k: Cont) => Outcome>>;
 
 // Pipeline state for incremental execution (REPL): runtime env, checker
 // accumulator, and an optional effect-interpretation override.
