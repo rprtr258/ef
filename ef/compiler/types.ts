@@ -1,13 +1,18 @@
 import type {Expr, ExprID, Program, TypeTok} from "./parser";
-import {BUILTINS, BUILTIN_TABLE, NATIVE_BUILTINS} from "./builtin_table.ts";
-import {ARITH_OPS, CMP_OPS, EQ_OPS, STAMPED_OPS, OP_ADD, OP_DIV, OP_NEG} from "./ops.ts";
-import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, tArr, tFun, tTup} from "./prims.ts";
+import {BUILTINS, BUILTIN_TABLE} from "./builtin_table.ts";
+import {ARITH_OPS, CMP_OPS, EQ_OPS, OP_ADD, OP_DIV, OP_NEG} from "./ops.ts";
+import {TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, tArr, tFun, tTup} from "./prims.ts";
 import {showT, TypeError_} from "./type_display.ts";
 import {
   FLOAT_NAMES, INT_NAMES, NUMERIC_NAMES,
-  Env, Unifier, widthOf,
+  Env, Unifier,
   type FunT, type NumName, type Prim, type Type, type TupT,
 } from "./unify.ts";
+import {
+  beginLamWidths, checkLamWidths, endLamWidths, pinBindingWidth, pinRetWidth,
+  stampArrKind, stampComputeWidth, stampDivWidth, stampEqWidth, stampNumKinds,
+  stampSuspension, touchNumericVar,
+} from "./stamps.ts";
 import {assertNever} from "./assert.ts";
 import type {Pos} from "./lexer.ts";
 import {exprChildren, type BinderKinds} from "./walk.ts";
@@ -162,12 +167,6 @@ function inferArr(
   }
 }
 
-// Runtime shape stamp (mirrors numKind): the evaluator builds a slice for
-// homogeneous literals and a tuple record otherwise.
-function stampArrKind(e: Expr & {t: "arr"}, kind: "arr" | "tup"): void {
-  e.arrKind = kind;
-}
-
 // Infer `e` expecting a tuple type. Propagates the expectation into array
 // literals (so `[1,2,3]` becomes a tuple), blocks (last statement), and
 // lambda bodies (return type), so a declared `[f,f,f]` return flows into a
@@ -205,23 +204,6 @@ function fieldIndex(name: string): number | null {
 // function-application path; `+` is dispatched separately (see `plusType`).
 function isNum(t: Type): t is Prim {
   return t.tag === "prim" && NUMERIC_NAMES.has(t.name as NumName);
-}
-
-// Width-ambiguity tracking (strict-width rule): while a lambda body is being
-// inferred, its unannotated params' type-var ids are registered on the
-// innermost active context; numeric ops mark the vars they see. At the `let`
-// that binds the lambda, a param that a numeric op touched but whose width
-// never resolved concrete is rejected: the body already fixed ONE width while
-// the generalized type would let each instantiation pick another.
-type LamCtx = { unann: Set<number>, touched: Set<number> };
-const lamStack: LamCtx[] = [];
-
-function touchNumericVar(u: Unifier, t: Type): void {
-  if (lamStack.length === 0) return;
-  const r = u.res(t);
-  if (r.tag !== "var") return;
-  const root = u.find(r.id);
-  for (const c of lamStack) if (c.unann.has(root)) c.touched.add(root);
 }
 
 const ANY_ARITH = "any is not a numeric width — concrete widths required for arithmetic";
@@ -390,8 +372,7 @@ function inferNode(
       // Width-ambiguity tracking: register this lambda's unannotated param
       // vars for the body's numeric ops; the `let` binding the lambda runs
       // the rejection check (checkLamWidths).
-      const ctx: LamCtx = {unann: new Set(unann.map(p => p.id)), touched: new Set()};
-      if (ctx.unann.size > 0) lamStack.push(ctx);
+      const ctx = beginLamWidths(unann);
       let ret: Type;
       try {
         const rt = e.retTyp !== null ? env.uni.res(e.retTyp) : null;
@@ -399,30 +380,11 @@ function inferNode(
           ? inferWith(e.body, nodes, rt, n, innerEffs, effects, rec)
           : infer(e.body, nodes, n, innerEffs, effects, rec);
       } finally {
-        if (ctx.unann.size > 0) {
-          lamStack.pop();
-          e.unannParams = unann;
-          e.numTouched = ctx.touched;
-        }
+        endLamWidths(ctx, e, unann);
       }
       if (e.retTyp !== null) {
         env.uni.unify(e.retTyp, ret);
-        // Pin the body's tail root when the declared return width is concrete
-        // and the body's type is a numeric wildcard: the tail boxes at its own
-        // stamp (num statics / operator boxW), so the stamp must carry the
-        // declared width for the caller's typed reads to match
-        // (fn(): i32 { 8 / 2 } boxes $I32, not the wildcard-default $I64).
-        const dt = env.uni.res(e.retTyp);
-        const dw = dt.tag === "prim" ? widthOf(dt) : null;
-        const rt2 = env.uni.res(ret);
-        if (dw !== null && dw.concrete && rt2.tag === "prim" &&
-          (rt2.name === "int" || rt2.name === "float")) {
-          const bodyE = nodes[e.body];
-          const tail = bodyE.t === "block" ? bodyE.stmts[bodyE.stmts.length - 1] : e.body;
-          const tailT = env.uni.res(rec.typeOf(tail) ?? TUNIT);
-          if (tailT.tag === "prim" && tailT.name === rt2.name && selfBoxedWidth(nodes, tail))
-            rec.recordType(tail, dt);
-        }
+        pinRetWidth(env.uni, rec, e, ret);
       }
       // Effect annotation is optional: if `! { ... }` is omitted, the
       // function's effect set is derived from the body's performed effects.
@@ -462,15 +424,7 @@ function inferNode(
       env.uni.unify(declared, vt);
       const rt = env.uni.res(declared);
       rec.recordTok("let", e.pos, e.name, declared);
-      // Pin a wildcard-typed value literal to the binding's concrete width:
-      // `x: i32 = 2147483647` boxes the literal as $I32 (wrapping at its
-      // own node, matching the interpreter's per-node normalization).
-      const rw = widthOf(rt);
-      if (rw !== null && rw.concrete && nodes[e.val].t === "num") {
-        const vt2 = env.uni.res(rec.typeOf(e.val) ?? TUNIT);
-        if (vt2.tag === "prim" && (vt2.name === "int" || vt2.name === "float"))
-          rec.recordType(e.val, rt);
-      }
+      pinBindingWidth(env.uni, rec, e.val, rt);
       // The lambda's stamped type is final: its parameter variables have been
       // bound (or not), so deep-resolve it — display never needs the unifier.
       const lam = nodes[e.val];
@@ -679,12 +633,7 @@ function inferNode(
         const widened = plusType(env.uni, at, bt);
         // The numeric `+` stamps and pins exactly like the other arithmetic
         // ops (the string case leaves no width to stamp).
-        const wo = widthOf(env.uni.res(widened));
-        if (wo !== null) {
-          e.numKind = wo.w;
-          pinWildcard(env.uni, rec, e.args[0], at, widened);
-          pinWildcard(env.uni, rec, e.args[1], bt, widened);
-        }
+        stampComputeWidth(env.uni, rec, e, [at, bt], widened);
         return widened;
       }
       // Numeric operators (- * / %) and comparisons (< > <= >=) widen int/float;
@@ -693,28 +642,14 @@ function inferNode(
         const at = infer(e.args[0], nodes, env, effs, effects, rec);
         const bt = infer(e.args[1], nodes, env, effs, effects, rec);
         const widened = numeric(env.uni, at, bt, fn.v);
-        // Stamp the COMPUTE width (the operand width; the result type would
-        // be bool for comparisons) — the evaluator's widthOp coerces both
-        // operands to this representation before operating.
-        const wo = widthOf(env.uni.res(widened));
-        if (wo !== null) {
-          e.numKind = wo.w;
-          // Pin wildcard-typed operands (untyped literals, non-generalized
-          // bindings) to the compute width: their recorded types flexed into
-          // this op, so their runtime representation is the op's width (the
-          // wasm backend boxes them as statics of this shape; a literal
-          // wider than the op width wraps here exactly like at the op).
-          pinWildcard(env.uni, rec, e.args[0], at, widened);
-          pinWildcard(env.uni, rec, e.args[1], bt, widened);
-        }
+        stampComputeWidth(env.uni, rec, e, [at, bt], widened);
         if (CMP_OPS.has(fn.v)) return TBOOL;
         // `/` is type-preserving: int/int -> int (truncated at runtime),
-        // float/float -> float. The checker stamps the division's WIDTH on
-        // the node so the evaluator/emitters pick truncation and the
-        // signed/unsigned op variants.
+        // float/float -> float; the division's width is stamped on the node
+        // so the evaluator/emitters pick truncation and the signed/unsigned
+        // op variants.
         if (fn.v === OP_DIV) {
-          const rw = widthOf(env.uni.res(widened));
-          e.div = rw !== null ? rw.w : "f64";
+          stampDivWidth(env.uni, e, widened);
           return widened;
         }
         return widened;
@@ -722,11 +657,7 @@ function inferNode(
       if (fn.t === "sym" && fn.v === OP_NEG) {
         const at = infer(e.args[0], nodes, env, effs, effects, rec);
         const widened = numeric(env.uni, at, at, OP_NEG);
-        const wo = widthOf(env.uni.res(widened));
-        if (wo !== null) {
-          e.numKind = wo.w;
-          pinWildcard(env.uni, rec, e.args[0], at, widened);
-        }
+        stampComputeWidth(env.uni, rec, e, [at], widened);
         return widened;
       }
       // Equality: both operands must share a type (untyped literals flex,
@@ -736,23 +667,7 @@ function inferNode(
         const at = infer(e.args[0], nodes, env, effs, effects, rec);
         const bt = infer(e.args[1], nodes, env, effs, effects, rec);
         env.uni.unify(at, bt);
-        // Numeric equality is stamped with the compute width too (concrete
-        // side wins between a width and a wildcard literal; float beats int
-        // between two wildcards) so `PI == 3` and `1 == 1.0` coerce right.
-        const ea = widthOf(env.uni.res(at)), eb = widthOf(env.uni.res(bt));
-        if (ea !== null && eb !== null)
-          e.numKind = ea.concrete ? ea.w : eb.concrete ? eb.w : (ea.w === "f64" || eb.w === "f64") ? "f64" : "i64";
-        // Pin wildcard operands to the flexed concrete width (the same
-        // discipline as the arithmetic ops): an untyped literal compared
-        // against a concrete-width value takes that width's representation
-        // (the BigInt literal wraps at its own node, exactly like the wasm
-        // static's box shape).
-        const flexW = ea !== null && ea.concrete ? ea.w : eb !== null && eb.concrete ? eb.w : null;
-        if (flexW !== null) {
-          const prim = WIDTH_PRIMS[flexW];
-          pinWildcard(env.uni, rec, e.args[0], at, prim);
-          pinWildcard(env.uni, rec, e.args[1], bt, prim);
-        }
+        stampEqWidth(env.uni, rec, e, at, bt);
         return TBOOL;
       }
       const ft = infer(e.fn, nodes, env, effs, effects, rec);
@@ -799,120 +714,6 @@ function inferNode(
     if (err instanceof TypeError_ && err.pos === undefined && e.pos !== undefined)
       err.pos = e.pos;
     throw err;
-  }
-}
-
-// Strict-width rejection for let-bound lambdas (runs at every let whose RHS
-// is a lambda, annotation or not — the body's width stamps are fixed either
-// way): an unannotated param is rejected when (a) numeric ops touched its var
-// but the width never resolved concrete (the generalized type would flex per
-// instantiation while the body fixed one width), or (b) it was pinned to an
-// untyped-literal wildcard (int/float) by anything — numeric ops, `==`, or an
-// int-wildcard builtin param. Truly polymorphic params (unbound vars, `any`)
-// and non-numeric pins (string, arrays, functions) pass. Directly-passed
-// lambdas never reach here: their params get concrete types from the
-// instantiation.
-function checkLamWidths(u: Unifier, lam: Expr & {unannParams?: {name: string, id: number}[], numTouched?: Set<number>}): void {
-  if (lam.unannParams === undefined) return;
-  const touched = new Set<number>();
-  if (lam.numTouched !== undefined)
-    for (const r of lam.numTouched) touched.add(u.find(r)); // unions after a touch may have re-rooted
-  for (const p of lam.unannParams) {
-    const rt = u.res({tag: "var", id: p.id});
-    if (rt.tag === "prim" && (rt.name === "int" || rt.name === "float"))
-      throw new TypeError_(`ambiguous numeric width — annotate the parameter (e.g. ${p.name}: i64)`);
-    if (rt.tag === "var" && touched.has(u.find(rt.id)))
-      throw new TypeError_(`ambiguous numeric width — annotate the parameter (e.g. ${p.name}: i64)`);
-  }
-}
-
-// Pin a wildcard-typed operand node's recorded type to the op's compute
-// width: the operand's type only reached this width by flexing, so its
-// runtime representation is the op's width (the wasm backend boxes pinned
-// literals as statics of this shape; the interpreter normalizes at the
-// node). Concrete-typed operands keep their own stamps.
-// Concrete width name -> its prim type (pinWildcard records these).
-const WIDTH_PRIMS: Record<string, Prim> = {
-  i32: TI32, u32: TU32, i64: TI64, u64: TU64, f32: TF32, f64: TF64,
-};
-
-// Nodes whose runtime box is produced BY their own stamp — pinnable: untyped
-// literals (fresh wildcards; statics key on the stamp), @as (boxes at its
-// target), and operator/neg sites (boxW reads the site's stamp). A call/sym/
-// field node's box comes from its own production — relabeling it would desync
-// the stamp from the box (e.g. a builtin's TFLOAT return read through a call).
-function selfBoxedWidth(nodes: Expr[], id: ExprID): boolean {
-  const n = nodes[id];
-  if (n.t === "num" || n.t === "as") return true;
-  if (n.t === "app") {
-    const fn = nodes[n.fn];
-    return fn.t === "sym" && (ARITH_OPS.has(fn.v) || fn.v === OP_NEG || fn.v === OP_ADD);
-  }
-  return false;
-}
-
-function pinWildcard(u: Unifier, rec: TokenRecorder, argId: ExprID, at: Type, widened: Type): void {
-  const rt = u.res(at);
-  if (rt.tag !== "prim" || (rt.name !== "int" && rt.name !== "float")) return;
-  // Fresh wildcard instances (untyped literals) always box at their stamp.
-  // A shared wildcard (e.g. a builtin signature's TFLOAT, or an operator's
-  // TINT result) is pinnable only when the node boxes at its own stamp.
-  if (!u.wilds.has(rt) && !selfBoxedWidth(rec.nodes, argId)) return;
-  const w = widthOf(u.res(widened));
-  if (w !== null) rec.recordType(argId, u.res(widened));
-}
-
-// Width stamps: after all items are checked, stamp every node whose type
-// resolved to a numeric width with `numKind` — concrete widths as-is, untyped
-// int/float literals defaulted to i64/f64 (literal defaulting, not width
-// conversion). Unstamped nodes (type still an unbound var — polymorphic
-// uses) compute by value-based dispatch at runtime.
-function stampNumKinds(nodes: Expr[], uni: Unifier, nodeTypes: Map<ExprID, Type>): void {
-  for (const [id, t] of nodeTypes) {
-    const rt = uni.res(t);
-    let w: NumName | null = null;
-    if (rt.tag === "prim") {
-      const n = rt.name as NumName;
-      if (n === "int" || n === "float") {
-        // Untyped literal: its recorded flex at unify time, else the
-        // i64/f64 default (literal defaulting, not width conversion).
-        w = uni.wildFlex.get(rt) ?? (n === "int" ? "i64" : "f64");
-      } else if (INT_NAMES.has(n) || FLOAT_NAMES.has(n)) w = n;
-    }
-    if (w !== null) (nodes[id] as Expr & {numKind?: string}).numKind = w;
-  }
-}
-
-// Suspension stamps: after all items are checked, classify every generic
-// call site by its callee's resolved FunT. `sus: false` — a dcall — requires
-// positive evidence: a FunT with neither marker and a concrete empty row.
-// Everything else (nonempty row, unbound row var, non-FunT callee including
-// `any`, anyTaint, contCall) stays a suspending `call`; a callee with no
-// recorded type defaults to suspending. Effect-polymorphic native builtins
-// (map/each/flatmap) have effect-variable rows by construction, so the row
-// test alone already keeps them suspending — the NATIVE_BUILTINS test below
-// is a belt-and-braces guard. Operator apps the checker dispatched
-// structurally (STAMPED_OPS, hosted in ops.ts) skip the callee lookup: their
-// callees never reach `infer`, so they carry no callee type in nodeTypes and
-// never get a suspension stamp — the converter's own fast paths dispatch
-// them.
-function stampSuspension(nodes: Expr[], uni: Unifier, nodeTypes: Map<ExprID, Type>): void {
-  for (const [id] of nodeTypes) {
-    const e = nodes[id];
-    if (e.t !== "app") continue;
-    const fn = nodes[e.fn];
-    if (fn.t === "sym" && STAMPED_OPS.has(fn.v)) continue;
-    let sus = true;
-    const ct = nodeTypes.get(e.fn);
-    if (ct !== undefined) {
-      const rt = uni.res(ct);
-      if (rt.tag === "fun" && rt.contCall !== true && rt.anyTaint !== true &&
-        !(fn.t === "sym" && NATIVE_BUILTINS.has(fn.v))) {
-        const er = uni.resEff(rt.effs);
-        if (er instanceof Set && er.size === 0) sus = false;
-      }
-    }
-    e.sus = sus;
   }
 }
 

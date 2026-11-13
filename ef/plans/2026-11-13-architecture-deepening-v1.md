@@ -331,11 +331,34 @@ a recorder.
 
 **Verification:** `bun run ci` + vscode LSP test (already inside the gate). **Commit:** `types: recorder interface for LSP tokens`
 
-**Chunk 5.4 — backend stamps behind one concern.**
-- [ ] numKind/arrKind/sus/div/checkLamWidths emission funnels through one stamps module/section so
+**Chunk 5.4 — backend stamps behind one concern.** ✅ landed (uncommitted)
+- [x] numKind/arrKind/sus/div/checkLamWidths emission funnels through one stamps module/section so
       new node variants fail loudly when a stamp is forgotten (pair with `assertNever`).
+      Landed shape: new leaf module `compiler/stamps.ts` (306 lines; imports only leaves — parser
+      types, unify, prims, ops, builtin_table, type_display, assert — nothing from types.ts's
+      checking internals). Owns: `stampNumKinds`/`stampSuspension` post-passes, `stampArrKind`,
+      `checkLamWidths`, `pinWildcard` (private), `WIDTH_PRIMS` (private), `selfBoxedWidth`
+      (private), the operator-site emissions (`stampComputeWidth`, `stampEqWidth`,
+      `stampDivWidth`), the two recordType width pins (`pinRetWidth` for lambda declared-return
+      tails, `pinBindingWidth` for typed let literals), and `lamStack` + the lambda
+      width-tracking context (`beginLamWidths`/`endLamWidths`/`touchNumericVar`).
+      lamStack landed in stamps.ts (module state there): the whole push/pop/mark discipline
+      lives with the stamps, and inference is a single synchronous pass so the stack is empty
+      outside a lambda body by construction. types.ts keeps only the checking-side glue (call
+      sites in the lambda/let/app/inferArr arms) and reads stamps through a narrow
+      `StampRecorder` port (`{nodes, recordType, typeOf}`) that TokenRecorder satisfies
+      structurally — stamps.ts imports no checking internals. Left inline by judgment:
+      `asKind`/`idx`/`shape` — disambiguation results of their own inference arms, not part of
+      the width/suspension stamp system. Guard: `selfBoxedWidth` and `stampSuspension` switch
+      exhaustively over all Expr variants ending in `assertNever` — a new node variant fails
+      typecheck until its box provenance (self-boxed or not) and call-site status (stamps `sus`
+      or not) are declared; `stampNumKinds` is type-driven over `nodeTypes` so a numeric-width
+      node cannot miss its `numKind`; inferNode's own `assertNever` switch forces the new arm's
+      stamps through the funnel functions.
 
 **Verification:** `bun run ci` (f32/i64 parity tests in examples.test.ts are the semantic net).
+Landed clean: 481 pass / 0 fail; `ef run` output byte-identical on widths/f32_arithmetic/
+cast_roundtrip, `ef types` on widths.ef identical.
 **Commit:** `types: stamps behind one concern`
 
 ---

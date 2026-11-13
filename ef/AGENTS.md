@@ -31,7 +31,9 @@ Hindley-Milner-flavoured type system with effect tracking.
   leaf over the CPS IR)/
   `wasm_emit.ts`/`wasm_module.ts` — see item 10),
   `wasm_host.ts` (wasm host runtime: instantiation, GC↔JS boxing,
-  effect interpretation), `lint.ts`, `prims.ts`, `assert.ts` (the
+  effect interpretation), `stamps.ts` (the one backend-stamp concern: width/
+suspension/box-provenance emission over an exhaustive `Expr` switch),
+`lint.ts`, `prims.ts`, `assert.ts` (the
   `assertNever` exhaustive-switch guard — every switch over `Expr` ends in
   it, so a new node variant fails typecheck in each walker that forgets it),
   frontends `cli.ts`/`repl.ts`.
