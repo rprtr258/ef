@@ -144,7 +144,8 @@ function hoverText(prog: Program, checked: Checked, id: ExprID, c: Pos): string 
     const names = fnPNames(prog, e.v);
     const nt = uni.nodeTypes.get(id);
     if (nt !== undefined) return `${e.v} : ${showT(uni.deepRes(nt), names)}`;
-    // Callee syms the checker never infers (list's app case): env lookup.
+    // Callee syms the checker never infers (structural operators like `+`):
+    // env lookup.
     return checked.env.lookup(e.v) === undefined
       ? null : `${e.v} : ${showT(checked.env.lookupResolved(e.v), names)}`;
   }

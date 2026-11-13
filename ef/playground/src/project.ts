@@ -66,7 +66,7 @@ each(fn(t: [i64], _) { Println!(t) }, triples(14));`,
 effect Tick(): i64;
 
 counter :: fn(steps: i64): [i64] {
-  cell :: list();
+  cell :: [0];
   set(cell, 0, 0);
   handle {
     map(fn(_) { Tick!() }, range(0, steps, 1))

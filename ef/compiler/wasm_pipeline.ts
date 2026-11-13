@@ -378,9 +378,7 @@ export function layoutStatics(d: Discovery, ix: Indices, o: Opt, plan: TermPlan)
   // Builtin closures: $CLO {fnIdx, env = null, fsize = params + map-like
   // extras} — only VALUE-referenced builtins get one (treeShakeBuiltins +
   // builtinValueUses): call-only builtins are called directly via
-  // builtinFnIdx, so no closure object is materialized. `list` keeps fsize
-  // 0: its slot count is exactly argc, which the trampoline reads back via
-  // array.len.
+  // builtinFnIdx, so no closure object is materialized.
   for (const bi of BUILTINS) {
     if (!o.valueBuiltins.has(bi.name)) continue;
     const fni = ix.builtinFnIdx.get(bi.name);

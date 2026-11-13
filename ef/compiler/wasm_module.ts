@@ -161,30 +161,6 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
         selectBool(em, f);
         break;
       }
-      case "list": {
-        // The frame has fsize 0, so the slots array length IS argc — the
-        // only argc reader in the backend (do not generalize).
-        const n = f.i32();
-        b.localGet(0);
-        b.structGet(4, 1);
-        b.arrayLen();
-        b.localSet(n);
-        const blk = f.allocArrBlk(n);
-        f.loop(() => {
-          b.localGet(n);
-        }, i => {
-          f.elemAddr(blk, i);
-          // slot(i) reads a static slot number; the list's source slot is
-          // the running counter, so index the frame's slots array directly.
-          b.localGet(0);
-          b.structGet(4, 1);
-          b.localGet(i);
-          b.arrayGet(1);
-          b.arraySet();
-        });
-        f.boxArr(blk);
-        break;
-      }
       case "sub": {
         // Zero-copy view: struct.new over the operand's own fields. from/to
         // are i64 args (slots 1/2); the operand stays in slot 0.

@@ -190,10 +190,10 @@ describe("ef language server", () => {
   });
 
   test("hover on a builtin shows its type", async () => {
-    await s.change("list(1);\n");
+    await s.change("sub([1, 2, 3], 0, 2);\n");
     const h = await s.hover(0, 1);
     expect(h).not.toBeNull();
-    expect(h!.contents.value.startsWith("```ef\nlist : ")).toBe(true);
+    expect(h!.contents.value.startsWith("```ef\nsub : ")).toBe(true);
   });
 
   test("hover on a subexpression shows its type", async () => {
@@ -433,7 +433,7 @@ describe("ef language server", () => {
   });
 
   test("definition on a builtin value and a builtin effect returns nothing", async () => {
-    await s.change("n :: Read!(\"x.txt\");\nm :: list(n);\n");
+    await s.change("n :: Read!(\"x.txt\");\nm :: len;\n");
     expect(await s.definition(0, 5)).toBeNull();
     expect(await s.definition(1, 5)).toBeNull();
   });

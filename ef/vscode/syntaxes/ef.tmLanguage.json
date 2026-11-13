@@ -46,7 +46,7 @@
       ]
     },
     "numeric-widths": {
-      "match": "\\b(?:i32|i64|u32|u64|f32|f64|string|bool|list)\\b",
+      "match": "\\b(?:i32|i64|u32|u64|f32|f64|string|bool)\\b",
       "name": "support.type.ef"
     },
     "numbers": {

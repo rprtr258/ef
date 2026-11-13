@@ -1190,8 +1190,4 @@ describe("wasm host boundary (wasm_host.ts)", () => {
     expect(parity(`xs: [i64] :: [1, 2];
 xs.5`)).toBe("ERR: .5: index 5 out of bounds [0, 2)");
   });
-
-  test("the list constructor routes through its wasm trampoline", () => {
-    expect(parity("list(1, 2)")).toBe("[1, 2]");
-  });
 });

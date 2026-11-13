@@ -238,8 +238,8 @@ export class Unifier {
   }
 
   // True if `t` contains an `any` (the absorbing escape type). Used to warn
-  // when `any` is *inferred* (e.g. from `list(...)` / `head` of an `[any]`)
-  // rather than explicitly written, so silent escapes are visible. `res` is
+  // when `any` is *inferred* (e.g. from indexing an `[any]`) rather than
+  // explicitly written, so silent escapes are visible. `res` is
   // applied so bound type variables are resolved before checking.
   containsAny(t: Type): boolean {
     const r = this.res(t);
@@ -934,7 +934,7 @@ function inferNode(
       // generalizing (otherwise its own vars read as free-in-env → no-op).
       env.vars.delete(e.name);
       // Value restriction: generalize only lambda values (literals carry no
-      // type vars; `arr` literals are typed directly, not via `list`).
+      // type vars; `arr` literals are typed directly by inferArr).
       // This keeps mutable-array/assign soundness (no `x := []` : [a]).
       env.vars.set(e.name, e.typ !== null ? rt : (nodes[e.val].t === "lambda" ? env.uni.generalize(env, rt) : rt));
       if (e.typ === null && env.uni.containsAny(rt))
@@ -1127,12 +1127,6 @@ function inferNode(
     }
     case "app": {
       const fn = nodes[e.fn];
-      // Array literals desugar to list(...); type as homogeneous [T].
-      if (fn.t === "sym" && fn.v === "list") {
-        const elem = env.uni.fresh();
-        for (const a of e.args) env.uni.unify(elem, infer(a, nodes, env, effs, effects));
-        return tArr(env.uni.res(elem));
-      }
       // `+` is overloaded: strict numeric arithmetic or string concatenation.
       if (fn.t === "sym" && fn.v === "+") {
         const at = infer(e.args[0], nodes, env, effs, effects);
@@ -1360,7 +1354,7 @@ function stampNumKinds(nodes: Expr[], uni: Unifier): void {  for (const [id, t] 
 // Operator names the app case dispatches structurally (their callees never
 // reach `infer`, so they carry no callee type in nodeTypes and never get a
 // suspension stamp — the converter's own fast paths dispatch them).
-const STAMPED_OPS = new Set([...NUMOPS, ...CMPOPS, ...EQOPS, "+", "neg", "list"]);
+const STAMPED_OPS = new Set([...NUMOPS, ...CMPOPS, ...EQOPS, "+", "neg"]);
 
 // Suspension stamps: after all items are checked, classify every generic
 // call site by its callee's resolved FunT. `sus: false` — a dcall — requires

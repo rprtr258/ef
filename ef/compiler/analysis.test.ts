@@ -26,7 +26,6 @@ describe("analysis surface tables", () => {
 
   test("BUILTINS arities spot checks", () => {
     const arity = (name: string) => BUILTINS.find(b => b.name === name)?.params;
-    expect(arity("list")).toBe(0); // variadic
     expect(arity("args")).toBe(0);
     expect(arity("PI")).toBe(0);
     expect(arity("neg")).toBe(1);
@@ -153,7 +152,6 @@ describe("builtinParamNames (LSP hover text)", () => {
   for (const [name, expected] of [
     ["sub", ["xs", "from", "to"]],
     ["not", ["v"]],
-    ["list", ["xs"]],
     ["map", ["f", "xs"]],
     ["Read", undefined], // effect entries carry sigs, not pnames
     ["+", undefined], // operators live in env.ts, not the builtin table

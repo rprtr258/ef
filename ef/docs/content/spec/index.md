@@ -114,8 +114,7 @@ args     ::= "(" (expr ("," expr)*)? ")"
   forces a tuple even when the elements would unify. The same expectation
   flows from a tuple **return type** into a `[...]` body literal, and from a
   tuple **parameter type** into an `[...]` argument literal (including
-  nested tuples, e.g. `[[f,f,f],...]`). Explicit `list(...)` always builds
-  an array.
+  nested tuples, e.g. `[[f,f,f],...]`).
 - **`&&` / `||`** desugar to `if`: `a && b` → `if a { b } else { false }`, `a || b` → `if a { true } else { b }`. Short-circuit falls out for free.
 - **Field access** `e.x` / `e.0`: reads a tuple field by name or position, or
   an array element by position (`xs.0`). The index is resolved at check time
@@ -364,7 +363,6 @@ The type checker stamps each `/` node as integer or float division at check time
 
 | Name | Type (schematic) | Notes |
 |------|------------------|-------|
-| `list` | `(any) -> [any]` | Variadic array constructor. Explicit `list(1,2,3)` is `[i64]`; bracket literals `[1,2,3]` are typed directly (array if homogeneous, else tuple). |
 | `sub` | `([A], i64, i64) -> [A]` | Zero-copy view of `[from, to)`: shares the operand's backing. Errors (`sub: range [from, to) out of bounds [0, len)`) unless `0 ≤ from ≤ to ≤ len`. |
 | `concat` | `([A], [A]) -> [A]` | Append; allocates a fresh backing, never aliases its operands — the only way a slice grows. |
 | `flat` | `([[A]]) -> [A]` | Flatten one level. |

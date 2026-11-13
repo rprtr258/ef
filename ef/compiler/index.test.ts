@@ -144,14 +144,14 @@ handle {
     const orig = console.warn;
     console.warn = (s: string) => { warned.push(s); };
     try {
-      typeOf("f :: list; f");            // inferred (any) -> [any]  -> warn
-      typeOf("f: (any) -> [any] :: list; f"); // explicit annotation -> silent
+      typeOf("g :: fn(x: any): any { x };");            // inferred (any) -> any  -> warn
+      typeOf("g: (any) -> any :: fn(x: any): any { x };"); // explicit annotation -> silent
       typeOf("xs :: [1, 2, 3]; xs");     // array literal -> [i64]   -> silent
     } finally {
       console.warn = orig;
     }
     expect(warned.length).toBe(1);
-    expect(warned[0]).toMatch(/`f` inferred as .*\(any\) -> \[any\]/);
+    expect(warned[0]).toMatch(/`g` inferred as .*\(any\) -> any/);
   });
 });
 
@@ -845,8 +845,6 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
       // variable instantiates a fresh effect variable per use.
       ["scheme instantiation copies effect variables",
        "twice :: fn (f, xs) { map(f, map(f, xs)) };\ntwice(fn(x: string): string { x }, [\"a\"])", "[\"a\"]"],
-      // The list constructor is callable directly (literals desugar to it).
-      ["list(...) builds an array", "list(1, 2)", "[1, 2]"],
       // hasPerformOutsideLambdas walks if/field spines inside handle bodies.
       ["handle body spine through if and field",
        "effect E(): i64; p: [i64, i64] :: [1, 2]; handle { if (true) { p.0 } else { E!() } } case E(n) => k { n }", "1"],

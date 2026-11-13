@@ -51,7 +51,6 @@ export type Builtin =
 // so entries are immutable and safe to share across programs.
 export const builtins: Builtin[] = [
     {kind: "fn", name: "not", t: tFun([TBOOL], TBOOL, new Set()), pnames: ["v"], fn: a => (a === false || a === null ? true : false)},
-    {kind: "fn", name: "list", t: tFun([TANY], tArr(TANY), new Set()), pnames: ["xs"], fn: (...xs) => mkSlice(xs)},
     {kind: "fn", name: "sub", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64, TI64], tArr(a), new Set()); }, pnames: ["xs", "from", "to"], fn: (xs, fv, tv) => {
       // Zero-copy view of [from, to): shares the backing, offset shifts.
       const s = asSlice(xs);

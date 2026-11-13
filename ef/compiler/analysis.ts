@@ -45,8 +45,8 @@ export const EFFECT_OPS: string[] =
 // Every builtin ef programs can name (the interpreter's global env): the
 // checker's operators first (resolved structurally, no table entry), then
 // the non-effect builtins in builtins.ts table order. `params` is the
-// fixed-arity ABI both backends agree on: 0 for the variadic `list`, the
-// value `PI`, and 0-arg `args`. analysis.test.ts asserts this stays in sync
+// fixed-arity ABI both backends agree on: 0 for the value `PI` and 0-arg
+// `args`. analysis.test.ts asserts this stays in sync
 // with builtins.ts/env.ts.
 export const BUILTINS: {name: string, params: number}[] = [
   {name: "+", params: 2},
@@ -61,7 +61,6 @@ export const BUILTINS: {name: string, params: number}[] = [
   {name: "==", params: 2},
   {name: "!=", params: 2},
   {name: "not", params: 1},
-  {name: "list", params: 0}, // variadic
   {name: "sub", params: 3},
   {name: "concat", params: 2},
   {name: "flat", params: 1},

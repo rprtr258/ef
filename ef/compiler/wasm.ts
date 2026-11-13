@@ -39,7 +39,7 @@
 // Representation (WasmGC — every wasm operand value is an anyref):
 // - unit = ref.null any; bool = i31ref 0/1; number = $NUM {f64} (immutable
 //   struct); string = $STR (mut i16 array, UTF-16 code units, matches JS
-//   strlen/char/Out); array/list = $ARR slice fat pointer {(ref null
+//   strlen/char/Out); array = $ARR slice fat pointer {(ref null
 //   $ELEMS) data, i32 off, i32 len} (immutable — views share the backing,
 //   only elements mutate); tuple = immutable $TUP {(ref null $ELEMS)};
 //   closure = immutable $CLO {i31 fnIdx, (ref null $FRAME) env, i31
