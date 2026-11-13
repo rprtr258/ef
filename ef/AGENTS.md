@@ -12,8 +12,10 @@ Hindley-Milner-flavoured type system with effect tracking.
   those rows; a new builtin is one row in builtin_table.ts plus one impl
   row here), `analysis.ts` (frontend passes: op discovery, builtin-ref
   tree-shaking; re-exports the builtin surface declared in builtin_table.ts
-  — shared by the wasm backend, parser-types-only leaf module), `cps.ts` (CPS
-  converter: checked AST → the shared CPS IR), `cps_ir.ts` (the CPS IR node
+  — shared by the wasm backend, parser-types-only leaf module), `pipeline.ts`
+  (the preparation seam: prepare/Ctx/newCtx, shared unhandled-op gate;
+  consumed by both backends and the frontends), `cps.ts` (CPS
+  converter: checked AST → the shared CPS IR)), `cps_ir.ts` (the CPS IR node
   set + the multi-shot ANF/freeze discipline comments; leaf module),
   `cps_opt.ts` (optimization passes applied as the final stage of CPS
   conversion),
@@ -97,9 +99,9 @@ Hindley-Milner-flavoured type system with effect tracking.
    tables (static, sync enforced by `analysis.test.ts`), `performsAnyOp`,
    `collectEffectOps` (op discovery in wasm op-table order), `builtinRefs`
    (shadowing-correct builtin references; binding order mirrors the
-   checker). Consumed by wasm_pipeline.ts's OPT_PASSES and eval.ts's exec (fail-fast
-   unhandled-op check + per-call env seeding); the rows also surface via
-   `ef types`'s result line.
+   checker). Consumed by wasm_pipeline.ts's OPT_PASSES and eval.ts's exec
+   (per-call env seeding); the rows also surface via `ef types`'s result
+   line.
 7. **`cps_ir.ts`** — the higher-order CPS IR, the single intermediate
    representation both backends consume: explicit continuations (`letk`
    binds a continuation λv.body; tail positions name their continuation as
@@ -157,10 +159,12 @@ Hindley-Milner-flavoured type system with effect tracking.
    also owns the pipeline shared by the REPL and `run`: `newCtx(interp?)`
    seeds state (empty runtime env), `exec(prog, ctx, checked)` evaluates an
    already-checked program (`checked = checkProgram(prog, ctx.checked)`, so
-   checking happens before the interpreter runs, once per line), fails fast
-   on statically unhandled non-builtin ops not covered by `ctx.interp`
-   (via `checked.unhandled` — the checker's residual top-level effect
-   rows, which do ops-minus-handled matching through calls), seeds
+   checking happens before the interpreter runs, once per line), applies
+   the shared pipeline gate (pipeline.ts's rejectUnhandled) that fails
+   fast on statically unhandled non-builtin ops not covered by
+   `ctx.interp` (via `checked.unhandled` — the checker's residual
+   top-level effect rows, which do ops-minus-handled matching through
+   calls), seeds
    `builtinRefs(prog)` into the runtime env (so a later REPL line can
    reference a previously-unused builtin; the no-shadowing checker rule
    keeps collisions impossible), then evaluates and returns `{value,

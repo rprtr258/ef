@@ -12,7 +12,7 @@ import {type Checked, type Type} from "./types.ts";
 import {Env, show, asSlice, mkSlice, mkTup, sliceElems, type Cont, type Native, type Outcome, type Value, num, seedBuiltins, type Closure} from "./env.ts";
 import {builtinRefs} from "./analysis.ts";
 import type {Program} from "./parser.ts";
-import {prepare, newCtx, type Ctx, type EffectInterp} from "./pipeline.ts";
+import {prepare, newCtx, rejectUnhandled, type Ctx, type EffectInterp} from "./pipeline.ts";
 import {toCps, RET} from "./cps.ts";
 import type {CAtom, CIr, CPrim, CTerm} from "./cps_ir.ts";
 import {assertNever} from "./assert.ts";
@@ -348,15 +348,14 @@ export {newCtx, type Ctx};
 // declaration), its resolved type, and whether the program ends in a bare
 // expression (the REPL echo rule: declarations print nothing).
 export function exec(prog: Program, ctx: Ctx, checked: Checked): {value: Value, lastType: Type, lastIsExpr: boolean} {
-  // Fail fast on statically unhandled ops before evaluating anything: an op
-  // in `checked.unhandled` (performed with no matching handler in its
-  // subtree) that is neither a builtin effect nor covered by ctx.interp
-  // would only surface in runTop mid-run, after earlier items' side
+  // Fail fast on statically unhandled ops before evaluating anything —
+  // pipeline.ts's rejectUnhandled, the gate both backends apply right after
+  // prepare: an op in `checked.unhandled` (performed with no matching
+  // handler in its subtree) that neither the builtin table nor ctx.interp
+  // covers would only surface in runTop mid-run, after earlier items' side
   // effects. Assign ctx.checked only after the check so a rejected line
   // leaves the REPL accumulator untouched, like a type error does.
-  for (const op of checked.unhandled)
-    if (!(op in builtinInterps) && ctx.interp?.[op] === undefined)
-      throw new Error("Unhandled effect: " + op);
+  rejectUnhandled(checked, ctx.interp);
   ctx.checked = checked;
   // Bind builtins this program references that the env lacks yet (a later
   // REPL line can use a previously-unreferenced builtin; the checker's

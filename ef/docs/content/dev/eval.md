@@ -115,12 +115,14 @@ program is checked by the caller *before* the interpreter runs (`run`
 checks once after parsing; a REPL line checks against
 `ctx.checked`):
 
-1. **Fail fast** on statically unhandled ops: any op in `checked.unhandled`
-   that is neither a builtin effect nor covered by `ctx.interp` throws
-   *before evaluation begins* — a program that would die mid-run after side
-   effects dies before its first side effect. `ctx.checked` is assigned only
-   after the check passes, so a rejected REPL line leaves the accumulator
-   untouched (like a type error does).
+1. **Fail fast** on statically unhandled ops (`rejectUnhandled` in
+   pipeline.ts — the one gate both backends call right after prepare; the
+   wasm pipeline applies it before any codegen): any op in
+   `checked.unhandled` that is neither a builtin effect nor covered by
+   `ctx.interp` throws *before evaluation begins* — a program that would die
+   mid-run after side effects dies before its first side effect.
+   `ctx.checked` is assigned only after the check passes, so a rejected REPL
+   line leaves the accumulator untouched (like a type error does).
 2. `seedBuiltins(ctx.env, builtinRefs(prog))` — bind exactly the builtins this
    program references (the checker's no-shadowing rule keeps user bindings
    off builtin names, so seeding never overwrites anything).

@@ -136,7 +136,9 @@ function hostStr(ex: Accessors, v: unknown): string {
 }
 
 export function runWasm(src: string, interp?: EffectInterp): Value {
-  const {bytes, ops} = compileWithOps(src);
+  // interp rides along for the static unhandled-op gate (pipeline.ts's
+  // rejectUnhandled): a custom op the interp covers must compile.
+  const {bytes, ops} = compileWithOps(src, interp);
   return runModule(bytes, ops, interp);
 }
 

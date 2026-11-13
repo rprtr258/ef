@@ -5,7 +5,7 @@
 // exercised by vscode/test/lsp.test.ts over raw stdio.
 import {test, expect, describe} from "bun:test";
 import {spawnSync} from "node:child_process";
-import {readFileSync, rmSync, writeFileSync} from "node:fs";
+import {existsSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 
@@ -106,6 +106,27 @@ f()
       rmSync(out, {force: true});
     }
   });
+
+  test("runwasm/buildwasm: the unified unhandled-op gate exits 1 and emits nothing", () => {
+    // The static gate (pipeline.ts's rejectUnhandled) covers both wasm
+    // entries: runwasm rejects before running, buildwasm before emitting —
+    // the same ops `ef run` rejects.
+    const file = join(tmpdir(), `ef-cli-test-${process.pid}-unhandled.ef`);
+    const out = join(tmpdir(), `ef-cli-test-${process.pid}-unhandled.wasm`);
+    writeFileSync(file, "effect T(x: i64): i64;\nT!(1)\n");
+    try {
+      const run = cli("runwasm", file);
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain("Unhandled effect: T");
+      const build = cli("buildwasm", file, out);
+      expect(build.code).toBe(1);
+      expect(build.stderr).toContain("Unhandled effect: T");
+      expect(existsSync(out)).toBe(false); // nothing emitted
+    } finally {
+      rmSync(file, {force: true});
+      rmSync(out, {force: true});
+    }
+  }, 15000); // two spawns + wasm compile; the 5s default flakes under parallel load
 
   test("types: prints top-level bindings and the program type", () => {
     const r = cli("types", join(compilerDir, "..", "examples", "simple_add.ef"));

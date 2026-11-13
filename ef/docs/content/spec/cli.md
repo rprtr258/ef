@@ -25,7 +25,8 @@ bun compiler/cli.ts run examples/star.ef
 run until killed. Effects with no matching handler in the chain are
 interpreted by the builtin table (or an injected override); a statically
 unhandled op with nothing to interpret it is rejected before evaluation
-starts.
+starts — the same shared gate `ef runwasm` and `ef buildwasm` apply before
+compilation.
 
 ## WebAssembly target
 
@@ -38,6 +39,10 @@ An effect with no matching handler in the chain — builtin or user — reaches
 the host and is interpreted by the same builtin host table `ef run` uses
 (optionally overridden via the runner's effect-interpretation argument), so
 `Exit!` behaves identically in both backends: it terminates the process.
+The static gate `ef run` applies gates the wasm commands too: `ef runwasm`
+and `ef buildwasm` reject a program whose residual ops neither the builtin
+table nor the runner's interpreter override covers — before any module is
+compiled, with the same message and nonzero exit.
 
 Not supported: a perform or handle site inside an `if` branch or `while`
 body — suspension across those control-flow blocks is rejected at compile

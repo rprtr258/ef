@@ -123,9 +123,10 @@ both backends consume it without pulling in the evaluator.
 
 `newCtx(interp?)` seeds state; the caller checks the program
 (`checkProgram(prog, ctx.checked)`), then `exec(prog, ctx, checked)` fails
-fast on statically-unhandled non-builtin ops, seeds the referenced builtins
-into the runtime env, then evaluates under the CPS evaluator
-(`evalE`/`apply`). Multi-shot `resume` is a plain JS closure. Effects with no
+fast on statically-unhandled non-builtin ops (pipeline.ts's `rejectUnhandled`
+— the same gate the wasm pipeline applies before codegen), seeds the
+referenced builtins into the runtime env, then evaluates under the CPS
+evaluator (`evalE`/`apply`). Multi-shot `resume` is a plain JS closure. Effects with no
 matching handler reach `runTop`, which interprets them through the builtin
 table (or an injected override — tests inject fake fs/time/randomness there).
 

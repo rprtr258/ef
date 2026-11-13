@@ -104,7 +104,7 @@
 // called from builtin closures, eval reads the effect interps lazily — so
 // module init order is free; no entry-order breaker import needed.)
 import binaryen from "binaryen";
-import {prepare} from "./pipeline.ts";
+import {prepare, rejectUnhandled, type EffectInterp} from "./pipeline.ts";
 import {toCps} from "./cps.ts";
 import {bindMOD} from "./wasm_tables.ts";
 import {buildModule, discover, layoutStatics, optimize, assignIndices, type Discovery, type Indices, type Layout, type Opt} from "./wasm_pipeline.ts";
@@ -140,16 +140,22 @@ import {type TermPlan} from "./wasm_term.ts";
 // --- compiler ---------------------------------------------------------------
 
 export function compile(src: string): Uint8Array<ArrayBuffer> {
+  // No interp: the shipped module's only runner is the default host table,
+  // so the static gate rejects ops nothing interprets — buildwasm fails
+  // with the same message `ef run` fails with, before a module is emitted.
   return compileWithOps(src).bytes;
 }
 
 // compile + the effect op table (opid → name) the host needs to interpret
 // ef_perform calls. The table is built by the same discovery pass that emits
 // the code, so the wasm module and the host agree on op numbering.
+// `interp` feeds only the static unhandled-op gate (the runner's effect
+// interpretation — see pipeline.ts's rejectUnhandled); codegen is
+// interp-independent.
 // Parse → check → CPS → binaryen function bodies: everything both emissions
 // share, so the WAT text the playground shows is built by the same pipeline
 // as the shipped bytes.
-function pipeline(src: string): {mod: binaryen.Module, ops: string[], o: Opt, lay: Layout, funcs: Fn[]} {
+function pipeline(src: string, interp?: EffectInterp): {mod: binaryen.Module, ops: string[], o: Opt, lay: Layout, funcs: Fn[]} {
   // prepare: parse + check before the backend runs — rejects ill-typed
   // programs and stamps the runtime markers the phases read (`numKind` on
   // literals, `div` on applications of `/`, `idx` on field accesses). The
@@ -157,6 +163,11 @@ function pipeline(src: string): {mod: binaryen.Module, ops: string[], o: Opt, la
   // eligibility's type resolver (uni.deepRes resolves bound vars;
   // quantified vars stay unbound).
   const {prog, checked} = prepare(src);
+  // The static unhandled-op gate (pipeline.ts's rejectUnhandled — the same
+  // one exec applies right after prepare): residual ops that neither the
+  // builtin table nor the runner's interp covers are rejected here, before
+  // any codegen — not as a mid-run host trap.
+  rejectUnhandled(checked, interp);
   // Stage 2: the CPS IR — the single conversion both backends consume. The
   // checker stamps the AST the converter reads (`numKind`/`div`/`idx`).
   const ir = toCps(prog);
@@ -177,8 +188,8 @@ function pipeline(src: string): {mod: binaryen.Module, ops: string[], o: Opt, la
   return {mod, ops: [...d.effOpIds.keys()], o, lay, funcs};
 }
 
-export function compileWithOps(src: string): {bytes: Uint8Array<ArrayBuffer>, ops: string[]} {
-  const {mod, ops, o, lay, funcs} = pipeline(src);
+export function compileWithOps(src: string, interp?: EffectInterp): {bytes: Uint8Array<ArrayBuffer>, ops: string[]} {
+  const {mod, ops, o, lay, funcs} = pipeline(src, interp);
   return {bytes: buildModule(mod, o, lay, funcs), ops};
 }
 

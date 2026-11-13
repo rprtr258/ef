@@ -10,6 +10,7 @@
 import {Parser, type Program} from "./parser.ts";
 import {checkProgram, type Checked} from "./types.ts";
 import {globalEnv, type Cont, type Env, type Outcome, type Value} from "./env.ts";
+import {EFFECT_OPS} from "./builtin_table.ts";
 
 // An effect interpreter: ops it knows map to host actions; unknown ops fall
 // through to the builtin table's default interpretation. The one interface
@@ -44,4 +45,23 @@ export function newCtx(interp?: EffectInterp): Ctx {
 export function prepare(src: string, acc?: Checked): {prog: Program, checked: Checked} {
   const prog = new Parser(src).parseProgram();
   return {prog, checked: checkProgram(prog, acc)};
+}
+
+// The builtin effect surface (builtin_table.ts's effect rows — the same set
+// the runtime table derives its default interpretations from, pinned by
+// analysis.test.ts).
+const BUILTIN_EFFECTS = new Set(EFFECT_OPS);
+
+// rejectUnhandled: the one fail-fast gate over checked.unhandled, applied by
+// both backends at their entry right after prepare (eval.ts's exec — before
+// it seeds builtins; wasm.ts's pipeline — before any codegen). An op with no
+// matching handler in its subtree (the checker's residual row: ops-minus-
+// handled matching through calls) that is neither a builtin effect nor
+// covered by the runner's interp override would only surface mid-run, after
+// earlier side effects. The message matches the runners' runtime backstops
+// (runTop / wasm_host's hostFor).
+export function rejectUnhandled(checked: Checked, interp?: EffectInterp): void {
+  for (const op of checked.unhandled)
+    if (!BUILTIN_EFFECTS.has(op) && interp?.[op] === undefined)
+      throw new Error("Unhandled effect: " + op);
 }

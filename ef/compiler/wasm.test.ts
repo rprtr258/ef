@@ -391,11 +391,33 @@ a + b`)).toBe("6");
   });
 
   test("user effects compile and escape to the host", () => {
-    // Same unhandled-effect error message as the interpreter.
+    // Same unhandled-effect error message as the interpreter, and the same
+    // timing: both runners reject statically at their entry (exec / the wasm
+    // pipeline) before anything runs.
     parity("effect Foo(n: i64): i64; Foo!(1) + 2");
-    // One-shot interp injection overrides the default interpretation.
+    // The buildwasm entry has no runner: the static gate rejects the same
+    // ops `ef run` rejects, before a module is emitted.
+    expect(() => compile("effect Foo(n: i64): i64; Foo!(1) + 2")).toThrow("Unhandled effect: Foo");
+    // One-shot interp injection overrides the default interpretation — an
+    // op the interp covers passes the gate and runs.
     // i64 args unbox to BigInt at the host boundary.
     expect(show(runWasm("effect Foo(n: i64): i64; Foo!(21) * 2", {Foo: (args, k) => k(Number(args[0]) + 1)}))).toBe("44");
+  });
+
+  test("static gate rejects before any side effect (same timing as exec)", () => {
+    // Mirror of the eval-side test (index.test.ts): a Println before the
+    // unhandled op must not run — rejectUnhandled fires at the pipeline
+    // entry, before evaluation or codegen.
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
+    try {
+      expect(() => runWasm(`effect T(x: i64): i64; Println!("boom"); T!(1)`))
+        .toThrow("Unhandled effect: T");
+    } finally {
+      console.log = orig;
+    }
+    expect(logs).toEqual([]); // Println never ran: rejection precedes evaluation
   });
 
   test("handlers: user ops, resume, deep nesting, multi-shot", () => {
