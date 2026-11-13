@@ -174,7 +174,12 @@ export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
           b.localGet(n);
         }, i => {
           f.elemAddr(blk, i);
-          f.slot(i);
+          // slot(i) reads a static slot number; the list's source slot is
+          // the running counter, so index the frame's slots array directly.
+          b.localGet(0);
+          b.structGet(4, 1);
+          b.localGet(i);
+          b.arrayGet(1);
           b.arraySet();
         });
         f.boxArr(blk);

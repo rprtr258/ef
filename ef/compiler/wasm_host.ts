@@ -9,12 +9,21 @@ import {type Value, OPS, asSlice, mkSlice, mkTup, show, sliceElems} from "./env.
 import {builtinEffectHosts} from "./builtins.ts";
 import {compileWithOps} from "./wasm.ts";
 import {DBGTRACE, TRACE_SITES} from "./wasm_tables.ts";
+import {assertNever} from "./assert.ts";
 
 // The accessor ABI: exported accessor functions — the only way JS can touch
 // GC structs. hostBox/hostUnbox rebuild interpreter Values through them; the
 // field names are the wasm export names.
+//
+// __tag's return type is the tag ladder wasm_module.ts emits (i31=2, $F64=1,
+// $STR=3, $ARR=4, $CLO=5, $I32..$F32=6..10, $TUP=11): every shape maps to a
+// tag, and the ladder ends in unreachable, so 1..11 is the full non-null
+// domain (null never reaches hostUnbox's switch — the null check precedes
+// it). Typing it as the literal union makes the unbox switch exhaustively
+// typechecked.
+type HostTag = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
 type Accessors = {
-  __tag(v: unknown): number,
+  __tag(v: unknown): HostTag,
   __num(v: unknown): number,
   __f32(v: unknown): number,
   __i32(v: unknown): number,
@@ -85,7 +94,8 @@ function hostBox(ex: Accessors, v: Value): unknown {
 function hostUnbox(ex: Accessors, v: unknown): Value {
   if (v === null)
     return null;
-  switch (ex.__tag(v)) {
+  const tag = ex.__tag(v);
+  switch (tag) {
     case 1: return ex.__num(v);
     case 2: return (v as number) !== 0;
     case 3: return hostStr(ex, v);
@@ -112,8 +122,8 @@ function hostUnbox(ex: Accessors, v: unknown): Value {
     case 7: return ex.__u32(v) >>> 0; // $U32 box (masked)
     case 8: return BigInt.asIntN(64, ex.__i64(v)); // $I64 box: BigInt
     case 9: return BigInt.asUintN(64, ex.__u64(v)); // $U64 box: BigInt masked
+    default: return assertNever(tag);
   }
-  throw new Error(`wasm host: unknown anyref tag ${ex.__tag(v)}`);
 }
 
 function hostStr(ex: Accessors, v: unknown): string {

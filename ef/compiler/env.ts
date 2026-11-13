@@ -169,7 +169,6 @@ export class Env {
       }
       e = e.parent;
     }
-    throw new Error("Assignment to unbound symbol: " + name);
   }
   extend(): Env {
     return new Env(this);

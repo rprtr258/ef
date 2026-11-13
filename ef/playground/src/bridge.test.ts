@@ -151,4 +151,37 @@ describe("bridge", () => {
     ]);
     expect(toks[1][0].scope).toBe("tag");
   });
+
+  test("tokenize scopes numbers, keywords and unscoped punctuation", () => {
+    const toks = tokenize("f(x, 1.5) ? 2");
+    const scopes = toks[0].map((t) => t.scope);
+    expect(scopes).toContain("number");
+    expect(scopes).toContain("identifier");
+    // `?` is outside the ef token grammar: no token at all, still advances.
+    expect(toks[0].map((t) => t.scope)).toEqual([
+      "identifier", "delimiter", "identifier", "delimiter", "number",
+      "delimiter", "number",
+    ]);
+  });
+
+  test("alias outlines render every type shape with declared param names", () => {
+    for (const [decl, typ] of [
+      ["V :: fn(a: type): type {[a]};", "[a]"],
+      ["F :: fn(a: type): type {(a) -> a};", "(a) -> a"],
+      ["I :: fn(a: type): type {a};", "a"],
+      ["A :: fn(): type {any};", "any"],
+    ] as [string, string][]) {
+      const [item] = outline(decl);
+      expect(item.typ).toBe(typ);
+    }
+  });
+
+  test("Wait! runs the bridge's busy-wait interpretation", () => {
+    const r = interpret("Wait!(0)", () => {});
+    expect(r.value).toBe(null);
+  });
+
+  test("unparseable files are simply not entry files", () => {
+    expect(isEntryFile("f :: fn( {")).toBe(false);
+  });
 });

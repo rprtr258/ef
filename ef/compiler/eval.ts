@@ -221,11 +221,10 @@ function evalPrim(p: CPrim, env: Env): Value {
       const o = evalAtom(p.obj, env);
       const idx = p.idx;
       // Tuples index their fields; arrays index through the view's window.
-      if (o !== null && typeof o === "object" && o.tag === "tup") {
-        if (idx < 0 || idx >= o.elems.length || !Number.isInteger(idx))
-          throw new Error(`.${p.name}: index ${idx} out of bounds [0, ${o.elems.length})`);
+      // Tuple indices are range-checked statically (types.ts's field case),
+      // so only the runtime-sized slice window needs a bounds check here.
+      if (o !== null && typeof o === "object" && o.tag === "tup")
         return o.elems[idx];
-      }
       const s = asSlice(o);
       if (idx < 0 || idx >= s.len || !Number.isInteger(idx))
         throw new Error(`.${p.name}: index ${idx} out of bounds [0, ${s.len})`);

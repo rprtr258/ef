@@ -93,10 +93,13 @@ export function impType(n: string): number {
 // in this build, so abstract heap types derive from the nullable type
 // constants via getHeapType. Concrete-type non-null forms share the bare
 // heap type id, so both spellings of a cast target collapse onto HT[i].
+// heapTypes indexes _T.HT/_T.RF with shape bytes 0..20; this load-time pin
+// keeps the table and that domain from drifting apart silently.
+if (_T.HT.length !== 21) throw new WasmError("internal: shape table grew past heapTypes' 0..20 domain");
+
 export function heapTypes(ht: number): {h: binaryen.HeapType, n: binaryen.Type} {
   if (ht === ANYREF) return {h: binaryen.getHeapType(binaryen.anyref), n: binaryen.anyref};
   if (ht === EQREF) return {h: binaryen.getHeapType(binaryen.eqref), n: binaryen.eqref};
   if (ht === I31REF) return {h: binaryen.getHeapType(binaryen.i31ref), n: binaryen.i31ref};
-  if (ht >= 0 && ht <= 20) return {h: _T.HT[ht], n: _T.RF[ht]};
-  throw new WasmError(`internal: bad heaptype byte ${ht}`);
+  return {h: _T.HT[ht], n: _T.RF[ht]};
 }

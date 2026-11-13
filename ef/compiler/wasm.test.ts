@@ -13,7 +13,7 @@ import {classifySlots} from "./wasm_devirt.ts";
 import type {TLevel} from "./wasm_term.ts";
 import {Parser} from "./parser.ts";
 import {runWasm} from "./wasm_host.ts";
-import {show} from "./env.ts";
+import {mkSlice, mkTup, show, type Value} from "./env.ts";
 
 // binaryen's typings lag its runtime (see wasm.ts RawBinaryen): readBinary's features argument is untyped in the .d.ts.
 const bin = binaryen as typeof binaryen & {
@@ -26,7 +26,7 @@ const workspaceDir = import.meta.dir;
 // for every program below, `run(src)` and `runWasm(src)` produce the same
 // `show()` rendering (values AND error messages).
 function parity(src: string) {
-  const interp = ((): string => {
+  const interpOut = ((): string => {
     try {
       return show(run(src));
     } catch (e) {
@@ -40,8 +40,8 @@ function parity(src: string) {
       return "ERR: " + (e as Error).message;
     }
   })();
-  expect(wasm).toBe(interp);
-  return interp;
+  expect(wasm).toBe(interpOut);
+  return interpOut;
 }
 
 // Health check for every compiled module in this file: the module must
@@ -1161,5 +1161,37 @@ add3(1, 2, 3)`;
     expect(parity(src)).toBe("6");
     const levels = audit(src);
     expect(levels.some(l => [...(l.typed?.values() ?? [])].includes("i32"))).toBe(true);
+  });
+});
+
+describe("wasm host boundary (wasm_host.ts)", () => {
+  test("value crossings box/unbox through every host branch", () => {
+    for (const [src, expected, interp] of [
+      // Custom interps returning tuples/slices exercise the tup and arr box
+      // branches; the results unbox back through the matching arms.
+      ["effect Make(): [i64, i64]; f :: fn(): i64 { t: [i64, i64] :: Make!(); t.0 + t.1 }; f()", "3", {Make: () => mkTup([1, 2])}],
+      ["effect Roll(): [i64]; Roll!()", "[5, 6]", {Roll: () => mkSlice([5, 6])}],
+      // The typed slot forces the $U32 box; a bare @as at top level rides
+      // the unstamped pass-through and crosses as an f64 num box instead.
+      ["u: u32 :: 4000000000; u", "4000000000", undefined],
+      ["\"hi there\"", "\"hi there\"", undefined],
+      ["id :: fn(x: i64): i64 { x }; id", "[fn]", undefined],
+    ] as [string, string, Record<string, (args: Value[]) => Value> | undefined][]) {
+      expect(show(runWasm(src, interp))).toBe(expected);
+    }
+  });
+
+  test("unboxable interp results are rejected with the box error", () => {
+    expect(() => runWasm("effect Foo(n: i64): i64; Foo!(1)", {Foo: () => ({tag: "fn"} as Value)}))
+    .toThrow(/cannot box value \[fn\]/);
+  });
+
+  test("array window OOB carries the field name through the fail channel", () => {
+    expect(parity(`xs: [i64] :: [1, 2];
+xs.5`)).toBe("ERR: .5: index 5 out of bounds [0, 2)");
+  });
+
+  test("the list constructor routes through its wasm trampoline", () => {
+    expect(parity("list(1, 2)")).toBe("[1, 2]");
   });
 });

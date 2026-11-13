@@ -572,26 +572,24 @@ function stampArrKind(e: Expr & {t: "arr"}, kind: "arr" | "tup"): void {
 // Infer `e` expecting a tuple type. Propagates the expectation into array
 // literals (so `[1,2,3]` becomes a tuple), blocks (last statement), and
 // lambda bodies (return type), so a declared `[f,f,f]` return flows into a
-// `[x, y, z]` body literal. Falls back to plain `infer` otherwise.
-function inferWith(id: ExprID, nodes: Expr[], expected: Type, env: Env, effs: Set<string>, effects: Map<string, EffectSig>): Type {
+// `[x, y, z]` body literal. Both call sites (lambda retTyp, block tail)
+// guard on the expectation being a resolved tup, so `expected` is a TupT.
+function inferWith(id: ExprID, nodes: Expr[], expected: TupT, env: Env, effs: Set<string>, effects: Map<string, EffectSig>): Type {
   const e = nodes[id];
-  const rt = env.uni.res(expected);
-  if (rt.tag !== "tup")
-    return infer(id, nodes, env, effs, effects);
   if (e.t === "arr")
-    return inferArr(id, nodes, rt, env, effs, effects);
+    return inferArr(id, nodes, expected, env, effs, effects);
   if (e.t === "block") {
     const n = env.extend();
     let last: Type = TUNIT;
     for (let i = 0; i < e.stmts.length; i++)
       last = i === e.stmts.length - 1
-        ? inferWith(e.stmts[i], nodes, rt, n, effs, effects)
+        ? inferWith(e.stmts[i], nodes, expected, n, effs, effects)
         : infer(e.stmts[i], nodes, n, effs, effects);
     return last;
   }
   if (e.t === "lambda" && e.retTyp !== null) {
     const saved = e.retTyp;
-    e.retTyp = rt;
+    e.retTyp = expected;
     try { return infer(id, nodes, env, effs, effects); }
     finally { e.retTyp = saved; }
   }
@@ -844,8 +842,9 @@ function inferNode(
       if (ctx.unann.size > 0) lamStack.push(ctx);
       let ret: Type;
       try {
-        ret = e.retTyp !== null && env.uni.res(e.retTyp).tag === "tup"
-          ? inferWith(e.body, nodes, e.retTyp, n, innerEffs, effects)
+        const rt = e.retTyp !== null ? env.uni.res(e.retTyp) : null;
+        ret = rt !== null && rt.tag === "tup"
+          ? inferWith(e.body, nodes, rt, n, innerEffs, effects)
           : infer(e.body, nodes, n, innerEffs, effects);
       } finally {
         if (ctx.unann.size > 0) {

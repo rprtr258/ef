@@ -130,6 +130,13 @@ describe("cps_opt via toCps: read-temp substitution", () => {
     expect(run(src)).toBe(15n);
   });
 
+  test("an unchecked @as converts as a pure pass-through", () => {
+    // toCps without a prior checkProgram sees no numKind stamp and no
+    // asKind, so the @as prim is skipped — the operand flows straight on.
+    const ir = conv("@as(1, i64)");
+    expect(JSON.stringify(terms(ir)).includes("\"t\":\"as\"")).toBe(false);
+  });
+
   test("closure-delivered temps resolve to the mkfn slot", () => {
     const src = "f :: fn(n: i64): i64 { n * 2 };\ng :: f;\ng(21)";
     const ir = conv(src);

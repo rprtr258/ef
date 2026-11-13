@@ -5,7 +5,7 @@
 import {describe, expect, test} from "bun:test";
 import {Parser} from "./parser.ts";
 import {globalEnv} from "./env.ts";
-import {builtins} from "./builtins.ts";
+import {builtins, builtinParamNames} from "./builtins.ts";
 import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, performsAnyOp} from "./analysis.ts";
 
 const refs = (src: string) => builtinRefs(new Parser(src).parseProgram());
@@ -147,4 +147,19 @@ describe("module init order", () => {
         {cwd: import.meta.dir});
       expect(p.exitCode).toBe(0);
     });
+});
+
+describe("builtinParamNames (LSP hover text)", () => {
+  for (const [name, expected] of [
+    ["sub", ["xs", "from", "to"]],
+    ["not", ["v"]],
+    ["list", ["xs"]],
+    ["map", ["f", "xs"]],
+    ["Read", undefined], // effect entries carry sigs, not pnames
+    ["+", undefined], // operators live in env.ts, not the builtin table
+  ] as [string, string[] | undefined][]) {
+    test(`${name} -> ${expected === undefined ? "undefined" : expected.join(", ")}`, () => {
+      expect(builtinParamNames(name)).toEqual(expected);
+    });
+  }
 });

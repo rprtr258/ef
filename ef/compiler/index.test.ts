@@ -4,7 +4,7 @@ import {join} from "node:path";
 import {readFileSync, unlinkSync, existsSync, writeFileSync} from "node:fs";
 import {execSync} from "node:child_process";
 import {run, newCtx, exec, type Ctx} from "./eval.ts";
-import {checkProgram, showT} from "./types.ts";
+import {checkProgram, showT, showErr, TypeError_} from "./types.ts";
 import {show, sliceElems, mkSlice, mkTup, type Slice, type Value} from "./env.ts";
 import {Parser} from "./parser.ts";
 import {toCps} from "./cps.ts";
@@ -132,7 +132,11 @@ handle {
   });
 
   test("Wait is an effect with a pure-looking unit type", () => {
-    expect(typeOf("f :: fn(): unit ! { Wait } { Wait!(0) };")).toBe("unit");
+    expect(typeOf("f :: fn(): unit ! { Wait } { Wait!(0) };"))
+    .toBe("unit");
+    // The default interpretation runs for real: sleepSync(0) returns
+    // immediately, then resumes with unit.
+    expect(run("Wait!(0)")).toBe(null);
   });
 
   test("inferred `any` warns; an explicit `: any` annotation is silent", () => {
@@ -227,6 +231,31 @@ describe("Tuples, aliases, and field access", () => {
   });
   test("stray punctuation in expression position fails as a parse error, not a sym node", () => {
     expect(() => run(`f(:)`)).toThrow("Unexpected token \":\"");
+  });
+  test("characters outside the token grammar fail in the lexer", () => {
+    for (const [src, c] of [
+      ["`x`", "`"],
+      ["1 ? 2", "?"],
+    ] as [string, string][]) {
+      expect(() => run(src)).toThrow(`Bad char: ${c}`);
+    }
+  });
+
+  test("string escapes: \\u and unknown escapes", () => {
+    for (const [src, expected] of [
+      ["\"\\u0041\"", "A"],
+      ["\"a\\qb\"", "aqb"],
+    ] as [string, string][]) {
+      expect(show(run(src))).toBe(`"${expected}"`);
+    }
+  });
+
+  test("array types reject named elements", () => {
+    expect(() => run(`p: [x: i64] :: [1]; p`)).toThrow("array type cannot have a named element");
+  });
+
+  test("a backtracked array-literal statement still demands a semicolon", () => {
+    expect(() => run(`[1] 2`)).toThrow("Expected \";\", got \"2\"");
   });
   test("dot access on a tuple by name", () => {
     expect(show(run(`p: [x: f64, y: f64] :: [1.0, 2.0]; p.x`))).toBe("1");
@@ -699,6 +728,182 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
       {U: (_args, k) => k(7)})).toBe(7n);
   });
 
+  test("runtime backstops the static unhandled-op check misses", () => {
+    // A case body re-performing its own op reads as handled statically (the
+    // handler covers T), but the body runs outside the handler — only the
+    // interpreter's unhandled-effect throw catches it.
+    expect(() => run(`effect T(x: i64): i64; handle { T!(1) } case T(n) => k { T!(2) }`))
+      .toThrow("Unhandled effect: T");
+  });
+
+  test("unstamped comparison sites run through the operator table", () => {
+    // Two untyped literals leave the site unstamped (no concrete width),
+    // so the comparison applies the env's own operator closure.
+    for (const [src, expected] of [
+      ["2 >= 1", true],
+      ["2.5 >= 1.5", true],
+      ["1 >= 2", false],
+    ] as [string, boolean][]) {
+      expect(run(src)).toBe(expected);
+    }
+  });
+
+  describe("showErr (REPL/CLI diagnostics)", () => {
+    const located = (msg: string, line: number, col: number) => {
+      const e = new TypeError_(msg);
+      e.pos = {line, col};
+      return e;
+    };
+    for (const [label, err, src, expected] of [
+      ["a plain Error has no position prefix", new Error("boom"), undefined, "boom"],
+      ["a located error prefixes line/col", located("boom", 2, 3), undefined, "at line 2, col 3: boom"],
+      ["with source, the offending line is quoted with a caret",
+       located("boom", 2, 3), "a := 1;\nb := 23;\n", "2 | b := 23;\n  |   ^\nat line 2, col 3: boom"],
+      ["a trailing \\r is stripped from the quoted line",
+       located("boom", 1, 1), "a := 1;\r\nb := 2;\r\n", "1 | a := 1;\n  | ^\nat line 1, col 1: boom"],
+    ] as [string, unknown, string | undefined, string][]) {
+      test(label, () => {
+        expect(showErr(err, src)).toBe(expected);
+      });
+    }
+  });
+
+  test("calling a non-closure any fails at the apply boundary", () => {
+    expect(() => run(`f: any :: 1; f(2)`)).toThrow("Not callable: 1");
+  });
+
+  test("stamped comparisons coerce through widthOp", () => {
+    // Concrete-typed operands stamp the site with their width, so the
+    // comparison runs through widthOp's planes (i64 bigints, f64 numbers).
+    for (const [src, expected] of [
+      ["x: i64 :: 2; y: i64 :: 1; x >= y", true],
+      ["x: f64 :: 2.5; y: f64 :: 1.5; x >= y", true],
+      ["x: f64 :: 2.5; y: f64 :: 1.5; x > y", true],
+      ["x: f64 :: 2.5; y: f64 :: 1.5; x <= y", false],
+      ["x: i64 :: 2; y: i64 :: 1; x < y", false],
+    ] as [string, boolean][]) {
+      expect(run(src)).toBe(expected);
+    }
+  });
+
+  test("a handler's escaping closure performs unhandled outside the handle", () => {
+    // The checker tracks residual ops through calls, but a polymorphic
+    // caller hides the escaped closure's row — only runTop's unhandled
+    // throw catches the perform.
+    expect(() => run(`
+      effect E(): i64;
+      call :: fn (f) { f() };
+      escape :: fn (h) { handle { h() } case E(n) => k { h } };
+      r :: escape(fn(): i64 ! { E } { E!() });
+      call(r)
+    `)).toThrow("Unhandled effect: E");
+  });
+
+  describe("checker diagnostics", () => {
+    for (const [src, msg] of [
+      ["[1] - 1", /-: \[i64\] and i64 are not numeric/],
+      ["x := [];\nx = [x];", /recursive type/],
+      ["if (true) { [1, \"a\"] } else { [1, \"a\", true] }", /tuple arity 2 ≠ 3/],
+      ["if (true) { fn(x: i64): i64 { x } } else { fn(x: i64, y: i64): i64 { x } }", /arity 1 ≠ 2/],
+      ["effect E(): i64; effect U(): i64; g1 :: fn(): i64 ! { E } { E!() }; g2 :: fn(): i64 ! { U } { U!() }; if (true) { g1 } else { g2 }", /effect mismatch: \{ E \} ≠ \{ U \}/],
+      ["@as(\"a\", i64)", /@as: cannot cast string to i64/],
+      ["xs: [i64] :: [1]; xs.foo", /arrays use \.N indexing, not \.foo/],
+      ["p: [i64, i64] :: [1, 2]; p.5", /\.5 out of range for tuple of 2/],
+      ["p: [x: i64, y: i64] :: [1, 2]; p.z", /tuple has no field \.z/],
+      ["x: i64 :: 1; x.0", /field access on non-record type: i64/],
+      ["p: [i64, i64] :: [1, 2]; [a, b, c] := p;", /destructure arity 3 ≠ tuple 2/],
+      ["x: i64 :: 1; [a, b] := x;", /cannot destructure non-record type: i64/],
+      ["effect E(x: i64): i64; E!()", /effect E: 1 args, got 0/],
+      ["handle { 1 } case Nope(n) => k { n }", /Handler for unknown effect: Nope/],
+      ["f :: fn(x: i64): i64 { x }; f(1, 2)", /arity 1 ≠ 2/],
+      ["t: string :: \"x\"; t(1)", /Type mismatch/],
+      ["s: string :: \"x\"; (if (true) { s } else { s })(1)", /Type mismatch/],
+      ["(fn(x: i64): i64 { x })(\"s\")", /Type mismatch/],
+      ["h :: fn(): [i64, i64] { fn(): [i64, i64] { [1, 2] } }; h()", /Type mismatch/],
+    ] as [string, RegExp][]) {
+      test(src.replace(/\s+/g, " ").slice(0, 60), () => {
+        expect(() => run(src)).toThrow(msg);
+      });
+    }
+  });
+
+  describe("checker internals through public behavior", () => {
+    for (const [label, src, expected] of [
+      // Two map instances of the same shape unify: their effect variables
+      // union in the unifier's effect union-find.
+      ["effect vars union across same-shaped polymorphic instances",
+       "pick :: fn (f, g) { if (true) { f } else { g } };\na :: pick(map, map);\na(fn(x: i64): i64 { x }, [1])", "[1]"],
+      // Three same-shaped instances chain the effect union-find's parent
+      // links, so find() walks and path-compresses.
+      ["effect union-find chains three instances",
+       "pick3 :: fn (f, g, h) { if (true) { if (true) { f } else { g } } else { h } };\na :: pick3(map, map, map);\na(fn(x: i64): i64 { x }, [1])", "[1]"],
+      // A generalized scheme whose type nests the param var inside a tuple
+      // instantiates a fresh copy per use.
+      ["scheme instantiation copies tuples",
+       "mk :: fn (x) { [[x, x], \"s\"] };\na :: mk(1);\nb :: mk(true);\nb", "[[true, true], \"s\"]"],
+      // A scheme whose param resolved to a fun type carrying an effect
+      // variable instantiates a fresh effect variable per use.
+      ["scheme instantiation copies effect variables",
+       "twice :: fn (f, xs) { map(f, map(f, xs)) };\ntwice(fn(x: string): string { x }, [\"a\"])", "[\"a\"]"],
+      // The list constructor is callable directly (literals desugar to it).
+      ["list(...) builds an array", "list(1, 2)", "[1, 2]"],
+      // hasPerformOutsideLambdas walks if/field spines inside handle bodies.
+      ["handle body spine through if and field",
+       "effect E(): i64; p: [i64, i64] :: [1, 2]; handle { if (true) { p.0 } else { E!() } } case E(n) => k { n }", "1"],
+      // hasPerformOutsideLambdas's as/while arms on a handle body spine
+      // (the while must not perform: .some() short-circuits the walk).
+      ["handle body spine through while and as",
+       "effect E(n: i64): i64; p: [i64, i64] :: [1, 2];\nf :: fn(): i64 {\n  handle {\n    while (false) { unit };\n    @as(if (true) { E!(p.0) } else { 2 }, i64)\n  } case E(n) => k { k(n) }\n};\nf()", "1"],
+      // caseReferencesK walks as/if/while/app/arr/field/handle shapes in
+      // case bodies that resume; the gate only runs over a perform-free body.
+      ["k references through as/if/while/arr/field/nested handle",
+       "effect E(n: i64): i64;\ng :: fn(): i64 ! { E } { E!(1) };\nf :: fn(): i64 {\n  handle {\n    g()\n  } case E(n) => k {\n    x := @as(n, i64);\n    if (x < 9) { x } else { 0 };\n    y := [x, x].1;\n    while (y < 1) { y = y + 1 };\n    h := handle { y } case Return(v) => r { k(v) };\n    k(h)\n  }\n};\nf()", "1"],
+      // inferWith's lambda branch: a lambda body under a tuple return type.
+      ["tuple expectation flows into a nested lambda body",
+       "h :: fn(): [i64, i64] { fn(): [i64, i64] { [1, 2] } }; h()", "ERR"],
+      // inferWith's block branch: non-final statements infer plainly.
+      ["tuple expectation flows through a block tail",
+       "p: [i64, i64] :: [1, 2];\nf :: fn(): [i64, i64] { a := 1; [a, 2] };\nf()", "[1, 2]"],
+      // inferWith's sym fallback: a non-literal tail against a tuple type.
+      ["tuple expectation applies to a sym tail",
+       "p: [i64, i64] :: [1, 2];\nf :: fn(): [i64, i64] { p };\nf()", "[1, 2]"],
+      // A dlet over an array window with annotated fields unifies each.
+      ["annotated array destructure unifies the field types",
+       "[a: i64, b: i64] := [1, 2];\na + b", "3"],
+    ] as [string, string, string][]) {
+      test(label, () => {
+        if (expected === "ERR") {
+          expect(() => run(src)).toThrow();
+        } else {
+          expect(show(run(src))).toBe(expected);
+        }
+      });
+    }
+
+    test("a polymorphic callee's arity failure names the parameter", () => {
+      expect(() => run(`k :: fn (f, x) { f(x) }; k(1, 2)`)).toThrow();
+    });
+
+    test("a concrete non-callable argument is caught and named", () => {
+      expect(() => run(`k :: fn (f, x) { f(x) };
+s: string :: "x";
+k(s, 1)`)).toThrow();
+    });
+
+    test("lookupResolved deep-resolves and instantiates schemes", () => {
+      const c = checkProgram(new Parser("m :: 5; m").parseProgram());
+      expect(showT(c.env.lookupResolved("m"))).toBe("i64");
+      // The builtin's scheme instantiates fresh type and effect variables.
+      const m = checkProgram(new Parser("map").parseProgram());
+      expect(showT(m.env.lookupResolved("map")))
+      .toMatch(/^\(\(a\) -> b ! \{ e\d+ \}, \[a\]\) -> \[b\] ! \{ e\d+ \}$/);
+    });
+
+    test("builtin operator rows display as polymorphic effect variables", () => {
+      expect(typeOf("map")).toMatch(/^\(\(a\) -> b ! \{ e\d+ \}, \[a\]\) -> \[b\] ! \{ e\d+ \}$/);
+    });
+  });
+
   test("builtin effects are never flagged", () => {
     expect(typeof run(`Random!()`)).toBe("number");
   });
@@ -865,6 +1070,12 @@ describe("numeric widths", () => {
     expect(show(run(`1.5 + 1`))).toBe("2.5"); // f64 + i64-literal -> f64
     expect(typeOf(`1 + 2`)).toBe("i64");
     expect(typeOf(`1.5 + 1.5`)).toBe("f64");
+  });
+
+  test("wildcard-wide arithmetic runs unstamped through the operator table", () => {
+    // Two untyped float literals leave the site unstamped (no concrete
+    // width to pin), so the interpreter applies the env's own `+` closure.
+    expect(run(`1.5 + 2.5`)).toBe(4);
   });
 
   test("builtins return concrete widths", () => {

@@ -16,6 +16,10 @@ type CliResult = {code: number, stdout: string, stderr: string};
 // spawnSync (not execFileSync): the error paths ARE the tested behavior, so
 // non-zero exits must come back as data instead of exceptions.
 function cli(...args: string[]): CliResult {
+  return cliIn({}, ...args);
+}
+
+function cliIn(extraEnv: Record<string, string>, ...args: string[]): CliResult {
   // FORCE_COLOR=0 pins the child's styling off: under a TTY, bun test
   // --parallel injects FORCE_COLOR=1 into its worker processes, the
   // inherited env reaches this child, and cli.ts's styleText honors
@@ -25,7 +29,7 @@ function cli(...args: string[]): CliResult {
   const r = spawnSync("bun", ["run", "cli.ts", ...args], {
     encoding: "utf8",
     cwd: compilerDir,
-    env: {...process.env, FORCE_COLOR: "0"},
+    env: {...process.env, FORCE_COLOR: "0", ...extraEnv},
   });
   return {code: r.status ?? 1, stdout: r.stdout, stderr: r.stderr};
 }
@@ -40,6 +44,30 @@ describe("cli", () => {
   test("runwasm: same stdout as the interpreter for the same example", () => {
     const file = join(compilerDir, "..", "examples", "two_prints.ef");
     expect(cli("runwasm", file).stdout).toBe(cli("run", file).stdout);
+  }, 15000); // two spawns + wasm compile; the 5s default flakes under parallel load
+
+  test("runwasm: EFTRACE=1 dumps the traced-site ring to stderr", () => {
+    // 5000 g-entries push the ring past its 4096 cap, exercising the shift.
+    const file = join(tmpdir(), `ef-cli-test-${process.pid}-trace.ef`);
+    writeFileSync(file, `g :: fn(x: i64): i64 { x + 1 };
+f :: fn(): i64 {
+  i := 0;
+  s := 0;
+  while (i < 5000) { s = s + g(i); i = i + 1 };
+  s
+};
+f()
+`);
+    try {
+      const all = cliIn({EFTRACE: "1", EFTRACE_ALL: "1"}, "runwasm", file);
+      expect(all.code).toBe(0);
+      expect(all.stderr).toContain("[EFTRACE] all sites:");
+      const last = cliIn({EFTRACE: "1"}, "runwasm", file);
+      expect(last.code).toBe(0);
+      expect(last.stderr).toContain("[EFTRACE] last sites:");
+    } finally {
+      rmSync(file, {force: true});
+    }
   }, 15000); // two spawns + wasm compile; the 5s default flakes under parallel load
 
   test("run: passes program args through to the program", () => {
