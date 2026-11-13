@@ -39,7 +39,7 @@ program  ::= item*
 item     ::= effect-decl | type-alias | stmt
 effect-decl ::= "effect" name params ":" type ";"
 type-alias ::= name "::" type ";"
-             | name "::" "fn" "(" (name ":" "type" ("," name ":" "type")*)? ")"
+             | name "::" "fn" "(" ((name ":" "type" ("," name ":" "type")*) ","?)? ")"
                  ":" "type" "{" type "}" ";"    -- see §3.1
 type     ::= ...                               -- "type" is the type of types
 stmt     ::= decl | assign | expr (";" | blocky)
@@ -53,11 +53,15 @@ aliases and effect declarations are not expressions and produce no value.
 ```
 decl      ::= name (":=" expr | "::" expr | ":" type ("=" expr | "::" expr)) ";"
             | tuple-pattern (":=" | "::") expr ";"
-tuple-pattern ::= "[" (name (":" type)? ("," name (":" type)?)*)? "]"
-params    ::= "(" (name (":" type)? ("," name (":" type)?)* )? ")"
-eff-annot ::= "!" "{" name ("," name)* "}"
+tuple-pattern ::= "[" ((name (":" type)? ("," name (":" type)?)*) ","?)? "]"
+params    ::= "(" ((name (":" type)? ("," name (":" type)?)*) ","?)? ")"
+eff-annot ::= "!" "{" (name ("," name)* ","?)? "}"
 block     ::= "{" stmt* "}"
 ```
+
+Every comma-separated list (params, args, destructure patterns, tuple types,
+effect rows) requires the comma between elements; only a trailing comma
+immediately before the close delimiter is optional.
 
 There are two binding kinds:
 
@@ -99,13 +103,13 @@ postfix  ::= primary ("(" args ")")* ("." name)*   -- call, then field access
 primary  ::= num | str | "true" | "false" | "unit"
            | name | "(" expr ")" | array | lambda | if | handle | as-expr
 as-expr  ::= "@as" "(" expr "," type ")"    # numeric cast, see §3.1
-array    ::= "[" (expr ("," expr)*)? "]"
+array    ::= "[" ((expr ("," expr)*) ","?)? "]"
 lambda   ::= "fn" params block
 if       ::= "if" "(" expr ")" block ("else" (if | block))?
 perform  ::= name "!" "(" args ")"        # `Op!(args)`
 handle   ::= "handle" block case+
 case     ::= "case" name params "=>" name block
-args     ::= "(" (expr ("," expr)*)? ")"
+args     ::= "(" ((expr ("," expr)*) ","?)? ")"
 ```
 
 - **Bracket literals** `[a, b, c]` are **arrays if all element types unify**
@@ -192,9 +196,9 @@ case        ::= "case" ("Return" | name) params "=>" name block
 
 ```
 type   ::= "[" type "]"                      -- array
-         | "[" tup-field ("," tup-field)* "]"  -- tuple
-         | "(" type ("," type)* ")" "->" type ("!" "{" name ("," name)* "}")?
-         | name ("(" type ("," type)* ")")?    -- alias instantiation
+         | "[" tup-field ("," tup-field)* ","? "]"  -- tuple
+         | "(" type ("," type)* ","? ")" "->" type ("!" "{" (name ("," name)* ","?)? "}")?
+         | name ("(" type ("," type)* ","? ")")?    -- alias instantiation
          | "i32" | "i64" | "u32" | "u64" | "f32" | "f64"
          | "string" | "bool" | "unit" | "any"
 tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
@@ -265,10 +269,10 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
   pure.
 - `any` — absorbing type. Unifies with anything and stays `any`. Because `any`
   is an escape hatch, the checker **warns** when a binding's
-  *inferred* type contains `any` (e.g. `f :: list` infers `(any) -> [any]`);
-  writing an explicit annotation (`f: (any) -> [any] :: list`) silences the
-  warning. Array literals like `[1,2,3]` are special-cased to `[i64]` and do
-  not trigger it.
+  *inferred* type contains `any` (e.g. `f :: fn(a: any): any { a }` infers
+  `(any) -> any`); writing an explicit annotation
+  (`f: (any) -> any :: fn(a: any): any { a }`) silences the warning. Array
+  literals like `[1, 2, 3]` are special-cased to `[i64]` and do not trigger it.
 
 ### 3.2 Type variables and unification
 
@@ -373,7 +377,7 @@ The type checker stamps each `/` node as integer or float division at check time
 | `set` | `([A], i64, A) -> unit` | Index assignment: writes through the view into the shared backing — every view over the same window (and the original) sees it. Strictly in-window: it never grows (`set: index i out of bounds [0, len)` otherwise); growth is `concat`'s job only. |
 
 **Slices.** A `[T]` value is a fat pointer `{backing array, offset, length}`
-— not a plain array. Literals, `list`, `range`, `concat`, and `map`-like
+— not a plain array. Literals, `range`, `concat`, and `map`-like
 builtins allocate a fresh backing (offset 0); `sub` returns a **view**
 sharing the operand's backing with a shifted offset and shorter length
 (zero-copy). Reads and writes go through the view's window; `==`/`!=` on

@@ -227,7 +227,7 @@ describe("Tuples, aliases, and field access", () => {
   // Field names are type-position-only, so a named-field literal must fail
   // at parse time.
   test("named-field expression literal is rejected at parse time", () => {
-    expect(() => run(`p: [x: i64, y: i64] :: [x: 1, y: 2]; p`)).toThrow("Unexpected token \":\"");
+    expect(() => run(`p: [x: i64, y: i64] :: [x: 1, y: 2]; p`)).toThrow("Expected \",\" or \"]\", got \":\"");
   });
   test("stray punctuation in expression position fails as a parse error, not a sym node", () => {
     expect(() => run(`f(:)`)).toThrow("Unexpected token \":\"");
@@ -256,6 +256,27 @@ describe("Tuples, aliases, and field access", () => {
 
   test("a backtracked array-literal statement still demands a semicolon", () => {
     expect(() => run(`[1] 2`)).toThrow("Expected \";\", got \"2\"");
+  });
+  // Comma-separated lists require the separator; only the trailing comma is
+  // optional (every list site shares Parser.listSep).
+  test("bracket literals demand commas between elements", () => {
+    expect(() => typeOf(`[1 2]`)).toThrow("Expected \",\" or \"]\", got \"2\"");
+    expect(() => typeOf(`[1, 2 3]`)).toThrow("Expected \",\" or \"]\", got \"3\"");
+    expect(typeOf(`[1, 2,]`)).toBe("[i64]");
+  });
+  test("destructure patterns demand commas between fields", () => {
+    expect(() => run(`[a b] := [1, 2];`)).toThrow("Expected \",\" or \"]\", got \"b\"");
+    expect(show(run(`[a, b,] := [1, 2]; a + b`))).toBe("3");
+  });
+  test("call args, fn params, and fn types demand commas", () => {
+    expect(() => typeOf(`f :: fn(a: i64 b: i64): i64 { a + b };`)).toThrow("Expected \",\" or \")\", got \"b\"");
+    expect(() => typeOf(`f: (i64 i64) -> i64 :: 1;`)).toThrow("Expected \",\" or \")\", got \"i64\"");
+    expect(show(run(`f :: fn(a: i64, b: i64,): i64 { a + b }; f(1, 2,)`))).toBe("3");
+  });
+  test("effect rows demand commas", () => {
+    expect(() => typeOf(`effect A(): i64; effect B(): i64; f :: fn(): i64 ! { A B } { A!() };`))
+      .toThrow("Expected \",\" or \"}\", got \"B\"");
+    expect(typeOf(`effect A(): i64; f :: fn(): i64 ! { A, } { A!() }; f()`)).toBe("i64");
   });
   test("dot access on a tuple by name", () => {
     expect(show(run(`p: [x: f64, y: f64] :: [1.0, 2.0]; p.x`))).toBe("1");

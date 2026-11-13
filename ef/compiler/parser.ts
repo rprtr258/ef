@@ -155,6 +155,15 @@ export class Parser {
     if (this.peek() !== s) this.fail(`Expected "${s}", got "${this.peek()}"`);
     this.i++;
   }
+  // Every comma-separated list (args, params, fn types, effect rows, bracket
+  // literals/patterns) shares one rule: the comma is required between
+  // elements, and a `,` directly before the close delimiter is the optional
+  // trailing comma. At the close delimiter itself this is a no-op, leaving
+  // the caller's `while (!this.is(close))` loop to exit.
+  listSep(close: string): void {
+    if (this.is(",")) this.i++;
+    else if (!this.is(close)) this.fail(`Expected "," or "${close}", got "${this.peek()}"`);
+  }
   // Throw a ParseError anchored at the token `o` offsets from the cursor
   // (negative = an already-consumed token). Past EOF the error is zero-width
   // at the last token's end — where input ran out.
@@ -252,7 +261,7 @@ export class Parser {
           if (!this.isKw("type")) throw Error("not a type fn");
           this.next(); // type
           tparams.set(p, parserVar());
-          if (this.is(",")) this.next();
+          this.listSep(")");
         }
         this.eat(")");
         this.eat(":");
@@ -330,7 +339,7 @@ export class Parser {
           const name = this.next();
           const typ = this.is(":") ? (this.next(), this.parseType()) : null;
           fields.push({name, typ, pos});
-          if (this.is(",")) this.i++;
+          this.listSep("]");
         }
         this.eat("]");
         const isConst = this.is("::");
@@ -372,7 +381,7 @@ export class Parser {
       const name = this.next();
       const typ = this.is(":") ? (this.next(), this.parseType()) : null;
       params.push({name, typ, pos});
-      if (this.is(",")) this.i++;
+      this.listSep(")");
     }
     this.eat(")");
     return params;
@@ -383,7 +392,7 @@ export class Parser {
     const args: ExprID[] = [];
     while (!this.is(")")) {
       args.push(this.parseExpr());
-      if (this.is(",")) this.i++;
+      this.listSep(")");
     }
     this.eat(")");
     return args;
@@ -408,7 +417,7 @@ export class Parser {
       const eff = this.next();
       this.recordTypeTok("macro", eff);
       effs.add(eff);
-      if (this.is(",")) this.i++;
+      this.listSep("}");
     }
     this.eat("}");
     return effs;
@@ -450,7 +459,7 @@ export class Parser {
       const ps: Type[] = [];
       while (!this.is(")")) {
         ps.push(this.parseType());
-        if (this.is(",")) this.i++;
+        this.listSep(")");
       }
       this.eat(")");
       this.eat("-");
@@ -480,7 +489,7 @@ export class Parser {
         this.next();
         while (!this.is(")")) {
           args.push(this.parseType());
-          if (this.is(",")) this.i++;
+          this.listSep(")");
         }
         this.eat(")");
       }
@@ -614,7 +623,7 @@ export class Parser {
       const els: ExprID[] = [];
       while (!this.is("]")) {
         els.push(this.parseExpr());
-        if (this.is(",")) this.i++;
+        this.listSep("]");
       }
       this.eat("]");
       return this.add({t: "arr", elems: els, pos: p});
