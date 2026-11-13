@@ -1,11 +1,11 @@
 import type {Expr, ExprID, Program, TypeTok} from "./parser";
-import {ParseError, type Pos} from "./lexer.ts";
 import {BUILTINS, BUILTIN_TABLE, NATIVE_BUILTINS} from "./builtin_table.ts";
 import {ARITH_OPS, CMP_OPS, EQ_OPS, STAMPED_OPS, OP_ADD, OP_DIV, OP_NEG} from "./ops.ts";
 import {TI32, TI64, TU32, TU64, TF32, TF64, TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, tArr, tFun, tTup} from "./prims.ts";
+import {showT, TypeError_} from "./type_display.ts";
 import {
   FLOAT_NAMES, INT_NAMES, NUMERIC_NAMES,
-  Env, TypeError_, Unifier, showT, widthOf,
+  Env, Unifier, widthOf,
   type FunT, type NumName, type Prim, type Type, type TupT,
 } from "./unify.ts";
 import {assertNever} from "./assert.ts";
@@ -30,31 +30,6 @@ export type EffectSig = {
   // names render the bare type as before.
   names?: string[],
 };
-
-// Render an error for the line-oriented frontends (REPL, CLI): ef errors
-// carry a structured 1-based pos (ParseError's token start, TypeError_'s
-// located expression) — when the source text is supplied the offending line
-// is quoted with a caret under the error column, followed by the located
-// message. The LSP reads `pos` directly and must not scrape this format back
-// out.
-export function showErr(err: unknown, src?: string): string {
-  const msg = err instanceof Error ? err.message : String(err);
-  const pos = err instanceof ParseError ? err.pos : err instanceof TypeError_ ? err.pos : undefined;
-  if (pos === undefined) return msg;
-  const head = `at line ${pos.line}, col ${pos.col}: ${msg}`;
-  if (src === undefined) return head;
-  return srcLine(src, pos) + "\n" + head;
-}
-
-// The offending source line, then a caret pointing at the column:
-//   2 | y :: 2;
-//     | ^
-function srcLine(src: string, pos: Pos): string {
-  const text = (src.split("\n").at(pos.line - 1) ?? "").replace(/\r$/, "");
-  const ln = String(pos.line);
-  const gut = " ".repeat(ln.length);
-  return `${ln} | ${text}\n${gut} | ${" ".repeat(pos.col - 1)}^`;
-}
 
 // Names no binding may take: BUILTINS is the shared list of everything an
 // ef program can name — operators (structural, not env-seeded) plus

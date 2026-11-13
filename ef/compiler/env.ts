@@ -1,4 +1,5 @@
-import {showT, type FunT} from "./unify.ts";
+import {showT} from "./type_display.ts";
+import {type FunT} from "./unify.ts";
 import type {CIr} from "./cps_ir.ts";
 import {builtins} from "./builtins.ts";
 import {

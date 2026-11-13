@@ -3,11 +3,12 @@
 // flexing, speculative checkpoint/restore), and HM generalization over the
 // checker `Env`. A leaf over prims.ts: the shape constructors (tArr/tFun/
 // tTup) and the prim constants live there, and prims imports only this
-// module's type shapes (type-only, erased at runtime). TypeError_ and the
-// `showT` formatter live here because the unifier's failure paths format
-// types.
-import type {Pos} from "./lexer.ts";
+// module's type shapes (type-only, erased at runtime). Failure paths render
+// types and throw through type_display.ts (showT/TypeError_) — a leaf that
+// imports this module's shapes type-only, so the runtime edge is one-way
+// (unify → type_display).
 import {tArr, tFun, tTup} from "./prims.ts";
+import {showT, TypeError_} from "./type_display.ts";
 
 export type Type = Prim | ArrT | TupT | FunT | Var | AnyT;
 export type NumName = "i32" | "i64" | "u32" | "u64" | "f32" | "f64" | "int" | "float";
@@ -364,56 +365,6 @@ type Snapshot = {
   effCounter: number,
 };
 
-// Format a type for display. Expects a *deep-resolved* type (see
-// `Unifier.deepRes`): any variable shown is a genuinely unbound one.
-// Type variables display as letters (a, b, ..., z, a1, b1, ...) in order of
-// first appearance, so the same variable always prints the same letter.
-// `pnames` optionally names the top-level fun's params (`x: T`); nested fun
-// types stay anonymous (names exist only for the hovered signature).
-// `varNames` pre-assigns variable ids to names before the first-appearance
-// letters (alias tparams print under their declared names).
-export function showT(t: Type, pnames?: (string | null)[], varNames?: Map<number, string>): string {
-  const names = varNames ?? new Map<number, string>();
-  const go = (t: Type, pns?: (string | null)[]): string => {
-    switch (t.tag) {
-      case "prim": return t.name === "int" ? "i64" : t.name === "float" ? "f64" : t.name;
-      case "arr": return "[" + go(t.elem) + "]";
-      case "tup":
-        return "[" + t.fields.map(f =>
-          f.name === null ? go(f.type) : f.name + ": " + go(f.type)).join(", ") + "]";
-      case "any": return "any";
-      case "var": {
-        let n = names.get(t.id);
-        if (n === undefined) {
-          const i = names.size;
-          const l = String.fromCharCode(97 + (i % 26));
-          n = i < 26 ? l : `${l}${Math.floor(i / 26)}`;
-          names.set(t.id, n);
-        }
-        return n;
-      }
-      case "fun": {
-        const ps = t.params.map((p, i) => {
-          const n = pns !== undefined && i < pns.length ? pns[i] : null;
-          return (n !== null && n !== "_" ? n + ": " : "") + go(p);
-        }).join(", ");
-        const e = t.effs instanceof Set
-          ? (t.effs.size > 0 ? " ! { " + [...t.effs].join(", ") + " }" : "")
-          : ` ! { e${t.effs.id} }`;
-        return "(" + ps + ") -> " + go(t.ret) + e;
-      }
-    }
-  };
-  return go(t, pnames);
-}
-
-export class TypeError_ extends Error {
-  // 1-based source position of the innermost expression being checked when
-  // the error was thrown (set by infer's wrapper; undefined for whole-program
-  // failures with no single blame site). Display sites read it directly: the
-  // LSP anchors its diagnostic there; showErr prefixes it for the REPL.
-  pos?: Pos;
-}
 // A unification failure — kept distinct so the app-call catch can rethrow it
 // annotated with the callee's name (typeMismatch).
 class TypeMismatch extends TypeError_ {}

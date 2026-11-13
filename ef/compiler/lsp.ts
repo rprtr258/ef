@@ -31,7 +31,8 @@ import {
   type SemanticTokensParams,
 } from "vscode-languageserver/node";
 import {Parser, type Alias, type ExprID, type Program, type TypeTok} from "./parser.ts";
-import {showT, TypeError_, type Unifier} from "./unify.ts";
+import {showT, TypeError_} from "./type_display.ts";
+import {type Unifier} from "./unify.ts";
 import {tFun, TANY} from "./prims.ts";
 import type {Checked, EffectSig} from "./types.ts";
 import {prepare} from "./pipeline.ts";

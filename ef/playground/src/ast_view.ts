@@ -3,7 +3,8 @@
 // stamps — so ill-typed files still print. Type annotations and alias/effect
 // signatures render through the checker's showT.
 import {Parser, type ExprID, type Program} from "../../compiler/parser.ts";
-import {showT, type Type} from "../../compiler/unify.ts";
+import {showT} from "../../compiler/type_display.ts";
+import {type Type} from "../../compiler/unify.ts";
 import {assertNever} from "../../compiler/assert.ts";
 
 const IND = "  ";

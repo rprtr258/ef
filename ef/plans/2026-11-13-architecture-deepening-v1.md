@@ -282,13 +282,24 @@ carries LSP fields today.
 - Compat re-export note: `types.ts` re-exports only if consumers still import from it; migrate all
   consumers in the same chunk instead (knip forbids orphan re-exports).
 
-**Chunk 5.2 — extract display.**
+**Chunk 5.2 — extract display.** ✅ landed
 Landed shape after 5.1: `showT` (and `TypeError_`) live in **unify.ts** (moved there for cycle
 reasons — unify's failure paths format types); this chunk moves them **out of unify.ts into
 type_display.ts**, together with `showErr` + source caret rendering from types.ts.
-- [ ] New `compiler/type_display.ts`: `showT` (from unify.ts), `showErr` + source caret rendering
+- [x] New `compiler/type_display.ts`: `showT` (from unify.ts), `showErr` + source caret rendering
       (from types.ts). Checkers'/unifier's error paths call it; output bytes identical (tests
       assert messages).
+- Landed shape: `type_display.ts` holds `showT`, `TypeError_`, `showErr`, and the `srcLine` caret
+  renderer (module-private). `TypeError_` moved with `showT`: it carries the display position the
+  LSP/showErr read, and moving it is what makes the cut acyclic. Import direction: unify.ts
+  runtime-imports `showT`/`TypeError_` from type_display.ts; type_display imports only `type
+  {Type}` from unify (type-only, erased at runtime) plus `ParseError`/`Pos` from lexer — the same
+  leaf pattern prims.ts uses over unify, so the runtime edge is one-way (unify → type_display →
+  lexer) with no cycle. The alternative cut (showT stays in unify, type_display holds
+  showErr/caret only) was rejected: it removes nothing from unify.ts. No re-exports: consumers
+  import type_display directly — compiler cli/env/lsp/repl/types/unify + index.test, playground
+  actions/ast_view/bridge/bridge.test. `srcLine` stays module-private (knip). Behavior identical:
+  CI 481 pass before and after; `ef run` type-mismatch + arity-error renders diffed byte-identical.
 
 **Verification:** `bun run ci`. **Commit:** `types: extract display`
 
