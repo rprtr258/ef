@@ -2,8 +2,10 @@
 // checker's type resolver for numeric-entry eligibility).
 //
 // Per-slot closure provenance + per-CFn purity fixpoint + numeric-entry
-// eligibility. The wasm emitters consume the results through the returned
-// site map (copied onto `__p` annotations by planIr) and TermPlan.cfnPure. Soundness rests on two
+// eligibility. wasm_plan.ts consumes the results through the returned site
+// map (planIr copies it onto the plan's per-node annotations) and
+// Plan.cfnPure; it also owns the typed-slot classification these
+// candidates feed (classifySlots there). Soundness rests on two
 // checker guarantees: **no shadowing** (checkBind — no same-frame
 // redeclaration, no hiding an enclosing binding) makes a flat per-unit
 // name→provenance map exact, and **ANF** (bind/let RHS is an atom) gives
@@ -19,7 +21,6 @@ import {BUILTINS, NATIVE_BUILTINS} from "./analysis.ts";
 import type {CAtom, CFn, CIr, CTerm} from "./cps_ir.ts";
 import {widthOf, type Type} from "./unify.ts";
 import {numSig} from "./wasm_tables.ts";
-import type {TLevel} from "./wasm_term.ts";
 
 // Facts for one dcall/call site.
 type SiteInfo = {
@@ -391,35 +392,4 @@ export function numericEntries(
     if (ok) out[c.fun] = {ws: c.ws, r: c.r, sig: numSig(c.ws, c.r)};
   }
   return out;
-}
-
-// PR3 slot classification: finalizes TLevel.typed/elided flags after
-// planning completes. A slot is typed when it has a concrete numeric
-// candidate (noteCand), every assign re-stamps it at the same width and
-// from the same wasm-fn region (noteAssign poisons otherwise), and it is
-// never read cross-fn (noteRead). A typed slot's value lives only in a
-// same-fn wasm local — locals die on unwind, frames survive — so any
-// cross-fn reach (captures, post-suspension reads, cross-fn writes)
-// disqualifies. A scope-node level whose every slot is typed elides its
-// frame allocation: the frame cells would stay null and the chain hop
-// drops together with the skipped extendFrame (frameHops skips elided
-// levels; the runtime parent chain matches because a skipped extend never
-// rebinds local 0). Chain anchors — cfn param levels, letk entry/F_n
-// frames, the main frame — carry no elideOk mark and always materialize.
-export function classifySlots(
-  cand: Map<TLevel, Map<string, string>>,
-  xread: Map<TLevel, Set<string>>,
-): void {
-  for (const [l, cs] of cand) {
-    if (cs.size === 0) continue;
-    const xr = xread.get(l);
-    const typed = new Map<string, string>();
-    for (const [name, w] of cs) {
-      if (xr !== undefined && xr.has(name)) continue;
-      typed.set(name, w);
-    }
-    if (typed.size === 0) continue;
-    l.typed = typed;
-    if (l.elideOk === true && typed.size === l.size) l.elided = true;
-  }
 }

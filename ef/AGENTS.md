@@ -28,7 +28,9 @@ Hindley-Milner-flavoured type system with effect tracking.
   shrink pass; split into `wasm_types.ts`/`wasm_tables.ts`/`wasm_body.ts`/
   `wasm_pipeline.ts`/`wasm_devirt.ts` (devirtualization analysis: per-slot
   closure provenance + per-CFn purity fixpoint + numeric-entry eligibility,
-  leaf over the CPS IR)/
+  leaf over the CPS IR)/`wasm_plan.ts` (the frame/slot planner: one
+  traversal assigning every binding a slot, publishing the immutable Plan
+  and owning the `__p` annotations consumed via accessors)/
   `wasm_emit.ts`/`wasm_module.ts` — see item 10),
   `wasm_host.ts` (wasm host runtime: instantiation, GC↔JS boxing,
   effect interpretation), `stamps.ts` (the one backend-stamp concern: width/

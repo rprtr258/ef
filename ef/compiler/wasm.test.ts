@@ -8,9 +8,7 @@ import {BIN_FEATURES, compile} from "./wasm.ts";
 import {prepare, type EffectInterp} from "./pipeline.ts";
 import {discover, optimize, assignIndices, layoutStatics} from "./wasm_pipeline.ts";
 import {toCps} from "./cps.ts";
-import {planIr} from "./wasm_term.ts";
-import {classifySlots} from "./wasm_devirt.ts";
-import type {TLevel} from "./wasm_term.ts";
+import {planIr, classifySlots, type TLevel, letkP, scopeP, dcallP} from "./wasm_plan.ts";
 import {runWasm} from "./wasm_host.ts";
 import {mkSlice, mkTup, show, type Value} from "./env.ts";
 
@@ -832,11 +830,11 @@ fib(28)`;
     const ir = toCps(prog);
     const plan = planIr(ir);
     expect(plan.cfnPure).toEqual([true]);
-    const sites = dcalls(ir.funcs[0].body) as {__p?: {devirt?: {fun: number}, inlineRest?: true}}[];
+    const sites = dcalls(ir.funcs[0].body) as Parameters<typeof dcallP>[0][];
     expect(sites.length).toBe(2);
     for (const s of sites) {
-      expect(s.__p?.devirt?.fun).toBe(0);
-      expect(s.__p?.inlineRest).toBe(true);
+      expect(dcallP(s)?.devirt?.fun).toBe(0);
+      expect(dcallP(s)?.inlineRest).toBe(true);
     }
   });
 
@@ -1024,14 +1022,14 @@ addk(1) + addk(2)`)).toBe("203");
   });
 });
 
-describe("wasm typed slots + scope-frame elision (wasm_devirt.ts classifySlots + wasm_term.ts emission)", () => {
+describe("wasm typed slots + scope-frame elision (wasm_plan.ts classifySlots + wasm_term.ts emission)", () => {
   // A planned level as the audit sees it: slot map, surviving typed map,
   // elision flag.
   type Lv = {slots: Map<string, number>, typed?: Map<string, string>, elided?: boolean};
 
-  // Every TLevel planIr creates for `src`: scope nodes annotate their level
-  // on __p directly; letk/dcall/handle annotations carry fnLvl plus the
-  // entry/rest scope snapshots (shared level objects, so the Set dedups).
+  // Every TLevel planIr creates for `src`: scope nodes carry their level
+  // directly; letk/dcall annotations carry fnLvl plus the entry/rest scope
+  // snapshots (shared level objects, so the Set dedups).
   const audit = (src: string): Lv[] => {
     const {prog} = prepare(src);
     const ir = toCps(prog);
@@ -1047,15 +1045,20 @@ describe("wasm typed slots + scope-frame elision (wasm_devirt.ts classifySlots +
     pushL(plan.globalLvl); // top-level bindings type on the global level
     const walk = (t: unknown): void => {
       if (t === null || t === undefined || typeof t !== "object") return;
-      const p = (t as {__p?: unknown}).__p as
-        | Lv | {fnLvl?: Lv, entryScope?: Lv[], restScope?: Lv[]} | undefined;
-      if (p !== undefined) {
-        if ((p as Lv).slots instanceof Map) pushL(p);
-        pushL((p as {fnLvl?: Lv}).fnLvl);
-        for (const l of (p as {entryScope?: Lv[]}).entryScope ?? []) pushL(l);
-        for (const l of (p as {restScope?: Lv[]}).restScope ?? []) pushL(l);
-      }
       const n = t as {[k: string]: unknown};
+      const sp = scopeP(t as Parameters<typeof scopeP>[0]);
+      if (sp !== undefined) pushL(sp);
+      const lp = letkP(t as Parameters<typeof letkP>[0]);
+      if (lp !== undefined) {
+        pushL(lp.fnLvl);
+        for (const l of lp.entryScope ?? []) pushL(l);
+        for (const l of lp.restScope ?? []) pushL(l);
+      }
+      const dp = dcallP(t as Parameters<typeof dcallP>[0]);
+      if (dp !== undefined) {
+        pushL(dp.fnLvl);
+        for (const l of dp.entryScope ?? []) pushL(l);
+      }
       for (const k of ["body", "rest", "a", "b"]) if (n[k] !== undefined) walk(n[k]);
       if (Array.isArray(n["cases"])) for (const c of n["cases"] as {body: unknown}[]) walk(c.body);
     };

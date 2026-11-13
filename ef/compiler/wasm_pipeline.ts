@@ -11,7 +11,8 @@ import {_T, StaticDesc, ValueRef, WasmError} from "./wasm_types.ts";
 import {BUILTIN_IMPORTS, DBGEMIT, DBGTRACE, HOST_IMPORTS, OPERATOR_OPS, SIGS, mapLikeFrameWords, vt} from "./wasm_tables.ts";
 import {Fn} from "./wasm_body.ts";
 import {registerHelpers} from "./wasm_emit.ts";
-import {type TermPlan, registerCaseFns, registerCfns, registerRetResumes} from "./wasm_term.ts";
+import {registerCaseFns, registerCfns, registerRetResumes} from "./wasm_term.ts";
+import {hdlP, type Plan} from "./wasm_plan.ts";
 import {registerBuiltins} from "./wasm_module.ts";
 import {type CIr, type CAtom, type CPrim, type CTerm} from "./cps_ir.ts";
 import * as w from "./wasm_consts.ts";
@@ -289,7 +290,7 @@ export function optimize(prog: Program): Opt {
   return o;
 }
 
-export function assignIndices(ir: CIr, plan: TermPlan, o: Opt): Indices {
+export function assignIndices(ir: CIr, plan: Plan, o: Opt): Indices {
   const reg = new IndexRegistrar(o.liveImports.length);
   // Shared fragments, created context-free before the ix literal (bodies are
   // attached at their emit sites); their registration positions pin them
@@ -338,7 +339,7 @@ export function assignIndices(ir: CIr, plan: TermPlan, o: Opt): Indices {
   return ix;
 }
 
-export function layoutStatics(d: Discovery, ix: Indices, o: Opt, plan: TermPlan): Layout {
+export function layoutStatics(d: Discovery, ix: Indices, o: Opt, plan: Plan): Layout {
   const statics: StaticDesc[] = [];
   const newStatic = (desc: StaticDesc): number => statics.push(desc) - 1;
   const lay: Layout = {
@@ -393,7 +394,7 @@ export function layoutStatics(d: Discovery, ix: Indices, o: Opt, plan: TermPlan)
   // records (plan fnIdx/idRetIdx order = registration order).
   // The perform walk reads these at runtime, so all facts are data.
   for (const hdl of plan.hdlOrder) {
-    const hp = hdl.__p!;
+    const hp = hdlP(hdl)!;
     const npMax = Math.max(0, ...hdl.cases.map(c => c.params.length));
     const entries: {opid: number, fn: number, fsize: number, nparams: number}[] = [];
     let ci = 0;

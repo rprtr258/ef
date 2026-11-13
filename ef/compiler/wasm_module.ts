@@ -9,7 +9,6 @@ import {WasmError} from "./wasm_types.ts";
 import {Buf, Fn} from "./wasm_body.ts";
 import {type Indices, type IndexRegistrar, type Opt} from "./wasm_pipeline.ts";
 import {type Emit, emitCallClosure, emitDirectEntryCall, emitDispatch, emitFail, i31of, ladderBody, makeRestThunk, rebox, selectBool, NUM64_ARMS} from "./wasm_emit.ts";
-import {mainFrameSize} from "./wasm_term.ts";
 import * as w from "./wasm_consts.ts";
 
 // Σ over the n per-element cells in backing `src` (viewed at offset `off`):
@@ -708,7 +707,7 @@ export function emitInits(em: Emit, mainFn: Fn): void {
   {
     const b = run.body;
     b.refNull(4); // global frame parent = null
-    b.i32Const(mainFrameSize(em.plan));
+    b.i32Const(em.plan.mainFrameSize);
     b.arrayNew(1);
     b.structNew(4);
     b.refNull(5); // k = null: main's dispatch returns its value

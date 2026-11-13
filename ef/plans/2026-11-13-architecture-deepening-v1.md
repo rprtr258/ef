@@ -433,11 +433,29 @@ materialized by `wasm_body.ts` (raw shape 4/1 literals), sized by `wasm_module.t
 internals. Shared mutable state spans three modules.
 
 **Chunk 7.1 — plan module with immutable output.**
-- [ ] New `compiler/wasm_plan.ts` owning planning + devirt classification; publishes an immutable
+- [x] New `compiler/wasm_plan.ts` owning planning + devirt classification; publishes an immutable
       `Plan` (typed slots, frame sizes, static-layout inputs). `planIr`/devirt mutate only inside
       this module; emitters/body/module/pipeline consume `Plan` read-only.
-- [ ] `__p` internal annotations stop crossing the seam; the header comment that claims nothing
+- [x] `__p` internal annotations stop crossing the seam; the header comment that claims nothing
       else reads them becomes true.
+
+      Landed: `wasm_plan.ts` owns TLevel/TScope, `lvl`/`addSlot`, the planner (Cx/planUnit/planIr),
+      the escape analysis, and `classifySlots` (moved out of wasm_devirt.ts — that module is a
+      pure leaf over the CPS IR again; wasm_plan.ts consumes its analyzeDevirt/numericEntries).
+      The published `Plan` (was TermPlan) is `readonly`-fielded and gains `mainFrameSize`
+      (computed at plan time; the `mainFrameSize()` helper is gone — wasm_module.ts reads
+      `em.plan.mainFrameSize`). The `__p` annotations (LetkP/HdlP/DcallP/CallP types + the
+      ALetk/AHandle/AScope/ADcall/ACall node intersections) live only in wasm_plan.ts; emitters
+      and layoutStatics read them through exported accessors (`letkP/hdlP/scopeP/dcallP/callP`),
+      so the literal `__p` appears in no other file. Term-emission cut: TLevel/TScope and the
+      annotation types are exported read-only; wasm_term.ts keeps `resolveT`/`frameHops`/
+      `typedLocal`/`addLocal` (locals/raw on levels stay emit-owned walk state — planning never
+      writes them) and mints its entry base levels via the plan module's `entryLevel`/`thunkBase`
+      factories, so `lvl`/`addSlot` are private to the planner. (em, plan) folds from 6.2's
+      review: emitCfns/emitCaseFns/emitRetResumes/emitMain now read `em.plan`; the
+      pipeline-level (no Emit) plan params stay (registerCfns/registerCaseFns/registerRetResumes,
+      assignIndices, layoutStatics). WAT byte-identical on examples/amb.ef + examples/block.ef;
+      ci 481 pass.
 
 **Verification:** `bun run ci`; `examples.test.ts` interpreter↔wasm parity; WAT structural diff
 per the chunk-6.1 recipe on an example with handlers.

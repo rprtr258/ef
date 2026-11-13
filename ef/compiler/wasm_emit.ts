@@ -8,7 +8,7 @@ import {_T} from "./wasm_types.ts";
 import {DBGEMIT, DBGTRACE, MOD, TRACE_SITES} from "./wasm_tables.ts";
 import {Buf, Fn} from "./wasm_body.ts";
 import {type Discovery, type Indices, type IndexRegistrar, type Layout, type Opt} from "./wasm_pipeline.ts";
-import type {TermPlan} from "./wasm_term.ts";
+import type {Plan} from "./wasm_plan.ts";
 import * as w from "./wasm_consts.ts";
 
 // ValueRef = one of: const (immediate cell), local (wasm local index,
@@ -39,8 +39,9 @@ export type Emit = {
   // filled by emitTightMaps (emitMapLike lives above wasm_term's layer).
   tightMaps: {f: Fn, name: string, cb: {idx: number, fsize: number}}[],
   // The IR plan (scopes, escapes, handle registry) — supplied at
-  // construction by wasm.ts's emit.
-  plan: TermPlan,
+  // construction by wasm.ts's emit. Final once planning completes; emitters
+  // read it.
+  plan: Plan,
 };
 export const i31of = (b: Buf): void => { b.refCast(w.I31REF, false); b.i31Get(); };
 

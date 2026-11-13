@@ -108,13 +108,12 @@ import {prepare, rejectUnhandled, type EffectInterp} from "./pipeline.ts";
 import {toCps} from "./cps.ts";
 import {bindMOD} from "./wasm_tables.ts";
 import {buildModule, discover, layoutStatics, optimize, assignIndices, type Discovery, type Indices, type Layout, type Opt} from "./wasm_pipeline.ts";
-import {planIr, emitCfns, emitCaseFns, emitRetResumes, emitResumeFn, emitTerminalRet, emitMain} from "./wasm_term.ts";
+import {emitCfns, emitCaseFns, emitRetResumes, emitResumeFn, emitTerminalRet, emitMain} from "./wasm_term.ts";
 import {Fn} from "./wasm_body.ts";
 import {type Emit, emitHelpers} from "./wasm_emit.ts";
 import {emitBuiltins, emitInits, emitTightMaps} from "./wasm_module.ts";
 import {type CIr} from "./cps_ir.ts";
-import {type TermPlan} from "./wasm_term.ts";
-
+import {planIr, type Plan} from "./wasm_plan.ts";
 // The binary format layer is gone: Buf's emit methods build binaryen AST
 // directly (wasm_body.ts); opcode constants survive only as the data keys
 // of the numeric-op tables (BIN_OPS/UN_OPS, CMP_OPS, ladder defOps). Buf's
@@ -133,7 +132,11 @@ import {type TermPlan} from "./wasm_term.ts";
 //                      modules' register* functions; their pipeline imports
 //                      are type-only, so the runtime graph stays one-way
 // - wasm_devirt.ts  — devirtualization analysis: slot provenance + per-CFn
-//                     purity fixpoint (leaf, over the CPS IR)
+//                     purity fixpoint (leaf, over the CPS IR; consumed by
+//                     the plan module)
+// - wasm_plan.ts    — frame/slot planning + devirt classification (planIr:
+//                     TLevel/TScope, per-node annotations, typed-slot/
+//                     elision flags) and the published Plan
 // - wasm_emit.ts    — shared value plane: helpers, dispatch, call ABI, pooling
 // - wasm_term.ts    — the IR term emitters (CFns, letk thunks, perform/handle,
 //                     case functions, main)
@@ -231,7 +234,7 @@ export const BIN_FEATURES = binaryen.Features.MVP | binaryen.Features.ReferenceT
 // Emission orchestration: one Emit context per compile, dropped at return.
 // Lives here so the emit modules stay one-way (wasm_module imports
 // wasm_emit/wasm_term; their imports of wasm_pipeline are type-only).
-function emit(ir: CIr, d: Discovery, o: Opt, ix: Indices, lay: Layout, plan: TermPlan): Fn[] {
+function emit(ir: CIr, d: Discovery, o: Opt, ix: Indices, lay: Layout, plan: Plan): Fn[] {
   const em: Emit = {
     d, o, ix, reg: ix.reg, lay, plan,
     funcs: [],
@@ -246,13 +249,13 @@ function emit(ir: CIr, d: Discovery, o: Opt, ix: Indices, lay: Layout, plan: Ter
   // tightMaps are the emitters' mutable accumulators; every other field is
   // final at construction.
   em.funcs.push(...emitHelpers(em));
-  emitCfns(em, ir, plan);
-  emitCaseFns(em, plan);
-  emitRetResumes(em, plan);
+  emitCfns(em, ir);
+  emitCaseFns(em);
+  emitRetResumes(em);
   emitResumeFn(em, ix.resumeFn);
   emitTerminalRet(em, ix.terminalRet);
   em.funcs.push(...emitBuiltins(em));
-  const mainFn = emitMain(em, ir, plan);
+  const mainFn = emitMain(em, ir);
   emitTightMaps(em);
   em.funcs.push(...em.thunks);
   em.funcs.push(mainFn);
