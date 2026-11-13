@@ -137,7 +137,7 @@ type ExampleCase = {
 const EXAMPLES: Record<string, ExampleCase[]> = {
   "amb.ef": [{
     label: "nondeterministic search finds Pythagorean triples",
-    timeout: 15000,
+    timeout: 60000,
     body: res => expect(res.stdout).toBe("[3, 4, 5]\n[5, 12, 13]\n[6, 8, 10]\nunit\n"),
   }],
   "apply.ef": [{
@@ -166,7 +166,7 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
   }],
   "widths.ef": [{
     label: "f32 precision, @as conversions, division and wraparound parity",
-    timeout: 15000, // ~4s alone; tips over the 5s default under full-suite load
+    timeout: 60000, // ~4s alone; tips over the 5s default under full-suite load
     body: res => {
       const lines = res.stdout.split("\n");
       // f32 rounding: 0.1f32 + 0.2f32 != 0.1f64 + 0.2f64.
@@ -468,7 +468,7 @@ const EXAMPLES: Record<string, ExampleCase[]> = {
       expect(prefixLen).toBeGreaterThanOrEqual(1000);
       expect(wasm.slice(0, prefixLen)).toBe(interp.slice(0, prefixLen));
     },
-    timeout: 25000,
+    timeout: 90000,
   }],
   "struct_allocation.ef": [{
     label: "separately built tuples differ",

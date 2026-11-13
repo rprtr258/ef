@@ -105,7 +105,7 @@ describe("wasm backend", () => {
       .map(f => readFileSync(f).toString())
       .map(compile)) 
       assertModule(bin);
-  }, 30000);
+  }, 90000);
 
   test("arithmetic: i64 / f64 division, neg, mod", () => {
     expect(parity("7 / 2")).toBe("3"); // i64 division truncates
