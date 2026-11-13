@@ -10,8 +10,10 @@ import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, p
 import {_T, StaticDesc, ValueRef, WasmError} from "./wasm_types.ts";
 import {BUILTIN_IMPORTS, DBGEMIT, DBGTRACE, HOST_IMPORTS, OPERATOR_OPS, SIGS, mapLikeFrameWords, vt} from "./wasm_tables.ts";
 import {Fn} from "./wasm_body.ts";
+import {registerHelpers} from "./wasm_emit.ts";
+import {type TermPlan, registerCaseFns, registerCfns, registerRetResumes} from "./wasm_term.ts";
+import {registerBuiltins} from "./wasm_module.ts";
 import {type CIr, type CAtom, type CPrim, type CTerm} from "./cps_ir.ts";
-import {type TermPlan} from "./wasm_term.ts";
 import * as w from "./wasm_consts.ts";
 
 // --- compile phases ----------------------------------------------------------
@@ -47,9 +49,8 @@ export type Discovery = {
 
 // Phase 2 — module-level optimization facts (OPT_PASSES at the bottom of the file).
 // Ordered passes over the program; each records facts the emitters
-// consume, and index assignment derives helper/lambda/builtin funcref
-// indices from the live import count (that ordering constraint is dataflow
-// here: assignIndices takes Opt).
+// consume, and the IndexRegistrar assigns every defined function's funcref
+// index at its definition site (starting after the live imports).
 export type Opt = {
   // Builtins referenced as VALUES (analysis.ts builtinValueUses —
   // treeShakeBuiltins): $CLO pool closures are emitted only for these;
@@ -60,20 +61,27 @@ export type Opt = {
   // shadowing-correct): layoutStatics/emitBuiltins emit only these.
   usedBuiltins: Set<string>,
   // Live host imports (dropDeadHostImports) — a subset of HOST_IMPORTS in
-  // original order — and each name's funcref index. Defined-function
-  // indices: helpers first (they always follow the imports), then lambdas,
-  // then handler case functions, builtins, main.
+  // original order — and each name's funcref index. Defined functions
+  // register through the IndexRegistrar (wasm_pipeline.ts), each at its
+  // definition site; see the Phase 3 block for the order.
   liveImports: string[],
   impIdx: Map<string, number>,
 };
 
-// Phase 3 — funcref index assignment (helpers, lambdas, handler case
-// functions, ret-resume functions, builtin trampolines), deterministic
-// IR-plan order.
+// Phase 3 — funcref index registration. Each definition site declares its
+// own functions through the IndexRegistrar (registerHelpers in wasm_emit.ts,
+// the register* functions in wasm_term.ts/wasm_module.ts); the shared ret
+// fragments are created here. Registration order is the module's function
+// order — the funcref table is the identity mapping over the fn list, so
+// every block registers exactly where its emit site pushes.
 export type Indices = {
-  // funcref index → typeIdx (direct CALL targets resolve their signatures
-  // through it; indirect calls carry the type index in the stream).
+  // funcref index → typeIdx — written only by the registrar; direct CALL
+  // targets resolve their signatures through it (indirect calls carry the
+  // type index in the stream).
   funcRefTypes: Map<number, number>,
+  // The index allocator; emission-time sites (thunks, main, run, the host
+  // accessors) register through it as they create their functions.
+  reg: IndexRegistrar,
   // Helper funcref indices: helpers always follow the live imports.
   fTruthy: number,
   fEq: number,
@@ -84,37 +92,56 @@ export type Indices = {
   fU32of: number,
   fI64of: number,
   fU64of: number,
-  // CFn funcref base: funcref(lambda i) = lambda0 + i (ir.funcs order).
-  lambda0: number,
-  // Numeric direct-ABI entry base: dense block over the eligible CFns in
-  // ir.funcs order (numFn maps CFn index → its entry's funcref; CFns
-  // without an entry own no slot).
-  dnum0: number,
+  // Numeric direct-ABI entries: numFn maps CFn index → its entry's funcref
+  // (CFns without an entry own no slot).
   numFn: Map<number, number>,
   // Shared default-Return case function, used only by handlers with npMax 0:
   // reads the Return value emitDispatch stashed in hframe slot 1 and
   // dispatches it through its k — eval.ts's `(v, k2) => k2(v)`.
   identityRet: Fn,
-  // Case-function funcref base: funcref(plan case #i) = case0 + i.
-  case0: number,
-  // Identity-ret funcref base (per-handle no-Return-case identities).
-  idRet0: number,
-  // Ret-resume funcref base (per-handle Return-case identity resumes).
-  retRes0: number,
   // Shared resume-closure fn: the T_KABI fn every perform site's
   // boxed resume binder points at.
   resumeFn: Fn,
   // Terminal-return fragment: a T_III_I thunk returning its param — the
   // direct-fn dcall fallbacks' terminal chain link.
   terminalRet: Fn,
-  // Builtin trampolines: funcref index of the first builtin / first land
-  // thunk, and trampoline funcref index per emitted builtin (direct builtin
-  // call sites target these instead of loading a $CLO and dispatching
-  // through the table).
-  builtin0: number,
-  thunk0: number,
+  // Trampoline funcref index per emitted builtin (direct builtin call sites
+  // target these instead of loading a $CLO and dispatching through the
+  // table).
   builtinFnIdx: Map<string, number>,
+  // Pre-emission-registered functions, stashed for their body-emitting site
+  // in registration (== push) order.
+  helpers: Fn[],      // emitHelpers
+  cfnFns: Fn[],       // emitCfns — boxed entries, ir.funcs order
+  dnumFns: Fn[],      // emitCfns — numeric direct-ABI entries, ir.funcs order
+  caseFns: Fn[],      // emitCaseFns — op cases + explicit Return cases, fnIdx order
+  idRetFns: Fn[],     // emitCaseFns pass 2 — per-handle identities, idRetIdx order
+  retResFns: Fn[],    // emitRetResumes — per-handle Return resumes, retResumeIdx order
+  builtinFns: Fn[],   // emitBuiltins — usedBuiltins-filtered BUILTINS order
 };
+
+// The single writer of funcref index state: register() stamps the fn's
+// funcref index + section/table signature and records the sig for sigOf's
+// eager call-site resolution (funcRefTypes). Every registration must land
+// at the fn's push position — the funcref table maps slot i to the i-th
+// function of the module.
+export class IndexRegistrar {
+  private next: number;
+  private slots = new Map<string, number>();
+  readonly funcRefTypes = new Map<number, number>();
+  constructor(impCount: number) { this.next = impCount; }
+  // Stamp fn with the next funcref index under `slot`; sig is the
+  // type-section signature the fn is compiled under (a SIGS key).
+  register(slot: string, fn: Fn, sig: number): number {
+    if (this.slots.has(slot)) throw new WasmError(`internal: duplicate funcref slot ${slot}`);
+    const idx = this.next++;
+    this.slots.set(slot, idx);
+    fn.idx = idx;
+    fn.typeIdx = sig;
+    this.funcRefTypes.set(idx, sig);
+    return idx;
+  }
+}
 
 // Phase 4 — static layout: immutable anyref globals with constant
 // initializers — deduped number literals, PI, string literals, true/false
@@ -263,90 +290,49 @@ export function optimize(prog: Program): Opt {
 }
 
 export function assignIndices(ir: CIr, plan: TermPlan, o: Opt): Indices {
-  // 2b. Helper funcref indices: helpers always follow the live imports
-  // (must match emitHelpers' push order).
+  const reg = new IndexRegistrar(o.liveImports.length);
   const ix: Indices = {
-    funcRefTypes: new Map(),
-    fTruthy: o.liveImports.length,
-    fEq: o.liveImports.length + 1,
-    fBox: o.liveImports.length + 2,
-    fNum64: o.liveImports.length + 3,
-    fF32of: o.liveImports.length + 4,
-    fI32of: o.liveImports.length + 5,
-    fU32of: o.liveImports.length + 6,
-    fI64of: o.liveImports.length + 7,
-    fU64of: o.liveImports.length + 8,
-    lambda0: o.liveImports.length + 9,
-    dnum0: 0,
+    funcRefTypes: reg.funcRefTypes,
+    reg,
+    fTruthy: 0,
+    fEq: 0,
+    fBox: 0,
+    fNum64: 0,
+    fF32of: 0,
+    fI32of: 0,
+    fU32of: 0,
+    fI64of: 0,
+    fU64of: 0,
     numFn: new Map(),
     identityRet: undefined!,
-    case0: 0,
-    idRet0: 0,
-    retRes0: 0,
     resumeFn: undefined!,
     terminalRet: undefined!,
-    builtin0: 0,
-    thunk0: 0,
     builtinFnIdx: new Map(),
+    helpers: [],
+    cfnFns: [],
+    dnumFns: [],
+    caseFns: [],
+    idRetFns: [],
+    retResFns: [],
+    builtinFns: [],
   };
-  // Helper sigs resolve before emission (a CALL's signature lookup is
-  // eager — $eq's body calls $num64, which is emitted later).
-  ix.funcRefTypes.set(ix.fNum64, 19); // __num's shape: (anyref) -> f64
-  ix.funcRefTypes.set(ix.fF32of, w.T_F32); // (anyref) -> f32
-  ix.funcRefTypes.set(ix.fI32of, w.T_GETI32); // (anyref) -> i32
-  ix.funcRefTypes.set(ix.fU32of, w.T_GETI32); // (anyref) -> i32
-  ix.funcRefTypes.set(ix.fI64of, w.T_GETI64); // (anyref) -> i64
-  ix.funcRefTypes.set(ix.fU64of, w.T_GETI64); // (anyref) -> i64
-  // 2c. CFn funcref indices (ir.funcs order; sigs resolve before emission).
-  for (let i = 0; i < ir.funcs.length; i++)
-    ix.funcRefTypes.set(ix.lambda0 + i, w.T_KABI);
-  // 2e. Case-function block: numeric direct-ABI entries (one per eligible
-  // CFn, ir.funcs order — emitCfns pushes them in the same order right
-  // after the boxed entries), then identityRet, per-handle case fns + ret
-  // cases + identity rets, ret resumes, then the shared resume fn. The
-  // order must match emitCaseFns/emitRetResumes' push order exactly.
-  let next = ix.lambda0 + ir.funcs.length;
-  ix.dnum0 = next;
-  next += plan.numEntry.filter(n => n !== null).length;
-  // Dense funcref assignment matching emitCfns' push order (one slot per
-  // eligible CFn, ir.funcs order — no holes).
-  let dn = 0;
-  for (let i = 0; i < ir.funcs.length; i++) {
-    if (plan.numEntry[i] === null) continue;
-    ix.numFn.set(i, ix.dnum0 + dn);
-    dn++;
-  }
-  const idf = new Fn(2);
-  idf.idx = next++;
-  ix.identityRet = idf;
-  ix.funcRefTypes.set(idf.idx, w.T_KABI);
-  ix.case0 = next;
-  next += plan.caseCount;
-  ix.idRet0 = next;
-  next += plan.idRetCount;
-  ix.retRes0 = next;
-  next += plan.retResCount;
-  const rf = new Fn(2);
-  rf.idx = next++;
-  ix.funcRefTypes.set(rf.idx, w.T_KABI);
-  ix.resumeFn = rf;
+  registerHelpers(reg, ix);
+  registerCfns(reg, ix, ir, plan);
+  // Shared default-Return fragment — created here context-free, body
+  // attached by emitCaseFns. It precedes the case-fn block, exactly where
+  // emitCaseFns' pass 0 pushes it.
+  ix.identityRet = new Fn(2);
+  reg.register("identityRet", ix.identityRet, w.T_KABI);
+  registerCaseFns(reg, ix, plan);
+  registerRetResumes(reg, ix, plan);
+  ix.resumeFn = new Fn(2);
+  reg.register("resumeFn", ix.resumeFn, w.T_KABI);
   // The terminal-return fragment (direct-fn dcall fallbacks chain here):
   // a T_III_I thunk that just returns its param (local 1) — the completion's
   // value unwinds as each fragment's result.
-  const tf = new Fn(3);
-  tf.idx = next++;
-  tf.typeIdx = w.T_III_I;
-  ix.funcRefTypes.set(tf.idx, w.T_III_I);
-  ix.terminalRet = tf;
-  // Builtin trampolines (must match emitBuiltins' emission order: BUILTINS
-  // filtered by usedBuiltins); land thunks follow them, main is last.
-  const builtins = BUILTINS.filter(b => o.usedBuiltins.has(b.name));
-  ix.builtin0 = next;
-  ix.thunk0 = ix.builtin0 + builtins.length;
-  for (let i = 0; i < builtins.length; i++) {
-    ix.builtinFnIdx.set(builtins[i].name, ix.builtin0 + i);
-    ix.funcRefTypes.set(ix.builtin0 + i, w.T_KABI); // sigs resolve before emission
-  }
+  ix.terminalRet = new Fn(3);
+  reg.register("terminalRet", ix.terminalRet, w.T_III_I);
+  registerBuiltins(reg, ix, o);
   return ix;
 }
 
@@ -401,7 +387,8 @@ export function layoutStatics(d: Discovery, ix: Indices, o: Opt, plan: TermPlan)
   // the handler declares one, otherwise an identity fn with matching
   // nparams (the shared npMax=0 fn puts the value at slot 1 where it reads
   // it back; handlers with npMax > 0 get a per-handler fn so param/resume
-  // slots stay intact). Funcref indices are plan-order-based (case0/idRet0).
+  // slots stay intact). Funcref indices come from the registered case-fn
+  // records (plan fnIdx/idRetIdx order = registration order).
   // The perform walk reads these at runtime, so all facts are data.
   for (const hdl of plan.hdlOrder) {
     const hp = hdl.__p!;
@@ -412,15 +399,15 @@ export function layoutStatics(d: Discovery, ix: Indices, o: Opt, plan: TermPlan)
       if (c.op === "Return") continue;
       const opid = d.effOpIds.get(c.op);
       if (opid === undefined) throw new WasmError(`internal: unnumbered op ${c.op}`);
-      entries.push({opid, fn: ix.case0 + hp.caseP[ci++].fnIdx, fsize: hp.hframeSize, nparams: c.params.length});
+      entries.push({opid, fn: ix.caseFns[hp.caseP[ci++].fnIdx].idx, fsize: hp.hframeSize, nparams: c.params.length});
     }
     const retCase = hdl.cases.find(c => c.op === "Return");
     if (retCase !== undefined) {
-      entries.push({opid: -1, fn: ix.case0 + hp.retP!.fnIdx, fsize: hp.hframeSize, nparams: npMax});
+      entries.push({opid: -1, fn: ix.caseFns[hp.retP!.fnIdx].idx, fsize: hp.hframeSize, nparams: npMax});
     } else if (npMax === 0) {
       entries.push({opid: -1, fn: ix.identityRet.idx, fsize: hp.hframeSize, nparams: 0});
     } else {
-      entries.push({opid: -1, fn: ix.idRet0 + hp.idRetIdx!, fsize: hp.hframeSize, nparams: npMax});
+      entries.push({opid: -1, fn: ix.idRetFns[hp.idRetIdx!].idx, fsize: hp.hframeSize, nparams: npMax});
     }
     const words: number[] = [];
     for (const en of entries)
@@ -518,6 +505,10 @@ export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]
   for (let i = 0; i < funcs.length; i++) {
     const f = funcs[i];
     const funcrefIdx = o.liveImports.length + i;
+    // The identity mapping between registration order and function order is
+    // the funcref table's backbone — a registrar misorder fails here, loudly.
+    if (f.idx !== funcrefIdx)
+      throw new WasmError(`internal: fn registered as f${f.idx} sits at position ${i} in the emit order`);
     const sig = SIGS[f.typeIdx] as {p: (number | number[])[], r: number | number[] | null} | undefined;
     if (sig === undefined) throw new WasmError(`internal: fn ${funcrefIdx} has unknown type ${f.typeIdx}`);
     m.addFunction(`f${funcrefIdx}`, binaryen.createType(sig.p.map(vt)),
@@ -578,9 +569,9 @@ export function buildModule(m: binaryen.Module, o: Opt, lay: Layout, funcs: Fn[]
 // --- module-level optimization pipeline ---------------------------------------
 
 // Ordered passes over the program (run in optimize()); each records facts the
-// emitters consume, and index assignment derives helper/lambda/builtin
-// funcref indices from the live import count (dataflow: assignIndices takes
-// Opt). The AST walks themselves live in analysis.ts (shared with
+// emitters consume. Funcref indices are assigned by the IndexRegistrar at the
+// definition sites, not here (dataflow: assignIndices takes Opt). The AST
+// walks themselves live in analysis.ts (shared with
 // interpreter-side consumers); planned for this seam: helper-function
 // reachability, function-body dedup.
 const OPT_PASSES: ((prog: Program, o: Opt) => void)[] = [

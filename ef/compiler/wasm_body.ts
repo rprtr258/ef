@@ -492,7 +492,7 @@ export class Fn {
   body: Buf;
   locals: binaryen.Type[] = []; // extra locals in allocation order
   typeIdx = w.T_KABI; // program functions share (frame, k) -> i32; helpers may differ
-  // Funcref table index (assigned at creation, stable across emission).
+  // Funcref table index (assigned by the IndexRegistrar at the definition site).
   idx = 0;
   // The owning emission context: Buf handlers reach per-compile state
   // (import tables, funcref sigs) through it instead of module globals. Fn

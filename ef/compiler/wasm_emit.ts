@@ -7,7 +7,7 @@
 import {_T} from "./wasm_types.ts";
 import {DBGEMIT, DBGTRACE, MOD, TRACE_SITES} from "./wasm_tables.ts";
 import {Buf, Fn} from "./wasm_body.ts";
-import {type Discovery, type Indices, type Layout, type Opt} from "./wasm_pipeline.ts";
+import {type Discovery, type Indices, type IndexRegistrar, type Layout, type Opt} from "./wasm_pipeline.ts";
 import type {TermPlan} from "./wasm_term.ts";
 import * as w from "./wasm_consts.ts";
 
@@ -27,6 +27,7 @@ export type Emit = {
   d: Discovery,
   o: Opt,
   ix: Indices,
+  reg: IndexRegistrar,
   lay: Layout,
   // Code under construction: emitted functions, and the thunks (T_III_I —
   // letk continuations and map-like land cells) appended between builtins
@@ -35,7 +36,7 @@ export type Emit = {
   thunks: Fn[],
   // Per-site tight map/each/flatmap loop fns (wasm_devirt.ts-proven pure
   // direct callbacks): created by wasm_term.ts at the call site, bodies
-  // filled by emitBuiltins (emitMapLike lives above wasm_term's layer).
+  // filled by emitTightMaps (emitMapLike lives above wasm_term's layer).
   tightMaps: {f: Fn, name: string, cb: {idx: number, fsize: number}}[],
   // The IR plan (scopes, escapes, handle registry) — set by wasm.ts's emit.
   plan: TermPlan,
@@ -172,7 +173,6 @@ function unboxArm(b: Buf, ret: number, ht: number, ops: number[], at = 0, nullab
 // $f32of/$i32of/$u32of/$i64of/$u64of and the host __num accessor all
 // share this one structure.
 type LadderSpec = {
-  typeIdx?: number,      // (anyref) -> ret (sig pre-registered in assignIndices)
   ret: number,           // arm/default block result valtype byte
   arms: [number, number[]][],
   defOps: number[],      // ops over the default ($F64) payload read
@@ -187,12 +187,21 @@ export function ladderBody(b: Buf, spec: LadderSpec): void {
   for (let i = 0; i < spec.arms.length; i++) b.end();
 }
 
-const ladderFn = (em: Emit, spec: LadderSpec): Fn => {
-  const fn = new Fn(1, em);
-  if (spec.typeIdx !== undefined) fn.typeIdx = spec.typeIdx;
-  ladderBody(fn.body, spec);
-  return fn;
-};
+// Helper fn declarations: created + registered here (context-free) so their
+// funcref indices and sigs exist before any call site resolves them; bodies
+// are filled by emitHelpers in the same order.
+export function registerHelpers(reg: IndexRegistrar, ix: Indices): void {
+  const truthy = new Fn(1); ix.fTruthy = reg.register("fTruthy", truthy, w.T_TRUTHY);
+  const eq = new Fn(2); ix.fEq = reg.register("fEq", eq, w.T_EQ);
+  const box = new Fn(1); ix.fBox = reg.register("fBox", box, w.T_BOX);
+  const num64 = new Fn(1); ix.fNum64 = reg.register("fNum64", num64, w.T_NUM64);
+  const f32of = new Fn(1); ix.fF32of = reg.register("fF32of", f32of, w.T_F32);
+  const i32of = new Fn(1); ix.fI32of = reg.register("fI32of", i32of, w.T_GETI32);
+  const u32of = new Fn(1); ix.fU32of = reg.register("fU32of", u32of, w.T_GETI32);
+  const i64of = new Fn(1); ix.fI64of = reg.register("fI64of", i64of, w.T_GETI64);
+  const u64of = new Fn(1); ix.fU64of = reg.register("fU64of", u64of, w.T_GETI64);
+  ix.helpers = [truthy, eq, box, num64, f32of, i32of, u32of, i64of, u64of];
+}
 
 // The adaptive arms $num64 and the host __num accessor share (everything
 // but the $F64 box: num64 takes it as an identity fast arm, __num as the
@@ -202,12 +211,11 @@ export const NUM64_ARMS: [number, number[]][] = [
 ];
 
 export function emitHelpers(em: Emit): Fn[] {
+  const [truthy, eq, box, num64, f32of, i32of, u32of, i64of, u64of] = em.ix.helpers;
+  for (const f of em.ix.helpers) f.em = em;
   // $truthy(v: anyref) -> i32: JS truthiness — 0 only for unit (ref.null
   // any) and the bool i31 0 (matches `c !== false && c !== null`); every
   // $NUM (including 0.0), $STR, $ARR and $CLO is truthy.
-  const truthy = new Fn(1, em);
-  truthy.typeIdx = w.T_TRUTHY;
-  em.ix.funcRefTypes.set(em.ix.fTruthy, w.T_TRUTHY);
   {
     const b = truthy.body;
     b.localIsNull(0); // ref.is_null
@@ -228,9 +236,6 @@ export function emitHelpers(em: Emit): Fn[] {
   // payload, bools by i31 payload, strings by i16 content, slices/tuples/
   // closures by identity (ref.cast (ref null eq) + ref.eq; a slice's
   // identity is its immutable wrapper), unit (null) equal only to unit.
-  const eq = new Fn(2, em);
-  eq.typeIdx = w.T_EQ;
-  em.ix.funcRefTypes.set(em.ix.fEq, w.T_EQ);
   {
     const b = eq.body;
     const res = eq.i32();
@@ -435,17 +440,14 @@ export function emitHelpers(em: Emit): Fn[] {
     b.refI31();
   }
   // $box(x: f64) -> anyref: number struct.
-  const box = new Fn(1, em);
-  box.typeIdx = w.T_BOX;
-  em.ix.funcRefTypes.set(em.ix.fBox, w.T_BOX);
   box.body.localGet(0);
   box.body.structNew(0);
   // $num64(v: anyref) -> f64: adaptive numeric unbox for the f64 plane —
   // $F64 payload as-is; an $F32 box promotes (exact): float-wildcard
   // values can flow into f64-plane positions (builtin params,
   // counters), so numeric unboxes must accept both shapes.
-  const num64 = ladderFn(em, {
-    typeIdx: 19, ret: 0x7c, // __num's shape: (anyref) -> f64
+  ladderBody(num64.body, {
+    ret: 0x7c, // __num's shape: (anyref) -> f64
     // $F64 first (the common case for well-typed f64 sites pays one
     // refTest), then $F32 promotes, the int boxes convert (each box's own
     // signedness); a non-number still traps at the default cast.
@@ -464,20 +466,20 @@ export function emitHelpers(em: Emit): Fn[] {
   //           zero-extends (the box's own semantics); $F64 truncates.
   // A non-number operand still traps at the default ref.cast (the frozen
   // deviation for dynamically non-numeric values).
-  const f32of = ladderFn(em, {
-    typeIdx: w.T_F32, ret: 0x7d,
+  ladderBody(f32of.body, {
+    ret: 0x7d,
     arms: [[11, []], [7, [w.CONV_F32_I32]], [8, [w.CONV_F32_U32]], [9, [w.CONV_F32_I64]], [10, [w.CONV_F32_U64]]],
     defOps: [w.F32_DEMOTE], // default: $F64 demote
   });
   // The signed/unsigned of-family: own box leads, the sibling shape is
   // arm 2, the remaining int boxes convert (the box's own signedness);
   // the default reads $F64 and truncates (wrapping to 32 bits too there).
-  const ofPair = (typeIdx: number, ret: number, own: number, sib: number, conv: [number, number[]][], defOps: number[]): Fn =>
-    ladderFn(em, {typeIdx, ret, arms: [[own, []], [sib, []], ...conv], defOps});
-  const i32of = ofPair(w.T_GETI32, 0x7f, 7, 8, [[9, [w.I32_WRAP_I64]], [10, [w.I32_WRAP_I64]]], [w.I64_TRUNC_F64, w.I32_WRAP_I64]);
-  const u32of = ofPair(w.T_GETI32, 0x7f, 8, 7, [[9, [w.I32_WRAP_I64]], [10, [w.I32_WRAP_I64]]], [w.I64_TRUNC_F64, w.I32_WRAP_I64]);
-  const i64of = ofPair(w.T_GETI64, 0x7e, 9, 10, [[7, [w.I64_EXTEND_I32_S]], [8, [w.I64_EXTEND_I32_U]]], [w.I64_TRUNC_F64]);
-  const u64of = ofPair(w.T_GETI64, 0x7e, 10, 9, [[7, [w.I64_EXTEND_I32_S]], [8, [w.I64_EXTEND_I32_U]]], [w.I64_TRUNC_F64]);
+  const ofPair = (f: Fn, ret: number, own: number, sib: number, conv: [number, number[]][], defOps: number[]): void =>
+    ladderBody(f.body, {ret, arms: [[own, []], [sib, []], ...conv], defOps});
+  ofPair(i32of, 0x7f, 7, 8, [[9, [w.I32_WRAP_I64]], [10, [w.I32_WRAP_I64]]], [w.I64_TRUNC_F64, w.I32_WRAP_I64]);
+  ofPair(u32of, 0x7f, 8, 7, [[9, [w.I32_WRAP_I64]], [10, [w.I32_WRAP_I64]]], [w.I64_TRUNC_F64, w.I32_WRAP_I64]);
+  ofPair(i64of, 0x7e, 9, 10, [[7, [w.I64_EXTEND_I32_S]], [8, [w.I64_EXTEND_I32_U]]], [w.I64_TRUNC_F64]);
+  ofPair(u64of, 0x7e, 10, 9, [[7, [w.I64_EXTEND_I32_S]], [8, [w.I64_EXTEND_I32_U]]], [w.I64_TRUNC_F64]);
   return [truthy, eq, box, num64, f32of, i32of, u32of, i64of, u64of];
 }
 
@@ -711,9 +713,7 @@ export function emitNumericEntryCall(
 // cells.
 export function makeRestThunk(em: Emit, role?: string): Fn {
   const f = new Fn(3, em);
-  f.typeIdx = w.T_III_I;
-  f.idx = em.ix.thunk0 + em.thunks.length;
-  em.ix.funcRefTypes.set(f.idx, w.T_III_I);
+  em.reg.register(`thunk${em.thunks.length}`, f, w.T_III_I);
   if (DBGEMIT && role !== undefined) console.error("THUNK", f.idx, role);
   em.thunks.push(f);
   return f;

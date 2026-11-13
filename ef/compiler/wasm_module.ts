@@ -7,6 +7,7 @@ import {OP_ADD, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_NE, OP_NOT} from "./ops.ts
 import {OPS} from "./env.ts";
 import {WasmError} from "./wasm_types.ts";
 import {Buf, Fn} from "./wasm_body.ts";
+import {type Indices, type IndexRegistrar, type Opt} from "./wasm_pipeline.ts";
 import {type Emit, emitCallClosure, emitDirectEntryCall, emitDispatch, emitFail, i31of, ladderBody, makeRestThunk, rebox, selectBool, NUM64_ARMS} from "./wasm_emit.ts";
 import {mainFrameSize} from "./wasm_term.ts";
 import * as w from "./wasm_consts.ts";
@@ -82,14 +83,26 @@ function collectCopy(f: Fn, src: number, off: number, dst: number, n: number): v
   });
 }
 
-export function emitBuiltins(em: Emit, builtin0: number): Fn[] {
+// Builtin trampoline declarations: one (frame, k) fn per used builtin in
+// BUILTINS order, created + registered here context-free so the $CLO
+// statics (layoutStatics) and direct call sites resolve their funcrefs
+// before emission; emitBuiltins fills the bodies in the same order.
+export function registerBuiltins(reg: IndexRegistrar, ix: Indices, o: Opt): void {
+  for (const {name} of BUILTINS) {
+    if (!o.usedBuiltins.has(name)) continue;
+    const f = new Fn(2);
+    ix.builtinFnIdx.set(name, reg.register(`builtin:${name}`, f, w.T_KABI));
+    ix.builtinFns.push(f);
+  }
+}
+
+export function emitBuiltins(em: Emit): Fn[] {
   const out: Fn[] = [];
+  let bi = 0;
   for (const {name} of BUILTINS) {
     if (!em.o.usedBuiltins.has(name)) continue;
-    const f = new Fn(2, em); // (frame, k): builtins are T_KABI trampolines
-    f.typeIdx = w.T_KABI;
-    f.idx = builtin0 + out.length; // matches the push order (usedBuiltins filter)
-    em.ix.funcRefTypes.set(f.idx, w.T_KABI);
+    const f = em.ix.builtinFns[bi++]; // (frame, k): builtins are T_KABI trampolines
+    f.em = em;
     const b = f.body;
     const box = () => {
       b.callFn(em.ix.fBox);
@@ -685,15 +698,12 @@ function emitMapLike(em: Emit, f: Fn, name: string, cb?: {idx: number, fsize: nu
 }
 
 // run (allocates the global frame, calls main with k = null) and the
-// 12 host accessors (JS cannot read GC fields directly). Appended
-// after main; indices computed here.
+// 12 host accessors (JS cannot read GC fields directly). Appended after
+// main; each registers through the registrar at its push position.
 export function emitInits(em: Emit): void {
-  const mainIdx = em.o.liveImports.length + em.funcs.length - 1; // main is last
-  em.ix.funcRefTypes.set(mainIdx, w.T_KABI); // main's funcref slot (after thunks)
+  const mainIdx = em.reg.register("main", em.mainFn, w.T_KABI);
   const run = new Fn(0, em);
-  run.typeIdx = w.T_RUN;
-  run.idx = mainIdx + 1;
-  em.ix.funcRefTypes.set(run.idx, w.T_RUN);
+  em.reg.register("run", run, w.T_RUN);
   {
     const b = run.body;
     b.refNull(4); // global frame parent = null
@@ -706,9 +716,7 @@ export function emitInits(em: Emit): void {
   em.funcs.push(run);
   const acc = (params: number, typeIdx: number, emit: (b: Buf, f: Fn) => void): Fn => {
     const f = new Fn(params, em);
-    f.typeIdx = typeIdx;
-    f.idx = em.o.liveImports.length + em.funcs.length;
-    em.ix.funcRefTypes.set(f.idx, typeIdx);
+    em.reg.register(`init${em.funcs.length}`, f, typeIdx);
     emit(f.body, f);
     em.funcs.push(f);
     return f;
@@ -743,7 +751,7 @@ export function emitInits(em: Emit): void {
   // the payload; a non-number still traps at the final cast). Same arms as
   // $num64 minus its $F64-identity fast arm (the payload read is the
   // default here).
-  acc(1, 19, (b) => ladderBody(b, {ret: 0x7c, arms: NUM64_ARMS, defOps: []}));
+  acc(1, w.T_NUM64, (b) => ladderBody(b, {ret: 0x7c, arms: NUM64_ARMS, defOps: []}));
   // __str_len(v) -> i32
   acc(1, 14, (b) => {
     b.localGet(0);

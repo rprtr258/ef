@@ -50,6 +50,7 @@ import {OP_ADD, OP_DIV, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_MUL, OP_NE, OP_NEG
 import {mapLikeFrameWords, numSig} from "./wasm_tables.ts";
 import {type CIr, type CTerm, type CAtom, type CPrim, type CFn} from "./cps_ir.ts";
 import {type Buf, Fn} from "./wasm_body.ts";
+import {type Indices, type IndexRegistrar} from "./wasm_pipeline.ts";
 import {type Emit, emitDispatch, emitCaseScan, selectBool, emitFail, i31of, makeRestThunk, hdlGet, CMP_OPS, emitCallClosure, emitDirectEntryCall, emitNumericEntryCall, rebox, boxShapeOf, planeLocal, reboxCallResult, tracePoint} from "./wasm_emit.ts";
 import {analyzeDevirt, classifySlots, numericEntries, type Devirt, type NumEntry} from "./wasm_devirt.ts";
 import type {Type} from "./unify.ts";
@@ -1536,7 +1537,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
       const baseScope = wk.em.plan.cfnBase.get(t.fun);
       if (baseScope === undefined) throw new WasmError(`internal: no base scope for fun ${t.fun}`);
       const clo = f.anyref();
-      b.i32Const(wk.em.ix.lambda0 + t.fun);
+      b.i32Const(wk.em.ix.cfnFns[t.fun].idx);
       b.refI31();
       b.localGet(0); // the captured frame
       b.i32Const(baseScope[0].size);
@@ -2091,12 +2092,12 @@ function directBuiltin(wk: Walk, fnAtom: CAtom): {idx: number, fsize: number} | 
   }
 }
 
-// Static direct-entry descriptor for a devirt-annotated callee: funcref
-// lambda0 + fun, base frame size from the planned mkfn-site scope.
+// Static direct-entry descriptor for a devirt-annotated callee: the CFn's
+// registered funcref, base frame size from the planned mkfn-site scope.
 function devirtSt(em: Emit, d: {fun: number, noEnv?: true}): {idx: number, fsize: number, noEnv?: true} {
   return d.noEnv === true
-    ? {idx: em.ix.lambda0 + d.fun, fsize: em.plan.cfnBase.get(d.fun)![0].size, noEnv: true}
-    : {idx: em.ix.lambda0 + d.fun, fsize: em.plan.cfnBase.get(d.fun)![0].size};
+    ? {idx: em.ix.cfnFns[d.fun].idx, fsize: em.plan.cfnBase.get(d.fun)![0].size, noEnv: true}
+    : {idx: em.ix.cfnFns[d.fun].idx, fsize: em.plan.cfnBase.get(d.fun)![0].size};
 }
 
 // The site's numeric signature when every arg carries a stamp and the
@@ -2233,16 +2234,15 @@ function mapTightDirect(em: Emit, fnAtom: CAtom, direct: {idx: number, fsize: nu
   return {idx: tightMapFn(em, name, devirtSt(em, {fun: cbFun})), fsize: direct.fsize};
 }
 
-// A per-site tight map-like loop fn: created here (funcref index from the
-// thunk pool), body filled later by emitBuiltins — emitMapLike lives above
-// this module's layer. Deduped per (builtin, callback) pair.
+// A per-site tight map-like loop fn: created + registered here at the call
+// site (its index lands in the thunk block — creation order), body filled
+// later by emitTightMaps (wasm_module.ts — emitMapLike lives above this
+// module's layer). Deduped per (builtin, callback) pair.
 function tightMapFn(em: Emit, name: string, cb: {idx: number, fsize: number}): number {
   const found = em.tightMaps.find(tm => tm.name === name && tm.cb.idx === cb.idx && tm.cb.fsize === cb.fsize);
   if (found !== undefined) return found.f.idx;
   const f = new Fn(2, em);
-  f.typeIdx = w.T_KABI;
-  f.idx = em.ix.thunk0 + em.thunks.length;
-  em.ix.funcRefTypes.set(f.idx, w.T_KABI);
+  em.reg.register(`thunk${em.thunks.length}`, f, w.T_KABI);
   em.thunks.push(f);
   em.tightMaps.push({f, name, cb});
   return f.idx;
@@ -2591,11 +2591,11 @@ function emitCaseBody(em: Emit, f: Fn, body: CTerm, base: TScope, esc: Set<strin
   tracePoint(em, f, `case f${f.fid} enter`);
   if (retResumeIdx !== undefined) {
     // resume binder (slot npMax) := $CLO{retResume, env = this hframe} —
-    // the funcref is retRes0 + retResumeIdx (the plan's per-handle counter
-    // indexes into the ret-resume block, not the raw table).
+    // the funcref is the plan's per-handle ret-resume record (the plan's
+    // counter indexes into the ret-resume block, not the raw table).
     const clo = f.anyref();
     const bb = f.body;
-    bb.i32Const(em.ix.retRes0 + retResumeIdx);
+    bb.i32Const(em.ix.retResFns[retResumeIdx].idx);
     bb.refI31();
     bb.localGet(0);
     bb.i32Const(0);
@@ -2731,22 +2731,13 @@ export function emitResumeFn(em: Emit, rf: Fn): void {
 // sequences: helpers → this → builtins → thunks → main.
 export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
   (em as Emit & {plan?: TermPlan}).plan = plan;
-  // Final entry types for every CFn up front: assignIndices pre-seeds all
-  // lambdas T_KABI, and devirt call sites emit static calls whose Buf-side
-  // sig resolution reads the callee's entry — a forward reference (an early
-  // fn calling a later one) must resolve the direct ABI, not the seed. The
-  // numeric entries resolve the same way (their SIGS records intern on the
-  // plan's numSig call, before any emitter runs).
-  for (let i = 0; i < ir.funcs.length; i++) {
-    em.ix.funcRefTypes.set(em.ix.lambda0 + i, ir.funcs[i].direct === true ? w.T_DABI : w.T_KABI);
-    const num = plan.numEntry[i];
-    if (num !== null) em.ix.funcRefTypes.set(em.ix.numFn.get(i)!, num.sig);
-  }
   for (let i = 0; i < ir.funcs.length; i++) {
     const fn = ir.funcs[i];
     const base = plan.cfnBase.get(i)!;
     const paramsL = lvl();
     for (const p of fn.params) addSlot(paramsL, p);
+    const f = em.ix.cfnFns[i];
+    f.em = em;
     // PR3 v1: cfn params stay boxed. The generic map/each/flatmap
     // trampolines box the callback's INDEX argument through $F64's fBox
     // regardless of the declared param width, so an entry-side unbox to
@@ -2757,9 +2748,6 @@ export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
       // local is never set (null): generic land-cell paths inside (a dcall's
       // CPS-entry branch) build cells whose next is null, so their completions
       // return instead of walking a chain. dret returns the boxed value.
-      const f = new Fn(1, em);
-      f.typeIdx = w.T_DABI;
-      f.idx = em.ix.lambda0 + i;
       const knull = f.typed(_T.RF[5]);
       const wk: Walk = {
         em, f, ts: [paramsL, ...base], kL: knull,
@@ -2770,9 +2758,6 @@ export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
       em.funcs.push(f);
       continue;
     }
-    const f = new Fn(2, em);
-    f.typeIdx = w.T_KABI;
-    f.idx = em.ix.lambda0 + i;
     const wk: Walk = {
       em, f, ts: [paramsL, ...base], kL: 1,
       esc: analyzeEscapes(fn.body), labels: [], depth: 0, tloc: new Map(),
@@ -2781,12 +2766,13 @@ export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
     emitTerm(wk, fn.body);
     em.funcs.push(f);
   }
-  // Numeric direct-ABI entries (ir.funcs order — the dnum0 block's layout
+  // Numeric direct-ABI entries (ir.funcs order — the dnum block's layout
   // order). The frame operand is the closure's captured env; the entry
   // itself extends it into the activation frame for the body's binds.
   // Slots 0..n-1 stay dead (params ride raw locals — the walk's slot
   // numbering keeps matching the planned scopes); params a cross-function
   // unit can read through the frame chain box into their slot at entry.
+  let dn = 0;
   for (let i = 0; i < ir.funcs.length; i++) {
     const num = plan.numEntry[i];
     if (num === null) continue;
@@ -2794,9 +2780,8 @@ export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
     const base = plan.cfnBase.get(i)!;
     const esc = analyzeEscapes(fn.body);
     const escaped = escapedParams(fn, esc);
-    const f = new Fn(1 + num.ws.length, em);
-    f.typeIdx = num.sig;
-    f.idx = em.ix.numFn.get(i)!;
+    const f = em.ix.dnumFns[dn++];
+    f.em = em;
     const paramsL = lvl();
     paramsL.raw = new Map();
     for (let k = 0; k < fn.params.length; k++) {
@@ -2831,25 +2816,84 @@ export function emitCfns(em: Emit, ir: CIr, plan: TermPlan): void {
   }
 }
 
-// Case fns + identity rets + ret resumes, in plan order (must match the
-// funcref indices assigned in wasm.ts's index layout).
+// CFn declarations: boxed entries (T_DABI/T_KABI by the devirt's direct
+// classification) + numeric direct-ABI entries, created + registered here
+// context-free in ir.funcs order so every funcref and its final sig exist
+// before any body resolves a (possibly forward) call target; emitCfns
+// fills the bodies in the same order.
+export function registerCfns(reg: IndexRegistrar, ix: Indices, ir: CIr, plan: TermPlan): void {
+  ix.cfnFns = ir.funcs.map((fn, i) => {
+    const f = new Fn(fn.direct === true ? 1 : 2);
+    reg.register(`cfn${i}`, f, fn.direct === true ? w.T_DABI : w.T_KABI);
+    return f;
+  });
+  for (let i = 0; i < ir.funcs.length; i++) {
+    const num = plan.numEntry[i];
+    if (num === null) continue;
+    const f = new Fn(1 + num.ws.length);
+    reg.register(`dnum${i}`, f, num.sig);
+    ix.numFn.set(i, f.idx);
+    ix.dnumFns.push(f);
+  }
+}
+
+// Case-fn declarations (op cases + explicit Return cases, fnIdx order) and
+// per-handle identity rets (idRetIdx order), created + registered here
+// context-free so the case tables layoutStatics builds carry their
+// funcrefs; emitCaseFns fills the bodies in the same order.
+export function registerCaseFns(reg: IndexRegistrar, ix: Indices, plan: TermPlan): void {
+  for (const hdl of plan.hdlOrder) {
+    const hp = hdl.__p!;
+    for (const c of hdl.cases) {
+      if (c.op === "Return") continue;
+      const f = new Fn(2);
+      reg.register(`case${hp.hdlIdx}:${c.op}`, f, w.T_KABI);
+      ix.caseFns.push(f);
+    }
+    if (hdl.cases.some(c => c.op === "Return")) {
+      const f = new Fn(2);
+      reg.register(`retcase${hp.hdlIdx}`, f, w.T_KABI);
+      ix.caseFns.push(f);
+    }
+  }
+  for (const hdl of plan.hdlOrder) {
+    const hp = hdl.__p!;
+    if (hp.idRetIdx === undefined) continue;
+    const f = new Fn(2);
+    reg.register(`idret${hp.hdlIdx}`, f, w.T_KABI);
+    ix.idRetFns.push(f);
+  }
+}
+
+// Ret-resume declarations (one per handle with an explicit Return case,
+// retResumeIdx order), created + registered here context-free; bodies are
+// filled by emitRetResumes in the same order.
+export function registerRetResumes(reg: IndexRegistrar, ix: Indices, plan: TermPlan): void {
+  for (const hdl of plan.hdlOrder) {
+    const hp = hdl.__p!;
+    if (hp.retResumeIdx === undefined) continue;
+    const f = new Fn(2);
+    reg.register(`retres${hp.hdlIdx}`, f, w.T_KABI);
+    ix.retResFns.push(f);
+  }
+}
+
+// Case fns + identity rets + ret resumes, in plan order (registration order —
+// registerCaseFns/registerRetResumes — is the module's function order).
 export function emitCaseFns(em: Emit, plan: TermPlan): void {
-  // The identityRet slot is always reserved in the index layout (its index
-  // precedes case0) — it holds the shared default-Return fn for npMax=0
-  // handles without an explicit Return case: read the Return value
-  // emitDispatch stashed in hframe slot 1, dispatch it through k.
-  const idf = new Fn(2, em);
-  idf.typeIdx = w.T_KABI;
-  idf.idx = em.ix.identityRet.idx;
-  em.ix.funcRefTypes.set(idf.idx, w.T_KABI);
+  // The identityRet fn (registered by the index phase) holds the shared
+  // default-Return body for npMax=0 handles without an explicit Return
+  // case: read the Return value emitDispatch stashed in hframe slot 1,
+  // dispatch it through k.
+  const idf = em.ix.identityRet;
   idf.em = em;
   emitIdRetFn(em, idf, 1);
   em.funcs.push(idf);
-  // Pass 1: every case fn (op cases + explicit Return cases) — the layout
-  // assigns them the contiguous case0.. block, so they must all be emitted
-  // before the identity rets (pass 2), which own the idRet0.. block. A
-  // per-handle interleaving here would collide funcrefs once a program has
-  // two handles without explicit Return cases.
+  // Pass 1: every case fn (op cases + explicit Return cases) — they fill
+  // the contiguous case block (registration order), so they must all be
+  // emitted before the identity rets (pass 2), which follow them in the fn
+  // list. A per-handle interleaving here would collide funcrefs once a
+  // program has two handles without explicit Return cases.
   for (const hdl of plan.hdlOrder) {
     const hp = hdl.__p!;
     const cases = hdl.cases;
@@ -2858,10 +2902,7 @@ export function emitCaseFns(em: Emit, plan: TermPlan): void {
     for (const c of cases) {
       if (c.op === "Return") continue;
       const cp = hp.caseP[ci++];
-      const f = new Fn(2, em);
-      f.typeIdx = w.T_KABI;
-      f.idx = em.ix.case0 + cp.fnIdx;
-      em.ix.funcRefTypes.set(f.idx, w.T_KABI);
+      const f = em.ix.caseFns[cp.fnIdx];
       f.em = em;
       emitCaseBody(em, f, c.body, cp.base, cp.esc, hdl.exit, undefined, npMax);
       em.funcs.push(f);
@@ -2869,25 +2910,19 @@ export function emitCaseFns(em: Emit, plan: TermPlan): void {
     const retCase = cases.find(c => c.op === "Return");
     if (retCase !== undefined) {
       const cp = hp.retP!;
-      const f = new Fn(2, em);
-      f.typeIdx = w.T_KABI;
-      f.idx = em.ix.case0 + cp.fnIdx;
-      em.ix.funcRefTypes.set(f.idx, w.T_KABI);
+      const f = em.ix.caseFns[cp.fnIdx];
       f.em = em;
       emitCaseBody(em, f, retCase.body, cp.base, cp.esc, hdl.exit, hp.retResumeIdx, npMax);
       em.funcs.push(f);
     }
   }
   // Pass 2: per-handle identity rets (handles without an explicit Return
-  // case), in plan order over the idRet0.. block.
+  // case), in plan order over the idRet block.
   for (const hdl of plan.hdlOrder) {
     const hp = hdl.__p!;
     if (hp.idRetIdx === undefined) continue;
     const npMax = Math.max(0, ...hdl.cases.map(c => c.params.length));
-    const f = new Fn(2, em);
-    f.typeIdx = w.T_KABI;
-    f.idx = em.ix.idRet0 + hp.idRetIdx;
-    em.ix.funcRefTypes.set(f.idx, w.T_KABI);
+    const f = em.ix.idRetFns[hp.idRetIdx];
     f.em = em;
     emitIdRetFn(em, f, npMax + 1);
     em.funcs.push(f);
@@ -2896,16 +2931,12 @@ export function emitCaseFns(em: Emit, plan: TermPlan): void {
 
 // Ret-resume fns (one per handle with an explicit Return case).
 export function emitRetResumes(em: Emit, plan: TermPlan): void {
-  let n = 0;
   for (const hdl of plan.hdlOrder) {
     const hp = hdl.__p!;
     if (hp.retResumeIdx === undefined) continue;
     const cases = hdl.cases;
     const npMax = Math.max(0, ...cases.map(c => c.params.length));
-    const f = new Fn(2, em);
-    f.typeIdx = w.T_KABI;
-    f.idx = em.ix.retRes0 + n++;
-    em.ix.funcRefTypes.set(f.idx, w.T_KABI);
+    const f = em.ix.retResFns[hp.retResumeIdx];
     f.em = em;
     emitRetResumeFn(em, f, npMax + 1);
     em.funcs.push(f);
@@ -2916,7 +2947,6 @@ export function emitRetResumes(em: Emit, plan: TermPlan): void {
 // (run() is the only non-tail caller in the chain).
 export function emitMain(em: Emit, ir: CIr, plan: TermPlan): void {
   const f = new Fn(2, em);
-  f.typeIdx = w.T_KABI;
   f.em = em;
   const wk: Walk = {
     em, f, ts: [plan.globalLvl], kL: 1,

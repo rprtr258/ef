@@ -374,10 +374,24 @@ its init order is the de-facto interface. Any reordering breaks silently.
 file count flat; extract later only if pipeline grows unwieldy).
 
 **Chunk 6.1 — registrar owns index allocation.**
-- [ ] In `wasm_pipeline.ts` (or new `wasm_indices.ts`): an `IndexRegistrar` with
+- [x] In `wasm_pipeline.ts` (or new `wasm_indices.ts`): an `IndexRegistrar` with
       `register(slot, fn, sig)` → index; `assignIndices` replaced by explicit registration calls at
       the definition sites; delete the hardcoded push-order mapping and magic `19`.
-- [ ] `funcRefTypes` written only by the registrar; emitters read.
+- [x] `funcRefTypes` written only by the registrar; emitters read.
+
+      Landed: `IndexRegistrar` (in `wasm_pipeline.ts`, next to `Indices`) owns the cursor and is the
+      single writer of `fn.idx`/`fn.typeIdx`/`funcRefTypes`; duplicate slot names throw. Pre-emission
+      blocks register at their definition sites via `registerHelpers` (wasm_emit.ts),
+      `registerCfns`/`registerCaseFns`/`registerRetResumes` (wasm_term.ts), `registerBuiltins`
+      (wasm_module.ts) — called by `assignIndices` in push order; emit-time sites (thunks,
+      tight maps, main, run, accessors) register as they create their fns. The base+offset fields
+      (`lambda0/dnum0/case0/idRet0/retRes0/builtin0/thunk0`) are gone — consumers index the
+      registrar-stashed `Fn` arrays (`cfnFns/caseFns/idRetFns/retResFns/dnumFns/builtinFns`)
+      by plan order; `magic 19` is `w.T_NUM64`. Registration order == fn-list order (identity
+      funcref table preserved), which is why emit-time blocks must register at creation, not in
+      a separate pass. Note: routing `funcRefTypes` through one writer pulled `emitInits`'
+      main/run/accessors into registrar calls, which also migrates wasm_module.ts's computed
+      `f.idx` convention — chunk 6.2's remaining scope is the Emit-construction half.
 
 **Verification:** `bun run ci` (wasm.test.ts full parity suite is the net); WAT structural diff —
 recipe: save `wasm-tools print <example>.wasm > /tmp/before.wat` from a pre-chunk build, rebuild

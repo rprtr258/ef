@@ -68,7 +68,7 @@ export const SIGS: Record<number, {p: (number | number[])[], r: number | number[
   [w.T_KABI]: {p: [[0x63, 4], [0x63, 5]], r: w.ANYREF},       // (frame, k) program fns
   [w.T_III_I]: {p: [[0x63, 4], w.ANYREF, [0x63, 5]], r: w.ANYREF}, // land thunks
   [w.T_DABI]: {p: [[0x63, 4]], r: w.ANYREF},                   // (frame) direct fns
-  [19]: {p: [w.ANYREF], r: 0x7c},                   // __num/fNum64
+  [w.T_NUM64]: {p: [w.ANYREF], r: 0x7c},                   // __num/fNum64: (anyref) -> f64
   [20]: {p: [w.ANYREF, 0x7f], r: 0x7f},             // __str_get
   [21]: {p: [w.ANYREF, 0x7f, 0x7f], r: null},       // __str_set
   [22]: {p: [w.ANYREF, 0x7f], r: w.ANYREF},           // __arr_get

@@ -58,13 +58,13 @@ export const K_RET = 0, K_HDL = 1, K_BND = 2;
 // (__mk_bool/__str_new/__arr_new), 13 (f64) -> anyref (fBox/__mk_num), 14
 // (anyref) -> i32 (fTruthy/__tag/__str_len/__arr_len), 15 (anyref, anyref)
 // -> anyref (fEq), 17 T_KABI ((ref null $FRAME), (ref null $K)) -> anyref, 18
-// T_III_I ((ref null $FRAME), anyref, (ref null $K)) -> anyref; 19..25 are
+// T_III_I ((ref null $FRAME), anyref, (ref null $K)) -> anyref; 20..25 are
 // accessor/helper shapes named in assemble() (24/25: __mk_f32,
 // __f32/fF32of). 16 is unused (a retired helper slot).
 export const T_RUN = 7, T_PERFORM = 9, T_FAIL = 10, T_STRNUM = 11,
   T_BOX = 13, T_TRUTHY = 14, T_EQ = 15, T_KABI = 17,
-  T_III_I = 18, T_MKF32 = 24, T_F32 = 25, T_MKI32 = 26, T_GETI32 = 27,
-  T_MKI64 = 28, T_GETI64 = 29;
+  T_III_I = 18, T_NUM64 = 19, T_MKF32 = 24, T_F32 = 25, T_MKI32 = 26,
+  T_GETI32 = 27, T_MKI64 = 28, T_GETI64 = 29;
 // Direct ABI (selective CPS): ((ref null $FRAME)) -> anyref — direct
 // functions take their activation frame (params + body binds over the
 // captured env) and RETURN the boxed result; no continuation operand.

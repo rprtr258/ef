@@ -128,7 +128,10 @@ import {type TermPlan} from "./wasm_term.ts";
 // - wasm_tables.ts  — signatures, host-import layout, binaryen module binding
 // - wasm_body.ts    — Buf + Fn: per-function body emission primitives
 // - cps.ts/cps_ir.ts— the CPS IR conversion (stage 1; shared by both backends)
-// - wasm_pipeline.ts— discover/optimize/assignIndices/layoutStatics/buildModule
+// - wasm_pipeline.ts— discover/optimize/register/layoutStatics/buildModule:
+//                      the registration hub — it runtime-imports the emit
+//                      modules' register* functions; their pipeline imports
+//                      are type-only, so the runtime graph stays one-way
 // - wasm_devirt.ts  — devirtualization analysis: slot provenance + per-CFn
 //                     purity fixpoint (leaf, over the CPS IR)
 // - wasm_emit.ts    — shared value plane: helpers, dispatch, call ABI, pooling
@@ -227,10 +230,10 @@ export const BIN_FEATURES = binaryen.Features.MVP | binaryen.Features.ReferenceT
 
 // Emission orchestration: one Emit context per compile, dropped at return.
 // Lives here so the emit modules stay one-way (wasm_module imports
-// wasm_emit/wasm_term; nothing imports back up).
+// wasm_emit/wasm_term; their imports of wasm_pipeline are type-only).
 function emit(ir: CIr, d: Discovery, o: Opt, ix: Indices, lay: Layout, plan: TermPlan): Fn[] {
   const em: Emit = {
-    d, o, ix, lay, plan,
+    d, o, ix, reg: ix.reg, lay, plan,
     funcs: [],
     thunks: [],
     tightMaps: [],
@@ -239,15 +242,15 @@ function emit(ir: CIr, d: Discovery, o: Opt, ix: Indices, lay: Layout, plan: Ter
   // Helpers (right after the live imports), CFns, case fns + ret resumes,
   // the shared resume fn, builtin trampolines, then main (last; run/
   // accessors follow in buildModule). Thunks (letk continuations + map-like
-  // land cells) are appended after the builtins — makeRestThunk assigns
-  // their indices from thunk0 at creation.
+  // land cells) are appended after the builtins — makeRestThunk registers
+  // them at creation.
   em.funcs.push(...emitHelpers(em));
   emitCfns(em, ir, plan);
   emitCaseFns(em, plan);
   emitRetResumes(em, plan);
   emitResumeFn(em, ix.resumeFn);
   emitTerminalRet(em, ix.terminalRet);
-  em.funcs.push(...emitBuiltins(em, ix.builtin0));
+  em.funcs.push(...emitBuiltins(em));
   emitMainTerm(em, ir, plan);
   emitTightMaps(em);
   em.funcs.push(...em.thunks);
