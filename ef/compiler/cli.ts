@@ -14,16 +14,16 @@
 import {readFileSync, writeFileSync} from "fs";
 import {styleText} from "util";
 import {run} from "./backend/interpreter/eval.ts";
-import {prepare} from "./pipeline.ts";
+import {prepare} from "./frontend/pipeline.ts";
 import {compile} from "./backend/wasm/wasm.ts";
 import {runWasm} from "./backend/wasm/wasm_host.ts";
-import {showErr, showT} from "./type_display.ts";
-import {type Type} from "./unify.ts";
-import {lint} from "./lint.ts";
+import {showErr, showT} from "./frontend/type_display.ts";
+import {type Type} from "./frontend/unify.ts";
+import {lint} from "./frontend/lint.ts";
 import {repl} from "./repl.ts";
 import {startLsp} from "./lsp.ts";
 import {show} from "./env.ts";
-import {type ExprID} from "./parser.ts";
+import {type ExprID} from "./frontend/parser.ts";
 
 // types: typecheck a source file; return every top-level symbol (let) with
 // its inferred type, plus the whole program's result type and its residual

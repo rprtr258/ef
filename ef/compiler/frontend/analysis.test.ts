@@ -5,12 +5,12 @@
 // the wasm tree-shake relies on.
 import {describe, expect, test} from "bun:test";
 import {Parser} from "./parser.ts";
-import {globalEnv} from "./env.ts";
-import {IMPL_KEYS, builtinParamNames} from "./builtins.ts";
-import {BUILTIN_TABLE} from "./builtin_table.ts";
+import {globalEnv} from "../env.ts";
+import {IMPL_KEYS, builtinParamNames} from "../builtins.ts";
+import {BUILTIN_TABLE} from "../builtin_table.ts";
 import {Unifier} from "./unify.ts";
 import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, performsAnyOp} from "./analysis.ts";
-import {OP_NEG} from "./ops.ts";
+import {OP_NEG} from "../ops.ts";
 
 const refs = (src: string) => builtinRefs(new Parser(src).parseProgram());
 const vals = (src: string) => builtinValueUses(new Parser(src).parseProgram());
@@ -180,7 +180,7 @@ describe("module init order", () => {
   // is called from builtin closures; eval builds the effect interps lazily
   // on first unhandled effect), so every module must initialize cleanly
   // regardless of entry point.
-  for (const entry of ["builtins.ts", "env.ts", "parser.ts", "types.ts", "backend/interpreter/eval.ts", "lint.ts"])
+  for (const entry of ["../builtins.ts", "../env.ts", "parser.ts", "types.ts", "../backend/interpreter/eval.ts", "lint.ts"])
     test(`${entry} as entry point`, () => {
       const p = Bun.spawnSync(
         [process.execPath, "-e", `import './${entry}'; console.log("ok")`],

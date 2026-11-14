@@ -104,15 +104,15 @@
 // called from builtin closures, eval reads the effect interps lazily — so
 // module init order is free; no entry-order breaker import needed.)
 import binaryen from "binaryen";
-import {prepare, rejectUnhandled, type EffectInterp} from "../../pipeline.ts";
-import {toCps} from "../../cps.ts";
+import {prepare, rejectUnhandled, type EffectInterp} from "../../frontend/pipeline.ts";
+import {toCps} from "../../frontend/cps.ts";
 import {bindMOD} from "./wasm_tables.ts";
 import {buildModule, discover, layoutStatics, optimize, assignIndices, type Discovery, type Indices, type Layout, type Opt} from "./wasm_pipeline.ts";
 import {emitCfns, emitCaseFns, emitRetResumes, emitResumeFn, emitTerminalRet, emitMain} from "./wasm_term.ts";
 import {Fn} from "./wasm_body.ts";
 import {type Emit, emitHelpers} from "./wasm_emit.ts";
 import {emitBuiltins, emitInits, emitTightMaps} from "./wasm_module.ts";
-import {type CIr} from "../../cps_ir.ts";
+import {type CIr} from "../../frontend/cps_ir.ts";
 import {planIr, type Plan} from "./wasm_plan.ts";
 // The binary format layer is gone: Buf's emit methods build binaryen AST
 // directly (wasm_body.ts); opcode constants survive only as the data keys

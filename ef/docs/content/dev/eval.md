@@ -116,7 +116,7 @@ checks once after parsing; a REPL line checks against
 `ctx.checked`):
 
 1. **Fail fast** on statically unhandled ops (`rejectUnhandled` in
-   pipeline.ts — the one gate both backends call right after prepare; the
+   frontend/pipeline.ts — the one gate both backends call right after prepare; the
    wasm pipeline applies it before any codegen): any op in
    `checked.unhandled` that is neither a builtin effect nor covered by
    `ctx.interp` throws *before evaluation begins* — a program that would die

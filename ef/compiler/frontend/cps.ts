@@ -20,8 +20,8 @@ import type {CAtom, CCase, CFn, CIr, CPrim, CTerm} from "./cps_ir.ts";
 import {widthOf, type Type} from "./unify.ts";
 import {optimizeCps} from "./cps_opt.ts";
 import {BUILTINS} from "./analysis.ts";
-import {assertNever} from "./assert.ts";
-import {OP_ADD, OP_DIV, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_MUL, OP_NE, OP_NEG, OP_REM, OP_SUB} from "./ops.ts";
+import {assertNever} from "../assert.ts";
+import {OP_ADD, OP_DIV, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_MUL, OP_NE, OP_NEG, OP_REM, OP_SUB} from "../ops.ts";
 
 // Builtin names the emitter specializes at direct call sites (analysis.ts's
 // surface table — parser-types-only, so no import-order hazards).

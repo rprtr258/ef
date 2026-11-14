@@ -5,8 +5,8 @@ import {writeFileSync} from "node:fs";
 // (wasm.ts). The design doc for the whole backend lives at the
 // top of wasm.ts.
 import binaryen from "binaryen";
-import {type Program} from "../../parser.ts";
-import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, performsAnyOp} from "../../analysis.ts";
+import {type Program} from "../../frontend/parser.ts";
+import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, performsAnyOp} from "../../frontend/analysis.ts";
 import {_T, StaticDesc, ValueRef, WasmError} from "./wasm_types.ts";
 import {BUILTIN_IMPORTS, DBGEMIT, DBGTRACE, HOST_IMPORTS, OPERATOR_OPS, SIGS, mapLikeFrameWords, vt} from "./wasm_tables.ts";
 import {Fn} from "./wasm_body.ts";
@@ -14,7 +14,7 @@ import {registerHelpers} from "./wasm_emit.ts";
 import {registerCaseFns, registerCfns, registerRetResumes} from "./wasm_term.ts";
 import {hdlP, type Plan} from "./wasm_plan.ts";
 import {registerBuiltins} from "./wasm_module.ts";
-import {type CIr, type CAtom, type CPrim, type CTerm} from "../../cps_ir.ts";
+import {type CIr, type CAtom, type CPrim, type CTerm} from "../../frontend/cps_ir.ts";
 import * as w from "./wasm_consts.ts";
 
 // --- compile phases ----------------------------------------------------------

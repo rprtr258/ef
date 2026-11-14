@@ -17,9 +17,9 @@
 // internal handles — performs inside its islands), so every gate here is
 // computed from the IR shape itself, never from `direct` alone.
 
-import {BUILTINS, NATIVE_BUILTINS} from "../../analysis.ts";
-import type {CAtom, CFn, CIr, CTerm} from "../../cps_ir.ts";
-import {widthOf, type Type} from "../../unify.ts";
+import {BUILTINS, NATIVE_BUILTINS} from "../../frontend/analysis.ts";
+import type {CAtom, CFn, CIr, CTerm} from "../../frontend/cps_ir.ts";
+import {widthOf, type Type} from "../../frontend/unify.ts";
 import {numSig} from "./wasm_tables.ts";
 
 // Facts for one dcall/call site.

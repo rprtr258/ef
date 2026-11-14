@@ -9,9 +9,9 @@
 // wasm tree-shakes and emits code.
 import {Parser, type Program} from "./parser.ts";
 import {checkProgram, type Checked} from "./types.ts";
-import {globalEnv, type Cont, type Env, type Outcome, type Value} from "./env.ts";
-import {EFFECT_OPS} from "./builtin_table.ts";
-import {errUnhandled} from "./ops.ts";
+import {globalEnv, type Cont, type Env, type Outcome, type Value} from "../env.ts";
+import {EFFECT_OPS} from "../builtin_table.ts";
+import {errUnhandled} from "../ops.ts";
 
 // An effect interpreter: ops it knows map to host actions; unknown ops fall
 // through to the builtin table's default interpretation. The one interface

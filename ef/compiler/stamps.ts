@@ -22,12 +22,12 @@ import {NATIVE_BUILTINS} from "./builtin_table.ts";
 import {assertNever} from "./assert.ts";
 import {ARITH_OPS, OP_ADD, OP_NEG, STAMPED_OPS} from "./ops.ts";
 import {TI32, TI64, TU32, TU64, TF32, TF64, TUNIT} from "./prims.ts";
-import {TypeError_} from "./type_display.ts";
+import {TypeError_} from "./frontend/type_display.ts";
 import {
   FLOAT_NAMES, INT_NAMES, Unifier, widthOf,
   type NumName, type Prim, type Type,
-} from "./unify.ts";
-import type {Expr, ExprID} from "./parser.ts";
+} from "./frontend/unify.ts";
+import type {Expr, ExprID} from "./frontend/parser.ts";
 
 // The slice of the checker's recorder the stamps read and write: the checked
 // node slice and the per-node recorded types (width pins overwrite entries —

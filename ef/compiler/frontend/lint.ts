@@ -3,7 +3,7 @@
 import type {Pos} from "./lexer.ts";
 import {Parser, type Expr, type ExprID, type Item} from "./parser.ts";
 import {exprChildren, forEachBinder} from "./walk.ts";
-import {assertNever} from "./assert.ts";
+import {assertNever} from "../assert.ts";
 
 // Each pass is an (items, nodes) => LintIssue[]; add more passes to LINT_PASSES.
 export type LintIssue =

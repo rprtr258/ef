@@ -13,10 +13,10 @@
 // top of wasm.ts.
 
 import {WasmError} from "./wasm_types.ts";
-import {type CIr, type CTerm, type CAtom, type CPrim, type CFn} from "../../cps_ir.ts";
+import {type CIr, type CTerm, type CAtom, type CPrim, type CFn} from "../../frontend/cps_ir.ts";
 import {analyzeDevirt, numericEntries, type Devirt, type NumEntry} from "./wasm_devirt.ts";
 import {OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_NE} from "../../ops.ts";
-import type {Type} from "../../unify.ts";
+import type {Type} from "../../frontend/unify.ts";
 import type {Fn} from "./wasm_body.ts";
 
 // ---------------------------------------------------------------------------

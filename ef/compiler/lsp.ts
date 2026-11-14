@@ -30,15 +30,15 @@ import {
   type SemanticTokens,
   type SemanticTokensParams,
 } from "vscode-languageserver/node";
-import {Parser, type Alias, type ExprID, type Program, type TypeTok} from "./parser.ts";
-import {showT, TypeError_} from "./type_display.ts";
-import {type Unifier} from "./unify.ts";
+import {Parser, type Alias, type ExprID, type Program, type TypeTok} from "./frontend/parser.ts";
+import {showT, TypeError_} from "./frontend/type_display.ts";
+import {type Unifier} from "./frontend/unify.ts";
 import {tFun, TANY} from "./prims.ts";
-import type {Checked, EffectSig} from "./types.ts";
-import {prepare} from "./pipeline.ts";
+import type {Checked, EffectSig} from "./frontend/types.ts";
+import {prepare} from "./frontend/pipeline.ts";
 import {builtinParamNames} from "./builtins.ts";
-import {forEachBinder} from "./walk.ts";
-import {ParseError, type Pos} from "./lexer.ts";
+import {forEachBinder} from "./frontend/walk.ts";
+import {ParseError, type Pos} from "./frontend/lexer.ts";
 
 // Parse errors carry the offending token's 1-based extent — underlined.
 // Checker errors carry a bare 1-based pos with no token extent — a zero-width

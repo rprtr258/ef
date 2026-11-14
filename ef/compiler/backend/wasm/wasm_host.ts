@@ -7,7 +7,7 @@
 // overridden per-op through the `interp` argument).
 import {type Cont, type Outcome, type Value, OPS, asSlice, mkSlice, mkTup, show, sliceElems} from "../../env.ts";
 import {builtinEffectHosts} from "../../builtins.ts";
-import type {EffectInterp} from "../../pipeline.ts";
+import type {EffectInterp} from "../../frontend/pipeline.ts";
 import {compileWithOps} from "./wasm.ts";
 import {DBGTRACE, TRACE_SITES} from "./wasm_tables.ts";
 import {assertNever} from "../../assert.ts";

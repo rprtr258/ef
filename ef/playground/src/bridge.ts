@@ -6,16 +6,16 @@
 // stubs) and preempted by the browser effect interpreters.
 
 import "./shim.ts";
-import {Parser, type Program, type Expr, type Alias} from "../../compiler/parser.ts";
-import {showT} from "../../compiler/type_display.ts";
-import {type Effs, type Type} from "../../compiler/unify.ts";
-import type {Checked, EffectSig} from "../../compiler/types.ts";
-import {lint} from "../../compiler/lint.ts";
+import {Parser, type Program, type Expr, type Alias} from "../../compiler/frontend/parser.ts";
+import {showT} from "../../compiler/frontend/type_display.ts";
+import {type Effs, type Type} from "../../compiler/frontend/unify.ts";
+import type {Checked, EffectSig} from "../../compiler/frontend/types.ts";
+import {lint} from "../../compiler/frontend/lint.ts";
 import {exec, newCtx} from "../../compiler/backend/interpreter/eval.ts";
-import {prepare, prepareStaged, type EffectInterp} from "../../compiler/pipeline.ts";
+import {prepare, prepareStaged, type EffectInterp} from "../../compiler/frontend/pipeline.ts";
 import {num, show, type Cont, type Outcome, type Value} from "../../compiler/env.ts";
-import {KEYWORDS, ONE, TWO, lex} from "../../compiler/lexer.ts";
-import {collectEffectOps} from "../../compiler/analysis.ts";
+import {KEYWORDS, ONE, TWO, lex} from "../../compiler/frontend/lexer.ts";
+import {collectEffectOps} from "../../compiler/frontend/analysis.ts";
 import {compileWithOps} from "../../compiler/backend/wasm/wasm.ts";
 import {runModule} from "../../compiler/backend/wasm/wasm_host.ts";
 

@@ -5,8 +5,8 @@
 // (closures, CPS natives, effect interps) live in builtins.ts; operator
 // implementations live in env.ts's OPS — the checker resolves operator apps
 // structurally, so operators are surface rows only.
-import type {Type, Unifier} from "./unify.ts";
-import type {EffectSig} from "./types.ts";
+import type {Type, Unifier} from "./frontend/unify.ts";
+import type {EffectSig} from "./frontend/types.ts";
 import {TI64, TANY, TBOOL, TF64, TFLOAT, TINT, TUNIT, TSTR, tArr, tFun} from "./prims.ts";
 import {
   OP_ADD, OP_SUB, OP_MUL, OP_REM, OP_NEG,

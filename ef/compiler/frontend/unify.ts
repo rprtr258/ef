@@ -7,7 +7,7 @@
 // types and throw through type_display.ts (showT/TypeError_) — a leaf that
 // imports this module's shapes type-only, so the runtime edge is one-way
 // (unify → type_display).
-import {tArr, tFun, tTup} from "./prims.ts";
+import {tArr, tFun, tTup} from "../prims.ts";
 import {showT, TypeError_} from "./type_display.ts";
 
 export type Type = Prim | ArrT | TupT | FunT | Var | AnyT;

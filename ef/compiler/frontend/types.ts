@@ -1,7 +1,7 @@
 import type {Expr, ExprID, Program, TypeTok} from "./parser";
-import {BUILTINS, BUILTIN_TABLE} from "./builtin_table.ts";
-import {ARITH_OPS, CMP_OPS, EQ_OPS, OP_ADD, OP_DIV, OP_NEG} from "./ops.ts";
-import {TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, tArr, tFun, tTup} from "./prims.ts";
+import {BUILTINS, BUILTIN_TABLE} from "../builtin_table.ts";
+import {ARITH_OPS, CMP_OPS, EQ_OPS, OP_ADD, OP_DIV, OP_NEG} from "../ops.ts";
+import {TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, tArr, tFun, tTup} from "../prims.ts";
 import {showT, TypeError_} from "./type_display.ts";
 import {
   FLOAT_NAMES, INT_NAMES, NUMERIC_NAMES,
@@ -12,8 +12,8 @@ import {
   beginLamWidths, checkLamWidths, endLamWidths, pinBindingWidth, pinRetWidth,
   stampArrKind, stampComputeWidth, stampDivWidth, stampEqWidth, stampNumKinds,
   stampSuspension, touchNumericVar,
-} from "./stamps.ts";
-import {assertNever} from "./assert.ts";
+} from "../stamps.ts";
+import {assertNever} from "../assert.ts";
 import type {Pos} from "./lexer.ts";
 import {exprChildren, type BinderKinds} from "./walk.ts";
 

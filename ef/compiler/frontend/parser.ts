@@ -4,11 +4,11 @@ import {
 import {
   TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TUNIT, TANY, TTYPE,
   tArr, tTup, tFun,
-} from "./prims.ts";
+} from "../prims.ts";
 import type {EffectSig} from "./types.ts";
 import {KEYWORDS, lex, ParseError, type Pos, type Tok} from "./lexer.ts";
-import {assertNever} from "./assert.ts";
-import {OP_NEG, OP_NOT} from "./ops.ts";
+import {assertNever} from "../assert.ts";
+import {OP_NEG, OP_NOT} from "../ops.ts";
 
 // Type variables allocated by the parser: alias type parameters, and
 // arguments omitted from a parametric alias use. They live in a negative id

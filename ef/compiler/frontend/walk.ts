@@ -13,7 +13,7 @@
 
 import type {Pos} from "./lexer.ts";
 import {exprChildren, type Expr, type ExprID, type Program} from "./parser.ts";
-import {assertNever} from "./assert.ts";
+import {assertNever} from "../assert.ts";
 
 export {exprChildren};
 

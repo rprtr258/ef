@@ -2,7 +2,7 @@
 // and host-import thunks, main, and the run/accessor init
 // functions the host imports. The design doc for the whole
 // backend lives at the top of wasm.ts.
-import {BUILTINS} from "../../analysis.ts";
+import {BUILTINS} from "../../frontend/analysis.ts";
 import {OP_ADD, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_NE, OP_NOT} from "../../ops.ts";
 import {OPS} from "../../env.ts";
 import {WasmError} from "./wasm_types.ts";

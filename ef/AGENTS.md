@@ -6,26 +6,27 @@ A TypeScript implementation of a small statically-typed language
 with **algebraic effects and effect handlers**, C/Go-flavored syntax, and a
 Hindley-Milner-flavoured type system with effect tracking.
 
-- Modules (under `compiler/`, a bun workspace package; the two backends live
-  under `compiler/backend/` — `backend/interpreter/` and `backend/wasm/`):
-  `lexer.ts`, `parser.ts`, `walk.ts`
+- Modules (under `compiler/`, a bun workspace package; the frontend lives
+  under `compiler/frontend/` and the two backends under
+  `compiler/backend/` — `backend/interpreter/` and `backend/wasm/`):
+  `frontend/lexer.ts`, `frontend/parser.ts`, `frontend/walk.ts`
   (the shared AST traversal — `exprChildren` child order + `forEachBinder` binder sites —
-  consumed by analysis, the checker's scanners, lint, and the LSP), `types.ts` (checker), `env.ts` (runtime
+  consumed by analysis, the checker's scanners, lint, and the LSP), `frontend/types.ts` (checker), `env.ts` (runtime
   values), `builtin_table.ts` (the declarative builtin table — pure rows
   (name, kind, checker sig); leaf module), `builtins.ts` (runtime impls for
   those rows; a new builtin is one row in builtin_table.ts plus one impl
   row here — and for fn/native/value kinds reachable from wasm code, a
   case in backend/wasm/wasm_module.ts's `emitBuiltins` switch, whose default throws
-  `internal: builtin <name> not implemented`), `analysis.ts` (frontend passes: op discovery, builtin-ref
+  `internal: builtin <name> not implemented`), `frontend/analysis.ts` (frontend passes: op discovery, builtin-ref
   tree-shaking; re-exports the builtin surface declared in builtin_table.ts
-  — shared by the wasm backend, parser-types-only leaf module), `pipeline.ts`
+  — shared by the wasm backend, parser-types-only leaf module), `frontend/pipeline.ts`
   (the preparation seam: prepare + the staged prepareStaged, Ctx/newCtx, the
   REPL's one-line runLine (prepare against the accumulator + exec, owned by
   eval.ts), shared
-  unhandled-op gate; consumed by both backends and the frontends), `cps.ts` (CPS
-  converter: checked AST → the shared CPS IR)), `cps_ir.ts` (the CPS IR node
+  unhandled-op gate; consumed by both backends and the frontends), `frontend/cps.ts` (CPS
+  converter: checked AST → the shared CPS IR)), `frontend/cps_ir.ts` (the CPS IR node
   set + the multi-shot ANF/freeze discipline comments; leaf module),
-  `cps_opt.ts` (optimization passes applied as the final stage of CPS
+  `frontend/cps_opt.ts` (optimization passes applied as the final stage of CPS
   conversion),
   `backend/interpreter/eval.ts` (CPS IR interpreter + pipeline),
   `backend/wasm/wasm.ts` (wasm backend entry: CPS IR → wasm codegen, binaryen
@@ -40,13 +41,13 @@ Hindley-Milner-flavoured type system with effect tracking.
   `backend/wasm/wasm_host.ts` (wasm host runtime: instantiation, GC↔JS boxing,
   effect interpretation), `stamps.ts` (the one backend-stamp concern: width/
 suspension/box-provenance emission over an exhaustive `Expr` switch),
-`lint.ts`, `prims.ts`, `assert.ts` (the
+`frontend/lint.ts`, `prims.ts`, `assert.ts` (the
   `assertNever` exhaustive-switch guard — every switch over `Expr` ends in
   it, so a new node variant fails typecheck in each walker that forgets it),
   frontends `cli.ts`/`repl.ts`.
 - Tests (under `compiler/`, backends' suites co-located with them under
-  `compiler/backend/`): `lint.test.ts` + `analysis.test.ts` + `ops.test.ts` +
-  `cps_opt.test.ts` (shared stages) + `backend/interpreter/index.test.ts` (the
+  `compiler/backend/`): `frontend/lint.test.ts` + `frontend/analysis.test.ts` + `ops.test.ts` +
+  `frontend/cps_opt.test.ts` (shared stages) + `backend/interpreter/index.test.ts` (the
   language suite run through the interpreter) + `backend/wasm/wasm.test.ts` +
   `backend/parity.test.ts` (table-driven interpreter↔wasm parity over
   `examples/*.ef` and the fine-grained fixtures in `compiler/backend/testdata/*.ef` —
@@ -82,9 +83,9 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
 
 ## Architecture (top to bottom, dependency order)
 
-1. **`lexer.ts`** — whitespace/newline-insensitive token stream. `KEYWORDS`,
+1. **`frontend/lexer.ts`** — whitespace/newline-insensitive token stream. `KEYWORDS`,
    `ONE`/`TWO` char tables. `Pos` (1-indexed line/col) lives here.
-2. **`parser.ts`** — Pratt for infix (precedence table `Parser.PREC`),
+2. **`frontend/parser.ts`** — Pratt for infix (precedence table `Parser.PREC`),
    recursive descent for the rest. `&&`/`||` desugar to `if` (free
    short-circuit). The AST is a flat node slice: expressions reference
    children by `ExprID` (an index into `Program.nodes`), not by embedding
@@ -92,7 +93,7 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
    name occurrence (alias decls/uses, type params, effect decls, `! { … }`
    rows, `Op!` performs, case labels) — the LSP's semantic-tokens source;
    failed alias attempts truncate their recordings on rewind.
-3. **`types.ts`** — the checker. `Type` union, the `Unifier` class (one instance per check: all
+3. **`frontend/types.ts`** — the checker. `Type` union, the `Unifier` class (one instance per check: all
    union-find/binding state lives there, carried in `Checked`), and a per-call `TokenRecorder`
    threaded through checking that records `semToks` — value-identifier semantic tokens for the LSP,
    kind `function`/`variable` by resolved type — plus per-node types and effect sigs, all carried
@@ -116,7 +117,7 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
    `Read`/`Write`/`Println`/`Out`/`Exit`/`Wait`/`Random`). Operators
    (`+ - * / % == neg` ...) stay in `env.ts`: the checker special-cases
    them structurally, and no honest type signature exists for them.
-6. **`analysis.ts`** — frontend analysis passes over a parsed program, a
+6. **`frontend/analysis.ts`** — frontend analysis passes over a parsed program, a
    parser-types-only leaf module importable by both backends (module init
    order is order-independent — see the eval⇄builtins note under
    `eval.ts`): `BUILTINS`/`EFFECT_OPS` surface
@@ -126,7 +127,7 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
    checker). Consumed by backend/wasm/wasm_pipeline.ts's OPT_PASSES and eval.ts's exec
    (per-call env seeding); the rows also surface via `ef types`'s result
    line.
-7. **`cps_ir.ts`** — the higher-order CPS IR, the single intermediate
+7. **`frontend/cps_ir.ts`** — the higher-order CPS IR, the single intermediate
    representation both backends consume: explicit continuations (`letk`
    binds a continuation λv.body; tail positions name their continuation as
    a var reference), `perform`/`handle` naming the reified handler
@@ -136,7 +137,7 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
    bindings are exactly the frozen accs a resume must honor, while named
    variables stay live in the shared, mutable frame. `$`-prefixed converter
    names can never collide with source identifiers.
-8. **`cps.ts`** — CPS conversion (checked AST → `cps_ir.ts` term): the one
+8. **`frontend/cps.ts`** — CPS conversion (checked AST → `frontend/cps_ir.ts` term): the one
    conversion both backends consume, so effect/resume/multi-shot semantics
    live in one place, not per backend. ANF-style: every compound value
    binds a fresh `$`-temp before flowing on; the converter's continuation
@@ -150,7 +151,7 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
    letks are emitted for call/perform sites whose node carries a numKind
    stamp: the resumed/returned value must normalize to that width at the
    site.
-9. **`cps_opt.ts`** — optimization passes over the CPS IR (`optimizeCps`,
+9. **`frontend/cps_opt.ts`** — optimization passes over the CPS IR (`optimizeCps`,
    applied by `toCps` as its final stage — consumers of `toCps` only ever
    see optimized IR). Four
    sound-by-construction rewrites, iterated to a fixpoint (every firing
@@ -185,7 +186,7 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
    seeds state (empty runtime env), `exec(prog, ctx, checked)` evaluates an
    already-checked program (`checked = checkProgram(prog, ctx.checked)`, so
    checking happens before the interpreter runs, once per line), applies
-   the shared pipeline gate (pipeline.ts's rejectUnhandled) that fails
+   the shared pipeline gate (frontend/pipeline.ts's rejectUnhandled) that fails
    fast on statically unhandled non-builtin ops not covered by
    `ctx.interp` (via `checked.unhandled` — the checker's residual
    top-level effect rows, which do ops-minus-handled matching through
@@ -212,7 +213,7 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
    **`wasm_host.ts`** (direct-style: instantiation, GC↔JS boxing through the
    §4 accessor ABI, `runWasm`; effect interpretation comes from builtins.ts's
    `builtinEffectHosts`).
-12. **`lint.ts`** — lint passes over a parsed program (`LINT_PASSES`);
+12. **`frontend/lint.ts`** — lint passes over a parsed program (`LINT_PASSES`);
    currently one rule (`unused-arg`).
 13. **Frontends** — `cli.ts` (`ef run|buildwasm|runwasm|types|lint <file>`,
     `ef repl`, `ef lsp`) and `repl.ts`
@@ -271,7 +272,7 @@ the README's opening, and compiler-internal changes update
 - **No shadowing.** Every binding site (`let`, destructure field, lambda
   parameter, handler binder/resume) goes through the checker's `checkBind`:
   no same-frame redeclaration, no hiding an enclosing binding, no colliding
-  with a builtin/operator name (analysis.ts's `BUILTINS` surface). The REPL
+  with a builtin/operator name (frontend/analysis.ts's `BUILTINS` surface). The REPL
   acc reuses the top frame, so rebinding across lines errors too. `_` is
   the exempt discard wildcard; effect names are a separate namespace.
 - **Function effect signatures.** `f :: fn(p: T): R ! { Effs } { ... }` —

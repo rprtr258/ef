@@ -2,7 +2,7 @@
 // constructors, a leaf module — its unify.ts import is type-only (erased at
 // runtime), so builtin_table.ts and types.ts read these at init time without
 // a runtime dependency on the checker.
-import type {AnyT, ArrT, Effs, FunT, Prim, TupField, TupT, Type} from "./unify.ts";
+import type {AnyT, ArrT, Effs, FunT, Prim, TupField, TupT, Type} from "./frontend/unify.ts";
 
 // The six machine widths. Arithmetic between distinct widths is a type
 // error; @as converts.

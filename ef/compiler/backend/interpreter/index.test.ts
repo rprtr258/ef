@@ -4,13 +4,13 @@ import {join} from "node:path";
 import {readFileSync, unlinkSync, existsSync, writeFileSync} from "node:fs";
 import {execSync} from "node:child_process";
 import {run, newCtx} from "./eval.ts";
-import {prepare} from "../../pipeline.ts";
+import {prepare} from "../../frontend/pipeline.ts";
 import {runLine} from "./eval.ts";
-import {showErr, showT, TypeError_} from "../../type_display.ts";
+import {showErr, showT, TypeError_} from "../../frontend/type_display.ts";
 import {show, sliceElems, mkSlice, mkTup, type Slice, type Value} from "../../env.ts";
-import {Parser} from "../../parser.ts";
-import {toCps} from "../../cps.ts";
-import type {CIr, CTerm} from "../../cps_ir.ts";
+import {Parser} from "../../frontend/parser.ts";
+import {toCps} from "../../frontend/cps.ts";
+import type {CIr, CTerm} from "../../frontend/cps_ir.ts";
 
 // typeOf: return the inferred type of the last expression, as a string.
 // Surfaces effect sets in function signatures, e.g. `(i64) -> i64 ! { Emit }`.

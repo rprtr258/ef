@@ -1,6 +1,6 @@
-import {showT} from "./type_display.ts";
-import {type FunT} from "./unify.ts";
-import type {CIr} from "./cps_ir.ts";
+import {showT} from "./frontend/type_display.ts";
+import {type FunT} from "./frontend/unify.ts";
+import type {CIr} from "./frontend/cps_ir.ts";
 import {builtins} from "./builtins.ts";
 import {
   OP_ADD, OP_SUB, OP_MUL, OP_REM,

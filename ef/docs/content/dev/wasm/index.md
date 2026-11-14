@@ -10,7 +10,7 @@ into WasmGC. There is no linear memory: every wasm operand value is an
 `compileWithOps(src)` composes free functions over plain artifact records —
 each phase returns a fresh record with its additions, and no phase mutates an
 artifact it did not create. Before the phases run, the pipeline applies the
-shared fail-fast gate (pipeline.ts's `rejectUnhandled`): residual ops
+shared fail-fast gate (frontend/pipeline.ts's `rejectUnhandled`): residual ops
 neither the builtin table nor the runner's interpreter covers are rejected
 right after prepare — before any codegen, the same check the interpreter's
 `exec` applies (see [Interpreter](../eval.md)). The phases:

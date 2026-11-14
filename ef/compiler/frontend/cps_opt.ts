@@ -46,8 +46,8 @@
 // shapes; dead trapping prims (field reads, TRAPPING_OPS ops) keep their
 // binding so the throw survives.
 
-import {assertNever} from "./assert.ts";
-import {TRAPPING_OPS} from "./ops.ts";
+import {assertNever} from "../assert.ts";
+import {TRAPPING_OPS} from "../ops.ts";
 import type {CAtom, CIr, CPrim, CTerm} from "./cps_ir.ts";
 
 const isTemp = (name: string): boolean => name.startsWith("$");

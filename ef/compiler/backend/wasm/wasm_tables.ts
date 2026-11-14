@@ -2,7 +2,7 @@
 // signatures, valtype decoding and the binaryen module binding. The
 // design doc for the whole backend lives at the top of wasm.ts.
 import binaryen from "binaryen";
-import {NATIVE_BUILTINS} from "../../analysis.ts";
+import {NATIVE_BUILTINS} from "../../frontend/analysis.ts";
 import {WasmError, _T} from "./wasm_types.ts";
 import * as w from "./wasm_consts.ts";
 
@@ -23,7 +23,7 @@ export const mapLikeFrameWords = (name: string): number => name === "each" ? 0 :
 // caller, no call, no frame. Unstamped (polymorphic) sites and sites
 // referenced as values (e.g. passed to foldl) use the dynamic trampolines —
 // see treeShakeBuiltins and emitOperatorInline.
-export {OPERATOR_OPS} from "../../analysis.ts";
+export {OPERATOR_OPS} from "../../frontend/analysis.ts";
 
 // Import names that serve exactly one builtin each (import → builtin).
 export const BUILTIN_IMPORTS: Record<string, string> = {
