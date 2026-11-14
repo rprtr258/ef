@@ -44,7 +44,7 @@ path — nondeterminism built from ordinary multi-shot resumption.
 ## Basic CLI usage
 
 ```sh
-git clone https://github.com/rprtr258/lish.git && cd lish/ef && bun install
+git clone https://github.com/rprtr258/ef.git && cd ef && bun install
 
 bun compiler/cli.ts run examples/factorial.ef       # 120 — run on the interpreter
 bun compiler/cli.ts runwasm examples/factorial.ef   # 120 — same, compiled to WebAssembly

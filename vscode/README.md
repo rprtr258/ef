@@ -1,7 +1,7 @@
 # ef Language Support
 
 Syntax highlighting, checker diagnostics, hover types, and go-to-definition for
-[ef](https://github.com/rprtr258/lish/tree/master/ef) — a tiny statically-typed
+[ef](https://github.com/rprtr258/ef) — a tiny statically-typed
 language with algebraic effects and effect handlers.
 
 - **Highlighting** — a TextMate grammar for `.ef`: keywords, `::`/`:=`
