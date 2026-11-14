@@ -25,13 +25,18 @@ export type ArrT = { tag: "arr", elem: Type };
 // for field access; unification compares arity + positional types, not names.
 export type TupField = { name: string | null, type: Type };
 export type TupT = { tag: "tup", fields: TupField[] };
-// Effect rows: a concrete `Set<string>` of performed effects, or an
-// unbound effect variable (row polymorphism). Effect variables unify by
-// union-find; a variable unifies with a concrete set by binding to it; two
-// concrete sets unify by equality. This lets higher-order builtins be
-// effect-polymorphic: `map : ((a) -> b ! e, [a]) -> [b] ! e` for a fresh `e`.
+// Effect rows: a concrete `Set<string | EffVar>` of performed effects (a row
+// may carry unbound effect variables — a call to a callee whose row is still
+// a variable propagates that variable into the ambient row, so polymorphic
+// callers stay effect-tracked), or an unbound effect variable (row
+// polymorphism). Effect variables unify by union-find; a variable unifies
+// with a concrete set by binding to it; two concrete sets unify by equality.
+// This lets higher-order builtins be effect-polymorphic:
+// `map : ((a) -> b ! e, [a]) -> [b] ! e` for a fresh `e`.
 type EffVar = { tag: "effvar", id: number };
-export type Effs = Set<string> | EffVar;
+// A concrete effect row: op names plus possibly-unbound effect variables.
+export type Row = Set<string | EffVar>;
+export type Effs = Row | EffVar;
 export type FunT = { tag: "fun", params: Type[], ret: Type, effs: Effs,
   // Suspension markers discovered during checking — data, not constraints.
   // `contCall`: the FunT is a resume binder's type; invoking it re-enters
@@ -57,22 +62,28 @@ export function widthOf(t: Type): {w: NumName, concrete: boolean} | null {
   return null;
 }
 
-// The unifier: ALL mutable unification state in one object — the type-variable
+// Unifier: ALL mutable unification state in one object — the type-variable
 // union-find, the substitution map `binds`, and the effect-row union-find.
 // One instance per checking session, created by `checkProgram` and carried
 // across REPL lines inside `Checked`. `Type` values are plain data; every
 // resolver below is a method, so independent `checkProgram` calls (tests!) never
-// share state. Effect rows are a concrete `Set<string>` of performed effects,
-// or an unbound effect variable (row polymorphism): a variable unifies with a
-// concrete set by binding to it; two concrete sets unify by equality. This
-// lets higher-order builtins be effect-polymorphic:
+// share state. Effect rows are a concrete `Set<string | EffVar>` of performed
+// effects (row vars may ride along — see `Effs`), or an unbound effect
+// variable (row polymorphism): a variable unifies with a concrete set by
+// binding to it; two concrete sets unify by equality. This lets higher-order
+// builtins be effect-polymorphic:
 // `map : ((a) -> b ! e, [a]) -> [b] ! e` for a fresh `e`.
 export class Unifier {
   parent = new Map<number, number>();
   n = 0;
   binds = new Map<number, Type>();
   effParent = new Map<number, number>();
-  effBinds = new Map<number, Set<string>>();
+  effBinds = new Map<number, Row>();
+  // Row variable id → the callee type variable it was forced for (app-case
+  // fallback). Lets the lambda's effect-annotation pinning tell parameter-
+  // borne variables (pin them) from a recursive self-call's variable (the
+  // binding's own unification constrains it afterwards).
+  forcedRows = new Map<number, number>();
   effCounter = 0;
   // Fresh per-literal wildcard prims (newWild). Unifying a wildcard with a
   // numeric context BINDS the width into the instance itself (flexWild) —
@@ -186,22 +197,56 @@ export class Unifier {
     return b !== undefined ? this.res(b) : {tag: "var", id: r};
   }
   // Resolve an effect row: follow the union-find; if bound, return the
-  // concrete set (sets are always ground). Unbound → the canonical variable.
+  // concrete set (rows may carry unbound variables — resolve members via
+  // `resRow`). Unbound → the canonical variable.
   resEff(e: Effs): Effs {
     if (e instanceof Set) return e;
     const r = this.effFind(e.id);
     const b = this.effBinds.get(r);
     return b ?? {tag: "effvar", id: r};
   }
+  // Flatten an effect row: resolve every variable member (bound ones inline
+  // their bound row's members, recursively); unbound ones stay as canonical
+  // variables. An unbound top-level variable flattens to a singleton row of
+  // itself, so callers always receive a row. Cycle-guarded: a variable bound
+  // to a row containing its own root resolves without looping.
+  resRow(e: Effs, seen?: Set<number>, keepCycles = false): Row {
+    const r = this.resEff(e);
+    if (!(r instanceof Set)) return new Set<string | EffVar>([r]);
+    const out: Row = new Set();
+    const guard = seen ?? new Set<number>();
+    for (const m of r) {
+      if (typeof m === "string") { out.add(m); continue; }
+      const root = this.effFind(m.id);
+      if (guard.has(root)) {
+        // A row variable unified with a row containing itself (ρ = {ρ}, the
+        // shape recursion produces). The least fixpoint contributes nothing,
+        // so semantic consumers collapse it; display keeps the variable —
+        // an unconstrained parameter's row shows as a generic row instead
+        // of a concrete empty claim.
+        if (keepCycles) out.add({tag: "effvar", id: root});
+        continue;
+      }
+      const b = this.effBinds.get(root);
+      if (b === undefined) out.add({tag: "effvar", id: root});
+      else {
+        guard.add(root);
+        for (const mm of this.resRow(b, guard, keepCycles)) out.add(mm);
+        guard.delete(root);
+      }
+    }
+    return out;
+  }
   // Deeply resolve every type/effect variable in `t`. Displayed types
   // (`showT`, closure types stamped on lambda nodes) are always deep-resolved,
   // so display never needs the unifier.
-  deepRes(t: Type): Type {
+  deepRes(t: Type, nested = false): Type {
     const r = this.res(t);
-    if (r.tag === "arr") return tArr(this.deepRes(r.elem));
-    if (r.tag === "tup") return tTup(r.fields.map(f => ({name: f.name, type: this.deepRes(f.type)})));
+    if (r.tag === "arr") return tArr(this.deepRes(r.elem, nested));
+    if (r.tag === "tup") return tTup(r.fields.map(f => ({name: f.name, type: this.deepRes(f.type, nested)})));
     if (r.tag === "fun")
-      return tFun(r.params.map(p => this.deepRes(p)), this.deepRes(r.ret), this.resEff(r.effs),
+      return tFun(r.params.map(p => this.deepRes(p, true)), this.deepRes(r.ret, true),
+        this.resRow(r.effs, undefined, nested),
         r.contCall === true || r.anyTaint === true ? {contCall: r.contCall, anyTaint: r.anyTaint} : undefined);
     return r;
   }
@@ -223,24 +268,41 @@ export class Unifier {
     this.effCounter = s.effCounter;
   }
 
-  // Unify two effect rows. var+var union; var+set binds; set+set requires
-  // equality — except the empty set `∅` is the polymorphic bottom: a function
-  // typed `... ! ∅` performs no effects and may be used wherever *any* effect
-  // set is expected (it is refined to the other set). This keeps unannotated
-  // HOF parameters flexible without let-generalization.
+  // Unify two effect rows. var+var union; var+set binds (the set may carry
+  // unbound variables); set+set requires matching op coverage — except the
+  // empty set `∅` is the polymorphic bottom: a function typed `... ! ∅`
+  // performs no effects and may be used wherever *any* effect set is expected
+  // (it is refined to the other set). When one side carries unbound variables,
+  // the variables absorb the other side's unmatched ops: `! { x, e } ~
+  // ! { x, y }` binds `e := { y }`. This keeps unannotated HOF parameters
+  // flexible without let-generalization and lets polymorphic callers carry
+  // their callee's row.
   unifyEff(a: Effs, b: Effs): void {
     const ra = this.resEff(a), rb = this.resEff(b);
     if (!(ra instanceof Set) && !(rb instanceof Set)) {
       this.effParent.set(this.effFind(ra.id), this.effFind(rb.id));
       return;
     }
-    if (!(ra instanceof Set)) { this.effBinds.set(this.effFind(ra.id), rb as Set<string>); return; }
+    if (!(ra instanceof Set)) { this.effBinds.set(this.effFind(ra.id), rb as Row); return; }
     if (!(rb instanceof Set)) { this.effBinds.set(this.effFind(rb.id), ra); return; }
-    if (ra.size === 0) return; // ∅ unifies with anything (refine to rb)
-    if (rb.size === 0) return;
-    if (ra.size !== rb.size || ![...ra].every(op => rb.has(op)))
+    const fa = this.resRow(ra), fb = this.resRow(rb);
+    if (fa.size === 0) return; // ∅ unifies with anything (refine to rb)
+    if (fb.size === 0) return;
+    const sA = [...fa].filter(m => typeof m === "string");
+    const vA = [...fa].filter(m => typeof m !== "string");
+    const sB = [...fb].filter(m => typeof m === "string");
+    const vB = [...fb].filter(m => typeof m !== "string");
+    const setA = new Set(sA), setB = new Set(sB);
+    const dA = sB.filter(op => !setA.has(op)); // ops only B has: A's vars must supply
+    const dB = sA.filter(op => !setB.has(op)); // ops only A has: B's vars must supply
+    if (dA.length > 0 && vA.length === 0)
       throw new TypeError_(
-        `effect mismatch: { ${[...ra].join(", ")} } ≠ { ${[...rb].join(", ")} }`);
+        `effect mismatch: { ${[...fa].map(m => typeof m === "string" ? m : `e${m.id}`).join(", ")} } ≠ { ${[...fb].map(m => typeof m === "string" ? m : `e${m.id}`).join(", ")} }`);
+    if (dB.length > 0 && vB.length === 0)
+      throw new TypeError_(
+        `effect mismatch: { ${[...fa].map(m => typeof m === "string" ? m : `e${m.id}`).join(", ")} } ≠ { ${[...fb].map(m => typeof m === "string" ? m : `e${m.id}`).join(", ")} }`);
+    for (const v of vA) this.effBinds.set(this.effFind(v.id), new Set(dA));
+    for (const v of vB) this.effBinds.set(this.effFind(v.id), new Set(dB));
   }
 
   occurs(id: number, t: Type): boolean {
@@ -343,8 +405,11 @@ export class Unifier {
     else if (r.tag === "fun") {
       for (const p of r.params) this.collectVars(p, tvs, evs);
       this.collectVars(r.ret, tvs, evs);
-      const er = this.resEff(r.effs);
-      if (!(er instanceof Set)) evs.add(this.effFind(er.id));
+      // keepCycles: a self-referential row variable (ρ = {ρ}, what recursion
+      // produces) is collected as quantifiable — collapsing it here would
+      // bake the least-fixpoint ∅ into every instance.
+      for (const m of this.resRow(r.effs, undefined, true))
+        if (typeof m !== "string") evs.add(this.effFind(m.id));
     }
   }
 
@@ -375,8 +440,25 @@ export class Unifier {
   }
 
   copyEff(e: Effs, em: Map<number, Effs>): Effs {
-    const r = this.resEff(e);
-    return r instanceof Set ? r : (em.get(this.effFind(r.id)) ?? r);
+    const out: Row = new Set();
+    for (const m of this.resRow(e, undefined, true)) {
+      if (typeof m === "string") out.add(m);
+      else {
+        const root = this.effFind(m.id);
+        const c = em.get(root);
+        if (c === undefined) out.add({tag: "effvar", id: root}); // free var stays
+        // quantified: the fresh instance (keepCycles — a self-referential
+        // instance must not flatten to ∅ here)
+        else for (const mm of this.resRow(c, undefined, true)) out.add(mm);
+      }
+    }
+    // Preserve the historical row shapes: a lone variable stays a bare
+    // variable (so var+set unification refines it), a ground set stays a set.
+    if (out.size === 1) {
+      const [m] = out;
+      if (typeof m !== "string") return m;
+    }
+    return out;
   }
 
   // HM let-generalization: abstract the type/effect vars of `t` that are not
@@ -402,9 +484,24 @@ export class Unifier {
       for (const id of gtvs)
         tm.set(id, this.fresh());
       for (const id of gevs)
-        em.set(id, this.freshEff());
+        em.set(id, this.instanceEff(id));
       return this.copyScheme(t, tm, em);
     };
+  }
+
+  // A fresh instance of a quantified row variable. A variable bound to a
+  // pure self-loop (ρ = {ρ}, what recursion produces) stays self-referential
+  // in the instance: an unbound copy would read as a genuinely unknown row,
+  // making every call to a pure recursive function suspending and its type
+  // display generic. resRow collapses the self-loop for semantic consumers
+  // and deepRes keeps it for parameter-row display.
+  instanceEff(id: number): EffVar {
+    const v = this.freshEff();
+    const b = this.effBinds.get(id);
+    if (b !== undefined && b.size > 0 &&
+        [...b].every(m => typeof m !== "string" && this.effFind(m.id) === id))
+      this.effBinds.set(v.id, new Set([{tag: "effvar", id: v.id}]));
+    return v;
   }
 }
 
@@ -412,7 +509,7 @@ export class Unifier {
 type Snapshot = {
   parent: Map<number, number>, n: number,
   binds: Map<number, Type>,
-  effParent: Map<number, number>, effBinds: Map<number, Set<string>>,
+  effParent: Map<number, number>, effBinds: Map<number, Row>,
   effCounter: number,
 };
 

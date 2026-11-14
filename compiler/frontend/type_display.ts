@@ -27,6 +27,17 @@ export class TypeError_ extends Error {
 // letters (alias tparams print under their declared names).
 export function showT(t: Type, pnames?: (string | null)[], varNames?: Map<number, string>): string {
   const names = varNames ?? new Map<number, string>();
+  // Unbound effect variables display through the same letter sequence as
+  // type variables (first appearance, deterministic per call). Type-var ids
+  // and effect-var ids come from separate counters, so they get their own
+  // map but one shared allocation index.
+  const effNames = new Map<number, string>();
+  let seq = names.size;
+  const nextLetter = (): string => {
+    const i = seq++;
+    const l = String.fromCharCode(97 + (i % 26));
+    return i < 26 ? l : `${l}${Math.floor(i / 26)}`;
+  };
   const go = (t: Type, pns?: (string | null)[]): string => {
     switch (t.tag) {
       case "prim": return t.name === "int" ? "i64" : t.name === "float" ? "f64" : t.name;
@@ -38,9 +49,7 @@ export function showT(t: Type, pnames?: (string | null)[], varNames?: Map<number
       case "var": {
         let n = names.get(t.id);
         if (n === undefined) {
-          const i = names.size;
-          const l = String.fromCharCode(97 + (i % 26));
-          n = i < 26 ? l : `${l}${Math.floor(i / 26)}`;
+          n = nextLetter();
           names.set(t.id, n);
         }
         return n;
@@ -50,9 +59,21 @@ export function showT(t: Type, pnames?: (string | null)[], varNames?: Map<number
           const n = pns !== undefined && i < pns.length ? pns[i] : null;
           return (n !== null && n !== "_" ? n + ": " : "") + go(p);
         }).join(", ");
+        // Rows are deep-resolved by the time showT runs (deepRes flattens
+        // bound variables), so members are op names and unbound row variables.
+        const effStr = (id: number): string => {
+          let n = effNames.get(id);
+          if (n === undefined) {
+            n = nextLetter();
+            effNames.set(id, n);
+          }
+          return n;
+        };
         const e = t.effs instanceof Set
-          ? (t.effs.size > 0 ? " ! { " + [...t.effs].join(", ") + " }" : "")
-          : ` ! { e${t.effs.id} }`;
+          ? (t.effs.size > 0
+            ? " ! { " + [...t.effs].map(m => typeof m === "string" ? m : effStr(m.id)).join(", ") + " }"
+            : "")
+          : ` ! { ${effStr(t.effs.id)} }`;
         return "(" + ps + ") -> " + go(t.ret) + e;
       }
     }

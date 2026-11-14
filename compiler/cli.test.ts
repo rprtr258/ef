@@ -134,7 +134,7 @@ f()
     expect(r.stdout).toBe(
       "id : (a) -> a\n" +
       "x : (i64, i64) -> i64\n" +
-      "q : ((a) -> b, (c) -> a) -> (c) -> b\n" +
+      "q : ((a) -> c ! { b }, (d) -> a ! { e }) -> (d) -> c ! { e, b }\n" +
       "_ : unit ! { Println }\n",
     );
   });

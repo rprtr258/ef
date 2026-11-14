@@ -143,7 +143,8 @@ export type OutlineItem = {
 
 function effRow(effs: Effs): string | null {
   if (!(effs instanceof Set) || effs.size === 0) return null;
-  return "{ " + [...effs].join(", ") + " }";
+  // Rows can carry unbound effect variables (deepRes flattens bound ones).
+  return "{ " + [...effs].map(m => typeof m === "string" ? m : `e${m.id}`).join(", ") + " }";
 }
 
 // Effect signature for display: "(i64, string) -> i64". checkProgram has
@@ -165,8 +166,12 @@ function aliasT(al: Alias): string {
         return "[" + t.fields.map((f) =>
           f.name === null ? go(f.type) : f.name + ": " + go(f.type)).join(", ") + "]";
       case "fun": {
+        // Rows can carry unbound effect variables (deepRes flattens bound
+        // ones) — render them like type_display does.
         const e = t.effs instanceof Set
-          ? (t.effs.size > 0 ? " ! { " + [...t.effs].join(", ") + " }" : "")
+          ? (t.effs.size > 0
+            ? " ! { " + [...t.effs].map(m => typeof m === "string" ? m : `e${m.id}`).join(", ") + " }"
+            : "")
           : ` ! { e${t.effs.id} }`;
         return "(" + t.params.map(go).join(", ") + ") -> " + go(t.ret) + e;
       }

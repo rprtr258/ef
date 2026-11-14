@@ -283,8 +283,11 @@ the README's opening, and compiler-internal changes update
 - **Function effect signatures.** `f :: fn(p: T): R ! { Effs } { ... }` —
   **mandatory for effectful bodies**: if the body performs any effect, a
   `! { ... }` annotation listing a superset must be present (pure bodies may
-  omit it). The declared set must cover what the body performs; it becomes the
-  function type's effect set, shown as `(T) -> R ! { Effs }`. Functions are
+  omit it). The declared set must cover what the body performs; it is the
+  function type's exact effect set, shown as `(T) -> R ! { Effs }`: an
+  unannotated parameter's effect variable is pinned to the declared set (a
+  callee outside it fails at the call site), and an empty declaration rejects
+  a body whose unannotated parameter performs. Functions are
   defined via a `::` const + an anonymous lambda; the lambda carries the same
   `: R` and `! { Effs }` annotations.
 - **No-Return handle rule.** When the handled body has effects, the result

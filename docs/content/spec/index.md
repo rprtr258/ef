@@ -308,7 +308,11 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
   omitted, the function's effect set is inferred from the body's performed
   effects. When present, the annotation must be a superset of the body's
   effects (the body's performed effects must be ⊆ the annotation), and the
-  annotation becomes the function's effect set. Anonymous lambdas may also
+  declaration is the function's exact effect row: an unannotated parameter's
+  effect variable is pinned to the declared set (a callee performing anything
+  outside the declaration fails at the call site), and an empty declaration
+  rejects a body whose unannotated parameter performs — annotate the
+  parameter's type with its effect row instead. Anonymous lambdas may also
   carry `: T` and `! { ... }` annotations: `fn(p): unit ! { Out } { ... }`.
 - `x := e` / `x :: e` — `e`'s type (with an optional `: T` annotation:
   `T` unifies with `infer(e)`). When `T` is a tuple and `e` is a bracket

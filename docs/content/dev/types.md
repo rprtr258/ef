@@ -70,11 +70,24 @@ plain data; every resolver is a method, so independent `checkProgram` calls
   <text x="504" y="138" class="faint">must not leak across lines</text>
 </svg>
 
-Effect rows deserve a second look: a row is either a concrete `Set<string>` of
-performed ops or an unbound `EffVar`. This makes higher-order builtins
-effect-polymorphic — `map : ((a) -> b ! e, [a]) -> [b] ! e` with a fresh `e`
+Effect rows deserve a second look: a row is a concrete set of performed ops
+— op names plus possibly unbound `EffVar` members — or a bare unbound
+`EffVar`. This makes higher-order builtins effect-polymorphic —
+`map : ((a) -> b ! e, [a]) -> [b] ! e` with a fresh `e`
 per instantiation: `map(pureFn, xs)` performs nothing,
-`map(fn(x) { Out!(x); x }, xs)` performs exactly `{ Out }`.
+`map(fn(x) { Out!(x); x }, xs)` performs exactly `{ Out }`. The variables
+also propagate through user code: calling an unannotated parameter forces
+it into a function type with a fresh row variable, and that variable joins
+the enclosing function's row — so a polymorphic caller (`apply`, a
+handler-delivered closure) stays effect-tracked, and a closure whose row
+names an op cannot slip past the residual-row gate by escaping its handler.
+A row variable that never unifies with anything concrete (a polymorphic
+value passed around but never applied to an effectful callee) contributes
+nothing — no constraint ever tied it to a perform. Recursion makes a row
+variable self-referential (ρ = {ρ}): semantic consumers collapse that
+circle to its non-cyclic contents (∅ for pure recursion), while display
+keeps the variable — a never-constrained parameter's row shows as a
+generic row on the argument type.
 
 ## Checking a program
 
@@ -100,7 +113,7 @@ per instantiation: `map(pureFn, xs)` performs nothing,
 | f32 stamping | every producing node is stamped; interp frounds, wasm emits a demote/promote round-trip — f32 precision holds end to end |
 | `any` is absorbing | escape hatch; inferred-`any` bindings warn (explicit annotation silences) |
 | `Op!` needs a declaration | `effect Op(args): ret` — `ret` is what `Op!(…)` evaluates to, i.e. what `resume` injects |
-| Effectful bodies need `! { … }` | a `::`/`fn` whose body performs effects must declare a superset; pure bodies may omit it |
+| Effectful bodies need `! { … }` | a `::`/`fn` whose body performs effects must declare a superset; pure bodies may omit it; the declaration pins unannotated parameters' effect variables to the declared set (empty declaration + performing parameter → rejected) |
 | No-Return handle rule | body effectful → result type is *not* unified with the body type (handlers transform results); body pure → `R ~ bodyType` |
 | `resume` `k` type | `k : (effectRet) -> R` where `R` is the handle result type, not the body type |
 | Value restriction | only lambda RHS are generalized; literals and bracket literals stay monomorphic — keeps mutation sound |

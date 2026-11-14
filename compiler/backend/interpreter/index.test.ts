@@ -807,9 +807,10 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
   });
 
   test("a handler's escaping closure performs unhandled outside the handle", () => {
-    // The checker tracks residual ops through calls, but a polymorphic
-    // caller hides the escaped closure's row — only runTop's unhandled
-    // throw catches the perform.
+    // The escaped closure's row rides the handle's result type (row-variable
+    // propagation through the polymorphic caller), so the checker's residual
+    // row names E and exec's fail-fast gate rejects before any side effect —
+    // no runtime backstop involved.
     expect(() => run(`
       effect E(): i64;
       call :: fn (f) { f() };
@@ -817,6 +818,82 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
       r :: escape(fn(): i64 ! { E } { E!() });
       call(r)
     `)).toThrow("Unhandled effect: E");
+  });
+
+  test("an effect annotation is the function's exact row", () => {
+    // The declaration pins an unannotated parameter's row variable to the
+    // declared set — the function performs exactly what it declares, and a
+    // callee stepping outside fails at the call site.
+    expect(() => run(`
+      effect E(): i64;
+      effect U(): i64;
+      run :: fn (f): i64 ! { E } { f() };
+      g :: fn(): i64 ! { U } { U!() };
+      handle { run(g) } case E(n) => k { n }
+    `)).toThrow("effect mismatch: { E } ≠ { U }");
+    // An empty declaration cannot pin unknown parameter effects to anything,
+    // so a body whose unannotated parameter performs is rejected outright.
+    expect(() => run(`
+      effect E(): i64;
+      run :: fn (f): i64 ! { } { f() };
+      g :: fn(): i64 ! { E } { E!() };
+      run(g)
+    `)).toThrow("effect annotation ! { ∅ } can't cover an unannotated parameter's effects");
+  });
+
+  test("a self-referential row derives a generic row for the argument", () => {
+    // Type-level pin only — running this program would not terminate (run
+    // tail-calls itself, f is never called). f's row var unifies with a copy
+    // of itself through the recursion (ρ = {ρ}); the self-referential var is
+    // quantified with the definition and displayed as a generic row on the
+    // argument, while semantically collapsing to ∅ (a concrete effectful
+    // call binds the circle at the call site and passes typecheck — f is
+    // never invoked, so nothing performs).
+    expect(typeOf(`
+      effect E(): i64;
+      run :: fn (f): i64 ! { E } { run(fn () { f() }) };
+      run
+    `)).toBe("(() -> b ! { a }) -> i64 ! { E }");
+  });
+
+  test("an annotation derives the row through a self-recursive parameter", () => {
+    // f's row variable flows through the recursive call and is pinned to the
+    // declaration, so a callee stepping outside the declaration fails at the
+    // call site even though f is only reached at the recursion's base.
+    expect(() => run(`
+      effect E(): i64;
+      effect U(): i64;
+      run :: fn (f, n: i64): i64 ! { E } { if (n == 0) { f() } else { run(f, n - 1) } };
+      g :: fn(): i64 ! { U } { U!() };
+      handle { run(g, 2) } case E(n) => k { n }
+    `)).toThrow("effect mismatch: { E } ≠ { U }");
+    // A callee within the declaration runs to completion under the handler.
+    run(`
+      effect E(): i64;
+      run :: fn (f, n: i64): i64 ! { E } { if (n == 0) { f() } else { run(f, n - 1) } };
+      g :: fn(): i64 ! { E } { E!() };
+      handle { run(g, 2) } case E(n) => k { n }
+    `);
+  });
+
+  test("an escaping closure's row is visible in its type and rejects statically", () => {
+    // The gate fires before evaluation: the Println before the escaping call
+    // must not run.
+    expect(() => run(`
+      effect E(): i64;
+      call :: fn (f) { f() };
+      escape :: fn (h) { handle { h() } case E(n) => k { h } };
+      r :: escape(fn(): i64 ! { E } { E!() });
+      Println!("boom");
+      call(r)
+    `)).toThrow("Unhandled effect: E");
+    // The delivered closure carries the handled op in its row.
+    expect(typeOf(`
+      effect E(): i64;
+      escape :: fn (h) { handle { h() } case E(n) => k { h } };
+      r :: escape(fn(): i64 ! { E } { E!() });
+      r
+    `)).toBe("() -> i64 ! { E }");
   });
 
   describe("checker diagnostics", () => {
@@ -914,11 +991,11 @@ k(s, 1)`)).toThrow();
       // The builtin's scheme instantiates fresh type and effect variables.
       const m = prepare("map");
       expect(showT(m.checked.env.lookupResolved("map")))
-      .toMatch(/^\(\(a\) -> b ! \{ e\d+ \}, \[a\]\) -> \[b\] ! \{ e\d+ \}$/);
+      .toMatch(/^\(\(a\) -> c ! \{ b \}, \[a\]\) -> \[c\] ! \{ b \}$/);
     });
 
     test("builtin operator rows display as polymorphic effect variables", () => {
-      expect(typeOf("map")).toMatch(/^\(\(a\) -> b ! \{ e\d+ \}, \[a\]\) -> \[b\] ! \{ e\d+ \}$/);
+      expect(typeOf("map")).toMatch(/^\(\(a\) -> c ! \{ b \}, \[a\]\) -> \[c\] ! \{ b \}$/);
     });
   });
 
