@@ -150,7 +150,8 @@ handle {
       console.warn = orig;
     }
     expect(warned.length).toBe(1);
-    expect(warned[0]).toMatch(/`g` inferred as .*\(any\) -> any/);
+    expect(warned[0])
+    .toBe("warning: `g` inferred as `(any) -> any` (contains `any`); add an explicit annotation to silence");
   });
 });
 
@@ -853,7 +854,7 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
       effect E(): i64;
       run :: fn (f): i64 ! { E } { run(fn () { f() }) };
       run
-    `)).toBe("(() -> b ! { a }) -> i64 ! { E }");
+    `)).toBe("(() -> a ! { e1 }) -> i64 ! { E }");
   });
 
   test("an annotation derives the row through a self-recursive parameter", () => {
@@ -991,11 +992,11 @@ k(s, 1)`)).toThrow();
       // The builtin's scheme instantiates fresh type and effect variables.
       const m = prepare("map");
       expect(showT(m.checked.env.lookupResolved("map")))
-      .toMatch(/^\(\(a\) -> c ! \{ b \}, \[a\]\) -> \[c\] ! \{ b \}$/);
+      .toBe("((a) -> b ! { e1 }, [a]) -> [b] ! { e1 }");
     });
 
     test("builtin operator rows display as polymorphic effect variables", () => {
-      expect(typeOf("map")).toMatch(/^\(\(a\) -> c ! \{ b \}, \[a\]\) -> \[c\] ! \{ b \}$/);
+      expect(typeOf("map")).toBe("((a) -> b ! { e1 }, [a]) -> [b] ! { e1 }");
     });
   });
 

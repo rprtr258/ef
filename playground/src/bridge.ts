@@ -7,7 +7,7 @@
 
 import "./shim.ts";
 import {Parser, type Program, type Expr, type Alias} from "../../compiler/frontend/parser.ts";
-import {showT} from "../../compiler/frontend/type_display.ts";
+import {showEffRow, showT} from "../../compiler/frontend/type_display.ts";
 import {type Effs, type Type} from "../../compiler/frontend/unify.ts";
 import type {Checked, EffectSig} from "../../compiler/frontend/types.ts";
 import {lint} from "../../compiler/frontend/lint.ts";
@@ -143,8 +143,19 @@ export type OutlineItem = {
 
 function effRow(effs: Effs): string | null {
   if (!(effs instanceof Set) || effs.size === 0) return null;
-  // Rows can carry unbound effect variables (deepRes flattens bound ones).
-  return "{ " + [...effs].map(m => typeof m === "string" ? m : `e${m.id}`).join(", ") + " }";
+  // Rows can carry unbound effect variables (deepRes flattens bound ones);
+  // they print as e1, e2, ... in first-appearance order, matching showT.
+  const effNames = new Map<number, string>();
+  let effSeq = 0;
+  const effStr = (m: { id: number }): string => {
+    let n = effNames.get(m.id);
+    if (n === undefined) {
+      n = `e${++effSeq}`;
+      effNames.set(m.id, n);
+    }
+    return n;
+  };
+  return "{ " + showEffRow(effs, effStr) + " }";
 }
 
 // Effect signature for display: "(i64, string) -> i64". checkProgram has
@@ -158,6 +169,18 @@ function sigT(sig: EffectSig): string {
 function aliasT(al: Alias): string {
   const names = new Map<number, string>();
   for (const [n, v] of al.tparams) names.set(v.id, n);
+  // Unbound row variables print as e1, e2, ... in first-appearance order
+  // across the whole body, matching showT.
+  const effNames = new Map<number, string>();
+  let effSeq = 0;
+  const effStr = (m: { id: number }): string => {
+    let n = effNames.get(m.id);
+    if (n === undefined) {
+      n = `e${++effSeq}`;
+      effNames.set(m.id, n);
+    }
+    return n;
+  };
   const go = (t: Type): string => {
     switch (t.tag) {
       case "prim": return t.name;
@@ -169,10 +192,8 @@ function aliasT(al: Alias): string {
         // Rows can carry unbound effect variables (deepRes flattens bound
         // ones) — render them like type_display does.
         const e = t.effs instanceof Set
-          ? (t.effs.size > 0
-            ? " ! { " + [...t.effs].map(m => typeof m === "string" ? m : `e${m.id}`).join(", ") + " }"
-            : "")
-          : ` ! { e${t.effs.id} }`;
+          ? (t.effs.size > 0 ? " ! { " + showEffRow(t.effs, effStr) + " }" : "")
+          : ` ! { ${effStr(t.effs)} }`;
         return "(" + t.params.map(go).join(", ") + ") -> " + go(t.ret) + e;
       }
       case "var": return names.get(t.id) ?? "a";
