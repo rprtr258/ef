@@ -18,8 +18,9 @@ CLI usage lives in [CLI & REPL](cli.md); linting in [Linter](lint.md).
   `\uHHHH` (code point). Unknown `\c` yields `c`.
 - **Number literals** are non-negative integer/decimal digit runs (e.g. `42`,
   `3.14`). A literal containing a `.` is an untyped float; otherwise an
-  untyped int. Untyped literals take on whatever numeric context demands and
-  default to `f64` / `i64` (see §3.1). Unary minus is parsed as the unary
+  untyped int. Untyped literals take on whatever numeric context demands —
+  the typechecker resolves each literal to one concrete width by end of
+  check, defaulting to `f64` / `i64` (see §3.1). Unary minus is parsed as the unary
   `-` operator in `parseUnary`.
 - **Identifiers** start with a letter or `_`, continue with letters/digits/`_`.
 - **Keywords:** `fn if else while handle case true false unit effect`.
@@ -209,11 +210,15 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
   - **Arithmetic is strict per width**: both operands of a numeric op must
     have the same width; `i32 + i64` is a type error. Comparisons and
     equality likewise require equal widths.
-  - **Untyped literals flex**: a num literal (`1`, `1.5`) carries an
-    internal untyped-int / untyped-float type that accepts any numeric (resp.
-    float) context; unconstrained it defaults to `i64` / `f64`. So
-    `x: i32 = 1` works, `sqrt(100)` works, but `x: i32 = 1.5` is
-    rejected (a float literal never narrows to an int width).
+  - **Untyped literals flex, then resolve**: a num literal (`1`, `1.5`)
+    carries an internal untyped-int / untyped-float type that accepts any
+    numeric (resp. float) context. Each use flexes its own copy to that
+    context's width; by the end of checking the typechecker has resolved
+    every literal to one concrete width — unconstrained reads default to
+    `i64` / `f64`. So `x: i32 = 1` works, `sqrt(100)` works, but
+    `x: i32 = 1.5` is rejected (a float literal never narrows to an int
+    width). The runtime never converts between widths at an operator:
+    after checking, every operand is already in the operation's width.
   - **@as(expr, T)** is the one explicit conversion between widths (and from
     `bool`): float → int truncates toward zero, bool → numeric gives `0/1`,
     every other conversion preserves the value. `@as` targets must be one of

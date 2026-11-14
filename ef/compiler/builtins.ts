@@ -75,17 +75,18 @@ const FN_IMPLS: Record<string, (...args: Value[]) => Value> = {
     }
     return mkSlice(out);
   },
-  len: xs => asSlice(xs).len,
-  strlen: s => (s as string).length,
+  len: xs => BigInt(asSlice(xs).len),
+  strlen: s => BigInt((s as string).length),
   cos: a => Math.cos(num(a)),
   sin: a => Math.sin(num(a)),
   abs: a => Math.abs(num(a)),
-  round: a => Math.round(num(a)),
+  round: a => BigInt(Math.round(num(a))),
   sqrt: a => Math.sqrt(num(a)),
   range: (a, b, c) => {
     const s = num(a), e = num(b), st = num(c);
     const n = st === 0 ? 0 : Math.max(0, Math.ceil((e - s) / st));
-    return mkSlice(Array.from({length: n}, (_, k) => s + k * st));
+    // Declared [TI64] — elements are BigInts like every i64 value.
+    return mkSlice(Array.from({length: n}, (_, k) => BigInt(s + k * st)));
   },
   char: a => String.fromCodePoint(num(a) | 0),
   number: a => parseFloat(a as string),
@@ -128,7 +129,8 @@ const NATIVE_IMPLS: Record<string, (args: Value[], k: Cont) => Outcome> = {
     function go(i: number): Outcome {
       if (i >= s.len)
         return k(null);
-      return apply(f, [s.data[s.off + i]!, i], () => go(i + 1));
+      // The index param is typed i64 — hand the closure a BigInt.
+      return apply(f, [s.data[s.off + i]!, BigInt(i)], () => go(i + 1));
     }
     return go(0);
   },
@@ -138,7 +140,8 @@ const NATIVE_IMPLS: Record<string, (args: Value[], k: Cont) => Outcome> = {
     function go(i: number): Outcome {
       if (i >= s.len)
         return k(mkSlice(acc));
-      return apply(f, [s.data[s.off + i]!, i], v => {
+      // The index param is typed i64 — hand the closure a BigInt.
+      return apply(f, [s.data[s.off + i]!, BigInt(i)], v => {
         acc.push(...sliceElems(asSlice(v)));
         return go(i + 1);
       });

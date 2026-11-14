@@ -90,13 +90,13 @@ export const BUILTIN_TABLE: readonly BuiltinDecl[] = [
     {kind: "effect", name: "Write", sig: {params: [TSTR, TSTR], ret: TUNIT, names: ["path", "content"]}},
     {kind: "effect", name: "Println", sig: {params: [TANY], ret: TUNIT, names: ["v"]}},
     {kind: "effect", name: "Out", sig: {params: [TSTR], ret: TUNIT, names: ["s"]}},
-    // `Exit(code: int): unit` terminates the process by default (never
-    // resumes); `Wait(secs: int): unit` blocks for `secs` seconds then
+    // `Exit(code: i64): unit` terminates the process by default (never
+    // resumes); `Wait(secs: i64): unit` blocks for `secs` seconds then
     // resumes with unit. Both are effects so a handler can intercept them.
-    {kind: "effect", name: "Exit", sig: {params: [TINT], ret: TUNIT, names: ["code"]}},
-    {kind: "effect", name: "Wait", sig: {params: [TINT], ret: TUNIT, names: ["secs"]}},
-    // `Random(): float` resumes with a random number in [0, 1).
-    {kind: "effect", name: "Random", sig: {params: [], ret: TFLOAT}},
+    {kind: "effect", name: "Exit", sig: {params: [TI64], ret: TUNIT, names: ["code"]}},
+    {kind: "effect", name: "Wait", sig: {params: [TI64], ret: TUNIT, names: ["secs"]}},
+    // `Random(): f64` resumes with a random number in [0, 1).
+    {kind: "effect", name: "Random", sig: {params: [], ret: TF64}},
 
     // Natives that call ef closures mid-flight (map/each/flatmap): CPS.
     {kind: "native", name: "map", t: (u: Unifier) => {

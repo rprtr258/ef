@@ -53,7 +53,7 @@ import type {Value} from "../env.ts";
 // because a JS number loses bits beyond 2^53.
 export type CAtom =
   | {t: "lit", v: Value, raw?: string, stamp?: string}
-  | {t: "var", name: string, stamp?: string};
+  | {t: "var", name: string, stamp?: string, adaptFrom?: string};
 
 // Pure computations (no suspension inside): width-stamped operator, array/
 // tuple literal, @as conversion, field access. Operator prims carry two

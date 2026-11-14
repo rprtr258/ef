@@ -198,7 +198,8 @@ class Converter {
         this.temps.add(name);
         return {
           t: "bind", name,
-          val: {t: "var", name: e.v, stamp: (e as Expr & {numKind?: string}).numKind},
+          val: {t: "var", name: e.v, stamp: (e as Expr & {numKind?: string}).numKind,
+            adaptFrom: (e as Expr & {adaptFrom?: string}).adaptFrom},
           rest: kap(k, {t: "var", name}),
         };
       }

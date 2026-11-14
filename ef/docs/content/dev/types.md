@@ -83,16 +83,20 @@ per instantiation: `map(pureFn, xs)` performs nothing,
 2. Infer each expression item; residual per-item effect rows land in
    `Checked.unhandled` (ops-minus-handled matching is done here — the checker
    can see through calls, which is exactly what a syntactic AST walk cannot).
-3. **Width-stamp post-pass** after *all* items: a literal's concrete width can
-   only be resolved once the whole program has unified, so stamps are written
-   at the end (`nodeTypes`, `numKind`, …).
+3. **Wildcard resolution + width-stamp post-pass** after *all* items:
+   `resolveWilds` propagates op-linked wildcard widths to a fixpoint, then
+   defaults every still-unbound literal (`int` → `i64`, `float` → `f64`) —
+   no wildcard survives checking. Divergent reads (one untyped binding read
+   at several widths) are marked `adaptFrom` so the backends adapt the
+   stored box's representation; stamps are then written from the resolved
+   types (`nodeTypes`, `numKind`, …).
 
 ## Load-bearing rules
 
 | Rule | Consequence |
 |------|-------------|
 | Strict widths | `i32 + i64` is a type error; `@as(expr, T)` is the one conversion (float→int truncates, bool→0/1) |
-| Wildcard literals | `1` flexes to any numeric width, `1.5` to any float width; unconstrained they default to `i64`/`f64` — never widened at parse time |
+| Wildcard literals | `1` flexes to any numeric width, `1.5` to any float width — each read flexes its own copy of the wildcard; `resolveWilds` leaves every literal a concrete width (default `i64`/`f64`), never widened at parse time |
 | f32 stamping | every producing node is stamped; interp frounds, wasm emits a demote/promote round-trip — f32 precision holds end to end |
 | `any` is absorbing | escape hatch; inferred-`any` bindings warn (explicit annotation silences) |
 | `Op!` needs a declaration | `effect Op(args): ret` — `ret` is what `Op!(…)` evaluates to, i.e. what `resume` injects |

@@ -4,12 +4,12 @@ import {ARITH_OPS, CMP_OPS, EQ_OPS, OP_ADD, OP_DIV, OP_NEG} from "../ops.ts";
 import {TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, tArr, tFun, tTup} from "../prims.ts";
 import {showT, TypeError_} from "./type_display.ts";
 import {
-  FLOAT_NAMES, INT_NAMES, NUMERIC_NAMES,
+  FLOAT_NAMES, INT_NAMES, NUMERIC_NAMES, widthOf,
   Env, Unifier,
   type FunT, type NumName, type Prim, type Type, type TupT,
 } from "./unify.ts";
 import {
-  beginLamWidths, checkLamWidths, endLamWidths, pinBindingWidth, pinRetWidth,
+  beginLamWidths, checkLamWidths, endLamWidths,
   stampArrKind, stampComputeWidth, stampDivWidth, stampEqWidth, stampNumKinds,
   stampSuspension, touchNumericVar,
 } from "../stamps.ts";
@@ -213,8 +213,12 @@ const ANY_ARITH = "any is not a numeric width — concrete widths required for a
 
 // Numeric op result under strict same-type arithmetic: untyped literals
 // (`int`/`float` names) are wildcards that take the other side's concrete
-// width (float literal wins between two wildcards); two distinct concrete
-// widths are a type error — @as converts explicitly.
+// width — unification binds the width into the wildcard instance itself
+// (float wins between two wildcards; two distinct concrete widths are a
+// type error — @as converts explicitly). Two same-kind wildcards get a
+// fresh result wildcard linked to both operands: a later concrete context
+// (annotation, outer op) mutates the result and resolveWilds propagates the
+// width into the literals, so operands and op share one final width.
 function numericResult(u: Unifier, ra: Type, rb: Type, op: string): Type {
   if (isNum(ra) && rb.tag === "var") { u.unify(rb, ra); return ra; }
   if (isNum(rb) && ra.tag === "var") { u.unify(ra, rb); return rb; }
@@ -224,12 +228,20 @@ function numericResult(u: Unifier, ra: Type, rb: Type, op: string): Type {
   if (ra.tag === "prim" && rb.tag === "prim") {
     const na = ra.name as NumName, nb = rb.name as NumName;
     if (na === "int" || na === "float") {
-      if (nb === "int" || nb === "float")
-        return na === "float" || nb === "float" ? TFLOAT : TINT;
-      u.rememberFlex(ra, nb);                     // concrete width wins
-      return rb;
+      if (nb === "int" || nb === "float") {
+        if (na !== nb) {
+          // Mixed wildcards: the int side flexes to float (both default f64).
+          u.flexWild(na === "int" ? ra : rb, "float");
+          return TFLOAT;
+        }
+        const r = u.newWild(na);
+        u.linkWilds(r, ra);
+        u.linkWilds(r, rb);
+        return r;
+      }
+      u.flexWild(ra, nb); return rb;              // concrete width wins
     }
-    if (nb === "int" || nb === "float") { u.rememberFlex(rb, na); return ra; }
+    if (nb === "int" || nb === "float") { u.flexWild(rb, na); return ra; }
     if (na === nb) return ra;                     // strict same-width
     throw new TypeError_(`${op}: ${showT(ra)} and ${showT(rb)} are different numeric widths (use @as to convert)`);
   }
@@ -344,10 +356,23 @@ function inferNode(
       if (s === undefined)
         throw new TypeError_("Unbound: " + e.v);
       const t = typeof s === "function" ? s() : s;
+      // A read of a wildcard-typed value (a binding over an untyped literal,
+      // or a signature's TINT/TFLOAT) copies the wildcard per read: each
+      // use flexes its own width in unification without leaking the
+      // mutation into the binding's type or sibling reads. Concrete prims
+      // are immutable and shared as-is.
+      const rt = env.uni.res(t);
+      const t2 = rt.tag === "prim" && (rt.name === "int" || rt.name === "float")
+        ? env.uni.newWild(rt.name)
+        : t;
+      // Copied reads remember the binding's own type: after resolution the
+      // checker marks reads whose site width diverged from the binding's
+      // box width (the backends adapt the stored representation there).
+      if (t2 !== t) (e as Expr & {bindTyp?: Type}).bindTyp = t;
       // Value-identifier highlighting: operator desugar syms never reach here
       // (the app case handles them without inferring the callee node).
-      rec.recordTok("sym", e.pos, e.v, t);
-      return t;
+      rec.recordTok("sym", e.pos, e.v, t2);
+      return t2;
     }
     case "lambda": {
       const n = env.extend();
@@ -384,7 +409,6 @@ function inferNode(
       }
       if (e.retTyp !== null) {
         env.uni.unify(e.retTyp, ret);
-        pinRetWidth(env.uni, rec, e, ret);
       }
       // Effect annotation is optional: if `! { ... }` is omitted, the
       // function's effect set is derived from the body's performed effects.
@@ -424,7 +448,6 @@ function inferNode(
       env.uni.unify(declared, vt);
       const rt = env.uni.res(declared);
       rec.recordTok("let", e.pos, e.name, declared);
-      pinBindingWidth(env.uni, rec, e.val, rt);
       // The lambda's stamped type is final: its parameter variables have been
       // bound (or not), so deep-resolve it — display never needs the unifier.
       const lam = nodes[e.val];
@@ -631,9 +654,9 @@ function inferNode(
         const at = infer(e.args[0], nodes, env, effs, effects, rec);
         const bt = infer(e.args[1], nodes, env, effs, effects, rec);
         const widened = plusType(env.uni, at, bt);
-        // The numeric `+` stamps and pins exactly like the other arithmetic
-        // ops (the string case leaves no width to stamp).
-        stampComputeWidth(env.uni, rec, e, [at, bt], widened);
+        // The numeric `+` stamps exactly like the other arithmetic ops (the
+        // string case leaves no width to stamp).
+        stampComputeWidth(env.uni, e, widened);
         return widened;
       }
       // Numeric operators (- * / %) and comparisons (< > <= >=) widen int/float;
@@ -642,7 +665,7 @@ function inferNode(
         const at = infer(e.args[0], nodes, env, effs, effects, rec);
         const bt = infer(e.args[1], nodes, env, effs, effects, rec);
         const widened = numeric(env.uni, at, bt, fn.v);
-        stampComputeWidth(env.uni, rec, e, [at, bt], widened);
+        stampComputeWidth(env.uni, e, widened);
         if (CMP_OPS.has(fn.v)) return TBOOL;
         // `/` is type-preserving: int/int -> int (truncated at runtime),
         // float/float -> float; the division's width is stamped on the node
@@ -657,7 +680,7 @@ function inferNode(
       if (fn.t === "sym" && fn.v === OP_NEG) {
         const at = infer(e.args[0], nodes, env, effs, effects, rec);
         const widened = numeric(env.uni, at, at, OP_NEG);
-        stampComputeWidth(env.uni, rec, e, [at], widened);
+        stampComputeWidth(env.uni, e, widened);
         return widened;
       }
       // Equality: both operands must share a type (untyped literals flex,
@@ -667,7 +690,7 @@ function inferNode(
         const at = infer(e.args[0], nodes, env, effs, effects, rec);
         const bt = infer(e.args[1], nodes, env, effs, effects, rec);
         env.uni.unify(at, bt);
-        stampEqWidth(env.uni, rec, e, at, bt);
+        stampEqWidth(env.uni, e, at, bt);
         return TBOOL;
       }
       const ft = infer(e.fn, nodes, env, effs, effects, rec);
@@ -756,7 +779,12 @@ export function checkProgram(
     for (const b of BUILTIN_TABLE) {
       if (b.kind !== "effect") {
         const bt = b.t;
-        env.vars.set(b.name, typeof bt === "function" ? () => bt(uni) : bt);
+        // Instantiated per use through copyScheme: the wildcard prims in a
+        // signature (the TFLOAT/TINT singletons) copy to fresh wilds per
+        // call site, so a call flexes its own copy without leaking the
+        // width into the signature or other sites.
+        env.vars.set(b.name, () =>
+          uni.copyScheme(typeof bt === "function" ? bt(uni) : bt, new Map(), new Map()));
       }
     }
   }
@@ -774,7 +802,27 @@ export function checkProgram(
   for (const it of prog.items.filter(it => "e" in it))
     lastType = infer(it.e, prog.nodes, env, unhandled, effects, rec);
 
+  // Wildcard resolution: propagate op-linked widths, then default every
+  // still-unbound wildcard (int → i64, float → f64). After this the checker
+  // has left no untyped literals — every numeric node type is concrete, so
+  // numKind stamping reads widths straight off the resolved types.
+  uni.resolveWilds();
   stampNumKinds(prog.nodes, uni, rec.nodeTypes);
+  // Divergent reads: a per-read wildcard copy may have flexed to a width
+  // different from the binding's own box width (one untyped binding read
+  // at several widths). Mark those reads so the backends adapt the stored
+  // representation instead of assuming the stamp's box shape.
+  for (const [id, t] of rec.nodeTypes) {
+    const n = prog.nodes[id];
+    if (n.t !== "sym") continue;
+    const src = n as Expr & {bindTyp?: Type, adaptFrom?: string};
+    if (src.bindTyp === undefined) continue;
+    const sw = widthOf(uni.res(t));
+    const bt = uni.res(src.bindTyp);
+    const bw = bt.tag === "prim" ? widthOf(bt) : null;
+    if (sw !== null && sw.concrete && bw !== null && bw.concrete && bw.w !== sw.w)
+      src.adaptFrom = bw.w;
+  }
   stampSuspension(prog.nodes, uni, rec.nodeTypes);
 
   return {env, effects, uni, lastType: uni.deepRes(lastType), unhandled, semToks: rec.semToks, nodeTypes: rec.nodeTypes};

@@ -208,7 +208,9 @@ function substReadTemps(root: CTerm, assigned: Set<string>, capts: Set<string>):
         }
         if (!seen.has(rep.name)) {
           seen.add(rep.name);
-          kept.push({name: rep.name, val: {t: "var", name: rep.name}});
+          // Carry the source stamp: the freeze snapshot must land in the
+          // same representation the temp's bind produced.
+          kept.push({name: rep.name, val: {t: "var", name: rep.name, stamp: rep.stamp}});
         }
       }
       t.freeze = kept.length > 0 ? kept : undefined;
@@ -225,7 +227,10 @@ function substReadTemps(root: CTerm, assigned: Set<string>, capts: Set<string>):
     // temp's bind is gone by the time the second one's uses are read.
     if (t.t === "bind" && isTemp(t.name) && t.val.t === "var"
         && !assigned.has(t.val.name) && !capts.has(t.name)) {
-      map.set(t.name, {t: "var", name: t.val.name});
+      // The substitute carries the bind's source stamp: reads normalized at
+      // the temp (BigInt vs number) must stay stamped when the temp goes
+      // away, or stamped ops see mixed representations.
+      map.set(t.name, t.val);
       changed.v = true;
       return rw(t.rest);
     }

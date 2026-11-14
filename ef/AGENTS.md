@@ -40,7 +40,8 @@ Hindley-Milner-flavoured type system with effect tracking.
   `wasm_emit.ts`/`wasm_module.ts` — see item 11),
   `backend/wasm/wasm_host.ts` (wasm host runtime: instantiation, GC↔JS boxing,
   effect interpretation), `stamps.ts` (the one backend-stamp concern: width/
-suspension/box-provenance emission over an exhaustive `Expr` switch),
+suspension/arrKind emission over an exhaustive `Expr` switch — widths come
+  from the checker's resolved types, not decided here),
 `frontend/lint.ts`, `prims.ts`, `assert.ts` (the
   `assertNever` exhaustive-switch guard — every switch over `Expr` ends in
   it, so a new node variant fails typecheck in each walker that forgets it),
@@ -252,10 +253,14 @@ the README's opening, and compiler-internal changes update
 - **Six numeric widths, strict arithmetic.** `i32 i64 u32 u64 f32 f64`
   replace int/float. Operands of a numeric op must share a width (`i32 +
   i64` is a type error); `@as(expr, T)` is the one conversion (float→int
-  truncates, bool→numeric gives 0/1). Untyped literals (`1`, `1.5`) are
-  internal wildcard types that flex to any numeric (resp. float) context
-  and default to i64/f64 — never let them widen to concrete types at parse
-  time. f32 values round to f32 precision at every producing node (checker
+  truncates, bool→numeric gives 0/1). Untyped literals (`1`, `1.5`) check
+  as internal wildcard types that flex to any numeric (resp. float)
+  context — each read/operation resolves its own copy in the unifier, and
+  `checkProgram` finishes with `resolveWilds`: propagation over op-linked
+  wildcards, then literal defaulting to i64/f64, so no wildcard survives
+  checking and the evaluator never coerces operands (after typecheck they
+  are already in the op's width). Never let them widen to concrete types
+  at parse time. f32 values round to f32 precision at every producing node (checker
   stamps `f32`; interp frounds, wasm emits a demote/promote round-trip);
   i64/u64 are exact to 2^53, no wraparound.
 - **Every `Expr` switch is exhaustive.** Walkers end in `default:` +

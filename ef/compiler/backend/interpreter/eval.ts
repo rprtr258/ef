@@ -263,12 +263,15 @@ function toBig(v: Value): bigint {
   return typeof v === "bigint" ? v : BigInt(Math.trunc(num(v)));
 }
 
-// Stamped operator application (all numeric ops except string `+`): coerce
-// both operands to the stamp's representation and compute the raw
-// mathematical result — the prim's norm wraps it to the width (i32 |0,
-// f32 fround, i64/u64 asIntN/asUintN). Comparisons return bool. Integer /
-// and % trap on ÷0 and INT_MIN÷-1 like wasm's div_s/rem ops; BigInt division
-// truncates toward zero natively, so no Math.trunc needed.
+// Stamped operator application (all numeric ops except string `+`): the
+// checker has resolved every operand's width (flexWild/resolveWilds), so
+// operands arrive already in the stamp's representation — i32/u32/f32/f64
+// as JS numbers, i64/u64 as BigInt — and the prim's norm wraps the raw
+// mathematical result to the width (i32 |0, f32 fround, i64/u64
+// asIntN/asUintN). No cross-width coercion happens here. Comparisons return
+// bool. Integer / and % trap on ÷0 and INT_MIN÷-1 like wasm's div_s/rem ops;
+// they compute through BigInt for exact truncation at the width (a double
+// quotient can round onto an integer boundary), not to convert operands.
 function widthOp(op: string, a: Value, b: Value | undefined, nk: string): Value {
   const big = nk === "i64" || nk === "u64";
   if (op === OP_DIV || op === OP_REM) {
@@ -287,13 +290,13 @@ function widthOp(op: string, a: Value, b: Value | undefined, nk: string): Value 
     return op === OP_DIV ? na / nb : na % nb;
   }
   if (op === OP_EQ || op === OP_NE) {
-    const eq = big ? toBig(a) === toBig(b!) : Number(a) === Number(b);
+    const eq = a === b!; // operands share the stamp's representation
     return op === OP_EQ ? eq : !eq;
   }
   if (big) {
-    const ba = toBig(a);
+    const ba = a as bigint;
     if (op === OP_NEG) return -ba;
-    const bb = toBig(b!);
+    const bb = b! as bigint;
     switch (op) {
       case OP_ADD: return ba + bb;
       case OP_SUB: return ba - bb;
@@ -305,9 +308,9 @@ function widthOp(op: string, a: Value, b: Value | undefined, nk: string): Value 
       default: return assertNever(op as never); // unreachable
     }
   }
-  const x = Number(a);
+  const x = a as number;
   if (op === OP_NEG) return -x;
-  const y = Number(b);
+  const y = b as number;
   switch (op) {
     case OP_ADD: return x + y;
     case OP_SUB: return x - y;

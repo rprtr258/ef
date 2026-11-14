@@ -245,9 +245,34 @@ function pushStampedVar(wk: Walk, a: CAtom & {t: "var"}): void {
   }
   f.pushRef(r);
   const wkn = a.stamp!;
+  if (a.adaptFrom !== undefined) {
+    // The stored box rides the binding's own width (adaptFrom), this read
+    // flexed to another: adaptively unbox to the f64 plane, then convert
+    // to the read's width and rebox (the checker only marks widths whose
+    // values are representable — exact within the i64 2^53 promise).
+    b.callFn(wk.em.ix.fNum64);
+    adaptRaw(f, wkn);
+    rebox(wk.em, f, wkn);
+    return;
+  }
   if (wkn === "f64") return; // the f64 plane's $F64 boxes pass through
   b.callFn(widthHelper(wk.em, wkn));
   rebox(wk.em, f, wkn);
+}
+
+// Convert the raw f64 on the stack to the raw value at `wkn`'s plane
+// (truncating toward zero for int targets, like the interpreter's toBig).
+function adaptRaw(f: Fn, wkn: string): void {
+  const b = f.body;
+  if (wkn === "f64") return;
+  if (wkn === "f32") b.num(w.F32_DEMOTE);
+  else if (wkn === "i32") b.num(w.TRUNC_F64);
+  else if (wkn === "u32") b.num(w.TRUNC_F64_U);
+  else if (wkn === "i64") b.num(w.I64_TRUNC_F64);
+  else {
+    b.num(w.TRUNC_F64_U);
+    b.num(w.I64_EXTEND_I32_U);
+  }
 }
 
 function widthHelper(em: Emit, wkn: string): number {
@@ -560,6 +585,15 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
   const pushArg = (i: number): void => {
     const a = p.args[i];
     if (a.t === "var") {
+      // A divergent read (the stored box rides the binding's width, this
+      // site flexed to another): adaptive unbox to f64, then convert to
+      // the op's raw plane.
+      if (a.adaptFrom !== undefined) {
+        f.pushRef(atomRef(wk, a));
+        b.callFn(em.ix.fNum64);
+        adaptRaw(f, wkName);
+        return;
+      }
       // A numeric entry's param local: same width reads straight off the
       // raw local (no box, no unbox); a different width (only reachable via
       // @as chains) boxes at the local's own width first so the adaptive

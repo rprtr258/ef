@@ -642,9 +642,11 @@ function emitMapLike(em: Emit, f: Fn, name: string, cb?: {idx: number, fsize: nu
       tb.i32Const(k);
       if (k === 0) tb.localGet(elem);
       else {
+        // The index param is typed i64 — box at $I64 (an $F64 box would
+        // trap the callback's stamped i64 reads).
         tb.localGet(iL);
-        tb.num(w.CONV_I32);
-        tb.callFn(em.ix.fBox);
+        tb.num(w.I64_EXTEND_I32_S);
+        rebox(em, t, "i64");
       }
       tb.arraySet();
     };

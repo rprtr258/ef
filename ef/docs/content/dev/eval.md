@@ -54,7 +54,11 @@ value exactly like the wasm backend's per-width ops:
 | `i64` / `u64` | `BigInt.asIntN/asUintN(64, …)` — exact beyond 2^53 |
 
 Unstamped nodes (polymorphic uses) pass values through; operators then
-dispatch on the runtime representation.
+dispatch on the runtime representation. `widthOp` itself never converts
+between widths: the checker resolves literal widths per site, so a stamped
+operator's operands arrive already in its representation (divergent reads
+— one untyped binding read at several widths — carry `adaptFrom` and are
+adapted at the read, not the op).
 
 ## Effects and handlers
 
