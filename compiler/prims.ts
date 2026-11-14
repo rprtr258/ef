@@ -2,7 +2,7 @@
 // constructors, a leaf module — its unify.ts import is type-only (erased at
 // runtime), so builtin_table.ts and types.ts read these at init time without
 // a runtime dependency on the checker.
-import type {AnyT, ArrT, Effs, FunT, Prim, TupField, TupT, Type} from "./frontend/unify.ts";
+import type {AnyT, ArrT, EffVar, Effs, FunT, Prim, TupField, TupT, Type} from "./frontend/unify.ts";
 
 // The six machine widths. Arithmetic between distinct widths is a type
 // error; @as converts.
@@ -36,5 +36,12 @@ export function tFun(params: Type[], ret: Type, effs: Effs, marks?: {contCall?: 
   if (marks?.contCall === true) ft.contCall = true;
   if (marks?.anyTaint === true) ft.anyTaint = true;
   return ft;
+}
+// A concrete effect row: performed op names (`ops`) plus possibly-unbound
+// effect variables (`vars` — an unannotated HOF parameter's unknown effects
+// riding along; see unify.ts's Effs). Here like tFun, so builtin_table.ts and
+// parser.ts build rows with no runtime dependency on the checker.
+export function rowOf(ops?: Iterable<string>, vars?: Iterable<EffVar>): Effs {
+  return {ops: new Set(ops), vars: new Set(vars)};
 }
 export function tTup(fields: TupField[]): TupT { return {tag: "tup", fields}; }

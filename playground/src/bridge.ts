@@ -9,6 +9,7 @@ import "./shim.ts";
 import {Parser, type Program, type Expr, type Alias} from "../../compiler/frontend/parser.ts";
 import {showEffRow, showT} from "../../compiler/frontend/type_display.ts";
 import {type Effs, type Type} from "../../compiler/frontend/unify.ts";
+import {rowOf} from "../../compiler/prims.ts";
 import type {Checked, EffectSig} from "../../compiler/frontend/types.ts";
 import {lint} from "../../compiler/frontend/lint.ts";
 import {exec, newCtx} from "../../compiler/backend/interpreter/eval.ts";
@@ -142,7 +143,7 @@ export type OutlineItem = {
 };
 
 function effRow(effs: Effs): string | null {
-  if (!(effs instanceof Set) || effs.size === 0) return null;
+  if (effs.ops.size === 0 && effs.vars.size === 0) return null;
   // Rows can carry unbound effect variables (deepRes flattens bound ones);
   // they print as e1, e2, ... in first-appearance order, matching showT.
   const effNames = new Map<number, string>();
@@ -191,9 +192,9 @@ function aliasT(al: Alias): string {
       case "fun": {
         // Rows can carry unbound effect variables (deepRes flattens bound
         // ones) — render them like type_display does.
-        const e = t.effs instanceof Set
-          ? (t.effs.size > 0 ? " ! { " + showEffRow(t.effs, effStr) + " }" : "")
-          : ` ! { ${effStr(t.effs)} }`;
+        const e = t.effs.ops.size > 0 || t.effs.vars.size > 0
+          ? " ! { " + showEffRow(t.effs, effStr) + " }"
+          : "";
         return "(" + t.params.map(go).join(", ") + ") -> " + go(t.ret) + e;
       }
       case "var": return names.get(t.id) ?? "a";
@@ -243,7 +244,7 @@ function outlineItems(src: string, prog: Program, checked: Checked | null): Outl
           // The written annotation (retEffs) is available pre-check; the
           // inferred row (typ.effs) once the checker has run.
           effs: val.t === "lambda" ?
-            (val.retEffs instanceof Set ? effRow(val.retEffs) :
+            (val.retEffs !== null ? effRow(rowOf(val.retEffs)) :
               val.typ !== undefined ? effRow(val.typ.effs) : null) : null,
           typ: checked !== null ? showT(checked.env.lookupResolved(e.name)) : null,
         });

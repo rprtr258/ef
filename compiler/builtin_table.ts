@@ -7,7 +7,7 @@
 // structurally, so operators are surface rows only.
 import type {Type, Unifier} from "./frontend/unify.ts";
 import type {EffectSig} from "./frontend/types.ts";
-import {TI64, TANY, TBOOL, TF64, TFLOAT, TINT, TUNIT, TSTR, tArr, tFun} from "./prims.ts";
+import {TI64, TANY, TBOOL, TF64, TFLOAT, TINT, TUNIT, TSTR, rowOf, tArr, tFun} from "./prims.ts";
 import {
   OP_ADD, OP_SUB, OP_MUL, OP_REM, OP_NEG,
   OP_LT, OP_GT, OP_LE, OP_GE, OP_EQ, OP_NE, OP_NOT,
@@ -58,28 +58,28 @@ export const OPERATOR_OPS: Set<string> = new Set(OPERATOR_ROWS.map(r => r.name))
 // are immutable and safe to share across programs: polymorphic `t` thunks
 // instantiate fresh vars per use.
 export const BUILTIN_TABLE: readonly BuiltinDecl[] = [
-    {kind: "fn", name: "not", t: tFun([TBOOL], TBOOL, new Set()), params: 1, pnames: ["v"]},
-    {kind: "fn", name: "sub", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64, TI64], tArr(a), new Set()); }, params: 3, pnames: ["xs", "from", "to"]},
-    {kind: "fn", name: "concat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), tArr(a)], tArr(a), new Set()); }, params: 2, pnames: ["xs", "ys"]},
-    {kind: "fn", name: "flat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(tArr(a))], tArr(a), new Set()); }, params: 1, pnames: ["xs"]},
-    {kind: "fn", name: "len", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a)], TI64, new Set()); }, params: 1, pnames: ["xs"]},
-    {kind: "fn", name: "strlen", t: tFun([TSTR], TI64, new Set()), params: 1, pnames: ["s"]},
+    {kind: "fn", name: "not", t: tFun([TBOOL], TBOOL, rowOf()), params: 1, pnames: ["v"]},
+    {kind: "fn", name: "sub", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64, TI64], tArr(a), rowOf()); }, params: 3, pnames: ["xs", "from", "to"]},
+    {kind: "fn", name: "concat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), tArr(a)], tArr(a), rowOf()); }, params: 2, pnames: ["xs", "ys"]},
+    {kind: "fn", name: "flat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(tArr(a))], tArr(a), rowOf()); }, params: 1, pnames: ["xs"]},
+    {kind: "fn", name: "len", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a)], TI64, rowOf()); }, params: 1, pnames: ["xs"]},
+    {kind: "fn", name: "strlen", t: tFun([TSTR], TI64, rowOf()), params: 1, pnames: ["s"]},
 
     {kind: "value", name: "PI", t: TFLOAT, params: 0},
-    {kind: "fn", name: "cos", t: tFun([TFLOAT], TFLOAT, new Set()), params: 1, pnames: ["x"]},
-    {kind: "fn", name: "sin", t: tFun([TFLOAT], TFLOAT, new Set()), params: 1, pnames: ["x"]},
-    {kind: "fn", name: "abs", t: tFun([TFLOAT], TFLOAT, new Set()), params: 1, pnames: ["x"]},
-    {kind: "fn", name: "round", t: tFun([TF64], TI64, new Set()), params: 1, pnames: ["x"]},
-    {kind: "fn", name: "sqrt", t: tFun([TFLOAT], TFLOAT, new Set()), params: 1, pnames: ["x"]},
+    {kind: "fn", name: "cos", t: tFun([TFLOAT], TFLOAT, rowOf()), params: 1, pnames: ["x"]},
+    {kind: "fn", name: "sin", t: tFun([TFLOAT], TFLOAT, rowOf()), params: 1, pnames: ["x"]},
+    {kind: "fn", name: "abs", t: tFun([TFLOAT], TFLOAT, rowOf()), params: 1, pnames: ["x"]},
+    {kind: "fn", name: "round", t: tFun([TF64], TI64, rowOf()), params: 1, pnames: ["x"]},
+    {kind: "fn", name: "sqrt", t: tFun([TFLOAT], TFLOAT, rowOf()), params: 1, pnames: ["x"]},
     // Builtins return concrete widths — range is (i64, i64, i64) -> [i64],
     // so its output is never width-ambiguous. Elements are plain JS numbers;
     // every read at an i64-typed site (get, callbacks) re-normalizes to BigInt.
-    {kind: "fn", name: "range", t: tFun([TI64, TI64, TI64], tArr(TI64), new Set()), params: 3, pnames: ["from", "to", "step"]},
-    {kind: "fn", name: "char", t: tFun([TINT], TSTR, new Set()), params: 1, pnames: ["code"]},
-    {kind: "fn", name: "number", t: tFun([TSTR], TFLOAT, new Set()), params: 1, pnames: ["s"]},
-    {kind: "fn", name: "args", t: tFun([], tArr(TSTR), new Set()), params: 0},
-    {kind: "fn", name: "get", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64], a, new Set()); }, params: 2, pnames: ["xs", "i"]},
-    {kind: "fn", name: "set", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64, a], TUNIT, new Set()); }, params: 3, pnames: ["xs", "i", "v"]},
+    {kind: "fn", name: "range", t: tFun([TI64, TI64, TI64], tArr(TI64), rowOf()), params: 3, pnames: ["from", "to", "step"]},
+    {kind: "fn", name: "char", t: tFun([TINT], TSTR, rowOf()), params: 1, pnames: ["code"]},
+    {kind: "fn", name: "number", t: tFun([TSTR], TFLOAT, rowOf()), params: 1, pnames: ["s"]},
+    {kind: "fn", name: "args", t: tFun([], tArr(TSTR), rowOf()), params: 0},
+    {kind: "fn", name: "get", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64], a, rowOf()); }, params: 2, pnames: ["xs", "i"]},
+    {kind: "fn", name: "set", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64, a], TUNIT, rowOf()); }, params: 3, pnames: ["xs", "i", "v"]},
 
     // Builtin effects, declared to the checker via `sig` and interpreted by
     // the runtime when left unhandled. `Read(path): string` reads a file;
@@ -100,15 +100,15 @@ export const BUILTIN_TABLE: readonly BuiltinDecl[] = [
 
     // Natives that call ef closures mid-flight (map/each/flatmap): CPS.
     {kind: "native", name: "map", t: (u: Unifier) => {
-      const a = u.fresh(), b = u.fresh(), e = u.freshEff();
+      const a = u.fresh(), b = u.fresh(), e = rowOf([], [u.freshEff()]);
       return tFun([tFun([a], b, e), tArr(a)], tArr(b), e);
     }, params: 2, pnames: ["f", "xs"]},
     {kind: "native", name: "each", t: (u: Unifier) => {
-      const a = u.fresh(), b = u.fresh(), e = u.freshEff();
+      const a = u.fresh(), b = u.fresh(), e = rowOf([], [u.freshEff()]);
       return tFun([tFun([a, TI64], b, e), tArr(a)], TUNIT, e);
     }, params: 2, pnames: ["f", "xs"]},
     {kind: "native", name: "flatmap", t: (u: Unifier) => {
-      const a = u.fresh(), b = u.fresh(), e = u.freshEff();
+      const a = u.fresh(), b = u.fresh(), e = rowOf([], [u.freshEff()]);
       return tFun([tFun([a, TI64], tArr(b), e), tArr(a)], tArr(b), e);
     }, params: 2, pnames: ["f", "xs"]},
 ];

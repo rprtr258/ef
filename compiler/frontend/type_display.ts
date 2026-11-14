@@ -9,7 +9,7 @@
 // here without a runtime cycle — the runtime edge runs unify →
 // type_display → lexer.
 import {ParseError, type Pos} from "./lexer.ts";
-import type {Row, Type} from "./unify.ts";
+import type {Effs, Type} from "./unify.ts";
 
 // 1-based source position of the innermost expression being checked when
 // the error was thrown (set by infer's wrapper; undefined for whole-program
@@ -72,9 +72,9 @@ export function showT(t: Type, pnames?: (string | null)[], varNames?: Map<number
           }
           return n;
         };
-        const e = t.effs instanceof Set
-          ? (t.effs.size > 0 ? " ! { " + showEffRow(t.effs, effStr) + " }" : "")
-          : ` ! { ${effStr(t.effs)} }`;
+        const e = t.effs.ops.size > 0 || t.effs.vars.size > 0
+          ? " ! { " + showEffRow(t.effs, effStr) + " }"
+          : "";
         return "(" + ps + ") -> " + go(t.ret) + e;
       }
     }
@@ -88,13 +88,9 @@ export function showT(t: Type, pnames?: (string | null)[], varNames?: Map<number
 // `effStr` names one unbound variable; the numbering lives with the
 // enclosing display call so the same variable prints the same number across
 // a whole type.
-export function showEffRow(row: Row, effStr: (v: { id: number }) => string): string {
-  const vars: string[] = [];
-  const ops: string[] = [];
-  for (const m of row) {
-    if (typeof m === "string") ops.push(m);
-    else vars.push(effStr(m));
-  }
+export function showEffRow(row: Effs, effStr: (v: { id: number }) => string): string {
+  const vars = [...row.vars].map(effStr);
+  const ops = [...row.ops];
   vars.sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
   ops.sort();
   return [...vars, ...ops].join(", ");

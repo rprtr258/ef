@@ -3,7 +3,7 @@ import {
 } from "./unify.ts";
 import {
   TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TUNIT, TANY, TTYPE,
-  tArr, tTup, tFun,
+  rowOf, tArr, tTup, tFun,
 } from "../prims.ts";
 import type {EffectSig} from "./types.ts";
 import {KEYWORDS, lex, ParseError, type Pos, type Tok} from "./lexer.ts";
@@ -469,7 +469,7 @@ export class Parser {
       this.eat("-");
       this.eat(">");
       const ret = this.parseType();
-      return tFun(ps, ret, this.parseEffAnnot() ?? new Set());
+      return tFun(ps, ret, rowOf(this.parseEffAnnot() ?? undefined));
     }
     const name = this.next();
     // type parameter of an enclosing alias body → a type variable.

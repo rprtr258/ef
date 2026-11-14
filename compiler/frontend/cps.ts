@@ -62,7 +62,7 @@ function kap(k: K, v: CAtom): CTerm {
 // Unstamped or any-absorbed lambdas default to CPS.
 function isDirectFn(prog: Program, e: Expr & {t: "lambda"}): boolean {
   const typ = e.typ;
-  if (typ === undefined || !(typ.effs instanceof Set) || typ.effs.size !== 0) return false;
+  if (typ === undefined || typ.effs.ops.size !== 0 || typ.effs.vars.size !== 0) return false;
   return !tailSusCall(prog, e.body);
 }
 

@@ -195,11 +195,12 @@ export function stampSuspension(nodes: Expr[], uni: Unifier, nodeTypes: Map<Expr
       const rt = uni.res(ct);
       if (rt.tag === "fun" && rt.contCall !== true && rt.anyTaint !== true &&
         !(fn.t === "sym" && NATIVE_BUILTINS.has(fn.v))) {
-        // resRow, not resEff: rows can carry effect variables (propagated
-        // from polymorphic callees) and self-referential bindings (a direct
-        // recursion's row equation) — a resolved empty row means the call
-        // cannot suspend; an unresolved variable or leftover op means it can.
-        if (uni.resRow(rt.effs).size === 0) sus = false;
+        // resRow flattens bound effect variables (propagated from
+        // polymorphic callees, or self-referential bindings from direct
+        // recursion) — a resolved empty row means the call cannot suspend;
+        // an unbound variable or leftover op means it can.
+        const rr = uni.resRow(rt.effs);
+        if (rr.ops.size === 0 && rr.vars.size === 0) sus = false;
       }
     }
     e.sus = sus;

@@ -33,7 +33,7 @@ import {
 import {Parser, type Alias, type ExprID, type Program, type TypeTok} from "./frontend/parser.ts";
 import {showT, TypeError_} from "./frontend/type_display.ts";
 import {type Unifier} from "./frontend/unify.ts";
-import {tFun, TANY} from "./prims.ts";
+import {tFun, TANY, rowOf} from "./prims.ts";
 import type {Checked, EffectSig} from "./frontend/types.ts";
 import {prepare} from "./frontend/pipeline.ts";
 import {builtinParamNames} from "./builtins.ts";
@@ -105,7 +105,7 @@ function posLT(a: Pos, b: Pos): boolean {
 // The sig's params/ret are deep-resolved so a use site's unifications (args
 // unified against the sig during checking) show concretely.
 function effSigText(uni: Unifier, sig: EffectSig): string {
-  return showT(uni.deepRes(tFun(sig.params.map(p => p ?? TANY), sig.ret, new Set())), sig.names);
+  return showT(uni.deepRes(tFun(sig.params.map(p => p ?? TANY), sig.ret, rowOf())), sig.names);
 }
 
 // Alias definition: `Pair(a, b) = [fst: a, snd: b]` — tuple fields render

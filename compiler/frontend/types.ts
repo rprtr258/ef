@@ -1,12 +1,12 @@
 import type {Expr, ExprID, Program, TypeTok} from "./parser";
 import {BUILTINS, BUILTIN_TABLE} from "../builtin_table.ts";
 import {ARITH_OPS, CMP_OPS, EQ_OPS, OP_ADD, OP_DIV, OP_NEG} from "../ops.ts";
-import {TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, tArr, tFun, tTup} from "../prims.ts";
+import {TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, rowOf, tArr, tFun, tTup} from "../prims.ts";
 import {showT, TypeError_} from "./type_display.ts";
 import {
   FLOAT_NAMES, INT_NAMES, NUMERIC_NAMES, widthOf,
   Env, Unifier,
-  type FunT, type NumName, type Prim, type Row, type Type, type TupT,
+  type Effs, type FunT, type NumName, type Prim, type Type, type TupT,
 } from "./unify.ts";
 import {
   beginLamWidths, checkLamWidths, endLamWidths,
@@ -121,6 +121,14 @@ class TokenRecorder {
   recordEffect(name: string, sig: EffectSig): void { this.effects.set(name, sig); }
 }
 
+// Forward a flattened row's members into an ambient accumulator row — ops
+// and still-unbound variables both (a polymorphic callee's row variable must
+// ride along; see the app case).
+function absorbEffs(dst: Effs, src: Effs): void {
+  for (const op of src.ops) dst.ops.add(op);
+  for (const v of src.vars) dst.vars.add(v);
+}
+
 // Infer an `[...]` literal. With an `expected` tuple, elements are checked
 // against the tuple's field types (named-tuple construction). Without one,
 // attempt homogeneous unification behind a checkpoint; on failure build a
@@ -130,7 +138,7 @@ function inferArr(
   nodes: Expr[],
   expected: TupT | null,
   env: Env,
-  effs: Row,
+  effs: Effs,
   effects: Map<string, EffectSig>,
   rec: TokenRecorder,
 ): Type {
@@ -172,7 +180,7 @@ function inferArr(
 // lambda bodies (return type), so a declared `[f,f,f]` return flows into a
 // `[x, y, z]` body literal. Both call sites (lambda retTyp, block tail)
 // guard on the expectation being a resolved tup, so `expected` is a TupT.
-function inferWith(id: ExprID, nodes: Expr[], expected: TupT, env: Env, effs: Row, effects: Map<string, EffectSig>, rec: TokenRecorder): Type {
+function inferWith(id: ExprID, nodes: Expr[], expected: TupT, env: Env, effs: Effs, effects: Map<string, EffectSig>, rec: TokenRecorder): Type {
   const e = nodes[id];
   if (e.t === "arr")
     return inferArr(id, nodes, expected, env, effs, effects, rec);
@@ -327,7 +335,7 @@ function infer(
   id: ExprID,
   nodes: Expr[],
   env: Env,
-  effs: Row,
+  effs: Effs,
   effects: Map<string, EffectSig>,
   rec: TokenRecorder,
 ): Type {
@@ -340,7 +348,7 @@ function inferNode(
   id: ExprID,
   nodes: Expr[],
   env: Env,
-  effs: Row,
+  effs: Effs,
   effects: Map<string, EffectSig>,
   rec: TokenRecorder,
 ): Type {
@@ -393,7 +401,7 @@ function inferNode(
         // (pre-existing behavior under assignment-to-nearest-binding).
         n.muts.add(p.name);
       }
-      const innerEffs: Row = new Set();
+      const innerEffs = rowOf();
       // Width-ambiguity tracking: register this lambda's unannotated param
       // vars for the body's numeric ops; the `let` binding the lambda runs
       // the rejection check (checkLamWidths).
@@ -421,9 +429,8 @@ function inferNode(
       // performs is rejected — annotate the parameter's type instead.
       if (e.retEffs !== null) {
         const decl = e.retEffs.size > 0 ? [...e.retEffs].join(", ") : "∅";
-        for (const m of env.uni.resRow(innerEffs)) {
-          if (typeof m === "string") continue;
-          const owner = env.uni.forcedRows.get(env.uni.effFind(m.id));
+        for (const v of env.uni.resRow(innerEffs).vars) {
+          const owner = env.uni.forcedRows.get(env.uni.effFind(v.id));
           // Skip variables not borne by this lambda's parameters: a recursive
           // self-call's row variable is constrained by the binding's own
           // unification right after this check.
@@ -431,15 +438,14 @@ function inferNode(
           if (e.retEffs.size === 0)
             throw new TypeError_(
               `effect annotation ! { ∅ } can't cover an unannotated parameter's effects — annotate the parameter's type with its effect row`);
-          env.uni.effBinds.set(env.uni.effFind(m.id), e.retEffs);
+          env.uni.effBinds.set(env.uni.effFind(v.id), rowOf(e.retEffs));
         }
-        for (const op of env.uni.resRow(innerEffs)) {
-          if (typeof op !== "string") continue;
+        for (const op of env.uni.resRow(innerEffs).ops) {
           if (!e.retEffs.has(op))
             throw new TypeError_(`effect ${op} not declared in signature (declared: ${decl})`);
         }
       }
-      const ft = tFun(ps, e.retTyp ?? ret, e.retEffs ?? innerEffs);
+      const ft = tFun(ps, e.retTyp ?? ret, e.retEffs !== null ? rowOf(e.retEffs) : innerEffs);
       e.typ = ft;
       // Param binders classified here, after the body has unified — an
       // unannotated param used as a callee resolves to a FunT by now.
@@ -616,11 +622,11 @@ function inferNode(
         throw new TypeError_(`effect ${e.op}: ${sig.params.length} args, got ${e.args.length}`);
       const argTs = e.args.map(a => infer(a, nodes, env, effs, effects, rec));
       for (let i = 0; i < sig.params.length; i++) env.uni.unify(sig.params[i] ?? TANY, argTs[i]);
-      effs.add(e.op);
+      effs.ops.add(e.op);
       return sig.ret;
     }
     case "handle": {
-      const bodyEffs: Row = new Set();
+      const bodyEffs = rowOf();
       const bodyT = infer(e.body, nodes, env, bodyEffs, effects, rec);
       // Spine-gated resume typing: with no Return case and no perform on the
       // body's spine, every resumption runs the body to completion, so the
@@ -651,8 +657,8 @@ function inferNode(
         }
         // resume: (sig.ret) -> resultT ; Return's resume is identity over bodyT
         const resumeT = c.op === "Return"
-          ? tFun([env.uni.res(bodyT)], env.uni.fresh(), new Set(), {contCall: true})
-          : tFun([sig!.ret], env.uni.fresh(), new Set(), {contCall: true});
+          ? tFun([env.uni.res(bodyT)], env.uni.fresh(), rowOf(), {contCall: true})
+          : tFun([sig!.ret], env.uni.fresh(), rowOf(), {contCall: true});
         checkBind(n, c.resume);
         n.vars.set(c.resume, resumeT);
         // Case bodies run outside this handler (its perform's continuation
@@ -668,8 +674,8 @@ function inferNode(
         if (bodyCompletes && caseReferencesK(nodes, c.resume, c.body))
           env.uni.unify(resumeT.ret, env.uni.res(bodyT));
       }
-      for (const c of e.cases) bodyEffs.delete(c.op);
-      for (const op of bodyEffs) effs.add(op);
+      for (const c of e.cases) bodyEffs.ops.delete(c.op);
+      absorbEffs(effs, bodyEffs);
       return resultT ?? TUNIT;
     }
     case "app": {
@@ -742,7 +748,7 @@ function inferNode(
         // variable rides along as a member, so a polymorphic caller (an
         // unannotated HOF parameter) stays effect-tracked — when its parameter
         // later unifies with an effectful callee, the row resolves there.
-        for (const op of env.uni.resRow(fr.effs)) effs.add(op);
+        absorbEffs(effs, env.uni.resRow(fr.effs));
         return env.uni.res(ret);
       }
       if (fr.tag === "any") return TANY;
@@ -751,15 +757,15 @@ function inferNode(
       // performed effects vanish from every ambient row (the escaped-closure
       // unhandled-effect hole). The variable unifies with the eventual
       // callee's row at this call's arg unification and propagates above.
-      const expected = tFun(argTs, ret, env.uni.freshEff());
+      const expected = tFun(argTs, ret, rowOf([], [env.uni.freshEff()]));
       // Remember which callee type variable this row variable was forced
       // for: the effect-annotation pinning must only cover variables belonging
       // to this lambda's parameters — a recursive self-call's variable is
       // constrained by the binding's own unification afterwards, and pinning
       // it here would reject a pure self-recursion under `! { ∅ }`.
       const rowVar = expected.effs;
-      if (ft.tag === "var" && !(rowVar instanceof Set))
-        env.uni.forcedRows.set(rowVar.id, ft.id);
+      if (ft.tag === "var" && rowVar.ops.size === 0 && rowVar.vars.size === 1)
+        env.uni.forcedRows.set([...rowVar.vars][0].id, ft.id);
       try { env.uni.unify(ft, expected); }
       catch (err) {
         if (err instanceof TypeError_ && fn.t === "sym")
@@ -768,7 +774,7 @@ function inferNode(
       }
       // The unknown callee's row is a fresh variable — propagate it, so the
       // enclosing function's row carries "whatever this parameter performs".
-      for (const op of env.uni.resRow(expected.effs)) effs.add(op);
+      absorbEffs(effs, env.uni.resRow(expected.effs));
       return env.uni.res(ret);
     }
     default:
@@ -846,12 +852,12 @@ export function checkProgram(
   // callers); after checking, a variable that resolved to concrete ops
   // contributes those, and one that never resolved contributes nothing —
   // no constraint ever tied it to a perform.
-  const row: Row = new Set();
+  const row = rowOf();
   for (const it of prog.items.filter(it => "e" in it))
     lastType = infer(it.e, prog.nodes, env, row, effects, rec);
   const unhandled = new Set<string>();
-  for (const m of uni.resRow(row))
-    if (typeof m === "string") unhandled.add(m);
+  for (const op of uni.resRow(row).ops)
+    unhandled.add(op);
 
   // Wildcard resolution: propagate op-linked widths, then default every
   // still-unbound wildcard (int → i64, float → f64). After this the checker
