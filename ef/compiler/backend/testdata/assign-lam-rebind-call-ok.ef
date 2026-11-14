@@ -1,0 +1,5 @@
+# The sound direction of the monomorphic-`:=`-lambda rule: sequential
+# reassignment to a compatible use still typechecks and runs.
+x := fn(a) { a };
+x = fn(y: i64) { y + 1 };
+x(1)

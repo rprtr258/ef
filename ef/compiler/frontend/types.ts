@@ -459,10 +459,15 @@ function inferNode(
       // Exclude the self-binding from the free-var context before
       // generalizing (otherwise its own vars read as free-in-env → no-op).
       env.vars.delete(e.name);
-      // Value restriction: generalize only lambda values (literals carry no
-      // type vars; `arr` literals are typed directly by inferArr).
-      // This keeps mutable-array/assign soundness (no `x := []` : [a]).
-      env.vars.set(e.name, e.typ !== null ? rt : (nodes[e.val].t === "lambda" ? env.uni.generalize(env, rt) : rt));
+      // Value restriction: generalize only immutable lambda values (literals
+      // carry no type vars; `arr` literals are typed directly by inferArr).
+      // This keeps mutable-array/assign soundness (no `x := []` : [a]), and
+      // mutable lambdas stay monomorphic too: assignment must unify against
+      // the binding's stored type — a generalized scheme would instantiate
+      // fresh vars per use, so `x = fn(y: i64) { y + 1 }` could never inform
+      // later uses, which would keep checking against the stale scheme while
+      // the runtime runs the new closure (type confusion).
+      env.vars.set(e.name, e.typ !== null ? rt : (nodes[e.val].t === "lambda" && !e.mut ? env.uni.generalize(env, rt) : rt));
       if (e.typ === null && env.uni.containsAny(rt))
         env.uni.warnInferredAny(e.name, rt);
       return TUNIT;

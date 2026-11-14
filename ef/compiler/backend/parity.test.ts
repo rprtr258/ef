@@ -256,6 +256,13 @@ const FIXTURES: Row[] = [
   {file: "err-mixed-add.ef", want: "ERR: +: i64 and string are not both numeric or both string\n", code: 1},
   {file: "err-get-oob.ef", want: "ERR: get: index 9 out of bounds [0, 2)\n", code: 1},
   {file: "err-unbound-head.ef", want: "ERR: Unbound: head\n", code: 1},
+  // Mutable (:=) lambda bindings stay monomorphic — assignment must inform
+  // later uses (the stale-scheme hole: checker saw the old type while the
+  // runtime ran the new closure).
+  {file: "assign-lam-rebind-type-err.ef", want: "ERR: Type mismatch:\ngot      : i64\nexpected : string\n", code: 1},
+  {file: "assign-lam-rebind-call-ok.ef", want: "2\n"},
+  {file: "assign-lam-rebind-captured-type-err.ef", want: "ERR: Type mismatch:\ngot      : string\nexpected : i64\n", code: 1},
+  {file: "lam-immutable-generalizes.ef", want: "[\"s\", 1]\n"},
   {file: "handle-const-case.ef", want: "7\n"},
   {file: "handle-resume-twice.ef", want: "6\n"},
   {file: "handle-lambda-perform-nonresume.ef", want: "1\n"},

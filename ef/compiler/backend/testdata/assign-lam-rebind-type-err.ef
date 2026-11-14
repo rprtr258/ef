@@ -1,0 +1,7 @@
+# Rebinding a mutable `:=` lambda keeps the binding monomorphic: uses after
+# the assignment check against the assigned type, so a stale-scheme call
+# (checking the old `(a) -> a` while the runtime runs the new i64 closure —
+# interp returned "s1", wasm crashed in ref.cast) is a static error.
+x := fn(a) { a };
+x = fn(y: i64) { y + 1 };
+x("s")

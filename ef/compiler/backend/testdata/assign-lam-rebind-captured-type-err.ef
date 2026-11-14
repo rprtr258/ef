@@ -1,0 +1,8 @@
+# The closure-capture variant of the stale-scheme hole: a lambda defined
+# while `x` is still unbound captures x's type variable, so a conflicting
+# reassignment must fail statically (f() would otherwise run the new i64
+# closure on the captured string call).
+x := fn(a) { a };
+f := fn() { x("s") };
+x = fn(y: i64) { y + 1 };
+f()
