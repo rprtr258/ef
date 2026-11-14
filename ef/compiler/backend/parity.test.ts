@@ -1,27 +1,36 @@
+// Every file in examples/ is exercised by a test: one entry per file in the
+// EXAMPLES table below, keyed by the example filename. The test bodies are
+// generated from the table, and the coverage guard at the bottom asserts
+// that the table's keys are exactly the .ef files on disk — so a new example
+// file without a table entry (and the real test body the entry carries)
+// fails the run, and a stale entry for a deleted file fails too.
+//
+// Tests run the compiler in-process (run / runWasm), capturing the stdout
+// the CLI would print: Println!'s console.log lines, Out!'s raw
+// process.stdout.write chunks, then the top-level result's show() line (see
+// runOne). Each test also runs the wasm backend and asserts the wasm result
+// coincides with the interpreter's (runExample). Exit! is intercepted with
+// a thrown sentinel (the default host interpretation is process.exit, which
+// would kill the test runner) and Random! is driven by a local seed-42
+// mulberry32, so Random!-driven examples (approx_pi.ef) are reproducible
+// and parity-checked exactly like the rest. The CLI executable surface
+// itself (argv, exit codes, stderr) is smoke-tested separately in
+// cli.test.ts.
+//
+// star.ef is the exception in shape, not in coverage: it is an infinite
+// animation loop, so instead of runExample it is compared against the
+// interpreter over a bounded output prefix (compile health for every
+// example, star included, is asserted in wasm.test.ts).
 import {test, expect, describe} from "bun:test";
-import {tmpdir} from "node:os";
+import {readdirSync, readFileSync} from "node:fs";
 import {join} from "node:path";
-import {readFileSync, readdirSync, writeFileSync} from "node:fs";
-import binaryen from "binaryen";
-import {run} from "./eval.ts";
-import {BIN_FEATURES, compile} from "./wasm.ts";
-import {prepare, type EffectInterp} from "./pipeline.ts";
-import {discover, optimize, assignIndices, layoutStatics} from "./wasm_pipeline.ts";
-import {toCps} from "./cps.ts";
-import {planIr, classifySlots, type TLevel, letkP, scopeP, dcallP} from "./wasm_plan.ts";
-import {runWasm} from "./wasm_host.ts";
-import {mkSlice, mkTup, show, type Value} from "./env.ts";
+import {run} from "./interpreter/eval.ts";
+import {runWasm} from "./wasm/wasm_host.ts";
+import {num, show, type Value} from "../env.ts";
 
-// binaryen's typings lag its runtime (see wasm.ts RawBinaryen): readBinary's features argument is untyped in the .d.ts.
-const bin = binaryen as typeof binaryen & {
-  readBinary(bytes: Uint8Array, features: number): ReturnType<typeof binaryen.wrapModule>,
-};
-
-const workspaceDir = import.meta.dir;
-
-// The wasm target must be observationally equivalent to the interpreter:
-// for every program below, `run(src)` and `runWasm(src)` produce the same
-// `show()` rendering (values AND error messages).
+// The value-level interpreter↔wasm parity check: for the same program,
+// `run(src)` (the interpreter) and `runWasm(src)` must produce the same
+// `show()` rendering — values AND error messages.
 function parity(src: string) {
   const interpOut = ((): string => {
     try {
@@ -41,71 +50,508 @@ function parity(src: string) {
   return interpOut;
 }
 
-// Health check for every compiled module in this file: the module must
-// validate, and no function may have an empty body (root expression Nop —
-// in the binary, just `locals decl + end`) while declaring a result: such
-// a body is an orphaned rest thunk that cannot return its result type.
-// Empty VOID bodies are legitimate (the backend emits them as terminal
-// rest thunks, e.g. for `args()`), so they pass.
-function assertModule(bytes: Uint8Array): void {
-  const mod = bin.readBinary(bytes, BIN_FEATURES);
+const compilerDir = join(import.meta.dir, ".."); // compiler/ — cli.ts and the examples/ paths below are relative to it
+
+type RunResult = {stdout: string, code: number};
+
+// The default host interpretation of Exit! is process.exit, which would
+// kill the test runner; runOne swaps it for this sentinel and maps it back
+// to an exit code at its boundary.
+class ExitSignal extends Error {
+  constructor(readonly code: number) { super(`exit ${code}`); }
+}
+
+// Local mulberry32 PRNG seeded with 42, standing in for Math.random(): the
+// interpreter and the wasm host would otherwise draw from the same global
+// Math.random() stream sequentially, so Random!-driven examples would fail
+// their parity check. A fresh stream per run keeps backend parity exact.
+function mulberry42(): () => number {
+  let a = 42 | 0;
+  return () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Runs one example through one backend in-process and returns the stdout
+// the CLI would print, plus the exit code (Exit! mapped from the sentinel).
+// Printed output is captured by swapping console.log (Println!) and
+// process.stdout.write (Out!) around the run, then the top-level result is
+// appended as the CLI's final show() line. argv mimics the CLI's shape —
+// the `args` builtin and wasm's ef_args host import read
+// process.argv.slice(2) at call time, and approx_pi.ef counts the
+// subcommand as part of its argv.
+function runOne(mode: "run" | "runwasm", example: string, args: string[]): RunResult {
+  const file = join(compilerDir, "..", "examples", example);
+  const src = readFileSync(file, "utf8");
+  const rand = mulberry42();
+  const chunks: string[] = [];
+  const realLog = console.log.bind(console);
+  const realWrite = process.stdout.write.bind(process.stdout);
+  const savedArgv = process.argv;
+  console.log = (...a: unknown[]) => { chunks.push(a.map(String).join(" ") + "\n"); };
+  process.stdout.write = (s: string) => { chunks.push(s); return true; };
+  process.argv = [process.argv[0], join(compilerDir, "cli.ts"), mode, file, ...args];
   try {
-    expect(mod.validate()).toBe(1);
-    const nopId: number = bin.NopId; // getExpressionId returns a plain number
-    const fns = Array.from({length: mod.getNumFunctions()}, (_, i) =>
-      bin.getFunctionInfo(mod.getFunctionByIndex(i)));
-    expect(fns.filter(info =>
-      bin.getExpressionId(info.body) === nopId && info.results !== bin.none)).toBeEmpty();
+    let value: Value;
+    try {
+      value = mode === "run"
+        ? run(src, {
+            Exit: a => { throw new ExitSignal(num(a[0])); },
+            Random: (_a, k) => k(rand()),
+          })
+        : runWasm(src, {
+            Exit: a => { throw new ExitSignal(num(a[0])); },
+            Random: (_a, k) => k(rand()),
+          });
+    } catch (e) {
+      if (e instanceof ExitSignal) return {stdout: chunks.join(""), code: e.code};
+      throw e;
+    }
+    return {stdout: chunks.join("") + show(value) + "\n", code: 0};
   } finally {
-    mod.dispose();
+    console.log = realLog;
+    process.stdout.write = realWrite;
+    process.argv = savedArgv;
   }
 }
 
-// Host import names of the module compile(src) declares, in order.
-function importsOf(src: string): string[] {
-  const bytes = compile(src);
-  assertModule(bytes);
-  return WebAssembly.Module.imports(new WebAssembly.Module(bytes)).map(i => i.name);
+// Runs the example through both backends and asserts the wasm result
+// coincides with the interpreter's (stdout + exit code); returns the
+// interpreter result.
+function runExample(example: string, args: string[] = []): RunResult {
+  const interp = runOne("run", example, args);
+  const wasm = runOne("runwasm", example, args);
+  expect(wasm).toEqual(interp);
+  return interp;
 }
 
-describe("wasm backend", () => {
-  test("emits a valid module", () => {
-    assertModule(compile("1 + 2"));
-    assertModule(compile("f :: fn(x: i64): i64 { x }; f(1)"));
+// One entry per examples/*.ef: the table IS the test suite. The test bodies
+// are generated from it (the loop below), and the coverage guard at the
+// bottom asserts that the table's keys are exactly the .ef files in
+// examples/ — a new example file without an entry (and the real test body
+// the entry carries) fails the run, and a stale entry for a deleted file
+// fails too. A body receives the interpreter's run result (the wasm backend
+// has already been run and parity-checked against it inside runExample);
+// `self: true` bodies instead receive the filename and do their own running
+// — used only by star.ef, whose infinite animation loop can never run to
+// completion. Multiple cases per file are allowed (approx_pi.ef, star.ef);
+// only star.ef needs a custom timeout.
+type ExampleCase = {
+  label: string,
+  timeout?: number,
+} & (
+| {
+  // `self?: undefined` + `self: true` is a proper TS discriminant: it
+  // lets contextual typing pick the branch for each table entry (and
+  // `c.self === true` narrow it in the loop below).
+  self?: undefined,
+  args?: string[],
+  body: (res: RunResult) => void | Promise<void>,
+}
+| {
+  self: true,
+  body: (file: string) => void | Promise<void>,
+});
+
+const EXAMPLES: Record<string, ExampleCase[]> = {
+  "amb.ef": [{
+    label: "nondeterministic search finds Pythagorean triples",
+    timeout: 60000,
+    body: res => expect(res.stdout).toBe("[3, 4, 5]\n[5, 12, 13]\n[6, 8, 10]\nunit\n"),
+  }],
+  "apply.ef": [{
+    label: "polymorphic apply calls functions stored in values",
+    body: res => expect(res.stdout).toBe("42\n\"n=7\"\n99\nunit\n"),
+  }],
+  "bitwise.ef": [{
+    label: "logical bool ops; widths with @as; shifts as arithmetic",
+    body: res => expect(res.stdout).toBe("25\n"),
+  }],
+  "bool_equality.ef": [{
+    label: "bool equality converted to int via @as",
+    body: res => expect(res.stdout).toBe("1\n"),
+  }],
+  "bool_logic.ef": [{
+    label: "&& / || classification",
+    body: res => expect(res.stdout).toBe("6\n"),
+  }],
+  "bracketed_expr.ef": [{
+    label: "parenthesized grouping",
+    body: res => expect(res.stdout).toBe("8\n"),
+  }],
+  "cast_roundtrip.ef": [{
+    label: "i64 -> f64 -> +1 -> i64 via @as",
+    body: res => expect(res.stdout).toBe("42\n"),
+  }],
+  "widths.ef": [{
+    label: "f32 precision, @as conversions, division and wraparound parity",
+    timeout: 60000, // ~4s alone; tips over the 5s default under full-suite load
+    body: res => {
+      const lines = res.stdout.split("\n");
+      // f32 rounding: 0.1f32 + 0.2f32 != 0.1f64 + 0.2f64.
+      expect(lines[0]).toBe("0.30000001192092896");
+      expect(lines[1]).toBe("0.30000000000000004");
+      expect(lines[2]).toBe("0.3333333432674408");
+      // f32 equality is f32-exact (line 8); truncation signs (lines 10-11).
+      expect(lines[7]).toBe("true");
+      expect(lines[9]).toBe("-3");
+      expect(lines[10]).toBe("-1");
+      // i32/u32 wraparound: native mod-2^32 ops in both backends.
+      expect(lines[16]).toBe("-2147483648"); // INT_MAX + 1
+      expect(lines[17]).toBe("2147483647"); // INT_MIN - 1
+      expect(lines[18]).toBe("-2"); // INT_MAX * 2
+      expect(lines[19]).toBe("0"); // u32 4294967295 + 1 wraps to 0
+      expect(lines[20]).toBe("4294967295"); // u32 0 - 1 wraps to 2^32 - 1
+      // Signed vs unsigned ordering of the same bits.
+      expect(lines[22]).toBe("true");
+      expect(lines[23]).toBe("true");
+      // i64/u64 exactness beyond 2^53: BigInt at the wasm
+      // boundary, wraps at 2^63/2^64, signed vs unsigned ordering.
+      expect(lines[25]).toBe("9007199254740993"); // 2^53 + 1 is exact
+      expect(lines[26]).toBe("false");
+      expect(lines[27]).toBe("-9223372036854775808"); // INT64_MAX + 1 wraps
+      expect(lines[28]).toBe("0"); // UINT64_MAX + 1 wraps
+      expect(lines[29]).toBe("true"); // 2^63 signed is negative
+      expect(lines[30]).toBe("true"); // 2^63 unsigned is positive
+    },
+  }],
+  "approx_pi.ef": [{
+    label: "Monte Carlo pi estimate (Random!) needs an n argument",
+    body: res => expect(res).toEqual({code: 1, stdout: "Usage: ef run examples/approx_pi.ef <n>\n"}),
+  }, {
+    label: "converges toward pi for large n",
+    args: ["10000"],
+    body: res => {
+      // runOne seeds Random! with a local seed-42 mulberry32, so both
+      // backends sample the same points and must print the same estimate
+      // (checked by runExample's parity).
+      const pi = Number(res.stdout.split("\n")[0]);
+      expect(pi).toBeCloseTo(3.14, 1);
+    },
+  }],
+  "block.ef": [{
+    label: "a block runs statements in order and yields the last value",
+    body: res => expect(res.stdout).toBe("42\n99\n123\nunit\n"),
+  }],
+  "closure_capture.ef": [{
+    label: "closure reads enclosing binding",
+    body: res => expect(res.stdout).toBe("10\n"),
+  }],
+  "closure_make_adder.ef": [{
+    label: "returned closure adds 3",
+    body: res => expect(res.stdout).toBe("7\n"),
+  }],
+  "closure_make_adder2.ef": [{
+    label: "returned closure adds 10",
+    body: res => expect(res.stdout).toBe("15\n"),
+  }],
+  "closure_nested.ef": [{
+    label: "apply_twice(inc)(5)",
+    body: res => expect(res.stdout).toBe("7\n"),
+  }],
+  "closure_no_capture.ef": [{
+    label: "closure without captures",
+    body: res => expect(res.stdout).toBe("1\n"),
+  }],
+  "collatz.ef": [{
+    label: "Println! from nested while/if loops",
+    body: res => expect(res.stdout).toBe(`${[
+      7, 22, 11, 34, 17, 52, 26, 13, 40, 20, 10, 5, 16, 8, 4, 2, 1, 55,
+    ].join("\n")}\n1\n`),
+  }],
+  "comments.ef": [{
+    label: "comments plus naive Fibonacci",
+    body: res => expect(res.stdout).toBe("55\n"),
+  }],
+  "complex_indexing.ef": [{
+    label: "expression as element index",
+    body: res => expect(res.stdout).toBe("3\n"),
+  }],
+  "control_constructs.ef": [{
+    label: "if/while nesting, done-flag break",
+    body: res => expect(res.stdout).toBe(`${[
+      1234, 617, 1852, 926, 463, 1390, 695, 2086, 1043, 3130,
+      1565, 4696, 2348, 1174, 587, 1762, 881, 2644, 1322, 661,
+      1984, 992, 496, 248, 124, 62, 31, 94, 47, 142,
+      71, 214, 107, 322, 161, 484, 242, 121, 364, 182,
+      91, 274, 137, 412, 206, 103, 310, 155, 466, 233,
+      700, 350, 175, 526, 263, 790, 395, 1186, 593, 1780,
+      890, 445, 1336, 668, 334, 167, 502, 251, 754, 377,
+      1132, 566, 283, 850, 425, 1276, 638, 319, 958, 479,
+      1438, 719, 2158, 1079, 3238, 1619, 4858, 2429, 7288, 3644,
+      1822, 911, 2734, 1367, 4102, 2051, 6154, 3077, 9232, 4616,
+      2308, 1154, 577, 1732, 866, 433, 1300, 650, 325, 976,
+      488, 244, 122, 61, 184, 92, 46, 23, 70, 35,
+      106, 53, 160, 80, 40, 20, 10, 5, 16, 8,
+      4, 2,
+    ].join("\n")}\n44\n`),
+  }],
+  "closure.ef": [{
+    label: "a returned closure keeps reading its captured environment",
+    body: res => expect(res.stdout).toBe("7\nunit\n"),
+  }],
+  "example.ef": [{
+    label: "handler loops over a whole search space",
+    body: res => expect(res.stdout).toBe("[[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]\n"),
+  }],
+  "equality_all_types.ef": [{
+    label: "int equality",
+    body: res => expect(res.stdout).toBe("1\n"),
+  }],
+  "expression_indexing.ef": [{
+    label: "variable as element index",
+    body: res => expect(res.stdout).toBe("20\n"),
+  }],
+  "extended_access.ef": [{
+    label: "element store through a variable index",
+    body: res => expect(res.stdout).toBe("43\n"),
+  }],
+  "external_function.ef": [{
+    label: "Println! then a discarded value",
+    body: res => expect(res.stdout).toBe("42\n0\n"),
+  }],
+  "f32_arithmetic.ef": [{
+    label: "f32 addition rounds to f32 precision",
+    body: res => expect(res.stdout).toBe("6\n"),
+  }],
+  "f64_comparison.ef": [{
+    label: "f64 comparison converted to int via @as",
+    body: res => expect(res.stdout).toBe("1\n"),
+  }],
+  "factorial.ef": [{
+    label: "recursion via if expression",
+    body: res => expect(res.stdout).toBe("120\n"),
+  }],
+  "fibonacci_function.ef": [{
+    label: "fib(10)",
+    body: res => expect(res.stdout).toBe("55\n"),
+  }],
+  "functional.ef": [{
+    label: "let-generalized polymorphic id",
+    body: res => expect(res.stdout).toBe("1\n0\n"),
+  }],
+  "fib.ef": [{
+    label: "exponential recursion through the CPS evaluator",
+    body: res => expect(res.stdout).toBe("196418\nunit\n"),
+  }],
+  "gc.ef": [{
+    label: "aliases, slices, element reads",
+    body: res => expect(res.stdout).toBe("115\n"),
+  }],
+  "gc_alias.ef": [{
+    label: "aliasing plus identity tuple equality",
+    body: res => expect(res.stdout).toBe("79\n"),
+  }],
+  "incA.ef": [{
+    label: "mutable state via a state effect",
+    body: res => expect(res.stdout).toBe("9\nunit\n"),
+  }],
+  "ignore_value.ef": [{
+    label: "discarded expression statements",
+    body: res => expect(res.stdout).toBe("42\n0\n"),
+  }],
+  "ignore_value_basic.ef": [{
+    label: "one discarded expression",
+    body: res => expect(res.stdout).toBe("42\n0\n"),
+  }],
+  "just_main.ef": [{
+    label: "minimal program value",
+    body: res => expect(res.stdout).toBe("0\n"),
+  }],
+  "local_decl.ef": [{
+    label: "a := binding inside a block is local to that block",
+    body: res => expect(res.stdout).toBe("5\nunit\n"),
+  }],
+  "literals.ef": [{
+    label: "decimal rewrites of binary/hex/scientific forms across the six widths",
+    body: res => expect(res.stdout).toBe("1571\n"),
+  }],
+  "named_struct.ef": [{
+    label: "named-tuple field access",
+    body: res => expect(res.stdout).toBe("25\n"),
+  }],
+  "nested_break_continue.ef": [{
+    label: "flag replaces break/continue",
+    body: res => expect(res.stdout).toBe("15\n"),
+  }],
+  "man_or_boy.ef": [{
+    label: "Knuth's man-or-boy test: mutable capture across recursive closures",
+    body: res => expect(res.stdout).toBe("-67\n"),
+  }],
+  "newton.ef": [{
+    label: "iterative numeric effect loop",
+    body: res => expect(res.stdout).toMatch(/^1\.4142\d*\nunit\n$/),
+  }],
+  "point.ef": [{
+    label: "alias, identity equality, one-element array",
+    body: res => expect(res.stdout).toBe("42\n"),
+  }],
+  "parametric_alias.ef": [{
+    label: "parametric aliases substitute into annotations and signatures",
+    body: res => expect(res.stdout).toBe("21\n"),
+  }],
+  "pointer_operations.ef": [{
+    label: "dereferences as binding aliases",
+    body: res => expect(res.stdout).toBe("52\n"),
+  }],
+  "poly_id_breaks.ef": [{
+    label: "deliberately ill-typed, but runs under `any`",
+    body: res => expect(res.stdout).toBe("5\nunit\n"),
+  }],
+  "reference_null.ef": [{
+    label: "no null in ef: direct field read",
+    body: res => expect(res.stdout).toBe("10\n"),
+  }],
+  "return_literals.ef": [{
+    label: "literal-returning functions",
+    body: res => expect(res.stdout).toBe("255\n"),
+  }],
+  "raytracer.ef": [{
+    label: "renders two spheres over a checkerboard plane",
+    timeout: 60000,
+    body: res => {
+      // The image format: 200 scanlines of 600 R/G/B lines each, closed by
+      // a -1 row separator, then the runner's final `unit` echo. All values
+      // land in [0, 1.5] — checker grays, clamped shading, and separators.
+      const lines = res.stdout.split("\n");
+      expect(lines[lines.length - 1]).toBe("");
+      expect(lines[lines.length - 2]).toBe("unit");
+      const px = lines.slice(0, 200 * 601);
+      expect(px.length).toBe(200 * 601);
+      let bad = "";
+      for (let i = 0; i < px.length && bad === ""; i++) {
+        if (i % 601 === 600) {
+          if (px[i] !== "-1") bad = `line ${i}: expected -1 separator, got ${px[i]}`;
+          continue;
+        }
+        const v = Number(px[i]);
+        if (px[i] === "" || Number.isNaN(v) || v < 0 || v > 1.5) bad = `line ${i}: unexpected ${px[i]}`;
+      }
+      expect(bad).toBe("");
+    },
+  }],
+  "sieve.ef": [{
+    label: "effectful pipeline produces primes up to 100",
+    body: res => expect(res.stdout).toBe(`${[
+      2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47,
+      53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
+    ].join("\n")}\nunit\n`),
+  }],
+  "simple_add.ef": [{
+    label: "Apply effect via the default host interpretation",
+    body: res => expect(res.stdout).toBe("2\nunit\n"),
+  }],
+  "slice_usage.ef": [{
+    label: "len/get/sub on a three-element array",
+    body: res => expect(res.stdout).toBe("5\n"),
+  }],
+  "squares_sum.ef": [{
+    label: "final expression evaluates to 30",
+    body: res => expect(res.stdout).toBe("30\n"),
+  }],
+  // star.ef is an infinite animation loop: it cannot run to completion, so
+  // its self: true body (moved here from wasm.test.ts's split re-emission
+  // regressions) does its own running — a bounded (timeout + output cap)
+  // cross-backend comparison. Compile health for every example (star
+  // included) is asserted in wasm.test.ts via assertModule.
+  "star.ef": [{
+    label: "renders identically in interpreter and wasm (bounded prefix)",
+    self: true,
+    body: async file => {
+      // Output-bounded, not wall-clock-bounded: read stdout until the
+      // 3000-char cap is reached, then kill the child. Bytes are
+      // load-independent: slower machines just take longer to fill the
+      // cap. If star ever stops producing output (a real regression), the
+      // read blocks until the test-level timeout fails the test.
+      const runBounded = async (mode: string): Promise<string> => {
+        const p = Bun.spawn(
+          ["bun", "run", "cli.ts", mode, `../examples/${file}`, "6", "2"],
+          {cwd: compilerDir, stdout: "pipe", stderr: "ignore"},
+        );
+        const reader = p.stdout.getReader();
+        const decode = new TextDecoder();
+        let out = "";
+        while (out.length < 3000) {
+          const {done, value} = await reader.read();
+          if (done) break;
+          out += decode.decode(value, {stream: true});
+        }
+        p.kill();
+        await p.exited;
+        return out.slice(0, 3000);
+      };
+      const [interp, wasm] = [await runBounded("run"), await runBounded("runwasm")];
+      // The first frame is deterministic; later frames diverge only by wall
+      // clock (the animation spins unbounded), so compare a prefix inside it.
+      const prefixLen = Math.min(interp.length, wasm.length);
+      expect(prefixLen).toBeGreaterThanOrEqual(1000);
+      expect(wasm.slice(0, prefixLen)).toBe(interp.slice(0, prefixLen));
+    },
+    timeout: 90000,
+  }],
+  "struct_allocation.ef": [{
+    label: "separately built tuples differ",
+    body: res => expect(res.stdout).toBe("0\n"),
+  }],
+  "sum_to_n.ef": [{
+    label: "recursive sum via if expression",
+    body: res => expect(res.stdout).toBe("55\n"),
+  }],
+  "tco.ef": [{
+    label: "deep tail recursion does not overflow",
+    body: res => expect(res.stdout).toBe("0\nunit\n"),
+  }],
+  "tuples.ef": [{
+    label: "positional literals, named access, vec3_add",
+    body: res => expect(res.stdout).toBe("41\n"),
+  }],
+  "two_prints.ef": [{
+    label: "top-level statements run in order",
+    body: res => expect(res.stdout).toBe("6\n7\nunit\n"),
+  }],
+  "unary.ef": [{
+    label: "! and unary minus, @as as bool-to-int cast",
+    body: res => expect(res.stdout).toBe("-5\n"),
+  }],
+  "unify.ef": [{
+    label: "type unifier picks the right branch",
+    body: res => expect(res.stdout).toBe("2\nunit\n"),
+  }],
+};
+
+for (const [file, cases] of Object.entries(EXAMPLES)) {
+  describe(file, () => {
+    for (const c of cases) {
+      if (c.self === true) {
+        const {body, timeout} = c;
+        test(c.label, () => body(file), timeout);
+      } else {
+        const {body, args, timeout} = c;
+        test(c.label, () => body(runExample(file, args)), timeout);
+      }
+    }
   });
+}
 
-  test("pipeline phases run standalone (init-order/TDZ guard)", () => {
-    // Drive each exported phase directly so an init-order bug fails here,
-    // named by phase, instead of as a generic compile() error. The program
-    // touches every layoutStatics branch: number + string literals, a PI
-    // reference, and a value-referenced builtin (closure static).
-    // The check stamps the runtime markers discover reads.
-    const {prog} = prepare("x :: 1;\ns :: \"a\";\npi :: PI;\nl :: len;\nx;");
-    const ir = toCps(prog);
-    const d = discover(ir, prog);
-    const o = optimize(prog);
-    const plan = planIr(ir);
-    const ix = assignIndices(ir, plan, o);
-    const lay = layoutStatics(d, ix, o, plan); // the batch-A TDZ site
-    expect(lay.statics.length).toBeGreaterThan(3);
-    expect(lay.unitRef.k).toBe("g");
-    expect(lay.piG).toBeGreaterThanOrEqual(0); // PI referenced → static
-  });
+// Coverage guard: the EXAMPLES table above must name exactly the .ef files
+// in examples/. A newly added example without a table entry fails here, and
+// so does a stale entry after a file is deleted. (Non-.ef files, e.g. .wasm
+// artifacts dropped next to the sources by `buildwasm`, are not examples.)
+test("every file in examples/ is exercised by a test", () => {
+  const files = readdirSync(join(compilerDir, "..", "examples")).filter(f => f.endsWith(".ef"));
+  expect(files.sort()).toEqual(Object.keys(EXAMPLES).sort());
+});
 
-  test("every example compiles to a valid module with no empty function bodies", () => {
-    // The invariant holds for any compiled program, so it runs over every
-    // .ef file in examples/. Compiling all examples takes ~11s (star.ef
-    // alone ~3s), well over the 5s default timeout.
-    const dir = join(workspaceDir, "..", "examples");
-    for (const bin of readdirSync(dir)
-      .filter(file => file.endsWith(".ef"))
-      .map(file => join(dir, file))
-      .map(f => readFileSync(f).toString())
-      .map(compile)) 
-      assertModule(bin);
-  }, 90000);
-
-  test("arithmetic: i64 / f64 division, neg, mod", () => {
+// Language-feature parity: one assertion per language construct, both
+// backends, via the shared parity() helper (backend/parity.ts). This is the
+// fine-grained sibling of the per-example table above; wasm-internal
+// assertions (module structure, slots, ABI, host imports) stay in
+// wasm.test.ts — those suites use parity() only as the observable.
+describe("language-feature parity: interpreter ↔ wasm", () => {
+test("arithmetic: i64 / f64 division, neg, mod", () => {
     expect(parity("7 / 2")).toBe("3"); // i64 division truncates
     expect(parity("7.0 / 2")).toBe("3.5");
     expect(parity("-5 + 3")).toBe("-2");
@@ -114,16 +560,7 @@ describe("wasm backend", () => {
     expect(() => run("1 / 0")).toThrow(/integer divide by zero/);
   });
 
-  test("arithmetic on non-numbers traps via ref.cast (frozen documented deviation)", () => {
-    // Known deviation (wasm.ts): the checker rejects statically-ill-typed
-    // arithmetic, but a
-    // dynamically non-number operand (e.g. through `any`) traps at the
-    // wasm ref.cast instead of throwing a host-side ef error — the GC
-    // plane's frozen deviation from the interpreter's TypeError.
-    expect(() => runWasm("(fn(x: any): any { x * 1 })(\"s\")")).toThrow(); // "*" is always numeric: slotF64 traps on the cast
-  });
-
-  test("unstamped operator sites apply the interpreter's own operators via ef_binop", () => {
+test("unstamped operator sites apply the interpreter's own operators via ef_binop", () => {
     // Sites the checker leaves unstamped — string `+` and string
     // comparisons — call the operator's trampoline, which routes through
     // the ef_binop host import: the interpreter's own operator closure
@@ -133,7 +570,7 @@ describe("wasm backend", () => {
     expect(parity("Println!(\"z\" > \"b\")")).toBe("ERR: Expected number, got \"z\"");
   });
 
-  test("comparisons and equality", () => {
+test("comparisons and equality", () => {
     expect(parity("if (3 < 5) { 10 } else { 20 }")).toBe("10");
     expect(parity("\"ab\" == \"ab\"")).toBe("true");
     expect(parity("\"a\" != \"b\"")).toBe("true");
@@ -141,7 +578,7 @@ describe("wasm backend", () => {
     expect(parity("1 != 2")).toBe("true");
   });
 
-  test("any-typed equality is value-based across all six widths", () => {
+test("any-typed equality is value-based across all six widths", () => {
     // The $eq helper matches the interpreter's JS === on values exactly:
     // same-representation numbers compare by value (f32 promotes, i32/u32
     // convert), BigInt is never === a Number, and mixed i64/u64 compares
@@ -161,7 +598,7 @@ describe("wasm backend", () => {
     expect(parity(eq + "eq(1, 2)")).toBe("false");
   });
 
-  test("tail operator after a land call dispatches through the RET cell", () => {
+test("tail operator after a land call dispatches through the RET cell", () => {
     // The inlined operators share the fixed shape: the tail value returns
     // to the enclosing wrapper, which dispatches it through the
     // continuation.
@@ -178,19 +615,19 @@ describe("wasm backend", () => {
       case Op() => k { k(10) }`)).toBe("6");
   });
 
-  test("strings: concat, len", () => {
+test("strings: concat, len", () => {
     expect(parity("\"ab\" + \"cd\"")).toBe("\"abcd\"");
     parity("len(\"héllo\")"); // len is array-only: both reject identically
     expect(parity("strlen(\"héllo\")")).toBe("5");
   });
 
-  test("control flow: if / while / blocks", () => {
+test("control flow: if / while / blocks", () => {
     expect(parity("i := 0; s := 0; while (i < 5) { s = s + i; i = i + 1 }; s")).toBe("10");
     // blocks with inner lets (lambda body = block sharing the frame)
     expect(parity("f :: fn() { a :: 2; b :: 3; a * b }; f()")).toBe("6");
   });
 
-  test("arrays: get/set/sub views, strict set, flat, concat, map", () => {
+test("arrays: get/set/sub views, strict set, flat, concat, map", () => {
     expect(parity("get([10,20,30], 1)")).toBe("20");
     // set is strictly in-window: no growth past the end, identical error.
     expect(parity("a :: [1]; set(a, 3, 9)")).toBe("ERR: set: index 3 out of bounds [0, 1)");
@@ -205,19 +642,19 @@ describe("wasm backend", () => {
     expect(parity("get(get([[1,2],[3,4]], 1), 0)")).toBe("3");
   });
 
-  test("closures: creation, capture, immediate call of a returned closure", () => {
+test("closures: creation, capture, immediate call of a returned closure", () => {
     expect(parity("addn :: fn(n: i64) { fn(x) { x + n } }; addn(10)(5)")).toBe("15");
     expect(parity("mk :: fn() { c := 0; fn() { c = c + 1; c } }; f :: mk(); f(); f(); f()")).toBe("3");
     expect(parity("f :: fn(a: i64) { fn(b: i64) { fn(c: i64) { a + b + c } } }; f(1)(2)(3)")).toBe("6");
     expect(parity("id :: fn(x) { x }; id(id)(3)")).toBe("3");
   });
 
-  test("recursion: non-tail and tail (return_call_indirect, O(1) wasm stack)", () => {
+test("recursion: non-tail and tail (return_call_indirect, O(1) wasm stack)", () => {
     expect(parity("fib :: fn(n: i64) { if (n < 2) { n } else { fib(n-1) + fib(n-2) } }; fib(15)")).toBe("610");
     expect(parity("lp :: fn(n: i64, acc: i64) { if (n == 0) { acc } else { lp(n - 1, acc + n) } }; lp(100000, 0)")).toBe("5000050000");
   });
 
-  test("math builtins", () => {
+test("math builtins", () => {
     expect(parity("round(sqrt(2) * 100) + abs(0 - 3)")).toBe("144");
     expect(parity("round(cos(0) * 10) + round(sin(0) * 10)")).toBe("10");
     // PI is a f64 value per the checker; the interpreter's runtime binds a
@@ -225,7 +662,7 @@ describe("wasm backend", () => {
     expect(show(runWasm("round(PI * 100)"))).toBe("314");
   });
 
-  test("f32 precision: typed f32 ops, $F32 boxes and @as conversions", () => {
+test("f32 precision: typed f32 ops, $F32 boxes and @as conversions", () => {
     // Graduated from the step-1 interp-only block: every case now runs
     // through BOTH backends (parity) — f32 values are real $F32 boxes
     // computed with the f32 opcode family.
@@ -258,7 +695,7 @@ describe("wasm backend", () => {
     expect(parity("r :: fn(x: f32, y: f32): f32 { x % y }; r(@as(7.3, f32), @as(2.0, f32))")).toBe("1.3000001907348633");
   });
 
-  test("i32/u32 wraparound: native mod-2^32 ops, comparisons, @as", () => {
+test("i32/u32 wraparound: native mod-2^32 ops, comparisons, @as", () => {
     // i32/u32 sites compute with i32.add/sub/mul (the wrap IS the
     // semantics) and the interpreter wraps through BigInt.asIntN/asUintN —
     // parity.
@@ -288,7 +725,7 @@ describe("wasm backend", () => {
     expect(parity("@as(-1, i32) == @as(1, i32)")).toBe("false");
   });
 
-  test("i32 division guards: divide by zero and INT_MIN / -1 fail identically", () => {
+test("i32 division guards: divide by zero and INT_MIN / -1 fail identically", () => {
     // The wasm side routes both through ef_fail (not native traps), so the
     // error message and exit code match the interpreter exactly.
     expect(parity("x: i32 :: 1; x / 0")).toBe("ERR: integer divide by zero");
@@ -302,7 +739,7 @@ describe("wasm backend", () => {
     expect(parity("-7 / 2")).toBe("-3");
   });
 
-  test("i64/u64 wraparound: exact 64-bit BigInt arithmetic, comparisons, @as", () => {
+test("i64/u64 wraparound: exact 64-bit BigInt arithmetic, comparisons, @as", () => {
     // i64/u64 sites compute with i64.add/sub/mul (the wrap IS the
     // semantics) and the interpreter wraps through BigInt.asIntN/asUintN —
     // parity, exact to 2^63 and beyond 2^53.
@@ -335,26 +772,7 @@ describe("wasm backend", () => {
     expect(parity("@as(-9223372036854775808, i64) / @as(-1, i64)")).toBe("ERR: integer overflow");
   });
 
-  test("builtin shadowing is rejected before codegen", () => {
-    // No shadowing: a user binding can never take a builtin's name, so
-    // tree-shaking never sees an occluded builtin. compile()'s check
-    // rejects these before any module is emitted.
-    expect(() => compile("len :: fn(xs: [i64]): i64 { 42 }; len([1, 2, 3])"))
-      .toThrow("cannot shadow builtin 'len'");
-    expect(parity("len :: fn(xs: [i64]): i64 { 42 }; len([1, 2, 3])"))
-      .toBe("ERR: cannot shadow builtin 'len'");
-    // Parameter shadowing a builtin name.
-    expect(() => compile("f :: fn(len: i64): i64 { len * 2 }; f(21)"))
-      .toThrow("cannot shadow builtin 'len'");
-    // Inner shadow of an outer builtin use.
-    expect(() => compile(`g :: fn() {
-  len :: fn(xs: [i64]): i64 { 0 };
-  len([1])
-};
-g() + len([9, 9])`)).toThrow("cannot shadow builtin 'len'");
-  });
-
-  test("builtins as values: references beyond call sites keep them emitted", () => {
+test("builtins as values: references beyond call sites keep them emitted", () => {
     // A builtin passed as an argument still needs its closure cell.
     expect(parity("apply1 :: fn(f, x) { f(x) }; apply1(round, 2.6)")).toBe("3");
     // Multiple builtins-as-values, referenced inside lambdas.
@@ -366,64 +784,14 @@ a + b`)).toBe("6");
     expect(parity("mk :: fn() { len }; mk()([7, 8, 9])")).toBe("3");
   });
 
-  test("errors surface identically (typecheck + runtime)", () => {
+test("errors surface identically (typecheck + runtime)", () => {
     parity("nope + 1"); // Unbound: nope
     parity("1 + \"a\""); // type error from the check
     parity("get([1,2], 9)"); // get: index 9 out of bounds
     parity("head(1, 2, 3)"); // arity error
   });
 
-  test("effects reach the host: Println output", () => {
-    const lines: string[] = [];
-    const orig = console.log;
-    console.log = (...a: unknown[]) => lines.push(a.join(" "));
-    try {
-      expect(show(runWasm("Println!(1); Println!(2.5); Println!(true); 7"))).toBe("7");
-    } finally {
-      console.log = orig;
-    }
-    expect(lines).toEqual(["1", "2.5", "true"]);
-  });
-
-  test("effects reach the host: Read/Write files", () => {
-    const p = join(tmpdir(), `ef-wasm-test-${process.pid}.txt`);
-    writeFileSync(p, "hello wasm");
-    expect(show(runWasm(`Read!("${p}")`))).toBe("\"hello wasm\"");
-    expect(show(runWasm(`Write!("${p}", "rewritten")`))).toBe("unit");
-    expect(readFileSync(p, "utf8")).toBe("rewritten");
-  });
-
-  test("user effects compile and escape to the host", () => {
-    // Same unhandled-effect error message as the interpreter, and the same
-    // timing: both runners reject statically at their entry (exec / the wasm
-    // pipeline) before anything runs.
-    parity("effect Foo(n: i64): i64; Foo!(1) + 2");
-    // The buildwasm entry has no runner: the static gate rejects the same
-    // ops `ef run` rejects, before a module is emitted.
-    expect(() => compile("effect Foo(n: i64): i64; Foo!(1) + 2")).toThrow("Unhandled effect: Foo");
-    // One-shot interp injection overrides the default interpretation — an
-    // op the interp covers passes the gate and runs.
-    // i64 args unbox to BigInt at the host boundary.
-    expect(show(runWasm("effect Foo(n: i64): i64; Foo!(21) * 2", {Foo: (args, k) => k(Number(args[0]) + 1)}))).toBe("44");
-  });
-
-  test("static gate rejects before any side effect (same timing as exec)", () => {
-    // Mirror of the eval-side test (index.test.ts): a Println before the
-    // unhandled op must not run — rejectUnhandled fires at the pipeline
-    // entry, before evaluation or codegen.
-    const logs: string[] = [];
-    const orig = console.log;
-    console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
-    try {
-      expect(() => runWasm(`effect T(x: i64): i64; Println!("boom"); T!(1)`))
-        .toThrow("Unhandled effect: T");
-    } finally {
-      console.log = orig;
-    }
-    expect(logs).toEqual([]); // Println never ran: rejection precedes evaluation
-  });
-
-  test("handlers: user ops, resume, deep nesting, multi-shot", () => {
+test("handlers: user ops, resume, deep nesting, multi-shot", () => {
     // Single op, constant result.
     expect(parity("effect Op(): i64; handle { 1 + Op!() } case Op() => k { 7 }")).toBe("7");
     // Resume with different values.
@@ -473,7 +841,7 @@ a + b`)).toBe("6");
       case Op() => k { k(3) }`)).toBe("6");
   }, 20000); // parity() spawns both runners per assertion; tips over the 5s default under suite load
 
-  test("mixed functions: row-{} body with an internal handle (direct boundary)", () => {
+test("mixed functions: row-{} body with an internal handle (direct boundary)", () => {
     // Island mid-body, result flows through the dret boundary to a pure call site.
     expect(parity(`effect Tick(n: i64): i64;
       mix :: fn(x: i64): i64 {
@@ -515,18 +883,16 @@ a + b`)).toBe("6");
       };
       outer(2)`)).toBe("[[1], [2]]");
   });
-
-  test("interp injection overrides builtin effects (Read mock)", () => {
-    const p = join(tmpdir(), `ef-wasm-mock-${process.pid}.txt`);
-    const src = `Read!("${p}")`;
-    // Both runners take the canonical CPS interp: k delivers the resumed
-    // value (the wasm host adapts its delivery to the perform site).
-    expect(show(run(src, {Read: (_args, k) => k("mocked")}))).toBe("\"mocked\"");
-    expect(show(runWasm(src, {Read: (_args, k) => k("mocked")}))).toBe("\"mocked\"");
-  });
 });
 
-describe("wasm effect codegen regressions", () => {
+// Code-path regression parity: the wasm codegen paths' regression locks
+// (effect cut modes, spine-gated resume typing, split re-emission,
+// devirtualization, numeric ABI, host fail channel) observed through the
+// shared parity() helper — the structural/plan-level twins of these suites
+// stay in wasm.test.ts.
+describe("backend regression parity: interpreter ↔ wasm", () => {
+  // --- effect codegen regressions ---
+
   test("multi-param op: two-shot resume of a 2-param continuation", () => {
     // Return slots for a multi-param op must not alias across resumes.
     expect(parity("effect T(a: i64, b: i64): i64; handle { T!(1, 2) } case T(a, b) => k { x :: k(a); y :: k(b); x + y }")).toBe("3");
@@ -551,12 +917,6 @@ describe("wasm effect codegen regressions", () => {
     expect(parity("effect Op(): i64; handle { [Op!(), Op!()] } case Op() => k { k(7) }")).toBe("[7, 7]");
     expect(parity("effect Op(): i64; handle { [1, 2, Op!(), Op!()] } case Op() => k { k(7) }")).toBe("[1, 2, 7, 7]");
     expect(parity("effect Op(): i64; handle { [[Op!(), 1], [2, [Op!()]]] } case Op() => k { k(7) }")).toBe("[[7, 1], [2, [7]]]");
-  });
-
-  test("handle as an operator operand compiles to a valid module", () => {
-    const src = "effect Op(): i64; 1 + handle { Op!() } case Op() => k { 7 }";
-    assertModule(compile(src));
-    expect(parity(src)).toBe("8");
   });
 
   test("div cut modes: performs in both div operand positions", () => {
@@ -598,9 +958,9 @@ describe("wasm effect codegen regressions", () => {
     // Same reload behind an @as on the expression.
     expect(parity("effect Op(): i64; handle { s := 0; i := 0; while (i < 2) { s = s + @as(i + Op!(), i64); i = i + 1 }; s } case Op() => k { k(k(7)) }")).toBe("23");
   });
-});
 
-describe("spine-gated resume typing: multi-shot resume over HOF loops", () => {
+  // --- spine-gated resume typing: multi-shot resume over HOF loops ---
+
   test("abort idiom: a k-free case body skips the delivery constraint", () => {
     expect(parity(`effect Op(): i64; cb :: fn(x: i64): i64 { Op!() };
       handle { map(cb, [1, 2]) } case Op() => k { 42 }`)).toBe("42");
@@ -640,88 +1000,9 @@ describe("spine-gated resume typing: multi-shot resume over HOF loops", () => {
       handle { each(cb, [1, 2]) } case Op() => k { q := k(1); k(2); q };
       acc`)).toBe("35");
   });
-});
 
-describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () => {
-  test("effect-free program with no served builtins: no host imports", () => {
-    const src = "x := 1; i := 0; while (i < 5) { x = x + i; i = i + 1 }; x";
-    assertModule(compile(src));
-    const imp = importsOf(src);
-    expect(imp.length).toBeLessThan(7);
-    expect(imp).not.toContain("ef_perform");
-    expect(imp).not.toContain("ef_char");
-    // ef_fail is live at our pass level (dropDeadHostImports), but with
-    // operators compiled inline this program contains no bounds check that
-    // could call it and no call_indirect/table, so the binaryen shrink pass
-    // proves it unreferenced and drops the import.
-    expect(imp).toEqual([]);
-  });
+  // --- split re-emission ---
 
-  test("ef_fail stays live when a trapping builtin is used", () => {
-    // get/set/sub trap through ef_fail; len only reads a struct field and
-    // set on a fresh array literal is in-bounds-eliminable — none of those
-    // reference ef_fail, so binaryen may drop the import.
-    expect(importsOf("sub([1], 0, 9)")).toContain("ef_fail");
-    expect(importsOf("get([1], 0)")).toContain("ef_fail");
-  });
-
-  test("an effect use keeps ef_perform imported (any op, even under a handler)", () => {
-    expect(importsOf("Println!(1)")).toContain("ef_perform");
-    expect(importsOf("effect Op(): i64; handle { Op!() } case Op() => k { 7 }"))
-      .toContain("ef_perform");
-  });
-
-  test("live served builtins keep their imports, with interpreter parity", () => {
-    expect(importsOf("char(97)")).toContain("ef_char");
-    expect(importsOf("round(cos(0) * 100)")).toContain("ef_cos");
-    expect(importsOf("args()")).toContain("ef_args");
-    expect(parity("char(97)")).toBe("\"a\"");
-    expect(parity("round(cos(0) * 100)")).toBe("100");
-    expect(parity("len(args())")).toBe(String(process.argv.slice(2).length));
-  });
-
-  test("shadowing a served builtin is rejected before codegen", () => {
-    const src = "char :: fn(x: i64): i64 { x }; char(97)";
-    expect(() => importsOf(src)).toThrow("cannot shadow builtin 'char'");
-    expect(parity(src)).toBe("ERR: cannot shadow builtin 'char'");
-  });
-
-  test("a program using everything keeps all 7 imports in original order", () => {
-    const src = "x :: round(cos(0) * 10) + round(sin(0) * 10) + strlen(char(97)) + number(\"2\") + len(args()); Println!(x); x";
-    expect(importsOf(src).toSorted()).toEqual(["ef_args", "ef_char", "ef_cos", "ef_fail", "ef_number", "ef_perform", "ef_sin"]);
-    parity(src);
-  });
-});
-
-describe("wasm binaryen shrink pass (optimizeBinary)", () => {
-  test("keeps host ABI exports/imports and semantics after the shrink pass", () => {
-    // effectful program: ef_perform must survive the optimizer via the table
-    const src = "Println!(\"hi\"); f :: fn(x: i64): i64 ! { Println } { Println!(x); x * 2 }; f(21)";
-    const bytes = compile(src);
-    assertModule(bytes);
-    const mod = new WebAssembly.Module(bytes);
-    const exports = WebAssembly.Module.exports(mod).map(e => e.name);
-    // GC plane: no memory/$hp — run + the 12 accessors only.
-    for (const e of [
-      "run", "__tag", "__num", "__str_len", "__str_get",
-      "__arr_len", "__arr_get", "__mk_num", "__mk_bool", "__str_new",
-      "__str_set", "__arr_new", "__arr_set",
-    ])
-      expect(exports).toContain(e);
-    expect(exports).not.toContain("mem");
-    expect(exports).not.toContain("__hp");
-    expect(importsOf(src)).toContain("ef_perform");
-    parity(src);
-  });
-
-  test("output is deterministic", () => {
-    expect(Buffer.from(compile("len(range(1, 10, 1))")).equals(Buffer.from(compile("len(range(1, 10, 1))")))).toBe(true);
-  });
-});
-// --- split re-emission ------------------------------------------------------
-// After-if fragments always exist and fill exactly once per site, and
-// arm-internal fragments root at the arm, not the body root.
-describe("split re-emission regressions", () => {
   test("if with split sites in both arms: parity", () => {
     parity(`if (1 < 0) {
   Println!("then-arm");
@@ -737,25 +1018,6 @@ Println!("after")`);
     parity(`x :: 0;
 if (x < 1) { Println!("then") } else { Println!("else") };
 Println!("tail")`);
-  });
-
-  test("land calls in both branches of a nested if-else compile", () => {
-    // Every non-builtin call is a land-call split site; its rest fragment
-    // re-emits from the body root. Rest fragments are memoized by their
-    // split chain: same site, same fragment fn.
-    const src = `g :: fn(x: i64): i64 { x + 1 };
-f :: fn(a: i64): i64 {
-  if (a == 0) {
-    if (g(a) == 1) { 1 } else { 2 }
-  } else {
-    if (g(a) == 1) { 3 } else { 4 }
-  }
-};
-Println!(f(0))`;
-    expect(() => compile(src)).not.toThrow();
-    assertModule(compile(src));
-    // And the compiled module computes the same value as the interpreter.
-    expect(parity(src)).toBe("unit");
   });
 
   test("nested-operand land call plus a sibling land call in one body: parity", () => {
@@ -786,78 +1048,7 @@ Println!(sphereT2([0.1, 0.0, -2.5], [0.0, 0.0, -5.0], 1.5))`;
     expect(wasm).toBe("unit");
   });
 
-  test("fn-value selection through if branches stays correct (split-chain fix lock-in)", () => {
-    // Lambdas picked by an if-else and called through the selection were
-    // miscompiled before the split-chain memo (restByChain): the wrong arm's
-    // function could run. The interpreter and the compiled module must agree
-    // on both picks, and the printed output must be the picked results.
-    const src = `f1 :: fn(a: f64): f64 { a * 2.0 };
-f2 :: fn(a: f64): f64 { a + 1.0 };
-pick :: fn(c: bool): (f64) -> f64 {
-  if (c) { f1 } else { f2 }
-};
-Println!(pick(true)(1.5));
-Println!(pick(false)(1.5))`;
-    const lines: string[] = [];
-    const orig = console.log;
-    console.log = (...a: unknown[]) => lines.push(a.join(" "));
-    try {
-      expect(show(runWasm(src))).toBe("unit");
-    } finally {
-      console.log = orig;
-    }
-    expect(lines).toEqual(["3", "2.5"]);
-  });
-
-});
-
-describe("wasm devirtualization (wasm_devirt.ts: static direct calls, inline rests, tight map loops)", () => {
-  // Collect dcall nodes from a term subtree.
-  const dcalls = (t: unknown, out: unknown[] = []): unknown[] => {
-    const n = t as {t: string, [k: string]: unknown};
-    if (n.t === "dcall") out.push(n);
-    for (const k of ["rest", "body", "a", "b"]) {
-      const sub = n[k];
-      if (sub !== undefined && sub !== null && typeof sub === "object") dcalls(sub, out);
-    }
-    if (Array.isArray(n["cases"])) for (const c of n["cases"] as {body: unknown}[]) dcalls(c.body, out);
-    return out;
-  };
-
-  test("purity fixpoint + dcall devirt/inlineRest annotations", () => {
-    // fib: self-recursive, no perform/handle/call — pure; every dcall site
-    // gets a devirt annotation; the non-tail rests (n-1 + n-2 joins) inline.
-    const src = `fib :: fn(n: i64): i64 {
-  if (n < 2) { n } else { fib(n - 1) + fib(n - 2) }
-};
-fib(28)`;
-    const {prog} = prepare(src);
-    const ir = toCps(prog);
-    const plan = planIr(ir);
-    expect(plan.cfnPure).toEqual([true]);
-    const sites = dcalls(ir.funcs[0].body) as Parameters<typeof dcallP>[0][];
-    expect(sites.length).toBe(2);
-    for (const s of sites) {
-      expect(dcallP(s)?.devirt?.fun).toBe(0);
-      expect(dcallP(s)?.inlineRest).toBe(true);
-    }
-  });
-
-  test("mixed fn (row {} with an internal handle) reached by dcall: devirt keeps the cell path", () => {
-    // mixed is direct-classified but impure (its island performs): the dcall
-    // still devirtualizes (static T_DABI call — mixed's entry ABI), but the
-    // rest must NOT inline (an escaped perform would lose it).
-    const src = `effect Op(): i64;
-mixed :: fn(x: i64): i64 { handle { x + Op!() } case Op() => k2 { k2(100) } };
-caller :: fn(x: i64): i64 { mixed(x) + 1 };
-[caller(1), caller(2)]`;
-    const {prog} = prepare(src);
-    const ir = toCps(prog);
-    const plan = planIr(ir);
-    expect(plan.cfnPure[0]).toBe(false); // mixed: internal handle
-    expect(plan.cfnPure[1]).toBe(false); // caller: dcall to an impure fn
-    expect(parity(src)).toBe("[102, 103]");
-  });
+  // --- devirtualization (behavioral half; the plan/annotation locks stay in wasm.test.ts) ---
 
   test("mutual recursion through nested closures: devirt with capts (env path) + inline rests", () => {
     // up captures down (capts non-empty): the static call still reads the
@@ -922,38 +1113,8 @@ handle { map(cb, [1, 2]) } case Op() => k { k(10) }`;
     expect(parity(src2)).toBe("[10, 10]");
   });
 
-  test("any-callee impure chain: stays on the generic path (known pre-existing wasm divergence)", () => {
-    // h is direct-classified but impure through the any hole (g's body has a
-    // generic call whose callee performs at runtime). The fixpoint keeps h
-    // and every gate off this chain; the wasm op-discovery miss behind the
-    // any-call is a pre-existing known limitation (see plan Non-goals) —
-    // pinned here as an interp/wasm divergence smoke test.
-    const src = `effect Op(): i64;
-g :: fn(a: any): i64 { a(0) };
-h :: fn(f: any): i64 { g(f) };
-performer :: fn(x: i64): i64 { Op!() };
-handle { h(performer) } case Op() => k { 43 }`;
-    const interp = ((): string => {
-      try {
-        return show(run(src));
-      } catch (e) {
-        return "ERR: " + (e as Error).message;
-      }
-    })();
-    expect(interp).toBe("43");
-    expect(() => compile(src)).not.toThrow();
-    const wasm = ((): string => {
-      try {
-        return show(runWasm(src));
-      } catch (e) {
-        return "ERR: " + (e as Error).message;
-      }
-    })();
-    expect(wasm).not.toBe("43"); // the known divergence: the op never reaches the handler
-  });
-});
+  // --- numeric entry ABI (behavioral half; the emitText structural lock stays in wasm.test.ts) ---
 
-describe("wasm numeric entry ABI (wasm_devirt.ts numericEntries: unboxed direct calls, shape-tag dispatch)", () => {
   test("specialized calls at all six widths", () => {
     expect(parity("inc :: fn(n: i32): i32 { n + 1 }; inc(41)")).toBe("42");
     expect(parity("inc :: fn(n: u32): u32 { n + 1 }; inc(41)")).toBe("42");
@@ -983,31 +1144,6 @@ describe("wasm numeric entry ABI (wasm_devirt.ts numericEntries: unboxed direct 
     expect(parity("id :: fn(x) { x }; id(\"s\")")).toBe(String.raw`"s"`);
   });
 
-  test("escaping numeric fn called generically rides the shape tag", () => {
-    // A static site first (the plan's entry criterion: ≥1 devirt site with a
-    // matching numeric signature), then the same closure escapes through an
-    // apply-typed value slot: the generic site's stamps shape-match the
-    // entry, so the runtime tag check dispatches the raw entry; a
-    // mismatching closure would fail the tag and take the boxed path (same
-    // values either way).
-    const src = `apply :: fn(f: (i64) -> i64, x: i64): i64 { f(x) };
-inc :: fn(n: i64): i64 { n + 1 };
-dec :: fn(n: i64): i64 { n - 1 };
-a :: inc(41);
-apply(inc, 1) + apply(dec, 2) + a`;
-    expect(parity(src)).toBe("45");
-    // Structural lock-in: the numeric entry (frame, i64) -> i64 exists and
-    // the generic site dispatches it through a call_indirect.
-    const mod = bin.readBinary(compile(src), BIN_FEATURES);
-    try {
-      const text = mod.emitText();
-      expect(text).toContain("(param (ref null $4) i64) (result i64)");
-      expect(text).toContain("call_indirect");
-    } finally {
-      mod.dispose();
-    }
-  });
-
   test("numeric fn inside a handler island", () => {
     // The handler island performs across the numeric call: the entry stays
     // boxed-free (the callee is handler-free) and the island machinery is
@@ -1025,195 +1161,128 @@ h(g(5))`)).toBe("17");
 addk :: fn(n: i64): i64 { n + k };
 addk(1) + addk(2)`)).toBe("203");
   });
-});
 
-describe("wasm typed slots + scope-frame elision (wasm_plan.ts classifySlots + wasm_term.ts emission)", () => {
-  // A planned level as the audit sees it: slot map, surviving typed map,
-  // elision flag.
-  type Lv = {slots: Map<string, number>, typed?: Map<string, string>, elided?: boolean};
-
-  // Every TLevel planIr creates for `src`: scope nodes carry their level
-  // directly; letk/dcall annotations carry fnLvl plus the entry/rest scope
-  // snapshots (shared level objects, so the Set dedups).
-  const audit = (src: string): Lv[] => {
-    const {prog} = prepare(src);
-    const ir = toCps(prog);
-    const plan = planIr(ir);
-    const out: Lv[] = [];
-    const seen = new Set<object>();
-    const pushL = (l: unknown): void => {
-      if (l !== null && l !== undefined && typeof l === "object" && !seen.has(l)) {
-        seen.add(l);
-        out.push(l as Lv);
-      }
-    };
-    pushL(plan.globalLvl); // top-level bindings type on the global level
-    const walk = (t: unknown): void => {
-      if (t === null || t === undefined || typeof t !== "object") return;
-      const n = t as {[k: string]: unknown};
-      const sp = scopeP(t as Parameters<typeof scopeP>[0]);
-      if (sp !== undefined) pushL(sp);
-      const lp = letkP(t as Parameters<typeof letkP>[0]);
-      if (lp !== undefined) {
-        pushL(lp.fnLvl);
-        for (const l of lp.entryScope ?? []) pushL(l);
-        for (const l of lp.restScope ?? []) pushL(l);
-      }
-      const dp = dcallP(t as Parameters<typeof dcallP>[0]);
-      if (dp !== undefined) {
-        pushL(dp.fnLvl);
-        for (const l of dp.entryScope ?? []) pushL(l);
-      }
-      for (const k of ["body", "rest", "a", "b"]) if (n[k] !== undefined) walk(n[k]);
-      if (Array.isArray(n["cases"])) for (const c of n["cases"] as {body: unknown}[]) walk(c.body);
-    };
-    walk(ir.term);
-    for (const f of ir.funcs) walk(f.body);
-    return out;
-  };
-
-  // No planned level may type `name` (every path to it was poisoned).
-  const assertUntyped = (levels: Lv[], name: string): void => {
-    for (const l of levels) {
-      expect(l.typed?.has(name) ?? false).toBe(false);
-    }
-  };
-
-  test("classifySlots: xread poisoning, elision only for fully-typed elideOk scopes", () => {
-    const lvl = (names: string[], elideOk = false): TLevel => {
-      const slots = new Map<string, number>();
-      for (const n of names) slots.set(n, slots.size);
-      const l: TLevel = {slots, size: names.length, locals: null};
-      if (elideOk) l.elideOk = true;
-      return l;
-    };
-    // All-typed candidate set on a scope level: typed + elided.
-    const a = lvl(["x", "y"], true);
-    classifySlots(new Map([[a, new Map([["x", "i64"], ["y", "i64"]])]]), new Map());
-    expect(a.typed?.get("x")).toBe("i64");
-    expect(a.typed?.get("y")).toBe("i64");
-    expect(a.elided).toBe(true);
-    // A cross-fn read poisons the name: it loses typing, the scope stays
-    // materialized.
-    const b = lvl(["x", "y"], true);
-    classifySlots(new Map([[b, new Map([["x", "i64"], ["y", "i64"]])]]),
-      new Map([[b, new Set(["x"])]]));
-    expect(b.typed?.has("x")).toBe(false);
-    expect(b.typed?.get("y")).toBe("i64");
-    expect(b.elided ?? false).toBe(false);
-    // Partial typing never elides (the frame still carries the holes).
-    const c = lvl(["x", "y"], true);
-    classifySlots(new Map([[c, new Map([["x", "f64"]])]]), new Map());
-    expect(c.typed?.get("x")).toBe("f64");
-    expect(c.elided ?? false).toBe(false);
-    // Non-scope levels (elideOk unset) type but never elide: chain anchors
-    // must keep allocating their frame.
-    const d = lvl(["x"]);
-    classifySlots(new Map([[d, new Map([["x", "i32"]])]]), new Map());
-    expect(d.typed?.get("x")).toBe("i32");
-    expect(d.elided ?? false).toBe(false);
-  });
-
-  test("while-body i64 assign exactness: typed op temps, cells stay boxed", () => {
-    const src = `x := 9007199254740993;
-i := 0;
-while (i < 2) { x = x + 1; i = i + 1; Println!(i); }
-x`;
-    // 2^53+1 stays exact through the typed op temps and the boxed cells.
-    expect(parity(src)).toBe("9007199254740995");
-    const levels = audit(src);
-    assertUntyped(levels, "x"); // assigned with an unstamped val: poisoned
-    assertUntyped(levels, "i");
-    // The arithmetic joins did classify.
-    expect(levels.some(l => [...(l.typed?.values() ?? [])].includes("i64"))).toBe(true);
-  });
-
-  test("scope-frame elision: a fully-typed while body's extend is skipped, hops stay right", () => {
-    // The perform sits inside the loop body scope: its continuation thunk
-    // re-enters through the elided level, so the resume-side frame walk
-    // must skip the elided hop together with the skipped extend.
-    const src = `effect Op(): i64;
-s := 0;
-handle { while (s < 3) { s = s + Op!() }; s } case Op() => k { k(3) }`;
-    expect(parity(src)).toBe("3");
-    const levels = audit(src);
-    expect(levels.some(l => l.elided === true && l.slots.size > 0 && l.typed?.size === l.slots.size)).toBe(true);
-  });
-
-  test("multi-shot rest-thunk read after resume: the read is cross-fn, the slot stays boxed", () => {
-    const src = `effect Op(): i64;
-x: i64 :: 10;
-handle { Op!() } case Op() => k { k(1); k(2) } + x`;
-    expect(parity(src)).toBe("12");
-    assertUntyped(audit(src), "x");
-  });
-
-  test("escaping-closure capture: the captured slot stays boxed (env path)", () => {
-    const src = `mk :: fn() { x: i64 :: 7; fn() { x } };
-mk()()`;
-    expect(parity(src)).toBe("7");
-    assertUntyped(audit(src), "x");
-  });
-
-  test("case-fn depth>0 read: cross-fn reach keeps the site slot boxed", () => {
-    const src = `effect Op(): i64;
-y: i64 :: 5;
-handle { y + Op!() } case Op() => k { k(y + 1) }`;
-    expect(parity(src)).toBe("11");
-    assertUntyped(audit(src), "y");
-  });
-
-  test("top-level captured assign: cross-fn writes poison candidacy, env path sees them", () => {
-    const src = `acc := 0;
-bump :: fn(v: i64): i64 { acc = acc + v; acc };
-[bump(1), bump(2), acc]`;
-    expect(parity(src)).toBe("[1, 3, 3]");
-    assertUntyped(audit(src), "acc");
-  });
-
-  test("f32 slots type and round at every producing node (fround parity)", () => {
-    const src = `a: f32 :: 0.1;
-b: f32 :: 0.2;
-a + b == @as(0.3, f32)`;
-    expect(parity(src)).toBe("true");
-    const levels = audit(src);
-    // The literal binds survived classification as f32 typed slots.
-    expect(levels.some(l => [...(l.typed?.values() ?? [])].includes("f32"))).toBe(true);
-  });
-
-  test("numeric entry over typed joins: the dcall result lands typed at the site", () => {
-    const src = `add3 :: fn(a: i32, b: i32, c: i32): i32 { a + b + c };
-add3(1, 2, 3)`;
-    expect(parity(src)).toBe("6");
-    const levels = audit(src);
-    expect(levels.some(l => [...(l.typed?.values() ?? [])].includes("i32"))).toBe(true);
-  });
-});
-
-describe("wasm host boundary (wasm_host.ts)", () => {
-  test("value crossings box/unbox through every host branch", () => {
-    for (const [src, expected, interp] of [
-      // Custom interps returning tuples/slices exercise the tup and arr box
-      // branches; the results unbox back through the matching arms.
-      ["effect Make(): [i64, i64]; f :: fn(): i64 { t: [i64, i64] :: Make!(); t.0 + t.1 }; f()", "3", {Make: (_args, k) => k(mkTup([1, 2]))}],
-      ["effect Roll(): [i64]; Roll!()", "[5, 6]", {Roll: (_args, k) => k(mkSlice([5, 6]))}],
-      // The typed slot forces the $U32 box; a bare @as at top level rides
-      // the unstamped pass-through and crosses as an f64 num box instead.
-      ["u: u32 :: 4000000000; u", "4000000000", undefined],
-      ["\"hi there\"", "\"hi there\"", undefined],
-      ["id :: fn(x: i64): i64 { x }; id", "[fn]", undefined],
-    ] as [string, string, EffectInterp | undefined][]) {
-      expect(show(runWasm(src, interp))).toBe(expected);
-    }
-  });
-
-  test("unboxable interp results are rejected with the box error", () => {
-    expect(() => runWasm("effect Foo(n: i64): i64; Foo!(1)", {Foo: (_args, k) => k({tag: "fn"} as Value)}))
-    .toThrow(/cannot box value \[fn\]/);
-  });
+  // --- host boundary ---
 
   test("array window OOB carries the field name through the fail channel", () => {
     expect(parity(`xs: [i64] :: [1, 2];
 xs.5`)).toBe("ERR: .5: index 5 out of bounds [0, 2)");
+  });
+
+});
+
+// Parity over the wasm-internal fixtures: the structural locks for these
+// programs live in wasm.test.ts (module shape, host imports, plan
+// annotations, emitText); these are their behavioral twins — the compiled
+// module must still compute the same thing as the interpreter.
+describe("parity over wasm-internal fixtures: interpreter ↔ wasm", () => {
+  test("builtin shadowing: same checker message in both runners", () => {
+    expect(parity("len :: fn(xs: [i64]): i64 { 42 }; len([1, 2, 3])"))
+      .toBe("ERR: cannot shadow builtin 'len'");
+  });
+
+  test("unhandled user effect: static rejection in both runners", () => {
+    // Same unhandled-effect error message as the interpreter, and the same
+    // timing: both runners reject statically at their entry (exec / the wasm
+    // pipeline) before anything runs.
+    parity("effect Foo(n: i64): i64; Foo!(1) + 2");
+  });
+
+  test("handle as an operator operand", () => {
+    expect(parity("effect Op(): i64; 1 + handle { Op!() } case Op() => k { 7 }")).toBe("8");
+  });
+
+  test("served builtins compute through the host imports", () => {
+    expect(parity("char(97)")).toBe("\"a\"");
+    expect(parity("round(cos(0) * 100)")).toBe("100");
+    expect(parity("len(args())")).toBe(String(process.argv.slice(2).length));
+  });
+
+  test("shadowing a served builtin: same rejection in both runners", () => {
+    expect(parity("char :: fn(x: i64): i64 { x }; char(97)"))
+      .toBe("ERR: cannot shadow builtin 'char'");
+  });
+
+  test("a program using every served builtin computes", () => {
+    parity("x :: round(cos(0) * 10) + round(sin(0) * 10) + strlen(char(97)) + number(\"2\") + len(args()); Println!(x); x");
+  });
+
+  test("binaryen shrink pass: semantics preserved", () => {
+    parity("Println!(\"hi\"); f :: fn(x: i64): i64 ! { Println } { Println!(x); x * 2 }; f(21)");
+  });
+
+  test("split re-emission: land calls in both branches of a nested if-else", () => {
+    expect(parity(`g :: fn(x: i64): i64 { x + 1 };
+f :: fn(a: i64): i64 {
+  if (a == 0) {
+    if (g(a) == 1) { 1 } else { 2 }
+  } else {
+    if (g(a) == 1) { 3 } else { 4 }
+  }
+};
+Println!(f(0))`)).toBe("unit");
+  });
+
+  test("devirt: mixed fn (row {} with an internal handle) reached by dcall", () => {
+    expect(parity(`effect Op(): i64;
+mixed :: fn(x: i64): i64 { handle { x + Op!() } case Op() => k2 { k2(100) } };
+caller :: fn(x: i64): i64 { mixed(x) + 1 };
+[caller(1), caller(2)]`)).toBe("[102, 103]");
+  });
+
+  test("numeric entry: escaping fn called generically rides the shape tag", () => {
+    expect(parity(`apply :: fn(f: (i64) -> i64, x: i64): i64 { f(x) };
+inc :: fn(n: i64): i64 { n + 1 };
+dec :: fn(n: i64): i64 { n - 1 };
+a :: inc(41);
+apply(inc, 1) + apply(dec, 2) + a`)).toBe("45");
+  });
+
+  test("typed slots: while-body i64 assign exactness", () => {
+    // 2^53+1 stays exact through the typed op temps and the boxed cells.
+    expect(parity(`x := 9007199254740993;
+i := 0;
+while (i < 2) { x = x + 1; i = i + 1; Println!(i); }
+x`)).toBe("9007199254740995");
+  });
+
+  test("typed slots: scope-frame elision keeps the resume-side hops right", () => {
+    expect(parity(`effect Op(): i64;
+s := 0;
+handle { while (s < 3) { s = s + Op!() }; s } case Op() => k { k(3) }`)).toBe("3");
+  });
+
+  test("typed slots: multi-shot rest-thunk read after resume", () => {
+    expect(parity(`effect Op(): i64;
+x: i64 :: 10;
+handle { Op!() } case Op() => k { k(1); k(2) } + x`)).toBe("12");
+  });
+
+  test("typed slots: escaping-closure capture (env path)", () => {
+    expect(parity(`mk :: fn() { x: i64 :: 7; fn() { x } };
+mk()()`)).toBe("7");
+  });
+
+  test("typed slots: case-fn depth>0 read (cross-fn reach)", () => {
+    expect(parity(`effect Op(): i64;
+y: i64 :: 5;
+handle { y + Op!() } case Op() => k { k(y + 1) }`)).toBe("11");
+  });
+
+  test("typed slots: top-level captured assign (env path sees it)", () => {
+    expect(parity(`acc := 0;
+bump :: fn(v: i64): i64 { acc = acc + v; acc };
+[bump(1), bump(2), acc]`)).toBe("[1, 3, 3]");
+  });
+
+  test("typed slots: f32 fround parity", () => {
+    expect(parity(`a: f32 :: 0.1;
+b: f32 :: 0.2;
+a + b == @as(0.3, f32)`)).toBe("true");
+  });
+
+  test("typed slots: numeric entry over typed joins", () => {
+    expect(parity(`add3 :: fn(a: i32, b: i32, c: i32): i32 { a + b + c };
+add3(1, 2, 3)`)).toBe("6");
   });
 });

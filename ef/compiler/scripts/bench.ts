@@ -11,11 +11,11 @@
 // diffing the JSON outputs.
 import {readdirSync, readFileSync} from "node:fs";
 import {join} from "node:path";
-import {compileWithOps} from "../wasm.ts";
-import {runModule} from "../wasm_host.ts";
+import {compileWithOps} from "../backend/wasm/wasm.ts";
+import {runModule} from "../backend/wasm/wasm_host.ts";
 import {prepare} from "../pipeline.ts";
 import {toCps} from "../cps.ts";
-import {newCtx, exec} from "../eval.ts";
+import {newCtx, exec} from "../backend/interpreter/eval.ts";
 import {show} from "../env.ts";
 
 const args = Bun.argv.slice(2);

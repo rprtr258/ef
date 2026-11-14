@@ -45,10 +45,10 @@
 import binaryen from "binaryen";
 import * as w from "./wasm_consts.ts";
 import {WasmError, _T, type ValueRef} from "./wasm_types.ts";
-import {BUILTINS} from "./analysis.ts";
-import {OP_ADD, OP_DIV, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_MUL, OP_NE, OP_NEG, OP_NOT, OP_REM, OP_SUB} from "./ops.ts";
+import {BUILTINS} from "../../analysis.ts";
+import {OP_ADD, OP_DIV, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_MUL, OP_NE, OP_NEG, OP_NOT, OP_REM, OP_SUB} from "../../ops.ts";
 import {mapLikeFrameWords, numSig} from "./wasm_tables.ts";
-import {type CIr, type CTerm, type CAtom, type CPrim, type CFn} from "./cps_ir.ts";
+import {type CIr, type CTerm, type CAtom, type CPrim, type CFn} from "../../cps_ir.ts";
 import {type Buf, Fn} from "./wasm_body.ts";
 import {type Indices, type IndexRegistrar} from "./wasm_pipeline.ts";
 import {type Emit, emitDispatch, emitCaseScan, selectBool, emitFail, i31of, makeRestThunk, hdlGet, CMP_OPS, emitCallClosure, emitDirectEntryCall, emitNumericEntryCall, rebox, boxShapeOf, planeLocal, reboxCallResult, tracePoint} from "./wasm_emit.ts";

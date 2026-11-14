@@ -11,13 +11,13 @@ import {showT} from "../../compiler/type_display.ts";
 import {type Effs, type Type} from "../../compiler/unify.ts";
 import type {Checked, EffectSig} from "../../compiler/types.ts";
 import {lint} from "../../compiler/lint.ts";
-import {exec, newCtx} from "../../compiler/eval.ts";
+import {exec, newCtx} from "../../compiler/backend/interpreter/eval.ts";
 import {prepare, prepareStaged, type EffectInterp} from "../../compiler/pipeline.ts";
 import {num, show, type Cont, type Outcome, type Value} from "../../compiler/env.ts";
 import {KEYWORDS, ONE, TWO, lex} from "../../compiler/lexer.ts";
 import {collectEffectOps} from "../../compiler/analysis.ts";
-import {compileWithOps} from "../../compiler/wasm.ts";
-import {runModule} from "../../compiler/wasm_host.ts";
+import {compileWithOps} from "../../compiler/backend/wasm/wasm.ts";
+import {runModule} from "../../compiler/backend/wasm/wasm_host.ts";
 
 // --- effect interpretation ------------------------------------------------
 

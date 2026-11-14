@@ -5,13 +5,13 @@
 // implements the host imports, including effects that reach the host with
 // no matching handler (builtins.ts's builtinEffectHosts, optionally
 // overridden per-op through the `interp` argument).
-import {type Cont, type Outcome, type Value, OPS, asSlice, mkSlice, mkTup, show, sliceElems} from "./env.ts";
-import {builtinEffectHosts} from "./builtins.ts";
-import type {EffectInterp} from "./pipeline.ts";
+import {type Cont, type Outcome, type Value, OPS, asSlice, mkSlice, mkTup, show, sliceElems} from "../../env.ts";
+import {builtinEffectHosts} from "../../builtins.ts";
+import type {EffectInterp} from "../../pipeline.ts";
 import {compileWithOps} from "./wasm.ts";
 import {DBGTRACE, TRACE_SITES} from "./wasm_tables.ts";
-import {assertNever} from "./assert.ts";
-import {errDivByZero, errIndexOOB, errIntOverflow, errSubRangeOOB, errUnhandled} from "./ops.ts";
+import {assertNever} from "../../assert.ts";
+import {errDivByZero, errIndexOOB, errIntOverflow, errSubRangeOOB, errUnhandled} from "../../ops.ts";
 
 // The accessor ABI: exported accessor functions — the only way JS can touch
 // GC structs. hostBox/hostUnbox rebuild interpreter Values through them; the

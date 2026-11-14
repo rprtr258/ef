@@ -1,5 +1,5 @@
 import * as readline from "node:readline";
-import {runLine, newCtx} from "./eval.ts";
+import {runLine, newCtx} from "./backend/interpreter/eval.ts";
 import {show} from "./env.ts";
 import {showErr, showT} from "./type_display.ts";
 

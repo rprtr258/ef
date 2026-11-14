@@ -13,10 +13,10 @@
 // the VS Code client).
 import {readFileSync, writeFileSync} from "fs";
 import {styleText} from "util";
-import {run} from "./eval.ts";
+import {run} from "./backend/interpreter/eval.ts";
 import {prepare} from "./pipeline.ts";
-import {compile} from "./wasm.ts";
-import {runWasm} from "./wasm_host.ts";
+import {compile} from "./backend/wasm/wasm.ts";
+import {runWasm} from "./backend/wasm/wasm_host.ts";
 import {showErr, showT} from "./type_display.ts";
 import {type Type} from "./unify.ts";
 import {lint} from "./lint.ts";

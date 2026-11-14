@@ -3,7 +3,7 @@
 // interps). Adding a builtin means one entry there plus one impl row here.
 import {readFileSync, writeFileSync} from "node:fs";
 import {sleepSync} from "bun";
-import {apply} from "./eval.ts";
+import {apply} from "./backend/interpreter/eval.ts";
 import {BUILTIN_TABLE} from "./builtin_table.ts";
 import {num, show, asSlice, mkSlice, sliceElems, type Cont, type Outcome, type Value} from "./env.ts";
 import {errIndexOOB, errSubRangeOOB} from "./ops.ts";

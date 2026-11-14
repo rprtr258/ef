@@ -8,17 +8,17 @@
 // continuation for value delivery, and the term's explicit continuations are
 // what the wasm backend defunctionalizes in stage 2.
 
-import type {Checked} from "./types.ts";
-import type {Type} from "./unify.ts";
-import {Env, show, asSlice, mkSlice, mkTup, sliceElems, type Cont, type Native, type Outcome, type Value, num, seedBuiltins, type Closure} from "./env.ts";
-import {builtinRefs} from "./analysis.ts";
-import type {Program} from "./parser.ts";
-import {prepare, newCtx, rejectUnhandled, type Ctx, type EffectInterp} from "./pipeline.ts";
-import {toCps, RET} from "./cps.ts";
-import type {CAtom, CIr, CPrim, CTerm} from "./cps_ir.ts";
-import {assertNever} from "./assert.ts";
-import {errDivByZero, errIndexOOB, errIntOverflow, errUnhandled, OP_ADD, OP_DIV, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_MUL, OP_NE, OP_NEG, OP_REM, OP_SUB} from "./ops.ts";
-import {builtinInterps} from "./builtins.ts";
+import type {Checked} from "../../types.ts";
+import type {Type} from "../../unify.ts";
+import {Env, show, asSlice, mkSlice, mkTup, sliceElems, type Cont, type Native, type Outcome, type Value, num, seedBuiltins, type Closure} from "../../env.ts";
+import {builtinRefs} from "../../analysis.ts";
+import type {Program} from "../../parser.ts";
+import {prepare, newCtx, rejectUnhandled, type Ctx, type EffectInterp} from "../../pipeline.ts";
+import {toCps, RET} from "../../cps.ts";
+import type {CAtom, CIr, CPrim, CTerm} from "../../cps_ir.ts";
+import {assertNever} from "../../assert.ts";
+import {errDivByZero, errIndexOOB, errIntOverflow, errUnhandled, OP_ADD, OP_DIV, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_MUL, OP_NE, OP_NEG, OP_REM, OP_SUB} from "../../ops.ts";
+import {builtinInterps} from "../../builtins.ts";
 
 function isNative(v: Value): v is Native {
   return v !== null && typeof v === "object" && v.tag === "native";

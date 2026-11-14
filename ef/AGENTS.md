@@ -6,14 +6,16 @@ A TypeScript implementation of a small statically-typed language
 with **algebraic effects and effect handlers**, C/Go-flavored syntax, and a
 Hindley-Milner-flavoured type system with effect tracking.
 
-- Modules (all under `compiler/`, a bun workspace package): `lexer.ts`, `parser.ts`, `walk.ts`
+- Modules (under `compiler/`, a bun workspace package; the two backends live
+  under `compiler/backend/` — `backend/interpreter/` and `backend/wasm/`):
+  `lexer.ts`, `parser.ts`, `walk.ts`
   (the shared AST traversal — `exprChildren` child order + `forEachBinder` binder sites —
   consumed by analysis, the checker's scanners, lint, and the LSP), `types.ts` (checker), `env.ts` (runtime
   values), `builtin_table.ts` (the declarative builtin table — pure rows
   (name, kind, checker sig); leaf module), `builtins.ts` (runtime impls for
   those rows; a new builtin is one row in builtin_table.ts plus one impl
   row here — and for fn/native/value kinds reachable from wasm code, a
-  case in wasm_module.ts's `emitBuiltins` switch, whose default throws
+  case in backend/wasm/wasm_module.ts's `emitBuiltins` switch, whose default throws
   `internal: builtin <name> not implemented`), `analysis.ts` (frontend passes: op discovery, builtin-ref
   tree-shaking; re-exports the builtin surface declared in builtin_table.ts
   — shared by the wasm backend, parser-types-only leaf module), `pipeline.ts`
@@ -25,26 +27,34 @@ Hindley-Milner-flavoured type system with effect tracking.
   set + the multi-shot ANF/freeze discipline comments; leaf module),
   `cps_opt.ts` (optimization passes applied as the final stage of CPS
   conversion),
-  `eval.ts` (CPS IR interpreter + pipeline), `wasm.ts` (wasm backend entry:
-  CPS IR → wasm codegen, binaryen
-  shrink pass; split into `wasm_types.ts`/`wasm_tables.ts`/`wasm_body.ts`/
+  `backend/interpreter/eval.ts` (CPS IR interpreter + pipeline),
+  `backend/wasm/wasm.ts` (wasm backend entry: CPS IR → wasm codegen, binaryen
+  shrink pass; sub-modules all in `backend/wasm/`:
+  `wasm_types.ts`/`wasm_tables.ts`/`wasm_body.ts`/
   `wasm_pipeline.ts`/`wasm_devirt.ts` (devirtualization analysis: per-slot
   closure provenance + per-CFn purity fixpoint + numeric-entry eligibility,
   leaf over the CPS IR)/`wasm_plan.ts` (the frame/slot planner: one
   traversal assigning every binding a slot, publishing the immutable Plan
   and owning the `__p` annotations consumed via accessors)/
-  `wasm_emit.ts`/`wasm_module.ts` — see item 10),
-  `wasm_host.ts` (wasm host runtime: instantiation, GC↔JS boxing,
+  `wasm_emit.ts`/`wasm_module.ts` — see item 11),
+  `backend/wasm/wasm_host.ts` (wasm host runtime: instantiation, GC↔JS boxing,
   effect interpretation), `stamps.ts` (the one backend-stamp concern: width/
 suspension/box-provenance emission over an exhaustive `Expr` switch),
 `lint.ts`, `prims.ts`, `assert.ts` (the
   `assertNever` exhaustive-switch guard — every switch over `Expr` ends in
   it, so a new node variant fails typecheck in each walker that forgets it),
   frontends `cli.ts`/`repl.ts`.
-- Tests (under `compiler/`): `index.test.ts` + `lint.test.ts` + `wasm.test.ts` +
-  `analysis.test.ts` + `examples.test.ts` (in-process: per-example interpreter↔wasm
-  parity, `Exit!` sentinel + seeded `Random!` override) + `cli.test.ts` (CLI
-  integration smoke: argv, exit codes, stdout/stderr) (`bun:test`).
+- Tests (under `compiler/`, backends' suites co-located with them under
+  `compiler/backend/`): `lint.test.ts` + `analysis.test.ts` + `ops.test.ts` +
+  `cps_opt.test.ts` (shared stages) + `backend/interpreter/index.test.ts` (the
+  language suite run through the interpreter) + `backend/wasm/wasm.test.ts` +
+  `backend/parity.test.ts` (per-example interpreter↔wasm parity over
+  `examples/*.ef`, `Exit!` sentinel + seeded `Random!` override, plus the
+  feature-level and regression-level parity suites moved out of
+  wasm.test.ts; wasm.test.ts keeps only wasm-internal assertions —
+  module structure, host imports, plan/slot annotations, ABI, host
+  injections) + `cli.test.ts` (CLI integration smoke: argv, exit codes, stdout/stderr),
+  with the value-level `parity()` helper defined in parity.test.ts (`bun:test`).
 - Run a file: `bun compiler/cli.ts run <file>` (subcommands: `run`, `buildwasm`,
   `runwasm`, `types`, `lint`, `repl`, `lsp`).
 - Gates: `bun run ci` = typecheck + eslint + runtime-deps check + tests; all must stay clean.
@@ -112,7 +122,7 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
    tables (static, sync enforced by `analysis.test.ts`), `performsAnyOp`,
    `collectEffectOps` (op discovery in wasm op-table order), `builtinRefs`
    (shadowing-correct builtin references; binding order mirrors the
-   checker). Consumed by wasm_pipeline.ts's OPT_PASSES and eval.ts's exec
+   checker). Consumed by backend/wasm/wasm_pipeline.ts's OPT_PASSES and eval.ts's exec
    (per-call env seeding); the rows also surface via `ef types`'s result
    line.
 7. **`cps_ir.ts`** — the higher-order CPS IR, the single intermediate
@@ -156,7 +166,7 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
    accumulator. Soundness conditions are checked against the whole IR
    (assigned names, capts); regions (spine, closure bodies) are optimized
    independently.
-10. **`eval.ts`** — CPS IR interpreter (`evalTerm`; `apply` dispatches
+10. **`backend/interpreter/eval.ts`** — CPS IR interpreter (`evalTerm`; `apply` dispatches
    calls): continuations are plain JS closures, re-invoked on resume.
    A dcall whose callee is a direct closure applies it inline at the site
    (frame over the closure's env, the site's continuation serving as both
@@ -183,10 +193,10 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
    reference a previously-unused builtin; the no-shadowing checker rule
    keeps collisions impossible), then evaluates and returns `{value,
    lastType, lastIsExpr}`; `run(src, interp?)` is a one-shot `exec`.
-11. **`wasm.ts`** — WebAssembly backend: CPS IR → wasm codegen (defunctionalizing
+11. **`backend/wasm/wasm.ts`** — WebAssembly backend: CPS IR → wasm codegen (defunctionalizing
    the same term eval.ts interprets), OPT_PASSES seam (tree-shaking, dead host-import
    elimination), in-process binaryen shrink pass. Split into strictly-layered
-   sub-modules (no import cycles; design doc at the top of
+   sub-modules in the same directory (no import cycles; design doc at the top of
    `wasm.ts`): **`wasm_types.ts`** (GC shape types, Ctx, ValueRef/StaticDesc
    leaf), **`wasm_tables.ts`** (signatures — dual call ABI T_KABI/T_DABI —
    host-import layout, binaryen module binding),
@@ -208,6 +218,9 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
    (line loop over eval.ts's `runLine`; bindings accumulate across lines).
 ## Working rules
 
+- **Keep the layout docs in step.** When moving, renaming, or adding compiler
+  modules, update this file's module list and Architecture section and any
+  affected `docs/content/dev/` pages **in the same change**.
 - **`bun run ci` must pass** — host typecheck (`bun check`), eslint (which
   includes the comment-hygiene custom rule `eslint/rules/comment-hygiene.ts`:
   comments and prose must describe the present — no dead provenance,
@@ -217,7 +230,7 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
   reachable from the runtime entries must be a `dependency`, not a
   `devDependency`), and the test suite all clean.
 - **Tests are the spec's executable form.** When you change the language,
-  update `index.test.ts` to match. Self-checks there must stay green.
+  update `backend/interpreter/index.test.ts` to match. Self-checks there must stay green.
 - **The single builtins table.** A new builtin is one row in
   `builtin_table.ts` (declarative: name, kind, checker sig) plus one impl
   row in `builtins.ts`; never seed it ad hoc into `checkProgram` or

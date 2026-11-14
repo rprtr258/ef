@@ -1,7 +1,7 @@
 import {describe, expect, test} from "bun:test";
 import {Parser} from "./parser.ts";
 import {toCps} from "./cps.ts";
-import {run} from "./eval.ts";
+import {run} from "./backend/interpreter/eval.ts";
 import {prepare} from "./pipeline.ts";
 import type {CAtom, CIr, CTerm} from "./cps_ir.ts";
 

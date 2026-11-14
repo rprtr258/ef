@@ -4,13 +4,13 @@ import {join} from "node:path";
 import {readFileSync, unlinkSync, existsSync, writeFileSync} from "node:fs";
 import {execSync} from "node:child_process";
 import {run, newCtx} from "./eval.ts";
-import {prepare} from "./pipeline.ts";
+import {prepare} from "../../pipeline.ts";
 import {runLine} from "./eval.ts";
-import {showErr, showT, TypeError_} from "./type_display.ts";
-import {show, sliceElems, mkSlice, mkTup, type Slice, type Value} from "./env.ts";
-import {Parser} from "./parser.ts";
-import {toCps} from "./cps.ts";
-import type {CIr, CTerm} from "./cps_ir.ts";
+import {showErr, showT, TypeError_} from "../../type_display.ts";
+import {show, sliceElems, mkSlice, mkTup, type Slice, type Value} from "../../env.ts";
+import {Parser} from "../../parser.ts";
+import {toCps} from "../../cps.ts";
+import type {CIr, CTerm} from "../../cps_ir.ts";
 
 // typeOf: return the inferred type of the last expression, as a string.
 // Surfaces effect sets in function signatures, e.g. `(i64) -> i64 ! { Emit }`.
@@ -703,7 +703,7 @@ test("array literal infers as tuple against a tuple-typed context", () => {
 
 test("REPL: bindings persist across lines", () => {
   const out = execSync(
-    "bun run cli.ts repl",
+    "bun run ../../cli.ts repl",
     {input: "a :: 6\nb :: 7\na * b\n:q\n", encoding: "utf8", timeout: 20000, cwd: import.meta.dir},
   );
   expect(out).toContain("42 : i64");
@@ -951,7 +951,7 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
     const f = join(tmpdir(), "ef-types-test.ef");
     writeFileSync(f, `effect T(x: i64): i64; Println!("a"); handle { T!(1) } case T(n) => k { n }`);
     try {
-      const out = execSync(`bun run cli.ts types ${f}`, {
+      const out = execSync(`bun run ../../cli.ts types ${f}`, {
         encoding: "utf8",
         timeout: 20000,
         cwd: import.meta.dir,
