@@ -1,0 +1,2 @@
+# Negative widening keeps the sign.
+@as(@as(-5, i32), i64)

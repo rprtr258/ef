@@ -1,0 +1,2 @@
+# The same reload behind an @as on the expression.
+effect Op(): i64; handle { s := 0; i := 0; while (i < 2) { s = s + @as(i + Op!(), i64); i = i + 1 }; s } case Op() => k { k(k(7)) }

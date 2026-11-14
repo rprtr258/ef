@@ -1,0 +1,4 @@
+# A split site in one arm and a tail print after the if.
+x :: 0;
+if (x < 1) { Println!("then") } else { Println!("else") };
+Println!("tail")

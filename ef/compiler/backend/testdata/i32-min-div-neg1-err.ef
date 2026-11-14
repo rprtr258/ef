@@ -1,0 +1,2 @@
+# INT_MIN / -1 overflows i32.
+x: i32 :: -2147483648; x / -1

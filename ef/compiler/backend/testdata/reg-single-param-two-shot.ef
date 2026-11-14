@@ -1,0 +1,2 @@
+# Two-shot resume of a single-param continuation, no call_indirect trap.
+effect T(n: i64): i64; handle { T!(5) } case T(n) => k { x :: k(n); y :: k(n); x + y }

@@ -1,0 +1,2 @@
+# A string comparison on an unstamped site errors inside the interpreter's operator closure; the message must match across backends.
+Println!("a" < "b")

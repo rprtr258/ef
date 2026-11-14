@@ -1,0 +1,2 @@
+# any-typed equality on f64s compares by value.
+eq :: fn(a: any, b: any) { a == b }; eq(1.5, 1.5)

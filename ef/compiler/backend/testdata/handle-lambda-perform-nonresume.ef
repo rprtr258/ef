@@ -1,0 +1,2 @@
+# Perform inside a lambda called twice; a non-resuming case discards the rest.
+effect Op(): i64; handle { f :: fn() { Op!() }; f() + f() } case Op() => k { 1 }

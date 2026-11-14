@@ -1,0 +1,2 @@
+# u64 keeps the unsigned op selection exact through the raw entry.
+f :: fn(a: u64, b: u64): u64 { a / b }; f(18446744073709551615, 2)

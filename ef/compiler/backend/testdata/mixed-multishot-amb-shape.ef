@@ -1,0 +1,18 @@
+# Multi-shot resume inside a mixed function: each Choose resume re-enters the spine through the resume lambda's tail contCall; propagating performs reach the Emit island across the boundary.
+effect Choose(lo: i64, hi: i64): i64;
+effect Emit(t: [i64]): unit;
+inner :: fn(n: i64): unit ! { Choose, Emit } {
+  a :: Choose!(1, n);
+  Emit!([a])
+};
+middle :: fn(n: i64): unit ! { Emit } {
+  handle { inner(n) } case Choose(lo, hi) => k {
+    each(fn(x, _) { k(x) }, range(lo, hi + 1, 1))
+  }
+};
+outer :: fn(n: i64): [[i64]] {
+  handle { middle(n) } case Emit(t) => k {
+    concat([t], k(unit))
+  } case Return(v) => k { [] }
+};
+outer(2)

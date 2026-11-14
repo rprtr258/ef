@@ -1,0 +1,4 @@
+# A performing operand: the resumed value must dispatch through the real handler chain, not just a RET cell.
+effect Op(): i64;
+handle { f :: fn(x: i64): i64 { x / 2 }; f(Op!()) + 1 }
+case Op() => k { k(10) }

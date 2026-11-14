@@ -1,0 +1,2 @@
+# Same cut-mode pairing on the i64 plane.
+effect P(): i64; effect Q(): i64; handle { (7 + P!()) / Q!() } case P() => k { k(2) } case Q() => k { k(7) }

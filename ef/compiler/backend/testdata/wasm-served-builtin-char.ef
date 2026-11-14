@@ -1,0 +1,2 @@
+# A served builtin computes through its host import.
+char(97)

@@ -1,0 +1,2 @@
+# The args builtin reads the test runner's argv (subcommand + file), in both backends.
+len(args())

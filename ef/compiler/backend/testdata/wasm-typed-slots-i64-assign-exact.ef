@@ -1,0 +1,5 @@
+# 2^53+1 stays exact through the typed op temps and the boxed cells.
+x := 9007199254740993;
+i := 0;
+while (i < 2) { x = x + 1; i = i + 1; Println!(i); }
+x

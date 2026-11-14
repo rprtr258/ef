@@ -1,0 +1,2 @@
+# Return slots for a multi-param op must not alias across resumes.
+effect T(a: i64, b: i64): i64; handle { T!(1, 2) } case T(a, b) => k { x :: k(a); y :: k(b); x + y }

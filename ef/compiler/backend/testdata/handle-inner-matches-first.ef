@@ -1,0 +1,2 @@
+# The matching inner handler fires first.
+effect A(): i64; handle { handle { A!() } case A() => k { 10 } } case A() => k { 20 }

@@ -1,0 +1,2 @@
+# 4294967297 fits i64: no truncation.
+@as(4294967297, i64)

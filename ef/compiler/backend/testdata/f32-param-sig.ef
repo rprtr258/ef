@@ -1,0 +1,2 @@
+# f32 parameters and return type.
+add :: fn(x: f32, y: f32): f32 { x + y }; add(3.34, 2.71)

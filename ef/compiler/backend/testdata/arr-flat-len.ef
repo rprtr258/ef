@@ -1,0 +1,2 @@
+# flat concatenates subarrays.
+len(flat([[1,2],[3]]))

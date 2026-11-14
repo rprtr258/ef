@@ -1,0 +1,9 @@
+# Split sites in both arms of an if, plus a tail print.
+if (1 < 0) {
+  Println!("then-arm");
+  Println!("after-then")
+} else {
+  Println!("else-arm");
+  Println!("after-else")
+};
+Println!("after")

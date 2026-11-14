@@ -1,0 +1,2 @@
+# Same bits, different BigInt values: -1 vs 2^64-1.
+eq :: fn(a: any, b: any) { a == b }; eq(@as(-1, i64), @as(18446744073709551615, u64))

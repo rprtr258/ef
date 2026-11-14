@@ -1,0 +1,2 @@
+# u32 division guard.
+x: u32 :: 1; x / 0

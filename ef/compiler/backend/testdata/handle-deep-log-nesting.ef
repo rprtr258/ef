@@ -1,0 +1,6 @@
+# A log threaded through nested resumes (resume in a non-tail position inside concat).
+effect Log(msg: string): unit;
+effect Result(v: string): unit;
+handle { Log!("a"); Log!("b"); Result!("42") }
+case Log(msg) => k { concat([msg], k(unit)) }
+case Result(v) => k { [v] }

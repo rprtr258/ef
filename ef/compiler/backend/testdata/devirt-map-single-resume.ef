@@ -1,0 +1,4 @@
+# map with a single resume per perform: results collected across them.
+effect Op(): i64;
+cb :: fn(x: i64): i64 { Op!() };
+handle { map(cb, [1, 2]) } case Op() => k { k(10) }

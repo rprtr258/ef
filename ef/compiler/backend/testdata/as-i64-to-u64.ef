@@ -1,0 +1,2 @@
+# Same-width @as is a no-op.
+@as(@as(5, i64), u64)

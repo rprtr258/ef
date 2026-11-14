@@ -1,0 +1,2 @@
+# -1 is representable in i32.
+@as(-1, i32)

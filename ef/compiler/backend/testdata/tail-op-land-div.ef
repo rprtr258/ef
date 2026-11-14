@@ -1,0 +1,4 @@
+# The tail value returns to the enclosing wrapper, which dispatches it through the continuation.
+f :: fn(x: i64): i64 { x / 2 };
+y :: f(10);
+y + 1

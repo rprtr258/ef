@@ -1,0 +1,2 @@
+# String equality compares contents.
+"ab" == "ab"

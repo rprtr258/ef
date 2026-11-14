@@ -1,0 +1,2 @@
+# A Return-less handle whose case ignores k.
+effect Op(): i64; handle { 5 } case Op() => k { 0 }

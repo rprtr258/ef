@@ -1,0 +1,2 @@
+# An f64 sum demoted by @as lands on the same f32 value.
+@as(0.1 + 0.2, f32)

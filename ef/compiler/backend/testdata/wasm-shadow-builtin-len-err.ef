@@ -1,0 +1,2 @@
+# Builtin shadowing is rejected with the same checker message in both runners.
+len :: fn(xs: [i64]): i64 { 42 }; len([1, 2, 3])

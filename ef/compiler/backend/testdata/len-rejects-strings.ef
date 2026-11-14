@@ -1,0 +1,2 @@
+# len is array-only: both backends reject with the same message.
+len("héllo")

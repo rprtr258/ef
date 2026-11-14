@@ -1,0 +1,2 @@
+# A function passed as a value and called.
+id :: fn(x) { x }; id(id)(3)

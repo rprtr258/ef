@@ -1,0 +1,2 @@
+# INT64_MAX compares positive.
+x: i64 :: 9223372036854775807; x > 0

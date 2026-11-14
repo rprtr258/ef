@@ -1,0 +1,2 @@
+# Strict same-width ops on the wide widths too.
+@as(1, i64) < @as(2, u64)

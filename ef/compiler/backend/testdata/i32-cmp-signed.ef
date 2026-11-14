@@ -1,0 +1,2 @@
+# The bits 0xFFFFFFFF compare negative as i32.
+@as(-1, i32) < @as(1, i32)

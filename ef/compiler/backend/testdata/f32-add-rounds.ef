@@ -1,0 +1,2 @@
+# f32 values are $F32 boxes computed with the f32 opcode family; the sum rounds to f32 precision.
+@as(0.1, f32) + @as(0.2, f32)

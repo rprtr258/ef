@@ -1,0 +1,6 @@
+# up captures down (capts non-empty): the static call reads the closure's env; down/up's rests inline.
+down :: fn(n: i64): i64 {
+  up :: fn(m: i64): i64 { if (m == 0) { 100 } else { 1 + down(m - 1) } };
+  if (n == 0) { 0 } else { up(n) }
+};
+[down(4), down(0), down(9)]

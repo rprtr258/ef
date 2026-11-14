@@ -1,0 +1,2 @@
+# f32 rem through a call boundary.
+r :: fn(x: f32, y: f32): f32 { x % y }; r(@as(7.3, f32), @as(2.0, f32))

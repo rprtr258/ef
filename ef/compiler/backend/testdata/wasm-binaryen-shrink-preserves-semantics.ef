@@ -1,0 +1,2 @@
+# The binaryen shrink pass preserves semantics.
+Println!("hi"); f :: fn(x: i64): i64 ! { Println } { Println!(x); x * 2 }; f(21)

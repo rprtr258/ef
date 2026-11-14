@@ -1,0 +1,2 @@
+# i64 division guard routes through ef_fail.
+x: i64 :: 1; x / 0

@@ -48,13 +48,14 @@ suspension/box-provenance emission over an exhaustive `Expr` switch),
   `compiler/backend/`): `lint.test.ts` + `analysis.test.ts` + `ops.test.ts` +
   `cps_opt.test.ts` (shared stages) + `backend/interpreter/index.test.ts` (the
   language suite run through the interpreter) + `backend/wasm/wasm.test.ts` +
-  `backend/parity.test.ts` (per-example interpreter↔wasm parity over
-  `examples/*.ef`, `Exit!` sentinel + seeded `Random!` override, plus the
-  feature-level and regression-level parity suites moved out of
-  wasm.test.ts; wasm.test.ts keeps only wasm-internal assertions —
+  `backend/parity.test.ts` (table-driven interpreter↔wasm parity over
+  `examples/*.ef` and the fine-grained fixtures in `compiler/backend/testdata/*.ef` —
+  two tables, one runner asserting backend agreement on stdout effects, exit
+  codes and errors, plus exact expected output per row; `Exit!` sentinel +
+  seeded `Random!` override; wasm.test.ts keeps only wasm-internal assertions —
   module structure, host imports, plan/slot annotations, ABI, host
   injections) + `cli.test.ts` (CLI integration smoke: argv, exit codes, stdout/stderr),
-  with the value-level `parity()` helper defined in parity.test.ts (`bun:test`).
+  with the shared runner (`runOnce`) defined in parity.test.ts (`bun:test`).
 - Run a file: `bun compiler/cli.ts run <file>` (subcommands: `run`, `buildwasm`,
   `runwasm`, `types`, `lint`, `repl`, `lsp`).
 - Gates: `bun run ci` = typecheck + eslint + runtime-deps check + tests; all must stay clean.

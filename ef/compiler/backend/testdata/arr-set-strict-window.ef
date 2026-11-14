@@ -1,0 +1,2 @@
+# set is strictly in-window: no growth past the end.
+a :: [1]; set(a, 3, 9)

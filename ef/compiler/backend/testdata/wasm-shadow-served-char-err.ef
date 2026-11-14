@@ -1,0 +1,2 @@
+# Shadowing a served builtin is rejected identically.
+char :: fn(x: i64): i64 { x }; char(97)

@@ -1,0 +1,2 @@
+# A huge i64 index must not wrap to a small in-bounds i32 in wasm.
+get([1, 2, 3], 4294967296)

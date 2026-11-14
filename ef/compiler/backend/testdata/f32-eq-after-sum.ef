@@ -1,0 +1,2 @@
+# f32 equality is f32-exact.
+@as(0.1, f32) + @as(0.2, f32) == @as(0.3, f32)

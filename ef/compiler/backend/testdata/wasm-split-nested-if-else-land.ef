@@ -1,0 +1,10 @@
+# Land calls in both branches of a nested if-else.
+g :: fn(x: i64): i64 { x + 1 };
+f :: fn(a: i64): i64 {
+  if (a == 0) {
+    if (g(a) == 1) { 1 } else { 2 }
+  } else {
+    if (g(a) == 1) { 3 } else { 4 }
+  }
+};
+Println!(f(0))

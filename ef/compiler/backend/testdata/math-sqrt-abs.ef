@@ -1,0 +1,2 @@
+# sqrt/abs composition with round.
+round(sqrt(2) * 100) + abs(0 - 3)

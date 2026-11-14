@@ -1,0 +1,4 @@
+# Exit! intercepted without resuming: the code after it never runs.
+handle { Out!("pre"); Exit!(42); Out!("post") }
+case Exit(c) => k { c }
+case Out(s) => k { Println!(s); k(unit) }

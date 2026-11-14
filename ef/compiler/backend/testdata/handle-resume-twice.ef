@@ -1,0 +1,2 @@
+# Two performs, both resumed.
+effect Op(): i64; handle { Op!() + Op!() } case Op() => k { k(3) }

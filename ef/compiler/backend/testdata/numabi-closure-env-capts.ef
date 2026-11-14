@@ -1,0 +1,4 @@
+# Numeric entries carry the closure env: the callee reads its captured k through the frame chain.
+k :: 100;
+addk :: fn(n: i64): i64 { n + k };
+addk(1) + addk(2)

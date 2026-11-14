@@ -1,0 +1,4 @@
+# A multi-shot rest-thunk read after resume.
+effect Op(): i64;
+x: i64 :: 10;
+handle { Op!() } case Op() => k { k(1); k(2) } + x

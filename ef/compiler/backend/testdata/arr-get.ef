@@ -1,0 +1,2 @@
+# Element read.
+get([10,20,30], 1)

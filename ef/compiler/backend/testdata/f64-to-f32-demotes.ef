@@ -1,0 +1,2 @@
+# f64 -> f32 demotes via @as.
+@as(@as(0.1, f64), f32)

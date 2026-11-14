@@ -1,0 +1,2 @@
+# f64 stays f64: the same sum differs in the last digits.
+0.1 + 0.2

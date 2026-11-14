@@ -1,0 +1,2 @@
+# The wasm side routes division guards through ef_fail, not native traps: message and exit code match.
+x: i32 :: 1; x / 0

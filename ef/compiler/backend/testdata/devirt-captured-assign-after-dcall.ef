@@ -1,0 +1,6 @@
+# g captures k: the static call chains the callee frame through its env; a later assign to k is visible through it.
+id :: fn(x: i64): i64 { x };
+k := 7;
+g :: fn(x: i64): i64 { x + k };
+k = 42;
+[g(1), id(k)]

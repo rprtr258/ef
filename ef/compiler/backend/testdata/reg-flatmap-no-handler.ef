@@ -1,0 +1,2 @@
+# flatmap over ints with no handler in scope.
+flat(map(fn(x: i64): [i64] { [x, x * 10] }, [1, 2, 3]))

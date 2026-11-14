@@ -1,0 +1,2 @@
+# String concat shows quoted.
+"ab" + "cd"

@@ -1,0 +1,8 @@
+# A land-call result consumed as a nested operand of another expression in the same body as a second (bare let-RHS) land call: compiled output must match the interpreter's stdout, not just its value.
+vDot :: fn(a: [f64], b: [f64]): f64 { (a.0 * b.0) + ((a.1 * b.1) + (a.2 * b.2)) };
+sphereT2 :: fn(d: [f64], c: [f64], r: f64): f64 {
+  a :: vDot(d, d);
+  b :: -2.0 * vDot(d, c);
+  a + b
+};
+Println!(sphereT2([0.1, 0.0, -2.5], [0.0, 0.0, -5.0], 1.5))

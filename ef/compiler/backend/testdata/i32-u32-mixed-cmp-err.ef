@@ -1,0 +1,2 @@
+# A mixed-width compare is a static type error; messages match exactly.
+@as(-1, i32) < @as(4294967295, u32)

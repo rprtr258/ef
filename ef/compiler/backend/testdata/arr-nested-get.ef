@@ -1,0 +1,2 @@
+# Nested array read.
+get(get([[1,2],[3,4]], 1), 0)

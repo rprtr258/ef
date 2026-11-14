@@ -1,0 +1,2 @@
+# INT64_MAX + 1 wraps; exact BigInt arithmetic at the interpreter.
+x: i64 :: 9223372036854775807; x + 1

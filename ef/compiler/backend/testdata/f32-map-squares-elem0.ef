@@ -1,0 +1,2 @@
+# f32 values through map and tuple field access.
+map(fn(v: f32): f32 { v * v }, [@as(0.5, f32)]).0

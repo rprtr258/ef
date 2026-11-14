@@ -1,0 +1,2 @@
+# A builtin returned from a lambda and called at the site.
+mk :: fn() { len }; mk()([7, 8, 9])

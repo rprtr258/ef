@@ -1,0 +1,2 @@
+# A lambda body block with inner :: lets (frame sharing).
+f :: fn() { a :: 2; b :: 3; a * b }; f()

@@ -1,0 +1,2 @@
+# Widening roundtrip.
+@as(@as(5, i32), i64)

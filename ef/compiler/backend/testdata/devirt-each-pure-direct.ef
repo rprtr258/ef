@@ -1,0 +1,2 @@
+# each with a pure direct callback takes the tight loop.
+inc2 :: fn(x: i64, i: i64): i64 { x + 1 }; each(inc2, [1, 2, 3])

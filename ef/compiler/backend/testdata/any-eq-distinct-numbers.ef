@@ -1,0 +1,2 @@
+# Distinct values compare unequal.
+eq :: fn(a: any, b: any) { a == b }; eq(1, 2)
