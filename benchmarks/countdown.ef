@@ -1,0 +1,29 @@
+# Bench: countdown from effect-handlers-bench (large input 200000000, final
+# state 0). Each iteration performs Get! to read the state and Set! to
+# decrement it — two perform/resume round-trips per step against a
+# module-level cell, the second carrying the new state inward.
+effect Get(): i64;
+effect Set(v: i64): unit;
+
+s := 200000000;
+
+down :: fn(): i64 ! { Get, Set } {
+  i := Get!();
+  if (i == 0) {
+    i
+  } else {
+    Set!(i - 1);
+    down()
+  }
+};
+
+handle {
+  down()
+} case Get() => k {
+  k(s)
+} case Set(v) => k {
+  s = v;
+  k(unit)
+} case Return(v) => k {
+  v
+}

@@ -1,0 +1,19 @@
+# Bench: iterator from effect-handlers-bench (large input 40000000 ->
+# 800000020000000). Emits 0..n inclusive via Emit! and the handler
+# accumulates the sum — one shallow perform/resume per element against a
+# module-level cell.
+effect Emit(v: i64): unit;
+
+s := 0;
+
+handle {
+  i := 0;
+  while (i <= 40000000) {
+    Emit!(i);
+    i = i + 1
+  }
+} case Emit(v) => k {
+  s = s + v;
+  k(unit)
+};
+s

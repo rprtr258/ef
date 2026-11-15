@@ -1,0 +1,60 @@
+# Bench: simulated dollar-file parsing from effect-handlers-bench (large
+# input 20000 -> 200010000). Three stacked handlers: feed answers Read!
+# with the simulated character stream (n lines, line i holding i dollars,
+# newline-terminated, then Stop!), parse counts dollars per line and
+# Emit!s each count, and the outer handler sums the emissions. Stop!
+# abandons the parse without resuming — non-local control flow across all
+# three boundaries.
+effect Read(): i64;
+effect Emit(e: i64): unit;
+effect Stop(): unit;
+
+newline :: 10;
+dollar :: 36;
+
+s := 0;
+fi := 0;   # feed state: lines started so far
+fj := 0;   # dollars left in the current line
+
+parse :: fn(a: i64): unit ! { Read, Emit, Stop } {
+  c := Read!();
+  if (c == dollar) {
+    parse(a + 1)
+  } else {
+    if (c == newline) {
+      Emit!(a);
+      parse(0)
+    } else {
+      Stop!()
+    }
+  }
+};
+
+handle {
+  handle {
+    handle {
+      parse(0)
+    } case Read() => k {
+      if (fi > 20000) {
+        Stop!()
+      } else {
+        if (fj == 0) {
+          fi = fi + 1;
+          fj = fi;
+          k(newline)
+        } else {
+          fj = fj - 1;
+          k(dollar)
+        }
+      }
+    };
+  } case Stop() => k {
+    unit
+  };
+  s
+} case Emit(e) => k {
+  s = s + e;
+  k(unit)
+} case Return(v) => k {
+  v
+}

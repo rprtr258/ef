@@ -1,0 +1,54 @@
+# Bench: state with multiple resumptions from effect-handlers-bench (large
+# input 16 -> 1005). Depth-first exploration of the complete binary tree of
+# height 16: each node asks Choose!, then updates the global state
+# (state := op2 state v) and folds op2 over the node values down to the
+# leaf's state (op2(x, y) = abs(x - 503*y + 37) mod 1009). The handler
+# resumes the continuation twice per choice — left fully, then right — and
+# keeps the max; the shared mutable state carries across resumptions by
+# design. 10 rounds, each seeded with the previous maximum.
+effect Choose(): bool;
+
+op2 :: fn(x: i64, y: i64): i64 {
+  d := x - 503 * y + 37;
+  a := if (d < 0) {
+    -d
+  } else {
+    d
+  };
+  a % 1009
+};
+
+state := 0;
+
+explore :: fn(h: i64): i64 ! { Choose } {
+  if (h == 0) {
+    state
+  } else {
+    Choose!();
+    state = op2(state, h);
+    op2(h, explore(h - 1))
+  }
+};
+
+paths :: fn(h: i64): i64 {
+  handle {
+    explore(h)
+  } case Choose() => k {
+    l := k(true);
+    r := k(false);
+    if (l > r) {
+      l
+    } else {
+      r
+    }
+  } case Return(v) => k {
+    v
+  }
+};
+
+i := 0;
+while (i < 10) {
+  state = paths(16);
+  i = i + 1
+};
+state

@@ -1,0 +1,12 @@
+# Bench: doubly-recursive Fibonacci from effect-handlers-bench (large input
+# 42 -> 433494437). No effects — the suite's pure call-stack benchmark at a
+# deeper depth than fib.ef.
+fib :: fn(n: i64): i64 {
+  if (n < 2) {
+    n
+  } else {
+    fib(n - 1) + fib(n - 2)
+  }
+};
+
+fib(42)

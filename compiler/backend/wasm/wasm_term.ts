@@ -1763,7 +1763,8 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   const kref = resolveK(wk, t.k);
   if (kref.kind === "label") throw new WasmError("internal: perform k must be materialized");
   // Resume capture record: 5 slots {0: slice head, 1: table, 2: hfc,
-  // 3: matched boundary, 4: skipped boundaries}. The slice head is the
+  // 3: null (the matched boundary is not retained — see the stores below),
+  // 4: skipped boundaries}. The slice head is the
   // perform site's own k cell — live and shared: the resume fn conses a
   // fresh $HDLCTX onto hctx (the paper's resumption re-arming the handler
   // on the resumer's context) and dispatches straight into the captured
@@ -1853,8 +1854,8 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   // resume record roots this invocation's copy).
   // fsz is a runtime local from the scan — the frame size and copy length
   // read the local (a JS i32Const here would emit the local's INDEX as a
-  // constant); the op arity is static (the performed op's arg count = the
-  // matched row's nparams).
+  // constant); the op arity is static (the performed op's arg count, and
+  // the arg slots are a prefix of the npMax-wide param block).
   const hfc = f.typed(_T.RF[4]), slots = f.typed(_T.RF[1]);
   // The hfc's parent = the matched boundary's hframe parent: the case body's
   // slot depths resolve against the HANDLE site's frame chain (where the
@@ -1882,6 +1883,15 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   b.i32Const(0);
   b.localGet(fsz);
   b.arrayCopy(1, 1);
+  // The copy must not carry the parent invocation's ret binder: its $CLO
+  // env is the parent hfc, so copied stale binders would chain every past
+  // hfc off the live one (the ret case re-stores its binder on entry).
+  b.localGet(slots);
+  b.localGet(fsz);
+  b.i32Const(1);
+  b.num(w.SUB);
+  b.refNull(6);
+  b.arraySet();
   tr("perform:hfcCopied");
   for (let k = 0; k < t.args.length; k++) {
     b.localGet(slots);
@@ -1895,7 +1905,8 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
     b.arraySet();
   }
   b.localGet(slots);
-  b.localGet(nparams); // the resume slot = the matched row's nparams (npMax)
+  b.localGet(nparams); // the resume slot = the table's npMax (case fns read
+                       // the binder there, whatever the matched op's arity)
   b.localGet(rclo);
   b.arraySet();
   tr("perform:caseDispatch");
@@ -1903,10 +1914,10 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   b.i32Const(2);
   b.localGet(hfc);
   b.arraySet();
-  b.localGet(recSlots);
-  b.i32Const(3);
-  b.localGet(entry);
-  b.arraySet();
+  // Slot 3 stays null: the matched boundary is reachable through hctx while
+  // the invocation is live, and storing it here would chain records across
+  // invocations (rec → entry.hfc → stale resume binder → previous rec),
+  // retaining every past iteration's record set in tail-resumption loops.
   b.localGet(recSlots);
   b.i32Const(4);
   b.localGet(skip);
@@ -2023,13 +2034,15 @@ function emitHandleT(wk: Walk, t: CTerm & {t: "handle"}): void {
 // Case fns (T_KABI over the hframe): the exit binder is the k param; op
 // cases read their resume binder from the hframe (written at the perform
 // site); the Return case's prologue materializes its identity resume.
-function emitCaseBody(em: Emit, f: Fn, body: CTerm, base: TScope, esc: Set<string>, exitName: string, retResumeIdx: number | undefined, npMax: number): void {
+function emitCaseBody(em: Emit, f: Fn, body: CTerm, base: TScope, esc: Set<string>, exitName: string, retResumeIdx: number | undefined): void {
   const wk: Walk = {em, f, ts: base, kL: 1, esc, labels: [], depth: 0, exitName, tloc: new Map()};
   tracePoint(em, f, `case f${f.fid} enter`);
   if (retResumeIdx !== undefined) {
-    // resume binder (slot npMax) := $CLO{retResume, env = this hframe} —
-    // the funcref is the plan's per-handle ret-resume record (the plan's
-    // counter indexes into the ret-resume block, not the raw table).
+    // resume binder (the hframe's last slot) := $CLO{retResume, env = this
+    // hframe} — the funcref is the plan's per-handle ret-resume record (the
+    // plan's counter indexes into the ret-resume block, not the raw table).
+    // The trailing slot keeps the Return completion from clobbering the op
+    // resume binder at npMax (see planHandle's hframe layout).
     const clo = f.anyref();
     const bb = f.body;
     bb.i32Const(em.ix.retResFns[retResumeIdx].idx);
@@ -2045,7 +2058,7 @@ function emitCaseBody(em: Emit, f: Fn, body: CTerm, base: TScope, esc: Set<strin
     bb.refI31();
     bb.structNew(6);
     bb.localSet(clo);
-    f.storeSlot(npMax, () => bb.localGet(clo));
+    f.storeSlot(base[0].size - 1, () => bb.localGet(clo));
   }
   addLocal(base[0], exitName, 1);
   emitTerm(wk, body);
@@ -2073,15 +2086,14 @@ function emitIdRetFn(em: Emit, f: Fn, slot: number): void {
   emitDispatch(em, f, v);
 }
 
-// The ret case's identity resume: (frame, k) -> the done value (the
-// invocation hframe's Return slot, reached via the $CLO env = the frame's
-// parent), dispatched through k — exactly the interpreter's
+// The ret case's identity resume: (frame, k) -> the done value (the Return
+// slot of the frame the K_BND sentinel stored it in — the $CLO env),
+// dispatched through k — exactly the interpreter's
 // `native((_a, k2) => k2(out.value))`.
 function emitRetResumeFn(em: Emit, f: Fn, slot: number): void {
   const b = f.body;
   const v = f.anyref();
-  b.localGet(0);
-  b.structGet(4, 0); // the $CLO env (the invocation's hframe)
+  b.localGet(0); // the $CLO env (the invocation's hframe)
   b.structGet(4, 1);
   b.i32Const(slot);
   b.arrayGet(1);
@@ -2331,14 +2343,13 @@ export function emitCaseFns(em: Emit): void {
   for (const hdl of em.plan.hdlOrder) {
     const hp = hdlP(hdl)!;
     const cases = hdl.cases;
-    const npMax = Math.max(0, ...cases.map(c => c.params.length));
     let ci = 0;
     for (const c of cases) {
       if (c.op === "Return") continue;
       const cp = hp.caseP[ci++];
       const f = em.ix.caseFns[cp.fnIdx];
       f.em = em;
-      emitCaseBody(em, f, c.body, cp.base, cp.esc, hdl.exit, undefined, npMax);
+      emitCaseBody(em, f, c.body, cp.base, cp.esc, hdl.exit, undefined);
       em.funcs.push(f);
     }
     const retCase = cases.find(c => c.op === "Return");
@@ -2346,7 +2357,7 @@ export function emitCaseFns(em: Emit): void {
       const cp = hp.retP!;
       const f = em.ix.caseFns[cp.fnIdx];
       f.em = em;
-      emitCaseBody(em, f, retCase.body, cp.base, cp.esc, hdl.exit, hp.retResumeIdx, npMax);
+      emitCaseBody(em, f, retCase.body, cp.base, cp.esc, hdl.exit, hp.retResumeIdx);
       em.funcs.push(f);
     }
   }

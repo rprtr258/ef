@@ -1,0 +1,38 @@
+# Bench: prime sieve via nested handlers from effect-handlers-bench (large
+# input 60000 -> 171848738, the sum of primes below 60000). Each discovered
+# prime p installs a fresh handler around the rest of the search that
+# rejects multiples of p; a query walks the handler chain from the newest
+# prime outward and the base handler answers true. The nesting depth grows
+# to the number of primes below 60000 (6057) — statically unbounded handler
+# nesting with deep resumption stacks.
+effect Prime(e: i64): bool;
+
+sieve :: fn(i: i64, n: i64, a: i64): i64 ! { Prime } {
+  if (i >= n) {
+    a
+  } else {
+    if (Prime!(i)) {
+      handle {
+        sieve(i + 1, n, a + i)
+      } case Prime(e) => k {
+        if (e % i == 0) {
+          k(false)
+        } else {
+          k(Prime!(e))
+        }
+      } case Return(v) => k {
+        v
+      }
+    } else {
+      sieve(i + 1, n, a)
+    }
+  }
+};
+
+handle {
+  sieve(2, 60000, 0)
+} case Prime(e) => k {
+  k(true)
+} case Return(v) => k {
+  v
+}

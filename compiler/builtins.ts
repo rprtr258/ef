@@ -2,7 +2,6 @@
 // declarative rows in builtin_table.ts (plain closures, CPS natives, effect
 // interps). Adding a builtin means one entry there plus one impl row here.
 import {readFileSync, writeFileSync} from "node:fs";
-import {sleepSync} from "bun";
 import {apply} from "./backend/interpreter/eval.ts";
 import {BUILTIN_TABLE} from "./builtin_table.ts";
 import {num, show, asSlice, mkSlice, sliceElems, type Cont, type Outcome, type Value} from "./env.ts";
@@ -152,6 +151,20 @@ const NATIVE_IMPLS: Record<string, (args: Value[], k: Cont) => Outcome> = {
 // The builtin effects' default CPS interpretations. eval.ts's runTop
 // consumes these directly for unhandled effects; the host derivation below
 // derives the wasm-side direct shape from them.
+// Synchronous sleep for the `Wait` host, portable across runtimes.
+// Atomics.wait blocks the thread without spinning on Node/Bun main threads;
+// the Date.now spin covers environments where SharedArrayBuffer or
+// main-thread Atomics.wait is unavailable (browser main threads).
+function sleepSync(secs: number): void {
+  const ms = secs * 1000;
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {}
+  }
+}
+
 const INTERPS: Record<string, (args: Value[], k: Cont) => Outcome> = {
   Read: (args, k) => k(readFileSync(args[0] as string, "utf8")),
   Write: (args, k) => {

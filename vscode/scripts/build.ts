@@ -16,9 +16,6 @@ export async function buildServer(): Promise<void> {
     ...common,
     entryPoints: [`${here}/server.ts`],
     outfile: `${here}/../dist/server.cjs`,
-    // builtins.ts (reached via the checker) imports bun's sleepSync for the
-    // `Wait` host; the server never evaluates, so a throwing stub suffices.
-    alias: {bun: `${here}/bun-shim.ts`},
   });
 }
 

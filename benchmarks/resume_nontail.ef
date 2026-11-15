@@ -1,0 +1,45 @@
+# Bench: resumption in non-tail position from effect-handlers-bench (large
+# input 10000 -> 860). Each Operator! is handled by resuming k in a
+# non-tail position: the resumed value feeds op2, so the resumption stack
+# grows to depth n per round and the round result folds op2 over the whole
+# chain (op2(x, y) = abs(x - 503*y + 37) mod 1009). 1000 rounds, each
+# seeded with the previous round's value.
+effect Operator(x: i64): unit;
+
+op2 :: fn(x: i64, y: i64): i64 {
+  d := x - 503 * y + 37;
+  a := if (d < 0) {
+    -d
+  } else {
+    d
+  };
+  a % 1009
+};
+
+loop :: fn(i: i64, s: i64): i64 ! { Operator } {
+  if (i == 0) {
+    s
+  } else {
+    Operator!(i);
+    loop(i - 1, s)
+  }
+};
+
+run :: fn(n: i64, s: i64): i64 {
+  handle {
+    loop(n, s)
+  } case Operator(x) => k {
+    y := k(unit);
+    op2(x, y)
+  } case Return(v) => k {
+    v
+  }
+};
+
+s := 0;
+i := 0;
+while (i < 1000) {
+  s = run(10000, s);
+  i = i + 1
+};
+s

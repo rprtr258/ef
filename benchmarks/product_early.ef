@@ -1,0 +1,32 @@
+# Bench: non-tail product with early abort from effect-handlers-bench
+# (large input 100000, output 0). prod multiplies each element with the
+# recursive result, so the 0 sentinel at the end of the descending
+# 1000-element list is only reached 1000 frames deep; Abort! there discards
+# the whole stack without resuming. The handled product is summed over
+# 100000 iterations.
+effect Abort(): i64;
+
+n :: 1000;
+
+xs := map(fn(v) { n - v }, range(0, n + 1, 1));
+
+prod :: fn(i: i64): i64 ! { Abort } {
+  x := get(xs, i);
+  if (x == 0) {
+    Abort!()
+  } else {
+    x * prod(i + 1)
+  }
+};
+
+total := 0;
+i := 0;
+while (i < 100000) {
+  total = total + (handle {
+    prod(0)
+  } case Abort() => k {
+    0
+  });
+  i = i + 1
+};
+total

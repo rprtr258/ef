@@ -390,7 +390,10 @@ export function layoutStatics(d: Discovery, ix: Indices, o: Opt, plan: Plan): La
     lay.cloOffsets.set("PI", lay.piG);
   }
   // Handler case tables: flat [opid, fnIdx, fsize, nparams]* i31s.
-  // The Return entry (opid -1) always goes last — an explicit case fn when
+  // nparams is the handler's npMax (max case arity) for every entry: case
+  // fns read their resume binder from hframe slot npMax regardless of the
+  // matched op's own arity, and the Return value lands at npMax+1. The
+  // Return entry (opid -1) always goes last — an explicit case fn when
   // the handler declares one, otherwise an identity fn with matching
   // nparams (the shared npMax=0 fn puts the value at slot 1 where it reads
   // it back; handlers with npMax > 0 get a per-handler fn so param/resume
@@ -406,7 +409,7 @@ export function layoutStatics(d: Discovery, ix: Indices, o: Opt, plan: Plan): La
       if (c.op === "Return") continue;
       const opid = d.effOpIds.get(c.op);
       if (opid === undefined) throw new WasmError(`internal: unnumbered op ${c.op}`);
-      entries.push({opid, fn: ix.caseFns[hp.caseP[ci++].fnIdx].idx, fsize: hp.hframeSize, nparams: c.params.length});
+      entries.push({opid, fn: ix.caseFns[hp.caseP[ci++].fnIdx].idx, fsize: hp.hframeSize, nparams: npMax});
     }
     const retCase = hdl.cases.find(c => c.op === "Return");
     if (retCase !== undefined) {

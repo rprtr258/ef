@@ -30,12 +30,17 @@
 // binding, and the fused let keeps x in the frame the spine runs over.
 //
 // Exit-continuation beta: a letk whose body never references it and whose
-// rest references it exactly once, through a `jump` node (never as a
-// call/perform continuation operand — those are reified at runtime and must
-// stay resolvable), is beta-reduced at that jump: the body, with the param
-// replaced by the jump's argument, replaces the jump. This is the while
-// loop's exit continuation. Splicing is sound because the body's free temps
-// are exactly the dropped freeze list: bind-once temps whose slots persist
+// rest references it exactly once is beta-reduced at that reference. (a) A
+// `jump` reference: the body, with the param replaced by the jump's
+// argument, replaces the jump (the while loop's exit continuation).
+// (b) A call k-operand reference whose body is a pure param-forward
+// (`jump e(param)`): the operand retargets to e and the letk drops. The
+// reification concern only bars splicing bodies that compute; a pure
+// forward's cell is a trampoline the resume can skip — and must skip,
+// or a tail-resuming case invocation chains its pending cell to the
+// previous one's and a tail-resumption loop's continuation grows one link
+// per iteration. Splicing is sound because the body's free temps are
+// exactly the dropped freeze list: bind-once temps whose slots persist
 // across resumes, so a live read at the jump site yields what the frozen
 // image would have restored.
 //
@@ -262,27 +267,70 @@ function fuseLetBinds(root: CTerm): [term: CTerm, changed: boolean] {
 function betaExitLetks(root: CTerm, capts: Set<string>): [term: CTerm, changed: boolean] {
   const changed = {v: false};
   const rw = (t: CTerm): CTerm => {
-    if (t.t === "letk" && t.norm === undefined && !capts.has(t.name)
+    if (t.t === "letk" && !capts.has(t.name)
         && countRefs(t.body, t.name) === 0 && countRefs(t.rest, t.name) === 1) {
-      // The single reference must be a jump — a call/perform k operand is a
-      // runtime reification and stays.
-      const arg = findExitArg(t.rest, t.name);
-      if (arg !== undefined) {
-        changed.v = true;
-        const body = t.body;
-        mapAtoms(body, (a) => (a.t === "var" && a.name === t.param ? arg : a));
-        const replace = (c: CTerm): CTerm => {
-          if (c.t === "jump" && c.k.t === "var" && c.k.name === t.name) return body;
-          rewriteChildren(c, replace);
-          return c;
-        };
-        return replace(t.rest);
+      // (a) The single reference is a jump: splice the body into it. The
+      // param must need no normalization (the spliced body reads it raw).
+      if (t.norm === undefined) {
+        const arg = findExitArg(t.rest, t.name);
+        if (arg !== undefined) {
+          changed.v = true;
+          const body = t.body;
+          mapAtoms(body, (a) => (a.t === "var" && a.name === t.param ? arg : a));
+          const replace = (c: CTerm): CTerm => {
+            if (c.t === "jump" && c.k.t === "var" && c.k.name === t.name) return body;
+            rewriteChildren(c, replace);
+            return c;
+          };
+          return replace(t.rest);
+        }
+      }
+      // (b) The single reference is a CALL's k operand and the body is a
+      // pure param-forward (`jump e(param)`): retarget the operand to e and
+      // drop the letk — the pending cell was a pure trampoline. Leaving it
+      // in costs more than a dispatch: every tail-resuming case invocation
+      // chains its pending cell to the previous one's, so a tail-resumption
+      // loop's continuation grows one link per iteration (both backends
+      // retain the whole chain for the loop's lifetime). Calls only: the
+      // callee is a resume binder, so the value delivered into the cell is
+      // the sub-run's checker-produced completion (canonical — the param
+      // norm would be a no-op). A perform's cell may also be fed by the
+      // host's unhandled-op resume, whose values are un-normalized, so
+      // those trampolines stay.
+      const fwd = pureForwardTarget(t.body, t.param);
+      if (fwd !== undefined) {
+        const site = findKOperandSite(t.rest, t.name);
+        if (site !== undefined) {
+          site.k = {t: "var", name: fwd};
+          changed.v = true;
+          return t.rest;
+        }
       }
     }
     rewriteChildren(t, rw);
     return t;
   };
   return [rw(root), changed.v];
+}
+
+// The exit continuation a pure param-forward letk body jumps to, if the
+// body is exactly `jump e(param)`.
+function pureForwardTarget(body: CTerm, param: string): string | undefined {
+  if (body.t === "jump" && body.k.t === "var" && body.arg.t === "var"
+      && body.arg.name === param) return body.k.name;
+  return undefined;
+}
+
+// The call node whose k operand names `name`, if that unique reference
+// (guaranteed by the caller's ref count) is such a node.
+function findKOperandSite(c: CTerm, name: string): (CTerm & {t: "call"}) | undefined {
+  if (c.t === "call" && c.k.t === "var" && c.k.name === name) return c;
+  let hit: (CTerm & {t: "call"}) | undefined;
+  rewriteChildren(c, (x) => {
+    if (hit === undefined) hit = findKOperandSite(x, name);
+    return x;
+  });
+  return hit;
 }
 
 // The argument of the unique jump to `name` in the subtree, if that unique

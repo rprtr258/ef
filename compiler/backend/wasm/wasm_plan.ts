@@ -519,7 +519,12 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
         const retSlot = addSlot(ts[0], t.ret);
         const npMax = Math.max(0, ...t.cases.map(c => c.params.length));
         const topBinds = Math.max(0, ...t.cases.map(c => countTopBinds(c.body)));
-        const hframeSize = npMax + 2 + topBinds;
+        // hframe layout: [params npMax][op resume binder][Return value]
+        // [topBinds][ret binder] — the Return case's identity resume gets
+        // the trailing slot: a Return completion through the boundary
+        // overwrites the binder it stores, and a twice-resuming case body
+        // (l := k(true); r := k(false)) still needs the op binder at npMax.
+        const hframeSize = npMax + 3 + topBinds;
         const hp: HdlP = {hdlIdx: cx.hdlOrder.length, hframeSize, retSlot, caseP: []};
         ah.__p = hp;
         cx.hdlOrder.push(ah);
@@ -540,12 +545,17 @@ function planUnit(cx: Cx, term: CTerm, base: TScope, esc: Set<string>): void {
           const hl = lvl();
           hl.fnCtx = ++cx.fnCtx;
           for (let i = 0; i < npMax; i++) addSlot(hl, `$p${i}`);
-          addSlot(hl, retCase.resume);
+          // Hole keeps the Return value at npMax+1 (the K_BND store site);
+          // the ret binder itself goes LAST — a Return completion through
+          // the boundary must not overwrite the op resume binder at npMax,
+          // which a twice-resuming case body still needs.
+          addSlot(hl, `$retbinder`);
           addSlot(hl, retCase.params[0]);
           const resc = analyzeEscapes(retCase.body);
           hp.retP = {base: [hl, ...ts], esc: resc, fnIdx: cx.caseCount++};
           hp.retResumeIdx = cx.retResCount++;
           planUnit(cx, retCase.body, [hl, ...ts], resc);
+          addSlot(hl, retCase.resume);
           cx.fnCtx = hl.fnCtx;
         } else if (npMax > 0) {
           hp.idRetIdx = cx.idRetCount++;

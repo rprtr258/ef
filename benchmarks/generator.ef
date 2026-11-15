@@ -1,0 +1,24 @@
+# Bench: generator from effect-handlers-bench (large input 25 -> 67108837).
+# Depth-first walk of the complete binary tree of height 25; each node
+# yields its value once (2^25 - 1 performs) and the handler accumulates the
+# sum. The tree is never materialized: gen(h) recursing on the same height
+# mirrors make_tree's DAG sharing (t = make(n-1) used as both children).
+effect Yield(v: i64): unit;
+
+s := 0;
+
+gen :: fn(h: i64): unit ! { Yield } {
+  if (h > 0) {
+    gen(h - 1);
+    Yield!(h);
+    gen(h - 1)
+  }
+};
+
+handle {
+  gen(25)
+} case Yield(v) => k {
+  s = s + v;
+  k(unit)
+};
+s
