@@ -195,7 +195,7 @@ const FIXTURES: Row[] = [
   {file: "f64-sum-keeps-precision.ef", want: "0.30000000000000004\n"},
   {file: "f32-typed-lets.ef", want: "0.30000001192092896\n"},
   {file: "f32-param-sig.ef", want: "6.050000190734863\n"},
-  {file: "f32-wildcard-adapts.ef", want: "2\n"},
+  {file: "f32-num-adapts.ef", want: "2\n"},
   {file: "f32-map-squares-elem0.ef", want: "0.25\n"},
   {file: "f32-sqrt.ef", want: "2\n"},
   {file: "f32-neg.ef", want: "-1.5\n"},

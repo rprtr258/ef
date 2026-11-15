@@ -26,7 +26,7 @@ performed without a matching handler surface in the program's residual row.
 | Variant | Written as | Notes |
 |---------|-----------|-------|
 | `Prim` | `i32 i64 u32 u64 f32 f64 string bool unit` | six numeric widths — arithmetic is strict per width |
-| untyped wildcards | *(internal)* `int` / `float` | produced **only** by literals; flex to any numeric (resp. float) context, default `i64` / `f64`; never writable in source |
+| untyped num types | *(internal)* `int` / `float` | produced **only** by literals; flex to any numeric (resp. float) context, default `i64` / `f64`; never writable in source |
 | `ArrT` | `[T]` | homogeneous array |
 | `TupT` | `[x: f64, y: f64]` / `[i64, string]` | fixed arity; field names are for access only — unification compares arity + positional types, not names |
 | `FunT` | `(T) -> R ! { E }` | params, return, and an **effect row** |
@@ -52,7 +52,7 @@ plain data; every resolver is a method, so independent `checkProgram` calls
   <text x="32"  y="76">v1 ≡ v2 ≡ v3   (union-find)</text>
   <text x="32"  y="96" class="faint">binds[v3] = i64</text>
   <text x="32"  y="116" class="faint">occurs-check rejects recursive types</text>
-  <text x="32"  y="140" class="faint">wilds: untyped literals flex to</text>
+  <text x="32"  y="140" class="faint">num types: untyped literals flex to</text>
   <text x="32"  y="154" class="faint">the context they unify with</text>
   <rect class="box" x="252" y="30" width="216" height="130" rx="10"/>
   <text x="360" y="52" text-anchor="middle">effect rows</text>
@@ -96,10 +96,12 @@ generic row on the argument type.
 2. Infer each expression item; residual per-item effect rows land in
    `Checked.unhandled` (ops-minus-handled matching is done here — the checker
    can see through calls, which is exactly what a syntactic AST walk cannot).
-3. **Wildcard resolution + width-stamp post-pass** after *all* items:
-   `resolveWilds` propagates op-linked wildcard widths to a fixpoint, then
-   defaults every still-unbound literal (`int` → `i64`, `float` → `f64`) —
-   no wildcard survives checking. Divergent reads (one untyped binding read
+3. **Num-type resolution + width-stamp post-pass** after *all* items:
+   `resolveNums` propagates op-linked num-type widths to a fixpoint. Untyped
+   num types stay valid through checking — the REPL acc keeps them (per-read
+   copies flex per use), while backends lower them to the defaults
+   (`int` → `i64`, `float` → `f64`) via `widthOf` at every stamp site.
+   Divergent reads (one untyped binding read
    at several widths) are marked `adaptFrom` so the backends adapt the
    stored box's representation; stamps are then written from the resolved
    types (`nodeTypes`, `stamps.numKind`, …).
@@ -109,7 +111,7 @@ generic row on the argument type.
 | Rule | Consequence |
 |------|-------------|
 | Strict widths | `i32 + i64` is a type error; `@as(expr, T)` is the one conversion (float→int truncates, bool→0/1) |
-| Wildcard literals | `1` flexes to any numeric width, `1.5` to any float width — each read flexes its own copy of the wildcard; `resolveWilds` leaves every literal a concrete width (default `i64`/`f64`), never widened at parse time |
+| Num-type literals | `1` flexes to any numeric width, `1.5` to any float width — each read flexes its own copy of the num type; backends lower unresolved num types to `i64`/`f64` via `widthOf`, never widened at parse time; the REPL alone echoes them as untyped num types (`42 : int`, `x := 42; x` → `42 : int`, `PI : float`) |
 | f32 stamping | every producing node is stamped; interp frounds, wasm emits a demote/promote round-trip — f32 precision holds end to end |
 | `any` is absorbing | escape hatch; inferred-`any` bindings warn (explicit annotation silences) |
 | `Op!` needs a declaration | `effect Op(args): ret` — `ret` is what `Op!(…)` evaluates to, i.e. what `resume` injects |

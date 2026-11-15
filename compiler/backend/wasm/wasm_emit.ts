@@ -443,7 +443,7 @@ export function emitHelpers(em: Emit): Fn[] {
   box.body.localGet(0);
   box.body.structNew(0);
   // $num64(v: anyref) -> f64: adaptive numeric unbox for the f64 plane —
-  // $F64 payload as-is; an $F32 box promotes (exact): float-wildcard
+  // $F64 payload as-is; an $F32 box promotes (exact): untyped-float num
   // values can flow into f64-plane positions (builtin params,
   // counters), so numeric unboxes must accept both shapes.
   ladderBody(num64.body, {

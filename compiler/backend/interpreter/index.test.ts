@@ -715,7 +715,8 @@ test("REPL: bindings persist across lines", () => {
     "bun run ../../cli.ts repl",
     {input: "a :: 6\nb :: 7\na * b\n:q\n", encoding: "utf8", timeout: 20000, cwd: import.meta.dir},
   );
-  expect(out).toContain("42 : i64");
+  // The REPL echoes untyped num types: a :: 6 stays an untyped int per read.
+  expect(out).toContain("42 : int");
 });
 
 describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
@@ -1167,7 +1168,7 @@ describe("numeric widths", () => {
     expect(typeOf(`1.5 + 1.5`)).toBe("f64");
   });
 
-  test("wildcard-wide arithmetic runs unstamped through the operator table", () => {
+  test("num-typed arithmetic runs unstamped through the operator table", () => {
     // Two untyped float literals leave the site unstamped (no concrete
     // width to pin), so the interpreter applies the env's own `+` closure.
     expect(run(`1.5 + 2.5`)).toBe(4);

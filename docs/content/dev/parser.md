@@ -66,7 +66,7 @@ Why flat instead of embedded:
 
 | Variant | Source | Notes |
 |---------|--------|-------|
-| `num` | `1`, `1.5` | `isFloat` decides the untyped int/float wildcard; checker stamps `numKind` with the resolved width |
+| `num` | `1`, `1.5` | `isFloat` decides the untyped int/float num type; checker stamps `numKind` with the resolved width |
 | `str` · `bool` · `unit` | literals | escapes decoded here (`parseStr`) |
 | `sym` | names | variable references and desugared operator names |
 | `lambda` | `fn (p) { … }` | optional `: R` / `! { Effs }` annotations; the width-ambiguity bookkeeping for unannotated params lives in stamps.ts's `lamWidths` map, not on the node |

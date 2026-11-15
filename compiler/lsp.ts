@@ -140,7 +140,7 @@ function hoverMd(text: string): Hover {
 // containing node. Typed syms show `name : Type` (instantiated for
 // polymorphic uses), with the fn's param names when known (binder lambda or
 // builtin table); binder nodes record unit, so they display the bound
-// value's type (annotated/wildcard vals are pinned to the binding's resolved
+// value's type (annotated/num-typed vals are pinned to the binding's resolved
 // width by the checker) as `name : Type`; everything else the bare type.
 function hoverText(prog: Program, checked: Checked, id: ExprID, c: Loc): string | null {
   const e = prog.nodes[id], uni = checked.uni;

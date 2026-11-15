@@ -14,9 +14,9 @@
 // a numeric width must classify its stamping here: stampSuspension switches
 // exhaustively over `e.t` and ends in assertNever, so a new variant fails
 // to compile until its call-site status is declared. Numeric widths are NOT
-// decided here: unify binds literal widths in place and resolveWilds
-// (unify.ts) leaves every wildcard concrete before stampNumKinds reads the
-// resolved types.
+// decided here: unify binds literal widths in place; unresolved num types
+// ("int"/"float") lower to the defaults (i64/f64) via widthOf — stampNumKinds
+// reads the lowered width off the resolved types.
 //
 // The module needs nothing from types.ts's checking internals: it reads the
 // unifier (types resolve here) and the parser's node slice. The checking
@@ -116,8 +116,8 @@ export function touchNumericVar(u: Unifier, t: Type): void {
 // way): an unannotated param is rejected when (a) numeric ops touched its var
 // but the width never resolved concrete (the generalized type would flex per
 // instantiation while the body fixed one width), or (b) it was pinned to an
-// untyped-literal wildcard (int/float) by anything — numeric ops, `==`, or an
-// int-wildcard builtin param. Truly polymorphic params (unbound vars, `any`)
+// untyped-literal num type (int/float) by anything — numeric ops, `==`, or an
+// int-num builtin param. Truly polymorphic params (unbound vars, `any`)
 // and non-numeric pins (string, arrays, functions) pass. Directly-passed
 // lambdas never reach here: their params get concrete types from the
 // instantiation.
@@ -138,7 +138,7 @@ export function checkLamWidths(u: Unifier, lamId: ExprID): void {
 
 // Stamp an operator site's COMPUTE width (the operand width; the result type
 // would be bool for comparisons). The operands' widths were resolved by
-// unification itself (flexWild/resolveWilds), so nothing is pinned here.
+// unification itself (flexNum/resolveNums), so nothing is pinned here.
 // No-op when the op's result carries no width (string `+`).
 export function stampComputeWidth(uni: Unifier, id: ExprID, widened: Type, stamps: (NodeStamps | undefined)[]): void {
   const wo = widthOf(uni.res(widened));
@@ -146,11 +146,11 @@ export function stampComputeWidth(uni: Unifier, id: ExprID, widened: Type, stamp
 }
 
 // Numeric equality is stamped with the compute width too (concrete side
-// wins between a width and a wildcard literal; float beats int between two
-// wildcards) — the result type is bool, so the operand width is not
+// wins between a width and a num-type literal; float beats int between two
+// num types) — the result type is bool, so the operand width is not
 // derivable from the node's type. The operands' widths were resolved by the
-// eq site's own unify (flexWild/resolveWilds); the fallback pick only
-// covers shared wildcard singletons (e.g. `PI == 3` → f64).
+// eq site's own unify (flexNum/resolveNums); the fallback pick only
+// covers shared num-type singletons (e.g. `PI == 3` → f64).
 export function stampEqWidth(uni: Unifier, id: ExprID, at: Type, bt: Type, stamps: (NodeStamps | undefined)[]): void {
   const ea = widthOf(uni.res(at)), eb = widthOf(uni.res(bt));
   if (ea !== null && eb !== null)
@@ -164,11 +164,10 @@ export function stampDivWidth(uni: Unifier, id: ExprID, widened: Type, stamps: (
   slot(stamps, id).div = rw !== null ? rw.w : "f64";
 }
 
-// Width stamps: after resolveWilds has left every wildcard concrete, stamp
-// every node whose type resolved to a numeric width with `numKind`. The
-// "int"/"float" branch only covers the SHARED TINT/TFLOAT singletons
-// (builtin signature wildcards), defaulting to i64/f64; fresh literal
-// wildcards never reach it. Unstamped nodes (type still an unbound var —
+// Width stamps: stamp every node whose type resolved to a numeric width
+// with `numKind`, lowering untyped num types to the defaults (int → i64,
+// float → f64 — the branch covers fresh literal num types and the shared
+// TINT/TFLOAT singletons alike). Unstamped nodes (type still an unbound var —
 // polymorphic uses) compute by value-based dispatch at runtime.
 export function stampNumKinds(uni: Unifier, nodeTypes: (Type | undefined)[], stamps: (NodeStamps | undefined)[]): void {
   for (let id = 0; id < nodeTypes.length; id++) {

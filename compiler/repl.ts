@@ -34,8 +34,12 @@ export function repl(): void {
     // runLine prepares against ctx's accumulator (a type error throws and
     // leaves ctx.checked untouched) and execs; the echo rule prints here.
     const {value, lastType, lastIsExpr} = runLine(ctx, src);
-    if (lastIsExpr && value !== null)
-      console.log(show(value) + " : " + showT(lastType));
+    if (lastIsExpr && value !== null) {
+      // Untyped constants echo as num types (int/float), not the width
+      // backends lower them to — 42 : int, PI : float.
+      const t = ctx.checked.lastNum ?? showT(lastType);
+      console.log(show(value) + " : " + t);
+    }
   };
   const HELP = [
     "Commands:",

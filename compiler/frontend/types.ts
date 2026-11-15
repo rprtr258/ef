@@ -227,12 +227,12 @@ const ANY_ARITH = "any is not a numeric width — concrete widths required for a
 // first-class values and can't silently compare unrelated types.
 
 // Numeric op result under strict same-type arithmetic: untyped literals
-// (`int`/`float` names) are wildcards that take the other side's concrete
-// width — unification binds the width into the wildcard instance itself
-// (float wins between two wildcards; two distinct concrete widths are a
-// type error — @as converts explicitly). Two same-kind wildcards get a
-// fresh result wildcard linked to both operands: a later concrete context
-// (annotation, outer op) mutates the result and resolveWilds propagates the
+// (`int`/`float` names) are num types that take the other side's concrete
+// width — unification binds the width into the num-type instance itself
+// (float wins between two num types; two distinct concrete widths are a
+// type error — @as converts explicitly). Two same-kind num types get a
+// fresh result num type linked to both operands: a later concrete context
+// (annotation, outer op) mutates the result and resolveNums propagates the
 // width into the literals, so operands and op share one final width.
 function numericResult(u: Unifier, ra: Type, rb: Type, op: string): Type {
   if (isNum(ra) && rb.tag === "var") { u.unify(rb, ra); return ra; }
@@ -245,18 +245,18 @@ function numericResult(u: Unifier, ra: Type, rb: Type, op: string): Type {
     if (na === "int" || na === "float") {
       if (nb === "int" || nb === "float") {
         if (na !== nb) {
-          // Mixed wildcards: the int side flexes to float (both default f64).
-          u.flexWild(na === "int" ? ra : rb, "float");
+          // Mixed num types: the int side flexes to float (both default f64).
+          u.flexNum(na === "int" ? ra : rb, "float");
           return TFLOAT;
         }
-        const r = u.newWild(na);
-        u.linkWilds(r, ra);
-        u.linkWilds(r, rb);
+        const r = u.newNum(na);
+        u.linkNums(r, ra);
+        u.linkNums(r, rb);
         return r;
       }
-      u.flexWild(ra, nb); return rb;              // concrete width wins
+      u.flexNum(ra, nb); return rb;              // concrete width wins
     }
-    if (nb === "int" || nb === "float") { u.flexWild(rb, na); return ra; }
+    if (nb === "int" || nb === "float") { u.flexNum(rb, na); return ra; }
     if (na === nb) return ra;                     // strict same-width
     throw new TypeError_(`${op}: ${showT(ra)} and ${showT(rb)} are different numeric widths (use @as to convert)`);
   }
@@ -362,7 +362,7 @@ function inferNode(
   const e = nodes[id];
   try {
   switch (e.t) {
-    case "num": return env.uni.newWild(e.isFloat ? "float" : "int");
+    case "num": return env.uni.newNum(e.isFloat ? "float" : "int");
     case "str": return TSTR;
     case "bool": return TBOOL;
     case "unit": return TUNIT;
@@ -371,14 +371,14 @@ function inferNode(
       if (s === undefined)
         throw new TypeError_("Unbound: " + e.v);
       const t = typeof s === "function" ? s() : s;
-      // A read of a wildcard-typed value (a binding over an untyped literal,
-      // or a signature's TINT/TFLOAT) copies the wildcard per read: each
+      // A read of a num-typed value (a binding over an untyped literal,
+      // or a signature's TINT/TFLOAT) copies the num type per read: each
       // use flexes its own width in unification without leaking the
       // mutation into the binding's type or sibling reads. Concrete prims
       // are immutable and shared as-is.
       const rt = env.uni.res(t);
       const t2 = rt.tag === "prim" && (rt.name === "int" || rt.name === "float")
-        ? env.uni.newWild(rt.name)
+        ? env.uni.newNum(rt.name)
         : t;
       // Copied reads remember the binding's own type: after resolution the
       // checker marks reads whose site width diverged from the binding's
@@ -808,6 +808,11 @@ export type Checked = {
   effects: Map<string, EffectSig>,
   uni: Unifier,
   lastType: Type,
+  // Pre-defaulting num name ("int"/"float") when the last item's type was
+  // an untyped num type — bare constants and builtin consts like PI. The
+  // REPL displays it instead of lastType's defaulted width; every other
+  // consumer sees the concrete lastType. Fresh per checkProgram call.
+  lastNum: "int" | "float" | undefined,
   // Union of this call's items' top-level residual effect rows — performed
   // ops with no matching handler in their subtree (the checker's own
   // ops-minus-handled bookkeeping; lambdas defer their performs). exec
@@ -848,8 +853,8 @@ export function checkProgram(
     for (const b of BUILTIN_TABLE) {
       if (b.kind !== "effect") {
         const bt = b.t;
-        // Instantiated per use through copyScheme: the wildcard prims in a
-        // signature (the TFLOAT/TINT singletons) copy to fresh wilds per
+        // Instantiated per use through copyScheme: the num prims in a
+        // signature (the TFLOAT/TINT singletons) copy to fresh num types per
         // call site, so a call flexes its own copy without leaking the
         // width into the signature or other sites.
         env.vars.set(b.name, () =>
@@ -878,15 +883,24 @@ export function checkProgram(
   for (const op of uni.resRow(row).ops)
     unhandled.add(op);
 
-  // Wildcard resolution: propagate op-linked widths, then default every
-  // still-unbound wildcard (int → i64, float → f64). After this the checker
-  // has left no untyped literals — every numeric node type is concrete, so
-  // numKind stamping reads widths straight off the resolved types.
-  uni.resolveWilds();
+  // Num-type resolution: propagate op-linked widths to a fixpoint. Untyped
+  // num types ("int"/"float") stay valid through checking — the REPL acc
+  // keeps them so `x := 42; x` reads copy a fresh num type per use, and a
+  // bare constant echoes as `42 : int` (Checked.lastNum). Backends lower
+  // them to the defaults via widthOf (stamps, devirt) — the checker never
+  // mutates them, so numKind stamping still reads lowered widths.
+  // The REPL alone keeps the pre-lowering view (lastNum): a bare
+  // constant's result type is an untyped num type (int/float), and a
+  // builtin const like PI displays as its untyped float.
+  const lastRes = uni.res(lastType);
+  const lastNum = lastRes.tag === "prim" && (lastRes.name === "int" || lastRes.name === "float")
+    ? lastRes.name
+    : undefined;
+  uni.resolveNums();
   stampNumKinds(uni, rec.nodeTypes, rec.stamps);
-  // Divergent reads: a per-read wildcard copy may have flexed to a width
+  // Divergent reads: a per-read num-type copy may have flexed to a width
   // different from the binding's own box width (one untyped binding read
-  // at several widths). Mark those reads so the backends adapt the stored
+  // at several widths; the box rides the lowered default). Mark those reads so the backends adapt the stored
   // representation instead of assuming the stamp's box shape.
   for (let id = 0; id < rec.nodeTypes.length; id++) {
     const t = rec.nodeTypes[id];
@@ -898,10 +912,13 @@ export function checkProgram(
     const sw = widthOf(uni.res(t));
     const bt = uni.res(src.bindTyp);
     const bw = bt.tag === "prim" ? widthOf(bt) : null;
-    if (sw !== null && sw.concrete && bw !== null && bw.concrete && bw.w !== sw.w)
+    // Both widths come back lowered (widthOf maps num types to i64/f64), so
+    // the comparison holds for unlowered binding types too — the box rides
+    // the binding's lowered default even when the checker kept the num type.
+    if (sw !== null && bw !== null && bw.w !== sw.w)
       src.adaptFrom = bw.w;
   }
   stampSuspension(prog.nodes, uni, rec.nodeTypes, rec.stamps);
 
-  return {env, effects, uni, lastType: uni.deepRes(lastType), unhandled, semToks: rec.semToks, nodeTypes: rec.nodeTypes, stamps: rec.stamps};
+  return {env, effects, uni, lastType: uni.deepRes(lastType), lastNum, unhandled, semToks: rec.semToks, nodeTypes: rec.nodeTypes, stamps: rec.stamps};
 }

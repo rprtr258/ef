@@ -264,7 +264,8 @@ function toBig(v: Value): bigint {
 }
 
 // Stamped operator application (all numeric ops except string `+`): the
-// checker has resolved every operand's width (flexWild/resolveWilds), so
+// checker resolved every operand's width (flexNum; untyped num types lower
+// to the defaults via widthOf), so
 // operands arrive already in the stamp's representation — i32/u32/f32/f64
 // as JS numbers, i64/u64 as BigInt — and the prim's norm wraps the raw
 // mathematical result to the width (i32 |0, f32 fround, i64/u64

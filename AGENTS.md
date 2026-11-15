@@ -256,12 +256,15 @@ the README's opening, and compiler-internal changes update
   replace int/float. Operands of a numeric op must share a width (`i32 +
   i64` is a type error); `@as(expr, T)` is the one conversion (float→int
   truncates, bool→numeric gives 0/1). Untyped literals (`1`, `1.5`) check
-  as internal wildcard types that flex to any numeric (resp. float)
-  context — each read/operation resolves its own copy in the unifier, and
-  `checkProgram` finishes with `resolveWilds`: propagation over op-linked
-  wildcards, then literal defaulting to i64/f64, so no wildcard survives
-  checking and the evaluator never coerces operands (after typecheck they
-  are already in the op's width). Never let them widen to concrete types
+  as internal untyped const (num) types — `int`/`float` — that flex to any
+  numeric (resp. float) context — each read/operation resolves its own copy in the unifier, and
+  `checkProgram` finishes with `resolveNums`: propagation over op-linked
+  num types. Num types stay valid through checking — the REPL acc keeps
+  them (a read copies a fresh num type, so `x := 42; x` echoes `42 : int`
+  and later uses can flex to other widths), while backends lower them to
+  the defaults (i64/f64) via `widthOf` at every stamp site, so the
+  evaluator never coerces operands (after typecheck they are already in
+  the op's width). Never let them widen to concrete types
   at parse time. f32 values round to f32 precision at every producing node (checker
   stamps `f32`; interp frounds, wasm emits a demote/promote round-trip);
   i64/u64 are exact to 2^53, no wraparound.

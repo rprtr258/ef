@@ -1,5 +1,5 @@
 // unify: the type-system core — the `Type` union and its shapes, the
-// unifier (union-find over type/effect variables, untyped-literal wildcard
+// unifier (union-find over type/effect variables, untyped-literal num
 // flexing, speculative checkpoint/restore), and HM generalization over the
 // checker `Env`. A leaf over prims.ts: the shape constructors (tArr/tFun/
 // tTup) and the prim constants live there, and prims imports only this
@@ -57,8 +57,11 @@ export type Var = { tag: "var", id: number };
 export type AnyT = { tag: "any" };
 
 // The numeric width of a resolved type: concrete widths as-is, untyped
-// int/float literals defaulted to i64/f64 (literal defaulting, not width
-// conversion). null for non-numeric types.
+// int/float num types lowered to their defaults (int → i64, float → f64 —
+// literal defaulting, not width conversion). This is THE backend lowering
+// point: stamps.ts and the wasm devirtualizer read widths only through it,
+// so untyped num types surviving the checker never leak into codegen.
+// null for non-numeric types.
 export function widthOf(t: Type): {w: NumName, concrete: boolean} | null {
   if (t.tag !== "prim") return null;
   const n = t.name as NumName;
@@ -91,19 +94,19 @@ export class Unifier {
   // binding's own unification constrains it afterwards).
   forcedRows = new Map<number, number>();
   effCounter = 0;
-  // Fresh per-literal wildcard prims (newWild). Unifying a wildcard with a
-  // numeric context BINDS the width into the instance itself (flexWild) —
+  // Fresh per-literal untyped num prims (newNum). Unifying a num type with
+  // a numeric context BINDS the width into the instance itself (flexNum) —
   // every recorded reference to it resolves to the concrete width. Shared
-  // singletons (TINT/TFLOAT in builtin signatures) are never in `wilds`, so
-  // unifying against them never mutates. wildLinks records same-kind
-  // wildcard pairs (op result ↔ operands) whose width is only decided
-  // later, resolved to concrete by resolveWilds at end of check.
-  wilds = new Set<Prim>();
-  wildLinks: Array<[Prim, Prim]> = [];
+  // singletons (TINT/TFLOAT in builtin signatures) are never in `nums`, so
+  // unifying against them never mutates. numLinks records same-kind
+  // num-type pairs (op result ↔ operands) whose width is only decided
+  // later, resolved to concrete by resolveNums at end of check.
+  nums = new Set<Prim>();
+  numLinks: Array<[Prim, Prim]> = [];
 
-  newWild(name: "int" | "float"): Prim {
+  newNum(name: "int" | "float"): Prim {
     const p: Prim = {tag: "prim", name};
-    this.wilds.add(p);
+    this.nums.add(p);
     return p;
   }
 
@@ -112,48 +115,46 @@ export class Unifier {
     this.parent.set(id, id);
     return {tag: "var", id};
   }
-  // Bind a wildcard's width in place (no-op for the shared TINT/TFLOAT
+  // Bind a num type's width in place (no-op for the shared TINT/TFLOAT
   // singletons — they stay context-flexible defaults). The name may itself
-  // be a wildcard name ("int"/"float"): the mixed-literal case mutates the
-  // int side to "float", still resolved by resolveWilds.
-  flexWild(wild: Prim, name: NumName): void {
-    if (this.wilds.has(wild)) wild.name = name;
+  // be a num name ("int"/"float"): the mixed-literal case mutates the
+  // int side to "float", still resolved by resolveNums.
+  flexNum(num: Prim, name: NumName): void {
+    if (this.nums.has(num)) num.name = name;
   }
-  // Link an op-site result wildcard with an operand wildcard: whichever
+  // Link an op-site result num type with an operand num type: whichever
   // side resolves a concrete width first (annotation, outer op, defaulting)
-  // propagates to the other in resolveWilds.
-  linkWilds(result: Prim, operand: Prim): void {
-    this.wildLinks.push([result, operand]);
+  // propagates to the other in resolveNums.
+  linkNums(result: Prim, operand: Prim): void {
+    this.numLinks.push([result, operand]);
   }
-  // End-of-check wildcard resolution: propagate linked widths to a fixpoint,
-  // then default every wildcard still unbound (literal defaulting, not
-  // width conversion — int → i64, float → f64). After this every wildcard
-  // instance is a concrete width: the checker leaves no untyped literals.
-  resolveWilds(): void {
+  // End-of-check num-type resolution: propagate linked widths to a fixpoint
+  // (annotation, outer op, or a concrete context decides the shared width).
+  // No defaulting here: untyped num types ("int"/"float") stay valid through
+  // checking — the REPL acc keeps them, and per-read copies flex per use.
+  // Backends lower them to the defaults (int → i64, float → f64) via
+  // widthOf at every stamp site.
+  resolveNums(): void {
     for (let changed = true; changed;) {
       changed = false;
-      for (const [r, o] of this.wildLinks) {
+      for (const [r, o] of this.numLinks) {
         const wr = widthOf(r), wo = widthOf(o);
         if (wr === null || wo === null) continue;
-        // Only fresh wildcards are mutable — the shared TINT/TFLOAT
+        // Only fresh num types are mutable — the shared TINT/TFLOAT
         // singletons keep their context-flexible name, so a link touching
         // one never sets changed (the fixpoint must terminate even when an
         // edge can never fully resolve).
         if (wr.concrete !== wo.concrete) {
-          if (wr.concrete && this.wilds.has(o) && o.name !== wr.w) { o.name = wr.w; changed = true; }
-          else if (!wr.concrete && this.wilds.has(r) && r.name !== wo.w) { r.name = wo.w; changed = true; }
+          if (wr.concrete && this.nums.has(o) && o.name !== wr.w) { o.name = wr.w; changed = true; }
+          else if (!wr.concrete && this.nums.has(r) && r.name !== wo.w) { r.name = wo.w; changed = true; }
         } else if (!wr.concrete && wr.w !== wo.w) {
-          // Mixed wildcard kinds across a link (int vs float): the int
+          // Mixed num kinds across a link (int vs float): the int
           // side flexes to float — the float side may still flex to a
           // concrete f32/f64 in a later round.
-          if (wr.w === "i64" && this.wilds.has(r) && r.name !== "float") { r.name = "float"; changed = true; }
-          else if (wo.w === "i64" && this.wilds.has(o) && o.name !== "float") { o.name = "float"; changed = true; }
+          if (wr.w === "i64" && this.nums.has(r) && r.name !== "float") { r.name = "float"; changed = true; }
+          else if (wo.w === "i64" && this.nums.has(o) && o.name !== "float") { o.name = "float"; changed = true; }
         }
       }
-    }
-    for (const w of this.wilds) {
-      if (w.name === "int") w.name = "i64";
-      else if (w.name === "float") w.name = "f64";
     }
   }
   freshEff(): EffVar {
@@ -375,17 +376,17 @@ export class Unifier {
     if (ra.tag === "var") { this.bindVar(ra.id, rb); return; }
     if (rb.tag === "var") { this.bindVar(rb.id, ra); return; }
     if (ra.tag === "prim" && rb.tag === "prim") {
-      // Numeric compatibility: untyped literals are wildcards — `1` accepts
+      // Numeric compatibility: untyped literals are num types — `1` accepts
       // any numeric context, `1.5` only float contexts (f32/f64, or the
       // untyped-int side of mixed literal arithmetic). Concrete widths are
-      // strict: i32 ~ i64 is a type error, use @as to convert. A wildcard
+      // strict: i32 ~ i64 is a type error, use @as to convert. A num type
       // meeting a context binds that width into its instance in place.
       const an = ra.name as NumName, bn = rb.name as NumName;
       if (an === bn) return;                               // exact: i32 ~ i32, string ~ string, ...
-      if (an === "int" && NUMERIC_NAMES.has(bn)) { this.flexWild(ra, bn); return; }   // `1` -> any numeric
-      if (bn === "int" && NUMERIC_NAMES.has(an)) { this.flexWild(rb, an); return; }
-      if (an === "float" && (bn === "float" || FLOAT_NAMES.has(bn))) { this.flexWild(ra, bn); return; }  // `1.5` -> f32/f64
-      if (bn === "float" && (an === "float" || FLOAT_NAMES.has(an))) { this.flexWild(rb, an); return; }
+      if (an === "int" && NUMERIC_NAMES.has(bn)) { this.flexNum(ra, bn); return; }   // `1` -> any numeric
+      if (bn === "int" && NUMERIC_NAMES.has(an)) { this.flexNum(rb, an); return; }
+      if (an === "float" && (bn === "float" || FLOAT_NAMES.has(bn))) { this.flexNum(ra, bn); return; }  // `1.5` -> f32/f64
+      if (bn === "float" && (an === "float" || FLOAT_NAMES.has(an))) { this.flexNum(rb, an); return; }
       throw this.typeMismatch(ra, rb);
     }
     if (ra.tag === "arr" && rb.tag === "arr") { this.unify(ra.elem, rb.elem); return; }
@@ -438,13 +439,13 @@ export class Unifier {
           r.contCall === true || r.anyTaint === true ? {contCall: r.contCall, anyTaint: r.anyTaint} : undefined,
         );
       default:
-        // Wildcard prims (untyped-literal types — the shared TINT/TFLOAT
-        // signature singletons and fresh literal wildcards alike)
+        // Num prims (untyped-literal types — the shared TINT/TFLOAT
+        // signature singletons and fresh literal num types alike)
         // instantiate fresh per use: the call site flexes its own copy via
-        // flexWild without leaking a width into the signature or other
+        // flexNum without leaking a width into the signature or other
         // sites. Concrete prims are immutable — shared as-is.
         if (r.tag === "prim" && (r.name === "int" || r.name === "float"))
-          return this.newWild(r.name);
+          return this.newNum(r.name);
         return r;
     }
   }
