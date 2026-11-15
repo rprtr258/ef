@@ -6,7 +6,7 @@ import {
   rowOf, tArr, tTup, tFun,
 } from "../prims.ts";
 import type {EffectSig} from "./types.ts";
-import {KEYWORDS, lex, ParseError, type Pos, type Tok} from "./lexer.ts";
+import {KEYWORDS, lex, ParseError, type Loc, type LocRange, type Tok} from "./lexer.ts";
 import {assertNever} from "../assert.ts";
 import {OP_NEG, OP_NOT} from "../ops.ts";
 
@@ -46,34 +46,34 @@ function subst(t: Type, tm: Map<number, Type>): Type {
   return t;
 }
 
-export type Param = { name: string, typ: Type | null, pos?: Pos };
+export type Param = { name: string, typ: Type | null, pos?: Loc };
 
 type HandlerCase = {
   op: string,
   params: Param[],
   resume: string,
-  resumePos: Pos, // the resume binder token's start — not an Expr node; the LSP hovers it with the checker's resume type
+  resumePos: Loc, // the resume binder token's start — not an Expr node; the LSP hovers it with the checker's resume type
   body: ExprID,
 };
 
 export type Item =
   | { e: ExprID }
-  | { effect: string, sig: EffectSig, pos?: Pos } // pos: the effect name token — go-to-definition's target for effect-name occurrences
-  | { alias: Alias, pos?: Pos }; // pos: the alias name token — go-to-definition's target for alias-name occurrences
+  | { effect: string, sig: EffectSig, pos?: Loc } // pos: the effect name token — go-to-definition's target for effect-name occurrences
+  | { alias: Alias, pos?: Loc }; // pos: the alias name token — go-to-definition's target for alias-name occurrences
 
 // --- AST ---
 // Flat node slice: expressions reference their children by `ExprID` (an index
 // into `Program.nodes`), not by embedding child nodes.
 export type ExprID = number;
-export type Program = { nodes: Expr[], starts: (Pos | undefined)[], items: Item[], typeToks: TypeTok[], ends: Pos[] };
+export type Program = { nodes: Expr[], locs: (LocRange | undefined)[], items: Item[], typeToks: TypeTok[] };
 
 // TypeTok: a type/effect name occurrence recorded while parsing — consumed by
 // the LSP's semantic-tokens provider (type/effect highlighting) and, for the
 // `macro` kind (effect decls, `! { … }` rows, performs, case labels), by the
 // effect-signature hover. Both backends ignore it. `len` is the token's
 // source length; pos is 1-based.
-export type TypeTok = {pos: Pos, len: number, kind: "type" | "typeParameter" | "macro" | "function" | "variable", name: string};
-// Node source positions live in Program.starts (parallel to nodes), not
+export type TypeTok = {pos: Loc, len: number, kind: "type" | "typeParameter" | "macro" | "function" | "variable", name: string};
+// Node source extents live in Program.locs (parallel to nodes), not
 // here; a node's own `pos`-like fields (dlet field names, Param) are binder
 // name tokens, a different concern.
 export type Expr =
@@ -88,7 +88,7 @@ export type Expr =
       // during body inference.
       unannParams?: {name: string, id: number}[], numTouched?: Set<number>, }
   | { t: "let", name: string, typ: Type | null, val: ExprID, mut: boolean } // `name := e;` / `name :: e;` / `name: T = e;` / `name: T :: e;`
-  | { t: "dlet", fields: { name: string, typ: Type | null, pos?: Pos }[], val: ExprID, mut: boolean, shape?: "tup" | "arr" } // `[a, b] := val;` / `[a, b] :: val;` destructuring bind; field pos: the field name token (go-to-definition target). The checker stamps `shape` (tuple fields vs array window) for the evaluators.
+  | { t: "dlet", fields: { name: string, typ: Type | null, pos?: Loc }[], val: ExprID, mut: boolean, shape?: "tup" | "arr" } // `[a, b] := val;` / `[a, b] :: val;` destructuring bind; field pos: the field name token (go-to-definition target). The checker stamps `shape` (tuple fields vs array window) for the evaluators.
   | { t: "assign", name: string, val: ExprID }
   | { t: "if", c: ExprID, a: ExprID, b: ExprID }
   | { t: "while", c: ExprID, body: ExprID }
@@ -155,7 +155,7 @@ export class Parser {
     return this.toks[this.i++].v;
   }
   // Position of the token at offset `o` from the cursor (undefined past EOF).
-  pos(o = 0): Pos | undefined {
+  pos(o = 0): Loc | undefined {
     return this.toks[this.i + o]?.pos;
   }
   eat(s: string): void {
@@ -193,21 +193,16 @@ export class Parser {
   // Flat node arena: every parsed expression is pushed here once and referred
   // to by `ExprID` (its index) from parents, items, and closures.
   nodes: Expr[] = [];
-  // Node source positions, parallel to `nodes`: each expression's start
-  // token — undefined only on synthesized nodes (the operator `sym`s
-  // desugared from `&&`/`||`/`!`). With `ends` this brackets every
-  // subexpression for the LSP's hover containment test. Backends ignore it.
-  starts: (Pos | undefined)[] = [];
-  // Node source extents, parallel to `nodes`: exclusive end position of each
-  // expression. Backends ignore it.
-  ends: Pos[] = [];
-  add(e: Expr, pos?: Pos): ExprID {
+  // Node source extents, parallel to `nodes`: each expression's start and
+  // exclusive end token — undefined only on synthesized nodes (the operator
+  // `sym`s and bools desugared from `&&`/`||`/`!`). Backends ignore it.
+  locs: (LocRange | undefined)[] = [];
+  add(e: Expr, pos?: Loc): ExprID {
     this.nodes.push(e);
-    this.starts.push(pos);
     // Every add site consumes the node's final token before adding (parents
     // are added after their children; statement binders add before eating
     // the trailing `;`), so the last consumed token's end is the node's end.
-    this.ends.push(this.toks[this.i - 1].end);
+    this.locs.push(pos === undefined ? undefined : {start: pos, end: this.toks[this.i - 1].end});
     return this.nodes.length - 1;
   }
 
@@ -220,7 +215,7 @@ export class Parser {
         items.push(al ?? {e: this.parseStmt()});
       }
     }
-    return {nodes: this.nodes, starts: this.starts, items, typeToks: this.typeToks, ends: this.ends};
+    return {nodes: this.nodes, locs: this.locs, items, typeToks: this.typeToks};
   }
   parseEffect(): Item {
     this.next(); // effect
@@ -345,7 +340,7 @@ export class Parser {
       const save = this.i;
       try {
         this.next();
-        const fields: { name: string, typ: Type | null, pos?: Pos }[] = [];
+        const fields: { name: string, typ: Type | null, pos?: Loc }[] = [];
         while (!this.is("]")) {
           const pos = this.pos();
           const name = this.next();
@@ -540,11 +535,11 @@ export class Parser {
       this.next();
       const right = this.parseBinary(prec + 1);
       if (op === "&&")
-        left = this.add({t: "if", c: left, a: right, b: this.add({t: "bool", v: false})}, this.starts[left]);
+        left = this.add({t: "if", c: left, a: right, b: this.add({t: "bool", v: false})}, this.locs[left]?.start);
       else if (op === "||")
-        left = this.add({t: "if", c: left, a: this.add({t: "bool", v: true}), b: right}, this.starts[left]);
+        left = this.add({t: "if", c: left, a: this.add({t: "bool", v: true}), b: right}, this.locs[left]?.start);
       else
-        left = this.add({t: "app", fn: this.add({t: "sym", v: op}), args: [left, right]}, this.starts[left]);
+        left = this.add({t: "app", fn: this.add({t: "sym", v: op}), args: [left, right]}, this.locs[left]?.start);
     }
     return left;
   }
@@ -571,11 +566,11 @@ export class Parser {
       this.recordTypeTok("macro", op);
       this.next(); // !
       const args = this.parseArgs();
-      e = this.add({t: "perform", op, args}, this.starts[e]);
+      e = this.add({t: "perform", op, args}, this.locs[e]?.start);
     }
     while (this.is("(")) {
       const args = this.parseArgs();
-      e = this.add({t: "app", fn: e, args}, this.starts[e]);
+      e = this.add({t: "app", fn: e, args}, this.locs[e]?.start);
     }
     // field access: `obj.x` (named) or `obj.0` (positional). The lexer
     // reads `0.0` as a single float token, so a chained `m.0.0` arrives as
@@ -583,7 +578,7 @@ export class Parser {
     while (this.is(".")) {
       this.next();
       const name = this.next();
-      for (const part of name.split(".")) e = this.add({t: "field", obj: e, name: part}, this.starts[e]);
+      for (const part of name.split(".")) e = this.add({t: "field", obj: e, name: part}, this.locs[e]?.start);
     }
     return e;
   }

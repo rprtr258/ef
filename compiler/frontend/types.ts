@@ -14,7 +14,7 @@ import {
   stampSuspension, touchNumericVar,
 } from "../stamps.ts";
 import {assertNever} from "../assert.ts";
-import type {Pos} from "./lexer.ts";
+import type {Loc, LocRange} from "./lexer.ts";
 import {exprChildren, type BinderKinds} from "./walk.ts";
 
 // Traversal arrangement: the pure structural scans (hasPerformOutsideLambdas,
@@ -96,7 +96,7 @@ class TokenRecorder {
   readonly semToks: TypeTok[] = [];
   constructor(
     readonly nodes: Expr[],        // the checked slice (pin's self-box lookups)
-    readonly starts: (Pos | undefined)[], // the same slice's node start positions (Program.starts)
+    readonly locs: (LocRange | undefined)[], // the same slice's node extents (Program.locs)
     private readonly uni: Unifier, // token classification resolves first
     private readonly effects: Map<string, EffectSig>,
   ) {}
@@ -111,7 +111,7 @@ class TokenRecorder {
   // highlights `function`, anything else `variable`. Positionless binders
   // (parse recovery) record nothing. `kind` carries the emitting node kind
   // for the coverage guard above; it drives nothing at runtime.
-  recordTok(_kind: TokKinds, pos: Pos | undefined, name: string, t: Type): void {
+  recordTok(_kind: TokKinds, pos: Loc | undefined, name: string, t: Type): void {
     if (pos === undefined) return;
     const rt = this.uni.res(t);
     this.semToks.push({pos, len: name.length, name, kind: rt.tag === "fun" ? "function" : "variable"});
@@ -380,7 +380,7 @@ function inferNode(
       if (t2 !== t) (e as Expr & {bindTyp?: Type}).bindTyp = t;
       // Value-identifier highlighting: operator desugar syms never reach here
       // (the app case handles them without inferring the callee node).
-      rec.recordTok("sym", rec.starts[id], e.v, t2);
+      rec.recordTok("sym", rec.locs[id]?.start, e.v, t2);
       return t2;
     }
     case "lambda": {
@@ -474,7 +474,7 @@ function inferNode(
         : infer(e.val, nodes, env, effs, effects, rec);
       env.uni.unify(declared, vt);
       const rt = env.uni.res(declared);
-      rec.recordTok("let", rec.starts[id], e.name, declared);
+      rec.recordTok("let", rec.locs[id]?.start, e.name, declared);
       // The lambda's stamped type is final: its parameter variables have been
       // bound (or not), so deep-resolve it — display never needs the unifier.
       const lam = nodes[e.val];
@@ -785,7 +785,7 @@ function inferNode(
     // Locate the innermost checker error at the position of the expression
     // being inferred when it was thrown. The first (deepest) frame to catch
     // wins; outer frames see `pos` set and skip.
-    const p = rec.starts[id];
+    const p = rec.locs[id]?.start;
     if (err instanceof TypeError_ && err.pos === undefined && p !== undefined)
       err.pos = p;
     throw err;
@@ -842,7 +842,7 @@ export function checkProgram(
   }
 
   // The per-call recorder over this call's node slice (see TokenRecorder).
-  const rec = new TokenRecorder(prog.nodes, prog.starts, uni, effects);
+  const rec = new TokenRecorder(prog.nodes, prog.locs, uni, effects);
   for (const it of prog.items.filter(it => "effect" in it))
     rec.recordEffect(it.effect, {params: it.sig.params.map(t => t ?? uni.fresh()), ret: it.sig.ret, names: it.sig.names});
 

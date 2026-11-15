@@ -8,10 +8,10 @@
 // recurses through these helpers, so child order and binder positions are
 // each stated exactly once.
 //
-// Leaf module: imports only parser.ts (the AST), lexer.ts (Pos), and
+// Leaf module: imports only parser.ts (the AST), lexer.ts (Loc), and
 // assert.ts.
 
-import type {Pos} from "./lexer.ts";
+import type {Loc} from "./lexer.ts";
 import {exprChildren, type Expr, type ExprID, type Program} from "./parser.ts";
 import {assertNever} from "../assert.ts";
 
@@ -26,8 +26,8 @@ export type BinderKinds = "lambda" | "let" | "dlet" | "handle";
 // Call fn(name, pos) for every name a node binds, in the checker's checkBind
 // order (types.ts): a lambda's params, a let's own name, a dlet's field
 // names, and a handler case's params (Return has one) then its resume
-// binder, case by case. nodePos is the node's start position
-// (Program.starts[id]) — the `let` binder's name token starts the statement,
+// binder, case by case. nodePos is the node's start (Program.locs[id].start)
+// — the `let` binder's name token starts the statement,
 // so it is the node pos; the other binder kinds carry their own
 // Param/field/`resumePos` tokens. Positions are undefined only on
 // parse-recovery binders; the resume binder always has one. Callers add the
@@ -35,8 +35,8 @@ export type BinderKinds = "lambda" | "let" | "dlet" | "handle";
 // scope in its own value (the checker's recursive-let rule).
 export function forEachBinder(
   e: Expr,
-  nodePos: Pos | undefined,
-  fn: (name: string, pos?: Pos) => void,
+  nodePos: Loc | undefined,
+  fn: (name: string, pos?: Loc) => void,
 ): void {
   switch (e.t) {
     case "lambda":

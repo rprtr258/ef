@@ -8,7 +8,7 @@
 // erased at runtime), so unify's failure paths import showT/TypeError_ from
 // here without a runtime cycle — the runtime edge runs unify →
 // type_display → lexer.
-import {ParseError, type Pos} from "./lexer.ts";
+import {ParseError, type Loc} from "./lexer.ts";
 import type {Effs, Type} from "./unify.ts";
 
 // 1-based source position of the innermost expression being checked when
@@ -16,7 +16,7 @@ import type {Effs, Type} from "./unify.ts";
 // failures with no single blame site). Display sites read it directly: the
 // LSP anchors its diagnostic there; showErr prefixes it for the REPL.
 export class TypeError_ extends Error {
-  pos?: Pos;
+  pos?: Loc;
 }
 
 // Format a type for display. Expects a *deep-resolved* type (see
@@ -114,7 +114,7 @@ export function showErr(err: unknown, src?: string): string {
 // The offending source line, then a caret pointing at the column:
 //   2 | y :: 2;
 //     | ^
-function srcLine(src: string, pos: Pos): string {
+function srcLine(src: string, pos: Loc): string {
   const text = (src.split("\n").at(pos.line - 1) ?? "").replace(/\r$/, "");
   const ln = String(pos.line);
   const gut = " ".repeat(ln.length);

@@ -121,7 +121,7 @@ function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<str
         break;
       case "lambda": {
         const s: Sc = {names: new Set(), parent: sc};
-        forEachBinder(e, prog.starts[id], n => s.names.add(n));
+        forEachBinder(e, prog.locs[id]?.start, n => s.names.add(n));
         walk(e.body, s);
         return;
       }
@@ -134,10 +134,10 @@ function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<str
       case "let":
         // The binding is already in sc before the value, mirroring emission:
         // `len :: len` reads the slot, not the builtin.
-        forEachBinder(e, prog.starts[id], n => sc.names.add(n));
+        forEachBinder(e, prog.locs[id]?.start, n => sc.names.add(n));
         break;
       case "dlet":
-        forEachBinder(e, prog.starts[id], n => sc.names.add(n));
+        forEachBinder(e, prog.locs[id]?.start, n => sc.names.add(n));
         break;
       case "assign": case "if": case "while": case "arr": case "field":
       case "as": case "perform":
@@ -166,7 +166,7 @@ function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<str
         // Case bodies run over the handler's hframe scope: case params and
         // the resume binder shadow outer bindings.
         const hs: Sc = {names: new Set(), parent: sc};
-        forEachBinder(e, prog.starts[id], n => hs.names.add(n));
+        forEachBinder(e, prog.locs[id]?.start, n => hs.names.add(n));
         for (const cse of e.cases)
           walk(cse.body, hs);
         return;

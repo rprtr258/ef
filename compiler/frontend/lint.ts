@@ -1,13 +1,13 @@
 // lint: run a sequence of lint passes over a parsed program and report issues.
 
-import type {Pos} from "./lexer.ts";
+import type {Loc} from "./lexer.ts";
 import {Parser, type Expr, type ExprID, type Program} from "./parser.ts";
 import {exprChildren, forEachBinder} from "./walk.ts";
 import {assertNever} from "../assert.ts";
 
 // Each pass is a (Program) => LintIssue[]; add more passes to LINT_PASSES.
 export type LintIssue =
-  {rule: "unused-arg", who: string, argname: string, pos?: Pos};
+  {rule: "unused-arg", who: string, argname: string, pos?: Loc};
 
 const LINT_PASSES: ((prog: Program) => LintIssue[])[] = [lintUnusedArgs];
 
@@ -50,20 +50,20 @@ function freeUses(id: ExprID, prog: Program, watch: Set<string>): Set<string> {
     // themselves come from forEachBinder.
     case "lambda": {
       const w2 = new Set(w);
-      forEachBinder(e, prog.starts[id], n => w2.delete(n));
+      forEachBinder(e, prog.locs[id]?.start, n => w2.delete(n));
       go(e.body, w2);
       return;
     }
     case "let": {
       // The let's own name is watched inside its val (recursive-let rule).
       const w2 = new Set(w);
-      forEachBinder(e, prog.starts[id], n => w2.add(n));
+      forEachBinder(e, prog.locs[id]?.start, n => w2.add(n));
       go(e.val, w2);
       return;
     }
     case "dlet": {
       const w2 = new Set(w);
-      forEachBinder(e, prog.starts[id], n => w2.delete(n));
+      forEachBinder(e, prog.locs[id]?.start, n => w2.delete(n));
       go(e.val, w2);
       return;
     }

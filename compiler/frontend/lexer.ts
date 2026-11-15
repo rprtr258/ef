@@ -9,16 +9,21 @@ export const TWO = ["::", ":=", "==", "!=", "<=", ">=", "&&", "||", "=>"];
 export const ONE = "()[]{},;<>+-*/!=:%.@";
 
 // A source position: 1-indexed line and column.
-export type Pos = { line: number, col: number };
+export type Loc = { line: number, col: number };
+
+// A half-open source extent: `start` inclusive, `end` exclusive (the last
+// consumed token's end). Brackets a subexpression for the LSP's hover
+// containment test; backends ignore it.
+export type LocRange = { start: Loc, end: Loc };
 // `end` is the exclusive end position (one past the token's last source
 // char) — parser node extents for the LSP's subexpression hover stamp from it.
-export type Tok = { v: string, pos: Pos, end: Pos };
+export type Tok = { v: string, pos: Loc, end: Loc };
 
 // A failed parse: carries the 1-based extent of the offending token so the
 // LSP anchors its diagnostic where the error happened (a plain Error would
 // fall back to 0:0).
 export class ParseError extends Error {
-  constructor(msg: string, public pos: Pos, public end: Pos) { super(msg); }
+  constructor(msg: string, public pos: Loc, public end: Loc) { super(msg); }
 }
 
 export function lex(src: string): Tok[] {
@@ -27,7 +32,7 @@ export function lex(src: string): Tok[] {
   // {line, col} without threading counters through the scanner.
   const lineStarts = [0];
   for (let k = 0; k < src.length; k++) if (src[k] === "\n") lineStarts.push(k + 1);
-  const posAt = (i: number): Pos => {
+  const posAt = (i: number): Loc => {
     let lo = 0, hi = lineStarts.length - 1;
     while (lo < hi) { const mid = (lo + hi + 1) >> 1; if ((lineStarts[mid] ?? 0) <= i) lo = mid; else hi = mid - 1; }
     return {line: lo + 1, col: i - lineStarts[lo] + 1};

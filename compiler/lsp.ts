@@ -38,7 +38,7 @@ import type {Checked, EffectSig} from "./frontend/types.ts";
 import {prepare} from "./frontend/pipeline.ts";
 import {builtinParamNames} from "./builtins.ts";
 import {forEachBinder} from "./frontend/walk.ts";
-import {ParseError, type Pos} from "./frontend/lexer.ts";
+import {ParseError, type Loc} from "./frontend/lexer.ts";
 
 // Parse errors carry the offending token's 1-based extent — underlined.
 // Checker errors carry a bare 1-based pos with no token extent — a zero-width
@@ -92,11 +92,11 @@ function checkDoc(src: string): Diagnostic[] {
   }
 }
 
-// Lexicographic Pos comparison (1-based line/col).
-function posLE(a: Pos, b: Pos): boolean {
+// Lexicographic Loc comparison (1-based line/col).
+function posLE(a: Loc, b: Loc): boolean {
   return a.line < b.line || (a.line === b.line && a.col <= b.col);
 }
-function posLT(a: Pos, b: Pos): boolean {
+function posLT(a: Loc, b: Loc): boolean {
   return a.line < b.line || (a.line === b.line && a.col < b.col);
 }
 
@@ -142,7 +142,7 @@ function hoverMd(text: string): Hover {
 // builtin table); binder nodes record unit, so they display the bound
 // value's type (annotated/wildcard vals are pinned to the binding's resolved
 // width by the checker) as `name : Type`; everything else the bare type.
-function hoverText(prog: Program, checked: Checked, id: ExprID, c: Pos): string | null {
+function hoverText(prog: Program, checked: Checked, id: ExprID, c: Loc): string | null {
   const e = prog.nodes[id], uni = checked.uni;
   if (e.t === "sym") {
     const names = fnPNames(prog, e.v);
@@ -185,8 +185,9 @@ function hoverText(prog: Program, checked: Checked, id: ExprID, c: Pos): string 
 }
 
 // Hover: the innermost checked subexpression whose source extent covers the
-// cursor — nodes carry a start pos and `prog.ends` the exclusive end, and the
-// checker records every inferred node's type in `checked.nodeTypes`. Candidates
+// cursor — each node's extent in `prog.locs` brackets it (start inclusive,
+// end exclusive), and the checker records every inferred node's type in
+// `checked.nodeTypes`. Candidates
 // also include untyped sym nodes (display falls through to the env for those).
 function hoverAt(src: string, line: number, col: number): Hover | null {
   let prog: Program, checked: Checked;
@@ -195,7 +196,7 @@ function hoverAt(src: string, line: number, col: number): Hover | null {
   } catch {
     return null;
   }
-  // 1-based cursor, matching Pos.
+  // 1-based cursor, matching Loc.
   const c = {line: line + 1, col: col + 1};
   // Type/effect name occurrences (recorded as typeToks) hover their target:
   // effect names (decls, `! { … }` rows, performs, case labels) → the op's
@@ -217,18 +218,18 @@ function hoverAt(src: string, line: number, col: number): Hover | null {
   }
   const cands: ExprID[] = [];
   for (let id = 0; id < prog.nodes.length; id++) {
-    const s = prog.starts[id];
-    if (s === undefined || !posLE(s, c) || !posLT(c, prog.ends[id])) continue;
+    const loc = prog.locs[id];
+    if (loc === undefined || !posLE(loc.start, c) || !posLT(c, loc.end)) continue;
     if (checked.nodeTypes.has(id) || prog.nodes[id].t === "sym") cands.push(id);
   }
   // Innermost first: greatest start, then smallest extent.
   cands.sort((a, b) => {
-    const sa = prog.starts[a]!, sb = prog.starts[b]!;
+    const la = prog.locs[a]!, lb = prog.locs[b]!;
+    const sa = la.start, sb = lb.start;
     if (sa.line !== sb.line) return sb.line - sa.line;
     if (sa.col !== sb.col) return sb.col - sa.col;
-    const ea = prog.ends[a], eb = prog.ends[b];
-    if (ea.line !== eb.line) return ea.line - eb.line;
-    return ea.col - eb.col;
+    if (la.end.line !== lb.end.line) return la.end.line - lb.end.line;
+    return la.end.col - lb.end.col;
   });
   for (const id of cands) {
     const text = hoverText(prog, checked, id, c);
@@ -238,7 +239,7 @@ function hoverAt(src: string, line: number, col: number): Hover | null {
 }
 
 // One value binding site: the binder name token's 1-based extent.
-type Binder = {name: string, pos: Pos, len: number};
+type Binder = {name: string, pos: Loc, len: number};
 
 // All value binding sites — let names, destructuring fields, lambda params,
 // handler case params, and resume binders, per node in forEachBinder order
@@ -247,14 +248,14 @@ type Binder = {name: string, pos: Pos, len: number};
 function binders(prog: Program): Binder[] {
   const out: Binder[] = [];
   for (const [id, e] of prog.nodes.entries())
-    forEachBinder(e, prog.starts[id], (name, pos) => {
+    forEachBinder(e, prog.locs[id]?.start, (name, pos) => {
       if (pos !== undefined) out.push({name, pos, len: name.length});
     });
   return out;
 }
 
-// A name token's LSP location (1-based Pos → 0-based single-line range).
-function nameLoc(uri: string, pos: Pos, len: number): Location {
+// A name token's LSP location (1-based Loc → 0-based single-line range).
+function nameLoc(uri: string, pos: Loc, len: number): Location {
   const start = {line: pos.line - 1, character: pos.col - 1};
   return {uri, range: {start, end: {line: start.line, character: start.character + len}}};
 }
@@ -271,19 +272,19 @@ function definitionAt(uri: string, src: string, line: number, col: number): Loca
   } catch {
     return null;
   }
-  // 1-based cursor, matching Pos.
+  // 1-based cursor, matching Loc.
   const c = {line: line + 1, col: col + 1};
   // Decl-site name positions per namespace — effects are hoisted (usable
   // before their item in source order) and alias tparams repeat across
   // aliases, so neither "first matching tok" nor source-order guessing can
   // locate a decl; the parser records the name token's pos on the item.
-  const effectDecls = new Map<string, Pos>();
-  const aliasDecls = new Map<string, Pos>();
+  const effectDecls = new Map<string, Loc>();
+  const aliasDecls = new Map<string, Loc>();
   for (const it of prog.items) {
     if ("effect" in it && it.pos !== undefined) effectDecls.set(it.effect, it.pos);
     if ("alias" in it && it.pos !== undefined) aliasDecls.set(it.alias.name, it.pos);
   }
-  const inTok = (pos: Pos, len: number): boolean =>
+  const inTok = (pos: Loc, len: number): boolean =>
     pos.line === c.line && pos.col <= c.col && c.col < pos.col + len;
   for (const t of prog.typeToks) {
     if (!inTok(t.pos, t.len)) continue;
@@ -302,10 +303,10 @@ function definitionAt(uri: string, src: string, line: number, col: number): Loca
   let ref: string | undefined;
   for (const [id, e] of prog.nodes.entries()) {
     if (ref !== undefined) break;
-    const s = prog.starts[id];
-    if (s === undefined) continue;
-    if (e.t === "sym" && inTok(s, e.v.length)) ref = e.v;
-    else if (e.t === "assign" && inTok(s, e.name.length)) ref = e.name;
+    const loc = prog.locs[id];
+    if (loc === undefined) continue;
+    if (e.t === "sym" && inTok(loc.start, e.v.length)) ref = e.v;
+    else if (e.t === "assign" && inTok(loc.start, e.name.length)) ref = e.name;
   }
   if (ref === undefined || ref === "_") return null;
   const b = bs.find(b => b.name === ref);
