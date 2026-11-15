@@ -10,13 +10,15 @@
 //     nothing, so timed runs exclude the compiler (and binaryen) entirely.
 //     The trailing args are the module's program args (the `args` builtin).
 import {readFileSync, writeFileSync} from "fs";
-import {compileWithOps} from "../../compiler/backend/wasm/wasm.ts";
-import {runModule} from "../../compiler/backend/wasm/wasm_host.ts";
+import {runModule} from "../../compiler/backend/wasm/wasm_run.ts";
 import {show} from "../../compiler/env.ts";
 
 const argv = process.argv.slice(2);
 if (argv[0] === "build") {
   const outdir = argv[1];
+  // Dynamic import: only the build subcommand compiles, so only it pays
+  // binaryen; run (timed in the harness) must load wasm_run.ts only.
+  const {compileWithOps} = await import("../../compiler/backend/wasm/wasm.ts");
   for (const spec of argv.slice(2)) {
     const [name, src = name] = spec.split("=", 2);
     const {bytes, ops} = compileWithOps(readFileSync(src).toString());

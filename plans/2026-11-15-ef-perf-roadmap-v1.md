@@ -163,17 +163,31 @@ cli.ts also statically imports `compile`/`runWasm` (lines 18–19), so every
 subcommand pays it. Fix is pure plumbing; no semantics.
 
 **Tasks.**
-- [ ] Split host runtime from compiler: move `runModule` (+ accessor/host
+- [x] Split host runtime from compiler: move `runModule` (+ accessor/host
       imports) into a binaryen-free module (e.g. `backend/wasm/wasm_run.ts`)
       or make `wasm_host.ts` import `compileWithOps` lazily (`await import`).
       Pick the shape that keeps `wasm.ts`'s module docstring's layering true;
       update AGENTS.md + docs/content/dev in the same change.
-- [ ] cli.ts: dynamic-import `compile` only inside `buildwasm`, and the
+      Done: `wasm_run.ts` holds the host runtime (binaryen-free); `wasm_host.ts`
+      is the compile + run seam (`runWasm` = `compileWithOps` + `runModule`);
+      `wasm_trace.ts` is the new EFTRACE leaf (wasm_tables.ts links binaryen,
+      so the trace state couldn't stay there). AGENTS.md items updated.
+- [x] cli.ts: dynamic-import `compile` only inside `buildwasm`, and the
       compile path of `runwasm`; `run`/`types`/`lint`/`repl` never load
-      binaryen.
-- [ ] Measure: trivial `println("hi")` via `ef run` (target ≤ 0.12 s), and
-      precompiled tree_explore import time (target ≤ 0.15 s).
-- [ ] Update the harness's `precompile.ts run` path to the new module.
+      binaryen. Done: `main` is async; verified with a Bun onLoad plugin
+      that replaces binaryen's entry with a throwing stub — run/types/lint/
+      repl + `precompile.ts run` pass, runwasm/buildwasm/precompile build
+      load binaryen as expected.
+- [x] Measure: trivial `Out!("hi\n")` via `ef run` = 0.075 s mean (10 runs,
+      target ≤ 0.12 s, was 0.30 s); `wasm_run.ts` import = 33 ms (target
+      ≤ 0.15 s, was ~0.4 s for the old runtime path). Precompiled
+      tree_explore total (import+exec) = 4.2 s (exec-dominated; the
+      harness's timed rows are where the ~0.35 s/row drop shows: quick
+      `--no-docker` gate green, e.g. product_early ef-wasm mean 0.046 s).
+- [x] Update the harness's `precompile.ts run` path to the new module. Done:
+      `runModule` import moved to `wasm_run.ts` and `compileWithOps` made a
+      dynamic import inside the `build` branch, so `run` never loads
+      binaryen either.
 
 **Verification.** `bun run ci` green; timing measurements above printed in the PR; `compare.ts` gate: ef-int and ef-wasm Table B means drop by ~0.2–0.5 s on every row; no row regresses.
 

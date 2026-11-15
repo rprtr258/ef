@@ -12,7 +12,7 @@
 import {readdirSync, readFileSync} from "node:fs";
 import {join} from "node:path";
 import {compileWithOps} from "../backend/wasm/wasm.ts";
-import {runModule} from "../backend/wasm/wasm_host.ts";
+import {runModule} from "../backend/wasm/wasm_run.ts";
 import {prepare} from "../frontend/pipeline.ts";
 import {toCps} from "../frontend/cps.ts";
 import {newCtx, exec} from "../backend/interpreter/eval.ts";

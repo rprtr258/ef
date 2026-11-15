@@ -18,7 +18,7 @@ import {num, show, type Cont, type Outcome, type Value} from "../../compiler/env
 import {KEYWORDS, ONE, TWO, lex} from "../../compiler/frontend/lexer.ts";
 import {collectEffectOps} from "../../compiler/frontend/analysis.ts";
 import {compileWithOps} from "../../compiler/backend/wasm/wasm.ts";
-import {runModule} from "../../compiler/backend/wasm/wasm_host.ts";
+import {runModule} from "../../compiler/backend/wasm/wasm_run.ts";
 
 // --- effect interpretation ------------------------------------------------
 

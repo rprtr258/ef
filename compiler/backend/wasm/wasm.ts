@@ -83,11 +83,11 @@
 // - JS cannot read GC struct fields directly, so the host boundary is 12
 //   exported accessor functions (__tag, __num, __str_len, __str_get,
 //   __arr_len, __arr_get, __mk_num, __mk_bool, __str_new, __str_set,
-//   __arr_new, __arr_set); wasm_host.ts rebuilds interpreter Values
+//   __arr_new, __arr_set); wasm_run.ts rebuilds interpreter Values
 //   through them. Host imports (7): ef_perform, ef_char, ef_number,
 //   ef_args, ef_cos, ef_sin, ef_fail — tree-shaken to the live set
 //   (ef_fail always live); effects reaching the host flow back through
-//   ef_perform and are interpreted there (wasm_host.ts, via builtins.ts's
+//   ef_perform and are interpreted there (wasm_run.ts, via builtins.ts's
 //   builtinEffectHosts).
 //
 // Known deviations vs the interpreter (degenerate programs only):

@@ -16,7 +16,7 @@ import {errUnhandled} from "../ops.ts";
 // An effect interpreter: ops it knows map to host actions; unknown ops fall
 // through to the builtin table's default interpretation. The one interface
 // for both backends' runners — eval.ts's runTop consumes it directly; the
-// wasm host (wasm_host.ts) adapts builtins.ts's builtinEffectHosts — each a
+// wasm host (wasm_run.ts) adapts builtins.ts's builtinEffectHosts — each a
 // sync Value delivery — to it at its boundary.
 export type EffectInterp = Partial<Record<string, (args: Value[], k: Cont) => Outcome>>;
 
@@ -91,7 +91,7 @@ const BUILTIN_EFFECTS = new Set(EFFECT_OPS);
 // handled matching through calls) that is neither a builtin effect nor
 // covered by the runner's interp override would only surface mid-run, after
 // earlier side effects. The message is ops.ts's errUnhandled — the same
-// constructor the runners' runtime backstops throw (runTop / wasm_host's
+// constructor the runners' runtime backstops throw (runTop / wasm_run's
 // hostFor).
 export function rejectUnhandled(checked: Checked, interp?: EffectInterp): void {
   for (const op of checked.unhandled)

@@ -42,15 +42,6 @@ export const HOST_IMPORTS = [
 // debug emitter tracing: run with DBGEMIT=1 to log split/thunk internals
 // during compile; off (and free) otherwise.
 export const DBGEMIT = process.env["DBGEMIT"] === "1";
-// Runtime tracing (EFTRACE=1): the emitter inserts an ef_trace(site, val)
-// host call at key points; the host keeps a ring buffer of (site, val) and
-// prints it when a runtime trap escapes (a trap otherwise loses all
-// location info).
-export const DBGTRACE = process.env["EFTRACE"] === "1";
-// Emission-site descriptions, indexed by the site id the emitter passes to
-// ef_trace. Lives in this leaf module so the emitter and the host share it
-// without an import cycle.
-export const TRACE_SITES: string[] = [];
 // Func signatures by type index. Valtype spellings
 // mirror the emitter's byte language: 0x7f i32, 0x7c f64, 0x6e anyref,
 // [0x63, n] = (ref null $n). Consumed by Buf's call handling and by

@@ -38,8 +38,11 @@ Hindley-Milner-flavoured type system with effect tracking.
   traversal assigning every binding a slot, publishing the immutable Plan
   and owning the `__p` annotations consumed via accessors)/
   `wasm_emit.ts`/`wasm_module.ts` — see item 11),
-  `backend/wasm/wasm_host.ts` (wasm host runtime: instantiation, GC↔JS boxing,
-  effect interpretation), `stamps.ts` (the one backend-stamp concern: width/
+  `backend/wasm/wasm_run.ts` (binaryen-free wasm host runtime:
+  instantiation, GC↔JS boxing, effect interpretation),
+  `backend/wasm/wasm_trace.ts` (the EFTRACE emission-site leaf shared by
+  emitter and runtime), `backend/wasm/wasm_host.ts` (compile + run seam:
+  `compileWithOps` + `runModule`), `stamps.ts` (the one backend-stamp concern: width/
 suspension/arrKind emission over an exhaustive `Expr` switch — widths come
   from the checker's resolved types, not decided here; width/suspension/
   lambda-type stamps land in `Checked.stamps` (keyed by ExprID), which
@@ -217,9 +220,11 @@ suspension/arrKind emission over an exhaustive `Expr` switch — widths come
    emitters, split protocol), **`wasm_module.ts`** (builtin trampolines, main,
    run/accessor init fns); `wasm.ts` itself is the entry: compile/
    compileWithOps + the emit() orchestration. Its host runtime lives in
-   **`wasm_host.ts`** (direct-style: instantiation, GC↔JS boxing through the
-   §4 accessor ABI, `runWasm`; effect interpretation comes from builtins.ts's
-   `builtinEffectHosts`).
+   **`wasm_run.ts`** (binaryen-free: instantiation, GC↔JS boxing through the
+   §4 accessor ABI, `runModule`; effect interpretation comes from
+   builtins.ts's `builtinEffectHosts`); **`wasm_host.ts`** is the compile +
+   run seam (`runWasm` = `compileWithOps` + `runModule`), so execute-only
+   callers import `wasm_run.ts` and never load binaryen.
 12. **`frontend/lint.ts`** — lint passes over a parsed program (`LINT_PASSES`);
    rules: `unused-arg`, and `derived-any` (typecheck-backed — `lint` runs
    `checkProgram` best-effort, type-aware passes skip unchecked programs).

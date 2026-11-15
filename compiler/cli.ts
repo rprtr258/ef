@@ -15,8 +15,6 @@ import {readFileSync, writeFileSync} from "fs";
 import {styleText} from "util";
 import {run} from "./backend/interpreter/eval.ts";
 import {prepare} from "./frontend/pipeline.ts";
-import {compile} from "./backend/wasm/wasm.ts";
-import {runWasm} from "./backend/wasm/wasm_host.ts";
 import {showErr, showT} from "./frontend/type_display.ts";
 import {type Type} from "./frontend/unify.ts";
 import {lint} from "./frontend/lint.ts";
@@ -43,7 +41,7 @@ function types(src: string): {syms: {name: string, type: Type}[], result: Type, 
   };
 }
 
-function main(cmd: string, args: string[]) {
+async function main(cmd: string, args: string[]) {
   switch (cmd) {
   case "repl":
     repl();
@@ -68,6 +66,9 @@ function main(cmd: string, args: string[]) {
       break;
     }
     const src = readFileSync(args[0]).toString();
+    // Dynamic import: runwasm compiles, so it pays binaryen; the other
+    // subcommands must never load it (wasm_host.ts → wasm.ts).
+    const {runWasm} = await import("./backend/wasm/wasm_host.ts");
     const result = runWasm(src, undefined, args.slice(1));
     console.log(show(result));
     return;
@@ -79,6 +80,9 @@ function main(cmd: string, args: string[]) {
     const src = readFileSync(args[0]).toString();
     const out = args[1] ??
       (args[0].endsWith(".ef") ? args[0].slice(0, -3) + ".wasm" : args[0] + ".wasm");
+    // Dynamic import: buildwasm is the only compile-only subcommand; the
+    // binaryen engine must not initialize for run/types/lint/repl/lsp.
+    const {compile} = await import("./backend/wasm/wasm.ts");
     const bytes = compile(src);
     writeFileSync(out, bytes);
     console.log(`wrote ${out} (${bytes.length} bytes)`);
@@ -128,7 +132,7 @@ const [, , cmd, ...rest] = process.argv;
 // One-line errors on stderr with exit 1 (what the uncaught default printed,
 // minus the stack), quoting the offending source line when the file is
 // readable — checker/parse errors arrive located.
-try { main(cmd, rest); }
+try { await main(cmd, rest); }
 catch (e) {
   let src: string | undefined;
   const file = rest.at(0);

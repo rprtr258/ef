@@ -3,7 +3,7 @@
 // both throw the same trap strings. Pinning them here keeps the derived
 // call sites (parser desugaring, checker sets, runtime messages) honest.
 // Production consumers of this file's exports: eval.ts's traps,
-// wasm_host.ts's hostFor/ef_fail, builtins.ts's impls, pipeline.ts's
+// wasm_run.ts's hostFor/ef_fail, builtins.ts's impls, pipeline.ts's
 // rejectUnhandled, cps_opt.ts's throwFree; this test pins the vocabulary
 // itself.
 import {describe, expect, test} from "bun:test";

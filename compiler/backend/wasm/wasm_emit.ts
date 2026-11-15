@@ -5,7 +5,8 @@
 // lives in wasm_term.ts. The design doc for the whole backend
 // lives at the top of wasm.ts.
 import {_T} from "./wasm_types.ts";
-import {DBGEMIT, DBGTRACE, MOD, TRACE_SITES} from "./wasm_tables.ts";
+import {DBGEMIT, MOD} from "./wasm_tables.ts";
+import {DBGTRACE, TRACE_SITES} from "./wasm_trace.ts";
 import {Buf, Fn} from "./wasm_body.ts";
 import {type Discovery, type Indices, type IndexRegistrar, type Layout, type Opt} from "./wasm_pipeline.ts";
 import type {Plan} from "./wasm_plan.ts";
