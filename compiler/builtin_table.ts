@@ -7,7 +7,7 @@
 // structurally, so operators are surface rows only.
 import type {Type, Unifier} from "./frontend/unify.ts";
 import type {EffectSig} from "./frontend/types.ts";
-import {TI64, TANY, TBOOL, TF64, TFLOAT, TINT, TUNIT, TSTR, rowOf, tArr, tFun} from "./prims.ts";
+import {TI64, TANY, TF64, TFLOAT, TINT, TUNIT, TSTR, rowOf, tArr, tFun} from "./prims.ts";
 import {
   OP_ADD, OP_SUB, OP_MUL, OP_REM, OP_NEG,
   OP_LT, OP_GT, OP_LE, OP_GE, OP_EQ, OP_NE, OP_NOT,
@@ -30,8 +30,7 @@ type BuiltinDecl =
 
 // Operators of the surface language, as surface rows: the checker resolves
 // these apps structurally and env.ts implements them, so the surface needs
-// only the name and fixed arity. `not` is both an operator row here and a
-// builtin fn below — env.ts binds it from builtins, not from OPS.
+// only the name and fixed arity.
 const OPERATOR_ROWS: {name: string, params: number}[] = [
   {name: OP_ADD, params: 2},
   {name: OP_SUB, params: 2},
@@ -58,7 +57,6 @@ export const OPERATOR_OPS: Set<string> = new Set(OPERATOR_ROWS.map(r => r.name))
 // are immutable and safe to share across programs: polymorphic `t` thunks
 // instantiate fresh vars per use.
 export const BUILTIN_TABLE: readonly BuiltinDecl[] = [
-    {kind: "fn", name: "not", t: tFun([TBOOL], TBOOL, rowOf()), params: 1, pnames: ["v"]},
     {kind: "fn", name: "sub", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), TI64, TI64], tArr(a), rowOf()); }, params: 3, pnames: ["xs", "from", "to"]},
     {kind: "fn", name: "concat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(a), tArr(a)], tArr(a), rowOf()); }, params: 2, pnames: ["xs", "ys"]},
     {kind: "fn", name: "flat", t: (u: Unifier) => { const a = u.fresh(); return tFun([tArr(tArr(a))], tArr(a), rowOf()); }, params: 1, pnames: ["xs"]},

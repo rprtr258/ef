@@ -1,6 +1,6 @@
 import type {Expr, ExprID, Program, TypeTok} from "./parser";
 import {BUILTINS, BUILTIN_TABLE} from "../builtin_table.ts";
-import {ARITH_OPS, CMP_OPS, EQ_OPS, OP_ADD, OP_DIV, OP_NEG} from "../ops.ts";
+import {ARITH_OPS, CMP_OPS, EQ_OPS, OP_ADD, OP_DIV, OP_NEG, OP_NOT} from "../ops.ts";
 import {TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, rowOf, tArr, tFun, tTup} from "../prims.ts";
 import {showT, TypeError_} from "./type_display.ts";
 import {
@@ -714,6 +714,11 @@ function inferNode(
         const widened = numeric(env.uni, at, at, OP_NEG);
         stampComputeWidth(env.uni, e, widened);
         return widened;
+      }
+      if (fn.t === "sym" && fn.v === OP_NOT) {
+        const at = infer(e.args[0], nodes, env, effs, effects, rec);
+        env.uni.unify(at, TBOOL);
+        return TBOOL;
       }
       // Equality: both operands must share a type (untyped literals flex,
       // concrete widths are strict — `i32 == i64` is an error). Cross-type

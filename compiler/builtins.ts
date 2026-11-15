@@ -51,7 +51,6 @@ export type Builtin =
 // runtime natives as `k(fn(...args))`; values bind as the value itself;
 // natives and effect interps are CPS functions.
 const FN_IMPLS: Record<string, (...args: Value[]) => Value> = {
-  not: a => (a === false || a === null ? true : false),
   sub: (xs, fv, tv) => {
     // Zero-copy view of [from, to): shares the backing, offset shifts.
     const s = asSlice(xs);

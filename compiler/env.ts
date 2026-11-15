@@ -4,7 +4,7 @@ import type {CIr} from "./frontend/cps_ir.ts";
 import {builtins} from "./builtins.ts";
 import {
   OP_ADD, OP_SUB, OP_MUL, OP_REM,
-  OP_EQ, OP_NE, OP_LT, OP_GT, OP_LE, OP_GE, OP_NEG,
+  OP_EQ, OP_NE, OP_LT, OP_GT, OP_LE, OP_GE, OP_NEG, OP_NOT,
 } from "./ops.ts";
 
 // --- Values (runtime) ---
@@ -218,6 +218,7 @@ export function globalEnv(refs?: Set<string>): Env {
   const g = new Env(null);
   for (const [s, f] of OPS) g.vars.set(s, lift(f));
   g.vars.set(OP_NEG, lift(a => typeof a === "bigint" ? -a : -num(a)));
+  g.vars.set(OP_NOT, lift(a => a === false || a === null));
   // Named builtins and their impls come from the one table in builtins.ts.
   // With `refs`, only referenced builtins bind — exec seeds missing ones
   // incrementally per call, matching the wasm module's tree-shaken builtin

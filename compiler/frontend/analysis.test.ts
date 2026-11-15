@@ -192,7 +192,6 @@ describe("module init order", () => {
 describe("builtinParamNames (LSP hover text)", () => {
   for (const [name, expected] of [
     ["sub", ["xs", "from", "to"]],
-    ["not", ["v"]],
     ["map", ["f", "xs"]],
     ["Read", undefined], // effect entries carry sigs, not pnames
     ["+", undefined], // operators live in env.ts, not the builtin table

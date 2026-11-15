@@ -168,6 +168,8 @@ export function emitBuiltins(em: Emit): Fn[] {
         break;
       }
       case OP_NOT: {
+        // `!` desugars to an app of the operator sym; its sites carry no
+        // width stamp, so they dispatch here rather than inline.
         f.slot(0);
         b.callFn(em.ix.fTruthy);
         b.num(w.EQZ);
