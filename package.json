@@ -6,7 +6,8 @@
     "compiler",
     "playground",
     "docs",
-    "vscode"
+    "vscode",
+    "benchmarks"
   ],
   "scripts": {
     "lint": "eslint '**/*.{ts,json,md}' && knip",

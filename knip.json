@@ -25,6 +25,10 @@
   // imported or tagged @public, not just reachable
   "includeEntryExports": true,
   "workspaces": {
+    // standalone benchmark CLIs, run directly (see benchmarks/compare/BASELINE.md)
+    "benchmarks": {
+      "entry": ["compare/*.ts"]
+    },
     "compiler": {
       "entry": ["scripts/*.ts"]
     },

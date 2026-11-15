@@ -73,6 +73,10 @@ suspension/arrKind emission over an exhaustive `Expr` switch — widths come
   with live reload; `docs/build.test.ts` (link integrity) runs under the root
   suite. Published to the `gh-pages` branch by the monorepo's
   `.github/workflows/docs.yml` on pushes to master.
+- `benchmarks/` workspace: the performance-benchmark harness
+  (`compare/compare.ts`, `compare/precompile.ts`, `compare/report.ts` — see
+  `compare/BASELINE.md`); a package.json exists mainly so knip tracks the
+  scripts as workspace entry points.
 - `vscode/` workspace: VS Code extension for ef — TextMate grammar for `.ef`,
   and a language client that spawns the LSP server from `compiler/lsp.ts`
   (diagnostics, hover types, go-to-definition, semantic tokens for type/effect

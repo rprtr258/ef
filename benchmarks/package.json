@@ -1,0 +1,5 @@
+{
+  "name": "benchmarks",
+  "private": true,
+  "type": "module"
+}
