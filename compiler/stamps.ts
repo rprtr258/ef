@@ -27,7 +27,7 @@ import {
   FLOAT_NAMES, INT_NAMES, Unifier, widthOf,
   type NumName, type Type,
 } from "./frontend/unify.ts";
-import type {Expr, ExprID} from "./frontend/parser.ts";
+import type {Expr} from "./frontend/parser.ts";
 
 // Runtime shape stamp (mirrors numKind): the evaluator builds a slice for
 // homogeneous literals and a tuple record otherwise.
@@ -142,8 +142,10 @@ export function stampDivWidth(uni: Unifier, e: Expr & {t: "app"}, widened: Type)
 // (builtin signature wildcards), defaulting to i64/f64; fresh literal
 // wildcards never reach it. Unstamped nodes (type still an unbound var —
 // polymorphic uses) compute by value-based dispatch at runtime.
-export function stampNumKinds(nodes: Expr[], uni: Unifier, nodeTypes: Map<ExprID, Type>): void {
-  for (const [id, t] of nodeTypes) {
+export function stampNumKinds(nodes: Expr[], uni: Unifier, nodeTypes: (Type | undefined)[]): void {
+  for (let id = 0; id < nodeTypes.length; id++) {
+    const t = nodeTypes[id];
+    if (t === undefined) continue;
     const rt = uni.res(t);
     let w: NumName | null = null;
     if (rt.tag === "prim") {
@@ -169,8 +171,9 @@ export function stampNumKinds(nodes: Expr[], uni: Unifier, nodeTypes: Map<ExprID
 // callees never reach `infer`, so they carry no callee type in nodeTypes and
 // never get a suspension stamp — the converter's own fast paths dispatch
 // them.
-export function stampSuspension(nodes: Expr[], uni: Unifier, nodeTypes: Map<ExprID, Type>): void {
-  for (const [id] of nodeTypes) {
+export function stampSuspension(nodes: Expr[], uni: Unifier, nodeTypes: (Type | undefined)[]): void {
+  for (let id = 0; id < nodeTypes.length; id++) {
+    if (nodeTypes[id] === undefined) continue;
     const e = nodes[id];
     // Compile-time coverage: `app` is the only call-site form; every other
     // variant is explicitly not-a-call-site, and a NEW variant fails here
@@ -190,7 +193,7 @@ export function stampSuspension(nodes: Expr[], uni: Unifier, nodeTypes: Map<Expr
     const fn = nodes[e.fn];
     if (fn.t === "sym" && STAMPED_OPS.has(fn.v)) continue;
     let sus = true;
-    const ct = nodeTypes.get(e.fn);
+    const ct = nodeTypes[e.fn];
     if (ct !== undefined) {
       const rt = uni.res(ct);
       if (rt.tag === "fun" && rt.contCall !== true && rt.anyTaint !== true &&

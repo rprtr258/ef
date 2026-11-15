@@ -92,7 +92,7 @@ type TokKinds = BinderCoverage | "sym";
 // slice, so per-line types must not leak across lines' ExprID spaces, and a
 // returned Checked keeps its own recordings alive via its own reference.
 class TokenRecorder {
-  readonly nodeTypes = new Map<ExprID, Type>();
+  readonly nodeTypes: (Type | undefined)[] = [];
   readonly semToks: TypeTok[] = [];
   constructor(
     readonly nodes: Expr[],        // the checked slice (pin's self-box lookups)
@@ -102,10 +102,10 @@ class TokenRecorder {
   ) {}
 
   // Every checked node's inferred type lands here exactly once (infer's
-  // single site); width pins may overwrite — the map holds each node's
-  // final stamp.
-  recordType(id: ExprID, t: Type): void { this.nodeTypes.set(id, t); }
-  typeOf(id: ExprID): Type | undefined { return this.nodeTypes.get(id); }
+  // single site); the lambda-retTyp retry path re-infers the same node and
+  // may overwrite — the slot holds each node's final stamp.
+  recordType(id: ExprID, t: Type): void { this.nodeTypes[id] = t; }
+  typeOf(id: ExprID): Type | undefined { return this.nodeTypes[id]; }
 
   // One emission point for value-identifier tokens: a resolved fn type
   // highlights `function`, anything else `variable`. Positionless binders
@@ -817,7 +817,9 @@ export type Checked = {
   semToks: TypeTok[],
   // Inferred type per node from this call — the LSP's per-node type source
   // (hover); the width/suspension stamps were already applied to the nodes.
-  nodeTypes: Map<ExprID, Type>,
+  // Indexed by ExprID, parallel to Program.nodes (holes at nodes infer never
+  // reached, e.g. operator-desugar callee syms).
+  nodeTypes: (Type | undefined)[],
 };
 
 // checkProgram: typecheck `prog`. `acc` is the previous result — the REPL
@@ -879,7 +881,9 @@ export function checkProgram(
   // different from the binding's own box width (one untyped binding read
   // at several widths). Mark those reads so the backends adapt the stored
   // representation instead of assuming the stamp's box shape.
-  for (const [id, t] of rec.nodeTypes) {
+  for (let id = 0; id < rec.nodeTypes.length; id++) {
+    const t = rec.nodeTypes[id];
+    if (t === undefined) continue;
     const n = prog.nodes[id];
     if (n.t !== "sym") continue;
     const src = n as Expr & {bindTyp?: Type, adaptFrom?: string};

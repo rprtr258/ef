@@ -146,14 +146,14 @@ function hoverText(prog: Program, checked: Checked, id: ExprID, c: Loc): string 
   const e = prog.nodes[id], uni = checked.uni;
   if (e.t === "sym") {
     const names = fnPNames(prog, e.v);
-    const nt = checked.nodeTypes.get(id);
+    const nt = checked.nodeTypes[id];
     if (nt !== undefined) return `${e.v} : ${showT(uni.deepRes(nt), names)}`;
     // Callee syms the checker never infers (structural operators like `+`):
     // env lookup.
     return checked.env.lookup(e.v) === undefined
       ? null : `${e.v} : ${showT(checked.env.lookupResolved(e.v), names)}`;
   }
-  const nt = checked.nodeTypes.get(id);
+  const nt = checked.nodeTypes[id];
   if (nt === undefined) return null;
   // Performs display the op's signature (function-style), not just the result
   // the perform expression evaluates to — same info as hovering the op name.
@@ -168,14 +168,14 @@ function hoverText(prog: Program, checked: Checked, id: ExprID, c: Loc): string 
     for (const cse of e.cases) {
       if (cse.resumePos.line !== c.line ||
           c.col < cse.resumePos.col || cse.resumePos.col + cse.resume.length <= c.col) continue;
-      const bt = checked.nodeTypes.get(cse.body);
-      const argT = cse.op === "Return" ? checked.nodeTypes.get(e.body) : checked.effects.get(cse.op)?.ret;
+      const bt = checked.nodeTypes[cse.body];
+      const argT = cse.op === "Return" ? checked.nodeTypes[e.body] : checked.effects.get(cse.op)?.ret;
       if (bt === undefined || argT === undefined) return null;
       return `${cse.resume} : (${showT(uni.deepRes(argT))}) -> ${showT(uni.deepRes(bt))}`;
     }
   }
   if (e.t === "let" || e.t === "assign" || e.t === "dlet") {
-    const vt = checked.nodeTypes.get(e.val);
+    const vt = checked.nodeTypes[e.val];
     if (vt === undefined) return null;
     const lam = prog.nodes[e.val];
     const s = showT(uni.deepRes(vt), lam.t === "lambda" ? lam.params.map(p => p.name) : undefined);
@@ -220,7 +220,7 @@ function hoverAt(src: string, line: number, col: number): Hover | null {
   for (let id = 0; id < prog.nodes.length; id++) {
     const loc = prog.locs[id];
     if (loc === undefined || !posLE(loc.start, c) || !posLT(c, loc.end)) continue;
-    if (checked.nodeTypes.has(id) || prog.nodes[id].t === "sym") cands.push(id);
+    if (checked.nodeTypes[id] !== undefined || prog.nodes[id].t === "sym") cands.push(id);
   }
   // Innermost first: greatest start, then smallest extent.
   cands.sort((a, b) => {
