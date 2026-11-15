@@ -1,7 +1,8 @@
 import * as readline from "node:readline";
-import {runLine, newCtx} from "./backend/interpreter/eval.ts";
+import {runLine, newCtx, type Ctx} from "./backend/interpreter/eval.ts";
 import {show} from "./env.ts";
 import {showErr, showT} from "./frontend/type_display.ts";
+import {BUILTINS} from "./builtin_table.ts";
 
 // repl: an interactive read-eval-print loop. Pipeline state (Ctx: runtime env
 // + type env + effect signatures) persists across lines, so `let`/`effect`
@@ -9,6 +10,23 @@ import {showErr, showT} from "./frontend/type_display.ts";
 // program; ef is newline-insensitive so multi-statement blocks fit on one
 // line. Echoes the value and inferred type of a bare expression;
 // declarations print nothing.
+// :env prints the user bindings accumulated so far, then the builtins. The
+// checker's env frame mixes builtins with user bindings (the REPL acc reuses
+// the root frame), so user bindings are identified by the builtin-name
+// filter — sound because the no-shadowing rule keeps user bindings off
+// builtin/operator names.
+function showEnv(ctx: Ctx): void {
+  const builtins: string[] = [];
+  let any = false;
+  for (const name of ctx.checked.env.vars.keys()) {
+    const entry = name + " : " + showT(ctx.checked.env.lookupResolved(name));
+    if (BUILTINS.some(b => b.name === name)) builtins.push(entry);
+    else { any = true; console.log(entry); }
+  }
+  for (const entry of builtins) console.log(entry);
+  if (!any && builtins.length === 0) console.log("(no bindings yet)");
+}
+
 export function repl(): void {
   const ctx = newCtx();
   const rl = readline.createInterface({input: process.stdin, output: process.stdout, prompt: "ef> "});
@@ -19,12 +37,28 @@ export function repl(): void {
     if (lastIsExpr && value !== null)
       console.log(show(value) + " : " + showT(lastType));
   };
-  console.log("ef REPL — type :q to quit");
+  const HELP = [
+    "Commands:",
+    "  :help   show this help",
+    "  :env    show bindings accumulated so far, plus builtins",
+    "  :q      quit (also :quit)",
+  ].join("\n");
+  console.log("ef REPL — type :help for commands, :q to quit");
   rl.prompt();
   rl.on("line", (line) => {
     const s = line.trimEnd();
     if (s === ":q" || s === ":quit") {
       rl.close();
+      return;
+    }
+    if (s === ":help") {
+      console.log(HELP);
+      rl.prompt();
+      return;
+    }
+    if (s === ":env") {
+      showEnv(ctx);
+      rl.prompt();
       return;
     }
     if (s === "") {
