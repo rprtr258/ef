@@ -40,6 +40,51 @@ describe("unused-arg", () => {
   });
 });
 
+describe("derived-any", () => {
+  const anyFn = `pull :: fn(x: any): any { x };\n`;
+  for (const [label, src, who, ty, pos] of [
+    [
+    "flags a binding whose inferred type came from an any-typed call",
+    `${anyFn}y := pull(1);`,
+    "`y`", "any", {line: 2, col: 1},
+    ],
+    [
+    "flags tuple fields fed by any-typed values; typed siblings stay silent",
+    `${anyFn}[a, b, c] := [pull(1), 2, "s"];`,
+    "field `a`", "any", {line: 2, col: 2},
+    ],
+    [
+    "flags an array of any-typed elements",
+    `${anyFn}xs := [pull(1), pull(2)];`,
+    "`xs`", "[any]", {line: 2, col: 1},
+    ],
+  ] as [string, string, string, string, {line: number, col: number}][]) {
+    test(label, () => {
+    expect(lint(src))
+        .toEqual([{rule: "derived-any", who, ty, pos}]);
+    });
+  }
+  test("propagation flags every derived binding in order", () => {
+    expect(lint(`${anyFn}y := pull(1);\nz := y;`))
+      .toEqual([
+        {rule: "derived-any", who: "`y`", ty: "any", pos: {line: 2, col: 1}},
+        {rule: "derived-any", who: "`z`", ty: "any", pos: {line: 3, col: 1}},
+      ]);
+  });
+  for (const [label, src] of [
+    ["an explicit annotation silences it", `${anyFn}y: any = pull(1);`],
+    ["an annotated tuple field silences that field", `${anyFn}[a: any, b] := [pull(1), 2];`],
+    ["the _ discard is exempt", `${anyFn}_ := pull(1);`],
+    // The signature spells out the full type — no any there is derived.
+    ["a lambda-valued :: binding is skipped", `pull :: fn(x: any): any { x };`],
+    ["pure bindings stay silent", `x := 1;\nys := [x, x];`],
+  ] as [string, string][]) {
+    test(label, () => {
+      expect(lint(src)).toEqual([]);
+    });
+  }
+});
+
 describe("unused-arg traversal", () => {
   // Walker-arm coverage: each shape must traverse silently (no false
   // positives) when every lambda parameter is used.

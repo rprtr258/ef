@@ -504,8 +504,6 @@ function inferNode(
       // later uses, which would keep checking against the stale scheme while
       // the runtime runs the new closure (type confusion).
       env.vars.set(e.name, e.typ !== null ? rt : (nodes[e.val].t === "lambda" && !e.mut ? env.uni.generalize(env, rt) : rt));
-      if (e.typ === null && env.uni.containsAny(rt))
-        env.uni.warnInferredAny(e.name, rt);
       return TUNIT;
     }
     case "arr":

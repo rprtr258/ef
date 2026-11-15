@@ -110,7 +110,10 @@ function main(cmd: string, args: string[]) {
     }
     for (const i of issues) {
       const loc = i.pos !== undefined ? `${args[0]}:${i.pos.line}:${i.pos.col}: ` : "";
-      console.log(`${loc}${styleText("yellow", i.rule)}: ${i.who} has unused argument ${styleText("red", i.argname)}`);
+      const msg = i.rule === "unused-arg"
+        ? `${i.who} has unused argument ${styleText("red", i.argname)}`
+        : `${i.who} is inferred as ${styleText("red", i.ty)} (contains \`any\`); add an explicit annotation to silence`;
+      console.log(`${loc}${styleText("yellow", i.rule)}: ${msg}`);
     }
     process.exit(1);
   }

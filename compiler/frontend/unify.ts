@@ -7,7 +7,7 @@
 // types and throw through type_display.ts (showT/TypeError_) — a leaf that
 // imports this module's shapes type-only, so the runtime edge is one-way
 // (unify → type_display).
-import {rowOf, tArr, tFun, tTup} from "../prims.ts";
+import {rowOf, tArr, tFun, tTup, TANY} from "../prims.ts";
 import {showT, TypeError_} from "./type_display.ts";
 
 export type Type = Prim | ArrT | TupT | FunT | Var | AnyT;
@@ -105,6 +105,10 @@ export class Unifier {
   // later, resolved to concrete by resolveNums at end of check.
   nums = new Set<Prim>();
   numLinks: Array<[Prim, Prim]> = [];
+  // Representatives of unbound vars that unified with `any` — the absorbing
+  // unification binds nothing, so this set is the only record that such a
+  // var's type is `any`. containsAny consults it.
+  anyVars = new Set<number>();
 
   newNum(name: "int" | "float"): Prim {
     const p: Prim = {tag: "prim", name};
@@ -249,6 +253,21 @@ export class Unifier {
     return r;
   }
 
+  // deepRes, plus any-absorbed unbound vars (see anyVars) rendered as `any` —
+  // the one display form for inferred-`any` types; plain deepRes would show
+  // such a var as a type-var letter.
+  deepResAny(t: Type): Type {
+    const r = this.res(t);
+    if (r.tag === "var") return this.anyVars.has(r.id) ? TANY : r;
+    if (r.tag === "arr") return tArr(this.deepResAny(r.elem));
+    if (r.tag === "tup") return tTup(r.fields.map(f => ({name: f.name, type: this.deepResAny(f.type)})));
+    if (r.tag === "fun")
+      return tFun(r.params.map(p => this.deepResAny(p)), this.deepResAny(r.ret),
+        this.resRow(r.effs),
+        r.contCall === true || r.anyTaint === true ? {contCall: r.contCall, anyTaint: r.anyTaint} : undefined);
+    return r;
+  }
+
   // Speculative-unification checkpoint: snapshot the union-find + effect state
   // so a homogenization attempt (`[a, b]` as array vs tuple) can be rolled
   // back on failure without corrupting the types inferred for the elements.
@@ -345,17 +364,11 @@ export class Unifier {
   containsAny(t: Type): boolean {
     const r = this.res(t);
     if (r.tag === "any") return true;
+    if (r.tag === "var") return this.anyVars.has(r.id);
     if (r.tag === "arr") return this.containsAny(r.elem);
     if (r.tag === "tup") return r.fields.some(f => this.containsAny(f.type));
     if (r.tag === "fun") return r.params.some(p => this.containsAny(p)) || this.containsAny(r.ret);
     return false;
-  }
-
-  warnInferredAny(name: string, t: Type): void {
-    console.warn(
-      `warning: \`${name}\` inferred as \`${showT(this.deepRes(t))}\` (contains \`any\`); ` +
-      `add an explicit annotation to silence`,
-    );
   }
 
   typeMismatch(actual: Type, expected: Type, name?: string): TypeMismatch {
@@ -372,6 +385,10 @@ export class Unifier {
       // stamping conservative (stampSuspension reads it).
       if (ra.tag === "fun") ra.anyTaint = true;
       if (rb.tag === "fun") rb.anyTaint = true;
+      // The absorbing unification binds no var, so the only record that a
+      // var's type is `any` is this set — containsAny reads it.
+      if (ra.tag === "var") this.anyVars.add(this.find(ra.id));
+      if (rb.tag === "var") this.anyVars.add(this.find(rb.id));
       return;
     }
     if (ra.tag === "var" && rb.tag === "var") {

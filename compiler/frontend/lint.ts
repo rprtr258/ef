@@ -2,18 +2,31 @@
 
 import type {Loc} from "./lexer.ts";
 import {Parser, type Expr, type ExprID, type Program} from "./parser.ts";
+import {checkProgram, type Checked} from "./types.ts";
+import {showT} from "./type_display.ts";
+import type {Type} from "./unify.ts";
 import {exprChildren, forEachBinder} from "./walk.ts";
 import {assertNever} from "../assert.ts";
 
-// Each pass is a (Program) => LintIssue[]; add more passes to LINT_PASSES.
+// Each pass is a (Program, Checked?) => LintIssue[]; add more passes to
+// LINT_PASSES. `lint` typechecks best-effort first: a type-aware pass sees
+// per-node inferred types, but a program that fails to check still gets its
+// AST-level passes run (the unused-arg rules deliberately cover unchecked
+// inputs like shadowing/duplicate params).
 export type LintIssue =
-  {rule: "unused-arg", who: string, argname: string, pos?: Loc};
+  | {rule: "unused-arg", who: string, argname: string, pos?: Loc}
+  | {rule: "derived-any", who: string, ty: string, pos?: Loc};
 
-const LINT_PASSES: ((prog: Program) => LintIssue[])[] = [lintUnusedArgs];
+const LINT_PASSES: ((prog: Program, checked: Checked | undefined) => LintIssue[])[] =
+  [lintUnusedArgs, lintDerivedAny];
 
 export function lint(src: string): LintIssue[] {
   const prog = new Parser(src).parseProgram();
-  return LINT_PASSES.flatMap(pass => pass(prog));
+  let checked: Checked | undefined;
+  try {
+    checked = checkProgram(prog);
+  } catch { /* unchecked programs still get their AST passes */ }
+  return LINT_PASSES.flatMap(pass => pass(prog, checked));
 }
 
 // Visit every lambda in an expression, pre-order (exprChildren order).
@@ -103,7 +116,7 @@ function freeUses(id: ExprID, prog: Program, watch: Set<string>): Set<string> {
 // unused-arg: a function parameter never referenced in the body (scope-aware:
 // inner lambda params, let bindings, dlet fields, and handler-case
 // params/resume shadow the outer name and don't count as a use).
-function lintUnusedArgs(prog: Program): LintIssue[] {
+function lintUnusedArgs(prog: Program, _checked: Checked | undefined): LintIssue[] {
   const issues: LintIssue[] = [];
   for (const it of prog.items.filter(it => "e" in it))
     for (const [lam, fname] of visitLambdas(it.e, prog, null)) {
@@ -119,5 +132,51 @@ function lintUnusedArgs(prog: Program): LintIssue[] {
         }
       }
     }
+  return issues;
+}
+
+// derived-any: an unannotated binding whose inferred type contains `any` —
+// the absorbing escape type propagating silently (from an `any`-typed param,
+// an `[any]` element, a call through an `any`-typed function). An explicit
+// annotation on the binding (or the `_` discard) silences it; a lambda-valued
+// `::` binding is skipped too — its signature spells out the full type, so no
+// any there is derived.
+function lintDerivedAny(prog: Program, checked: Checked | undefined): LintIssue[] {
+  if (checked === undefined) return [];
+  const issues: LintIssue[] = [];
+  // The inferred type of `id` when it contains `any`, displayed via
+  // deepResAny (any-absorbed unbound vars render as any — a call through an
+  // any-typed function leaves its result var unbound; see Unifier.anyVars).
+  const anyTypeOf = (id: ExprID): Type | null => {
+    const t = checked.nodeTypes[id];
+    return t !== undefined && checked.uni.containsAny(t) ? checked.uni.deepResAny(t) : null;
+  };
+  for (let id = 0; id < prog.nodes.length; id++) {
+    const e = prog.nodes[id];
+    if (e.t === "let") {
+      if (e.typ !== null || e.name === "_" || prog.nodes[e.val].t === "lambda")
+        continue;
+      const ty = anyTypeOf(e.val);
+      if (ty !== null)
+        issues.push({
+          rule: "derived-any", who: `\`${e.name}\``, ty: showT(ty),
+          pos: prog.locs[id]?.start,
+        });
+    } else if (e.t === "dlet") {
+      const vt = anyTypeOf(e.val);
+      if (vt === null) continue;
+      for (const [i, f] of e.fields.entries()) {
+        if (f.typ !== null || f.name === "_") continue;
+        const ft = (vt.tag === "tup" ? vt.fields[i]?.type
+          : vt.tag === "arr" ? vt.elem
+          : null) ?? null;
+        if (ft !== null && checked.uni.containsAny(ft))
+          issues.push({
+            rule: "derived-any", who: `field \`${f.name}\``, ty: showT(checked.uni.deepResAny(ft)),
+            pos: f.pos,
+          });
+      }
+    }
+  }
   return issues;
 }

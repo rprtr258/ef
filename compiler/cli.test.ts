@@ -158,6 +158,19 @@ f()
     }
   });
 
+  test("lint: derived-any binding exits 1 and names the binding", () => {
+    const file = join(tmpdir(), `ef-cli-test-${process.pid}-any.ef`);
+    writeFileSync(file, "pull :: fn(x: any): any { x };\ny := pull(1);\n");
+    try {
+      const r = cli("lint", file);
+      expect(r.code).toBe(1);
+      expect(r.stdout).toContain("derived-any");
+      expect(r.stdout).toContain("`y` is inferred as any");
+    } finally {
+      rmSync(file, {force: true});
+    }
+  });
+
   test("run: a missing file exits 1 with diagnostics on stderr", () => {
     const r = cli("run", "/nonexistent/ef-cli-test-missing.ef");
     expect(r.code).toBe(1);

@@ -217,7 +217,8 @@ suspension/arrKind emission over an exhaustive `Expr` switch — widths come
    §4 accessor ABI, `runWasm`; effect interpretation comes from builtins.ts's
    `builtinEffectHosts`).
 12. **`frontend/lint.ts`** — lint passes over a parsed program (`LINT_PASSES`);
-   currently one rule (`unused-arg`).
+   rules: `unused-arg`, and `derived-any` (typecheck-backed — `lint` runs
+   `checkProgram` best-effort, type-aware passes skip unchecked programs).
 13. **Frontends** — `cli.ts` (`ef run|buildwasm|runwasm|types|lint <file>`,
     `ef repl`, `ef lsp`) and `repl.ts`
    (line loop over eval.ts's `runLine`; bindings accumulate across lines).

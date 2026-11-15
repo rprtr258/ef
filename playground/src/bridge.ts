@@ -82,7 +82,9 @@ export function problems(src: string): Problem[] {
     return [{stage: staged.stage, msg: errText(staged.error), line: null}];
   return lint(src).map((i) => ({
     stage: "lint" as const,
-    msg: `${i.who}: unused argument ${i.argname}`,
+    msg: i.rule === "unused-arg"
+      ? `${i.who}: unused argument ${i.argname}`
+      : `${i.who}: inferred as ${i.ty} (contains \`any\`)`,
     line: i.pos?.line ?? null,
   }));
 }
