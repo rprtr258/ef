@@ -302,11 +302,11 @@ describe("ef language server", () => {
   });
 
   test("hover on a resume binder shows the resolved result type", async () => {
-    await s.change("effect Get(): i64;\nm :: handle { Get!(); } case Get() => k { k(42); unit } case Return(v) => k { unit };\n");
-    const h1 = await s.hover(1, 38); // Get's resume
+    await s.change("effect Get(): i64;\nm :: handle { Get!() } case Get() => k { k(42); unit } case Return(v) => k { unit };\n");
+    const h1 = await s.hover(1, 37); // Get's resume
     expect(h1).not.toBeNull();
     expect(h1!.contents.value).toBe("```ef\nk : (i64) -> unit\n```");
-    const h2 = await s.hover(1, 74); // Return's resume: (body type) -> result
+    const h2 = await s.hover(1, 73); // Return's resume: (body type) -> result
     expect(h2!.contents.value).toBe("```ef\nk : (i64) -> unit\n```");
   });
 

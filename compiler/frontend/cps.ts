@@ -278,7 +278,11 @@ class Converter {
         if (e.stmts.length === 0) return kap(k, UNIT);
         const go = (i: number): CTerm =>
           i === e.stmts.length - 1
-            ? this.convert(e.stmts[i], k)
+            // A `;` after the tail expression discards its value: the block
+            // completes with unit after the statement finishes evaluating.
+            ? e.semi
+              ? this.convert(e.stmts[i], {t: "fn", f: () => kap(k, UNIT)})
+              : this.convert(e.stmts[i], k)
             : this.convert(e.stmts[i], {t: "fn", f: () => go(i + 1)});
         return {t: "scope", rest: go(0)};
       }

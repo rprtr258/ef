@@ -64,6 +64,11 @@ Every comma-separated list (params, args, destructure patterns, tuple types,
 effect rows) requires the comma between elements; only a trailing comma
 immediately before the close delimiter is optional.
 
+**Block values.** A block evaluates to its last expression's value only when
+that expression has no trailing `;`; a `;`-terminated tail (or an empty
+block) makes the block evaluate to `unit`. Blocks appear as lambda bodies,
+`if` arms, and handler bodies/case arms.
+
 There are two binding kinds:
 
 - `name := e;` — a **mutable variable** (inferred type).

@@ -188,11 +188,13 @@ function inferWith(id: ExprID, nodes: Expr[], expected: TupT, env: Env, effs: Ef
   if (e.t === "block") {
     const n = env.extend();
     let last: Type = TUNIT;
+    // A `;`-terminated tail discards the last statement's value: the block
+    // is unit, so no tup expectation flows into it.
     for (let i = 0; i < e.stmts.length; i++)
-      last = i === e.stmts.length - 1
+      last = !e.semi && i === e.stmts.length - 1
         ? inferWith(e.stmts[i], nodes, expected, n, effs, effects, rec)
         : infer(e.stmts[i], nodes, n, effs, effects, rec);
-    return last;
+    return e.semi ? TUNIT : last;
   }
   if (e.t === "lambda" && e.retTyp !== null) {
     const saved = e.retTyp;
@@ -613,7 +615,8 @@ function inferNode(
       const n = env.extend();
       let last: Type = TUNIT;
       for (const s of e.stmts) last = infer(s, nodes, n, effs, effects, rec);
-      return last;
+      // The last expression is the block's value only when no `;` follows it.
+      return e.semi ? TUNIT : last;
     }
     case "perform": {
       const sig = effects.get(e.op);

@@ -107,8 +107,8 @@ while (true) {
         [cos(rotateSpeed), 0.0, -sin(rotateSpeed)],
         [0.0, 1.0, 0.0],
         [sin(rotateSpeed), 0.0, cos(rotateSpeed)]
-      ]);
-    };
+      ])
+    }
   }, poly);
   poly = map(fn(p) {
     apply(p, [

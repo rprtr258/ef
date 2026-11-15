@@ -92,7 +92,7 @@ export type Expr =
   | { t: "assign", name: string, val: ExprID }
   | { t: "if", c: ExprID, a: ExprID, b: ExprID }
   | { t: "while", c: ExprID, body: ExprID }
-  | { t: "block", stmts: ExprID[] }
+  | { t: "block", stmts: ExprID[], semi: boolean }
   | { t: "perform", op: string, args: ExprID[] }
   | { t: "handle", body: ExprID, cases: HandlerCase[] }
   | { t: "app", fn: ExprID, args: ExprID[], div?: NumName, numKind?: string,
@@ -140,6 +140,10 @@ export class Parser {
   typeParamStack: Map<string, Var>[] = [];
   // Type/effect name occurrences, pushed in source order while parsing.
   typeToks: TypeTok[] = [];
+  // Whether the most recent parseStmt expression statement consumed a
+  // trailing `;` — parseBlock reads it to decide if the block's last
+  // expression is its value (no `;`) or discarded (unit).
+  stmtSemi = false;
   constructor(src: string) {
     this.toks = lex(src);
   }
@@ -305,6 +309,7 @@ export class Parser {
 
   parseStmt(): ExprID {
     const p = this.pos();
+    this.stmtSemi = false;
     let e: ExprID;
     const nonKw = this.peek() !== undefined && !KEYWORDS.has(this.peek()!);
     if (nonKw && this.peek(1) === ":=") {
@@ -358,7 +363,8 @@ export class Parser {
       } catch {
         this.i = save;
         e = this.parseExpr();
-        if (this.is(";"))
+        this.stmtSemi = this.is(";");
+        if (this.stmtSemi)
           this.i++;
         else if (!isBlocky(this.nodes[e]) && !this.is("}") && !this.atEnd())
           this.eat(";");
@@ -372,7 +378,8 @@ export class Parser {
         this.i++;
     } else {
       e = this.parseExpr();
-      if (this.is(";"))
+      this.stmtSemi = this.is(";");
+      if (this.stmtSemi)
         this.i++;
       else if (!isBlocky(this.nodes[e]) && !this.is("}") && !this.atEnd())
         this.eat(";");
@@ -409,9 +416,13 @@ export class Parser {
     const p = this.pos();
     this.eat("{");
     const stmts: ExprID[] = [];
-    while (!this.is("}")) stmts.push(this.parseStmt());
+    let semi = false;
+    while (!this.is("}")) {
+      stmts.push(this.parseStmt());
+      semi = this.stmtSemi;
+    }
     this.eat("}");
-    return this.add({t: "block", stmts}, p);
+    return this.add({t: "block", stmts, semi}, p);
   }
 
   // optional `! { op, op, ... }` effect annotation on a fn return type

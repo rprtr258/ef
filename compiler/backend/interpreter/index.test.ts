@@ -359,6 +359,14 @@ describe("Negative tests (static type checker rejects)", () => {
     assertTypeError(`if (1 < 2) { 1 } else { "x" }`, "i64");
   });
 
+  test("A `;` after a block's last expression makes the block unit", () => {
+    // The tail expression is the block's value only without a trailing `;`.
+    expect(typeOf(`f :: fn(): i64 { 1; 2 }; f()`)).toBe("i64");
+    expect(typeOf(`f :: fn(): unit { 1; 2; }; f()`)).toBe("unit");
+    assertTypeError(`f :: fn(): i64 { 1; 2; }; f()`, "unit");
+    assertTypeError(`if (true) { 1 } else { 2; }`, "unit");
+  });
+
   test("Using an undeclared effect", () => {
     assertTypeError(`Nope!(1)`, "Unknown effect");
   });
