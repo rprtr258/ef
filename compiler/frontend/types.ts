@@ -11,7 +11,7 @@ import {
 import {
   beginLamWidths, checkLamWidths, endLamWidths,
   stampArrKind, stampComputeWidth, stampDivWidth, stampEqWidth, stampNumKinds,
-  stampSuspension, touchNumericVar,
+  stampSuspension, touchNumericVar, type NodeStamps,
 } from "../stamps.ts";
 import {assertNever} from "../assert.ts";
 import type {Loc, LocRange} from "./lexer.ts";
@@ -93,6 +93,10 @@ type TokKinds = BinderCoverage | "sym";
 // returned Checked keeps its own recordings alive via its own reference.
 class TokenRecorder {
   readonly nodeTypes: (Type | undefined)[] = [];
+  // Per-node backend stamps (stamps.ts NodeStamps — numKind/div/sus/typ):
+  // written during inference and by the checkProgram post-passes, consumed
+  // by the CPS converter via the returned Checked.
+  readonly stamps: (NodeStamps | undefined)[] = [];
   readonly semToks: TypeTok[] = [];
   constructor(
     readonly nodes: Expr[],        // the checked slice (pin's self-box lookups)
@@ -449,7 +453,9 @@ function inferNode(
         }
       }
       const ft = tFun(ps, e.retTyp ?? ret, e.retEffs !== null ? rowOf(e.retEffs) : innerEffs);
-      e.typ = ft;
+      // The lambda's FunT rides the stamps side-table (the converter's
+      // isDirectFn reads its effect row; the IR's func.typ copies it).
+      (rec.stamps[id] ??= {}).typ = ft;
       // Param binders classified here, after the body has unified — an
       // unannotated param used as a callee resolves to a FunT by now.
       for (let i = 0; i < e.params.length; i++) {
@@ -481,8 +487,9 @@ function inferNode(
       // bound (or not), so deep-resolve it — display never needs the unifier.
       const lam = nodes[e.val];
       if (lam.t === "lambda") {
-        if (lam.typ !== undefined)
-          lam.typ = env.uni.deepRes(lam.typ) as FunT;
+        const st = rec.stamps[e.val];
+        if (st?.typ !== undefined)
+          st.typ = env.uni.deepRes(st.typ) as FunT;
         checkLamWidths(env.uni, lam);
       }
       // Exclude the self-binding from the free-var context before
@@ -691,7 +698,7 @@ function inferNode(
         const widened = plusType(env.uni, at, bt);
         // The numeric `+` stamps exactly like the other arithmetic ops (the
         // string case leaves no width to stamp).
-        stampComputeWidth(env.uni, e, widened);
+        stampComputeWidth(env.uni, id, widened, rec.stamps);
         return widened;
       }
       // Numeric operators (- * / %) and comparisons (< > <= >=) widen int/float;
@@ -700,14 +707,14 @@ function inferNode(
         const at = infer(e.args[0], nodes, env, effs, effects, rec);
         const bt = infer(e.args[1], nodes, env, effs, effects, rec);
         const widened = numeric(env.uni, at, bt, fn.v);
-        stampComputeWidth(env.uni, e, widened);
+        stampComputeWidth(env.uni, id, widened, rec.stamps);
         if (CMP_OPS.has(fn.v)) return TBOOL;
         // `/` is type-preserving: int/int -> int (truncated at runtime),
-        // float/float -> float; the division's width is stamped on the node
-        // so the evaluator/emitters pick truncation and the signed/unsigned
-        // op variants.
+        // float/float -> float; the division's width is stamped in the
+        // Checked.stamps side-table so the evaluator/emitters pick
+        // truncation and the signed/unsigned op variants.
         if (fn.v === OP_DIV) {
-          stampDivWidth(env.uni, e, widened);
+          stampDivWidth(env.uni, id, widened, rec.stamps);
           return widened;
         }
         return widened;
@@ -715,7 +722,7 @@ function inferNode(
       if (fn.t === "sym" && fn.v === OP_NEG) {
         const at = infer(e.args[0], nodes, env, effs, effects, rec);
         const widened = numeric(env.uni, at, at, OP_NEG);
-        stampComputeWidth(env.uni, e, widened);
+        stampComputeWidth(env.uni, id, widened, rec.stamps);
         return widened;
       }
       if (fn.t === "sym" && fn.v === OP_NOT) {
@@ -730,7 +737,7 @@ function inferNode(
         const at = infer(e.args[0], nodes, env, effs, effects, rec);
         const bt = infer(e.args[1], nodes, env, effs, effects, rec);
         env.uni.unify(at, bt);
-        stampEqWidth(env.uni, e, at, bt);
+        stampEqWidth(env.uni, id, at, bt, rec.stamps);
         return TBOOL;
       }
       const ft = infer(e.fn, nodes, env, effs, effects, rec);
@@ -816,10 +823,13 @@ export type Checked = {
   // function/variable) — the LSP merges them with the parser's typeToks.
   semToks: TypeTok[],
   // Inferred type per node from this call — the LSP's per-node type source
-  // (hover); the width/suspension stamps were already applied to the nodes.
-  // Indexed by ExprID, parallel to Program.nodes (holes at nodes infer never
-  // reached, e.g. operator-desugar callee syms).
+  // (hover). Indexed by ExprID, parallel to Program.nodes (holes at nodes
+  // infer never reached, e.g. operator-desugar callee syms).
   nodeTypes: (Type | undefined)[],
+  // Per-node backend stamps from this call (stamps.ts NodeStamps), parallel
+  // to Program.nodes — the CPS converter's stamp source (numKind/div/sus,
+  // plus the lambdas' FunTs for the direct-style decision and func.typ).
+  stamps: (NodeStamps | undefined)[],
 };
 
 // checkProgram: typecheck `prog`. `acc` is the previous result — the REPL
@@ -876,7 +886,7 @@ export function checkProgram(
   // has left no untyped literals — every numeric node type is concrete, so
   // numKind stamping reads widths straight off the resolved types.
   uni.resolveWilds();
-  stampNumKinds(prog.nodes, uni, rec.nodeTypes);
+  stampNumKinds(uni, rec.nodeTypes, rec.stamps);
   // Divergent reads: a per-read wildcard copy may have flexed to a width
   // different from the binding's own box width (one untyped binding read
   // at several widths). Mark those reads so the backends adapt the stored
@@ -894,7 +904,7 @@ export function checkProgram(
     if (sw !== null && sw.concrete && bw !== null && bw.concrete && bw.w !== sw.w)
       src.adaptFrom = bw.w;
   }
-  stampSuspension(prog.nodes, uni, rec.nodeTypes);
+  stampSuspension(prog.nodes, uni, rec.nodeTypes, rec.stamps);
 
-  return {env, effects, uni, lastType: uni.deepRes(lastType), unhandled, semToks: rec.semToks, nodeTypes: rec.nodeTypes};
+  return {env, effects, uni, lastType: uni.deepRes(lastType), unhandled, semToks: rec.semToks, nodeTypes: rec.nodeTypes, stamps: rec.stamps};
 }

@@ -12,8 +12,8 @@ import {assertNever} from "../../compiler/assert.ts";
 const IND = "  ";
 
 export function showCps(src: string): string {
-  const {prog} = prepare(src);
-  return showIr(toCps(prog));
+  const {prog, checked} = prepare(src);
+  return showIr(toCps(prog, checked.stamps));
 }
 
 function showIr(ir: CIr): string {

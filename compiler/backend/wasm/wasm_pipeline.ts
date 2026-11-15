@@ -61,6 +61,9 @@ export type Opt = {
   // Builtins the program references at all (values + call sites,
   // shadowing-correct): layoutStatics/emitBuiltins emit only these.
   usedBuiltins: Set<string>,
+  // The checker's stamps table (Checked.stamps), threaded for
+  // treeShakeBuiltins' numKind lookups.
+  numKinds?: readonly ({numKind?: string} | undefined)[],
   // Live host imports (dropDeadHostImports) — a subset of HOST_IMPORTS in
   // original order — and each name's funcref index. Defined functions
   // register through the IndexRegistrar (wasm_pipeline.ts), each at its
@@ -278,10 +281,11 @@ export function discover(ir: CIr, prog: Program): Discovery {
   return d;
 }
 
-export function optimize(prog: Program): Opt {
+export function optimize(prog: Program, numKinds?: readonly ({numKind?: string} | undefined)[]): Opt {
   const o: Opt = {
     valueBuiltins: new Set(),
     usedBuiltins: new Set(),
+    numKinds,
     liveImports: [...HOST_IMPORTS],
     impIdx: new Map(HOST_IMPORTS.map((n, i): [string, number] => [n, i])),
   };
@@ -586,8 +590,8 @@ const OPT_PASSES: ((prog: Program, o: Opt) => void)[] = [
 // builtinRefs — shadowing-correct, checker-mirroring binding order):
 // layoutStatics/emitBuiltins emit only these.
 function treeShakeBuiltins(prog: Program, o: Opt): void {
-  o.valueBuiltins = builtinValueUses(prog);
-  const refs = builtinRefs(prog);
+  o.valueBuiltins = builtinValueUses(prog, o.numKinds);
+  const refs = builtinRefs(prog, o.numKinds);
   // Trampolines: every referenced non-operator (their direct call sites
   // still call them); operators only when used as values, since operator
   // call sites compile inline.

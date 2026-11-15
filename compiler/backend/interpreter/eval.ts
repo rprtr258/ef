@@ -366,12 +366,12 @@ export function exec(prog: Program, ctx: Ctx, checked: Checked): {value: Value, 
   // REPL line can use a previously-unreferenced builtin; the checker's
   // no-shadowing rule keeps user bindings off builtin names, so seeding
   // never overwrites anything).
-  seedBuiltins(ctx.env, builtinRefs(prog));
+  seedBuiltins(ctx.env, builtinRefs(prog, ctx.checked.stamps));
   // One conversion, one term, one runTop drive: items chain inside the term,
   // so an interp-resumed effect continues into the next item. Top-level
   // binds land in ctx.env (the items bind in the caller's frame),
   // preserving the REPL accumulator protocol.
-  const ir = toCps(prog);
+  const ir = toCps(prog, ctx.checked.stamps);
   let lastIsExpr = false;
   for (const it of prog.items)
     lastIsExpr = "e" in it ? prog.nodes[it.e].t !== "let" : false; // effect decl / alias: not echoable

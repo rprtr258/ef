@@ -199,7 +199,10 @@ describe("cps_opt via toCps: dead binding drop", () => {
 describe("cps_opt via toCps: dcall/dret through the rewrites", () => {
   // Suspension stamps are checker-stamped: conversion sees them only after
   // the check (prepare).
-  const convC = (src: string): CIr => toCps(prepare(src).prog);
+  const convC = (src: string): CIr => {
+    const {prog, checked} = prepare(src);
+    return toCps(prog, checked.stamps);
+  };
 
   // A pure callee: the dcall's operand read-temps substitute away like call
   // args, and the direct boundary is a dret tail (never a jump to $ret).

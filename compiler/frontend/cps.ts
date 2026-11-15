@@ -11,14 +11,15 @@
 // rest term from the value's atom) or a tail position naming an existing
 // continuation (the value jumps straight there — no wrapper letk). Wrapper
 // letks are emitted for call/perform sites whose node carries a numKind
-// stamp: the resumed/returned value must normalize to that width at the site
+// stamp (Checked.stamps — the checker's per-node stamps side-table): the
+// resumed/returned value must normalize to that width at the site
 // (matching eval.ts's per-node evalE wrap), and a shared tail continuation
 // can't absorb a per-site stamp.
 
 import type {Expr, ExprID, Program} from "./parser.ts";
 import type {CAtom, CCase, CFn, CIr, CPrim, CTerm} from "./cps_ir.ts";
-import {widthOf, type Type} from "./unify.ts";
 import {optimizeCps} from "./cps_opt.ts";
+import type {NodeStamps} from "../stamps.ts";
 import {BUILTINS} from "./analysis.ts";
 import {assertNever} from "../assert.ts";
 import {OP_ADD, OP_DIV, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_MUL, OP_NE, OP_NEG, OP_REM, OP_SUB} from "../ops.ts";
@@ -60,22 +61,22 @@ function kap(k: K, v: CAtom): CTerm {
 // unread, so a tail call to either would flow the never-set $ret into a
 // callee that can suspend, severing the ambient chain its performs walk.
 // Unstamped or any-absorbed lambdas default to CPS.
-function isDirectFn(prog: Program, e: Expr & {t: "lambda"}): boolean {
-  const typ = e.typ;
+function isDirectFn(prog: Program, stamps: readonly (NodeStamps | undefined)[], id: ExprID): boolean {
+  const typ = stamps[id]?.typ;
   if (typ === undefined || typ.effs.ops.size !== 0 || typ.effs.vars.size !== 0) return false;
-  return !tailSusCall(prog, e.body);
+  return !tailSusCall(prog, stamps, (prog.nodes[id] as Expr & {t: "lambda"}).body);
 }
 
 // A checker-stamped suspending app anywhere in the AST tail chain — exactly
 // the call shapes the converter emits as `call {k: $ret}` (non-tail sites
 // become dcall with a materialized land cell).
-function tailSusCall(prog: Program, id: ExprID): boolean {
+function tailSusCall(prog: Program, stamps: readonly (NodeStamps | undefined)[], id: ExprID): boolean {
   const e = prog.nodes[id];
   switch (e.t) {
-    case "app": return e.sus === true;
-    case "if": return tailSusCall(prog, e.a) || tailSusCall(prog, e.b);
-    case "block": return e.stmts.length > 0 && tailSusCall(prog, e.stmts[e.stmts.length - 1]);
-    case "as": return tailSusCall(prog, e.e);
+    case "app": return stamps[id]?.sus === true;
+    case "if": return tailSusCall(prog, stamps, e.a) || tailSusCall(prog, stamps, e.b);
+    case "block": return e.stmts.length > 0 && tailSusCall(prog, stamps, e.stmts[e.stmts.length - 1]);
+    case "as": return tailSusCall(prog, stamps, e.e);
     default: return false;
   }
 }
@@ -89,7 +90,7 @@ class Converter {
   // cps_ir.ts's letk.freeze).
   private temps = new Set<string>();
 
-  constructor(prog: Program) {
+  constructor(prog: Program, private readonly stamps: readonly (NodeStamps | undefined)[] = []) {
     this.prog = prog;
   }
 
@@ -113,28 +114,8 @@ class Converter {
     const go = (i: number, acc: CAtom[]): CTerm =>
       i === args.length
         ? kk(acc)
-        : this.convert(args[i], {t: "fn", f: (v) => go(i + 1, acc.concat([this.stampArg(args[i], v)]))});
+        : this.convert(args[i], {t: "fn", f: (v) => go(i + 1, acc.concat([v]))});
     return go(0, []);
-  }
-
-  // Carry the arg node's width stamp onto the bound atom. Computed args
-  // arrive as converter-temp vars (a prim let binds `$t` unstamped), so the
-  // reference would lose the width the checker stamped on the arg node —
-  // call sites read args by stamp (raw numeric args at numeric entries).
-  // The stamp rides only nodes whose own type is a concrete numeric prim:
-  // a comparison node also carries numKind (its OPERANDS' compute width),
-  // but its value is a bool — stamping it would misshape every read. The
-  // interpreter's stamped-var read normalizes at the stamp — idempotent
-  // for a value already computed at that width.
-  private stampArg(id: ExprID, v: CAtom): CAtom {
-    if (v.t === "var" && v.stamp === undefined) {
-      const e = this.prog.nodes[id] as Expr & {numKind?: string, typ?: Type};
-      if (e.numKind !== undefined && e.typ !== undefined &&
-        e.typ.tag === "prim" && widthOf(e.typ)?.concrete === true) {
-        return {t: "var", name: v.name, stamp: e.numKind};
-      }
-    }
-    return v;
   }
 
   // Bind a primitive result, then continue with its var. Prims never
@@ -182,7 +163,7 @@ class Converter {
       case "num":
         // i64/u64 literals materialize from the raw lexeme at runtime (a JS
         // number loses bits beyond 2^53); the stamp normalizes.
-        return kap(k, {t: "lit", v: e.v, raw: e.raw, stamp: e.numKind});
+        return kap(k, {t: "lit", v: e.v, raw: e.raw, stamp: this.stamps[id]?.numKind});
       case "str":
       case "bool":
         return kap(k, {t: "lit", v: e.v});
@@ -198,21 +179,21 @@ class Converter {
         this.temps.add(name);
         return {
           t: "bind", name,
-          val: {t: "var", name: e.v, stamp: (e as Expr & {numKind?: string}).numKind,
+          val: {t: "var", name: e.v, stamp: this.stamps[id]?.numKind,
             adaptFrom: (e as Expr & {adaptFrom?: string}).adaptFrom},
           rest: kap(k, {t: "var", name}),
         };
       }
       case "lambda": {
         const params = e.params.map(p => p.name);
-        const direct = isDirectFn(this.prog, e);
+        const direct = isDirectFn(this.prog, this.stamps, id);
         const body = this.convert(e.body, direct ? {t: "tail", name: RET, dret: true} : {t: "tail", name: RET});
         const fun = this.funcs.length;
         this.funcs.push({
           params,
           capts: freeVars(body, new Set([RET, ...params])),
           body,
-          typ: e.typ ?? undefined,
+          typ: this.stamps[id]?.typ,
           direct: direct || undefined,
         });
         const name = this.fresh("$f");
@@ -289,7 +270,7 @@ class Converter {
       case "perform":
         // k names the reified continuation: what resume injects into. When
         // the perform is itself the tail, that's the named tail directly.
-        return this.callTail(k, (e as Expr & {numKind?: string}).numKind, (kk) =>
+        return this.callTail(k, this.stamps[id]?.numKind, (kk) =>
           this.convArgs(e.args, (vas) => ({t: "perform", op: e.op, args: vas, k: kk})));
       case "handle": {
         // $hret: the handled body's exit — the runtime binds it to the
@@ -320,12 +301,12 @@ class Converter {
         // add the division stamp (nk ?? div ?? "f64") — integer division
         // truncates and traps on ÷0 and INT_MIN÷-1 like wasm's div/rem ops.
         // The app node's own stamp (norm) re-normalizes the result.
+        const nk = this.stamps[id]?.numKind;
         const fn = this.prog.nodes[e.fn];
         if (fn.t === "sym") {
           const op = fn.v;
-          const nk = e.numKind;
           if (op === OP_DIV || op === OP_REM) {
-            const stamp = nk ?? e.div ?? "f64";
+            const stamp = nk ?? this.stamps[id]?.div ?? "f64";
             return this.convArgs(e.args, (vas) =>
               this.primLet({t: "op", op, args: vas, stamp, norm: nk}, k));
           }
@@ -337,11 +318,11 @@ class Converter {
         // binds in-frame and the term continues, with no continuation
         // machinery at the site. Builtin-sym callees stay unbound names (the
         // emitter specializes them), like the generic paths below.
-        if (e.sus === false) {
+        if (this.stamps[id]?.sus === false) {
           const dcallK = (vf: CAtom) => (vas: CAtom[]): CTerm => {
             const name = this.fresh("$c");
             this.temps.add(name);
-            return {t: "dcall", fn: vf, args: vas, name, norm: e.numKind, rest: kap(k, {t: "var", name})};
+            return {t: "dcall", fn: vf, args: vas, name, norm: nk, rest: kap(k, {t: "var", name})};
           };
           if (fn.t === "sym" && isDirectBuiltinName(fn.v))
             return this.convArgs(e.args, (vas) => dcallK({t: "var", name: fn.v})(vas));
@@ -354,16 +335,16 @@ class Converter {
         // slot no runtime value ever fills.
         if (fn.t === "sym" && isDirectBuiltinName(fn.v)) {
           return this.convArgs(e.args, (vas) =>
-            this.callTail(k, e.numKind, (kk) =>
-              ({t: "call", fn: {t: "var", name: fn.v}, args: vas, k: kk, rstamp: e.numKind})));
+            this.callTail(k, nk, (kk) =>
+              ({t: "call", fn: {t: "var", name: fn.v}, args: vas, k: kk, rstamp: nk})));
         }
         return this.convert(e.fn, {t: "fn", f: (vf) =>
           this.convArgs(e.args, (vas) =>
-            this.callTail(k, e.numKind, (kk) => ({t: "call", fn: vf, args: vas, k: kk, rstamp: e.numKind})))});
+            this.callTail(k, nk, (kk) => ({t: "call", fn: vf, args: vas, k: kk, rstamp: nk})))});
       }
       case "as": {
         const asKind = e.asKind;
-        const stamp = (e as Expr & {numKind?: string}).numKind;
+        const stamp = this.stamps[id]?.numKind;
         return this.convert(e.e, {t: "fn", f: (v) => {
           // No asKind and no stamp: a pure pass-through conversion.
           if (asKind === undefined && stamp === undefined)
@@ -383,8 +364,8 @@ class Converter {
   }
 }
 
-export function toCps(prog: Program): CIr {
-  const c = new Converter(prog);
+export function toCps(prog: Program, stamps: readonly (NodeStamps | undefined)[] = []): CIr {
+  const c = new Converter(prog, stamps);
   // The optimization passes are the conversion's final stage: every consumer
   // of toCps (interpreter, wasm backend) sees the same optimized term, and
   // none of them knows the passes exist.

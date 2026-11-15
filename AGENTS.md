@@ -41,7 +41,9 @@ Hindley-Milner-flavoured type system with effect tracking.
   `backend/wasm/wasm_host.ts` (wasm host runtime: instantiation, GC↔JS boxing,
   effect interpretation), `stamps.ts` (the one backend-stamp concern: width/
 suspension/arrKind emission over an exhaustive `Expr` switch — widths come
-  from the checker's resolved types, not decided here),
+  from the checker's resolved types, not decided here; width/suspension/
+  lambda-type stamps land in `Checked.stamps` (keyed by ExprID), which
+  `toCps(prog, checked.stamps)` consumes — the AST stays pure parse output),
 `frontend/lint.ts`, `prims.ts`, `assert.ts` (the
   `assertNever` exhaustive-switch guard — every switch over `Expr` ends in
   it, so a new node variant fails typecheck in each walker that forgets it),

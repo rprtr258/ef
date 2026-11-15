@@ -86,20 +86,27 @@ export function collectEffectOps(prog: Program): string[] {
 // a user let shadowing a builtin name keeps that builtin unreferenced. Any
 // reference (call site, argument, lambda body) marks it used; user code is
 // not dead-code-eliminated here.
-export function builtinRefs(prog: Program): Set<string> {
-  return classifyBuiltinRefs(prog).refs;
+export function builtinRefs(
+  prog: Program,
+  // The checker's stamps table (Checked.stamps): an operator app with a
+  // numKind dispatches inline, not through the runtime trampoline.
+  numKinds?: readonly ({numKind?: string} | undefined)[],
+): Set<string> {
+  return classifyBuiltinRefs(prog, numKinds).refs;
 }
-
 // The subset of builtinRefs referenced as VALUES — anywhere except the
 // callee position of an app (a callee sym that names a builtin is a direct
 // call site, not a value reference). The wasm backend emits $CLO pool
 // closures only for these, and operator trampolines only for these (direct
 // operator call sites compile the computation inline instead).
-export function builtinValueUses(prog: Program): Set<string> {
-  return classifyBuiltinRefs(prog).values;
+export function builtinValueUses(
+  prog: Program,
+  numKinds?: readonly ({numKind?: string} | undefined)[],
+): Set<string> {
+  return classifyBuiltinRefs(prog, numKinds).values;
 }
 
-function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<string>} {
+function classifyBuiltinRefs(prog: Program, numKinds?: readonly ({numKind?: string} | undefined)[]): {refs: Set<string>, values: Set<string>} {
   type Sc = {names: Set<string>, parent: Sc | null};
   const bound = (sc: Sc, name: string): boolean => {
     for (let s: Sc | null = sc; s !== null; s = s.parent)
@@ -146,13 +153,13 @@ function classifyBuiltinRefs(prog: Program): {refs: Set<string>, values: Set<str
         // A builtin sym in callee position is a direct call, not a value
         // use; any other callee shape (lambda, app, ...) walks normally.
         // Exception: an operator site the checker left unstamped (no
-        // numKind — polymorphic operands via the escape hatch). The
-        // interpreter dispatches those by value at runtime; the wasm
-        // backend needs the operator's dynamic trampoline, which only
+        // numKind in the stamps table — polymorphic operands via the escape
+        // hatch). The interpreter dispatches those by value at runtime; the
+        // wasm backend needs the operator's dynamic trampoline, which only
         // exists when the operator counts as a value use.
         const fn = prog.nodes[e.fn];
         if (fn.t === "sym") {
-          if (OPERATOR_OPS.has(fn.v) && e.numKind === undefined) values.add(fn.v);
+          if (OPERATOR_OPS.has(fn.v) && numKinds?.[id]?.numKind === undefined) values.add(fn.v);
           walk(e.fn, sc, true);
         } else {
           walk(e.fn, sc);

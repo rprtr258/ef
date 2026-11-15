@@ -54,14 +54,14 @@ for (const file of files) {
   const {bytes, ops} = compileWithOps(src);
   const value = show(runModule(bytes, ops));
   const {prog, checked} = prepare(src);
-  toCps(prog);
+  toCps(prog, checked.stamps);
   const interpValue = show(exec(prog, newCtx(), checked).value);
   if (interpValue !== value)
     throw new Error(`${file}: backend value mismatch: wasm ${value}, interp ${interpValue}`);
   for (let i = 0; i < WARMUP; i++) {
     runModule(bytes, ops);
     exec(prog, newCtx(), checked);
-    toCps(prog);
+    toCps(prog, checked.stamps);
   }
   const wasmSamples: number[] = [];
   const execSamples: number[] = [];
@@ -72,7 +72,7 @@ for (const file of files) {
     Bun.gc(true);
     execSamples.push(time(() => exec(prog, newCtx(), checked)));
     Bun.gc(true);
-    cpsSamples.push(time(() => toCps(prog)));
+    cpsSamples.push(time(() => toCps(prog, checked.stamps)));
   }
   const wasm = stats(wasmSamples);
   const execStats = stats(execSamples);

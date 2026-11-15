@@ -57,11 +57,11 @@ test("pipeline phases run standalone (init-order/TDZ guard)", () => {
     // named by phase, instead of as a generic compile() error. The program
     // touches every layoutStatics branch: number + string literals, a PI
     // reference, and a value-referenced builtin (closure static).
-    // The check stamps the runtime markers discover reads.
-    const {prog} = prepare("x :: 1;\ns :: \"a\";\npi :: PI;\nl :: len;\nx;");
-    const ir = toCps(prog);
+    // The check stamps the runtime markers discover reads (Checked.stamps).
+    const {prog, checked} = prepare("x :: 1;\ns :: \"a\";\npi :: PI;\nl :: len;\nx;");
+    const ir = toCps(prog, checked.stamps);
     const d = discover(ir, prog);
-    const o = optimize(prog);
+    const o = optimize(prog, checked.stamps);
     const plan = planIr(ir);
     const ix = assignIndices(ir, plan, o);
     const lay = layoutStatics(d, ix, o, plan); // the batch-A TDZ site
@@ -307,8 +307,8 @@ describe("wasm devirtualization (wasm_devirt.ts: static direct calls, inline res
   if (n < 2) { n } else { fib(n - 1) + fib(n - 2) }
 };
 fib(28)`;
-    const {prog} = prepare(src);
-    const ir = toCps(prog);
+    const {prog, checked} = prepare(src);
+    const ir = toCps(prog, checked.stamps);
     const plan = planIr(ir);
     expect(plan.cfnPure).toEqual([true]);
     const sites = dcalls(ir.funcs[0].body) as Parameters<typeof dcallP>[0][];
@@ -327,8 +327,8 @@ fib(28)`;
 mixed :: fn(x: i64): i64 { handle { x + Op!() } case Op() => k2 { k2(100) } };
 caller :: fn(x: i64): i64 { mixed(x) + 1 };
 [caller(1), caller(2)]`;
-    const {prog} = prepare(src);
-    const ir = toCps(prog);
+    const {prog, checked} = prepare(src);
+    const ir = toCps(prog, checked.stamps);
     const plan = planIr(ir);
     expect(plan.cfnPure[0]).toBe(false); // mixed: internal handle
     expect(plan.cfnPure[1]).toBe(false); // caller: dcall to an impure fn
@@ -399,8 +399,8 @@ describe("wasm typed slots + scope-frame elision (wasm_plan.ts classifySlots + w
   // directly; letk/dcall annotations carry fnLvl plus the entry/rest scope
   // snapshots (shared level objects, so the Set dedups).
   const audit = (src: string): Lv[] => {
-    const {prog} = prepare(src);
-    const ir = toCps(prog);
+    const {prog, checked} = prepare(src);
+    const ir = toCps(prog, checked.stamps);
     const plan = planIr(ir);
     const out: Lv[] = [];
     const seen = new Set<object>();

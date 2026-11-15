@@ -242,10 +242,10 @@ function outlineItems(src: string, prog: Program, checked: Checked | null): Outl
           name: e.name,
           line: prog.locs[it.e]?.start.line ?? null,
           // The written annotation (retEffs) is available pre-check; the
-          // inferred row (typ.effs) once the checker has run.
+          // inferred row (stamps.typ.effs) once the checker has run.
           effs: val.t === "lambda" ?
             (val.retEffs !== null ? effRow(rowOf(val.retEffs)) :
-              val.typ !== undefined ? effRow(val.typ.effs) : null) : null,
+              checked?.stamps[e.val]?.typ !== undefined ? effRow(checked.stamps[e.val]!.typ!.effs) : null) : null,
           typ: checked !== null ? showT(checked.env.lookupResolved(e.name)) : null,
         });
       }

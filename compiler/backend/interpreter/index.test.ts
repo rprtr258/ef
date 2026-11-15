@@ -10,7 +10,7 @@ import {showErr, showT, TypeError_} from "../../frontend/type_display.ts";
 import {show, sliceElems, mkSlice, mkTup, type Slice, type Value} from "../../env.ts";
 import {Parser} from "../../frontend/parser.ts";
 import {toCps} from "../../frontend/cps.ts";
-import type {CIr, CTerm} from "../../frontend/cps_ir.ts";
+import type {CIr, CAtom, CTerm} from "../../frontend/cps_ir.ts";
 
 // typeOf: return the inferred type of the last expression, as a string.
 // Surfaces effect sets in function signatures, e.g. `(i64) -> i64 ! { Emit }`.
@@ -1372,8 +1372,8 @@ describe("selective CPS: dcall/dret classification", () => {
     return n;
   };
   const ir = (src: string): CIr => {
-    const {prog} = prepare(src); // the suspension stamps are checker-stamped
-    return toCps(prog);
+    const {prog, checked} = prepare(src); // the suspension stamps are checker-stamped
+    return toCps(prog, checked.stamps);
   };
 
   test("pure recursive function: self-call and top-level call are dcalls, boundary is dret", () => {
@@ -1419,6 +1419,37 @@ describe("selective CPS: dcall/dret classification", () => {
     expect(countNodes(c, t => t.t === "call")).toBe(2); // main(), k(n * 2)
     expect(countNodes(c, t => t.t === "dret")).toBe(1); // helper's boundary (main's tail is a perform — CPS)
     expect(countNodes(c, t => t.t === "perform")).toBe(1);
+  });
+
+  test("bool-valued comparison args at dcall sites carry no stamp (pushStampedVar pins)", () => {
+    // A comparison app node carries a numKind stamp (operand compute width)
+    // while producing a bool, so its result must NOT become a stamped arg
+    // var — wasm's pushStampedVar would unbox it and numeric-entry would
+    // misclassify the call. Also pins the known latent gap: computed numeric
+    // args (e.g. add(1 + 2) inside a fn) stay unstamped, so wasm numeric
+    // entry never fires for them.
+    const c = ir(`
+      f :: fn(b: bool): bool { b };
+      f(1 == 1)
+    `);
+    const args: CAtom[] = [];
+    const walk = (t: CTerm): void => {
+      if (t.t === "dcall") args.push(...t.args);
+      switch (t.t) {
+        case "letk": walk(t.body); walk(t.rest); return;
+        case "let": case "bind": case "mkfn": case "dlet": case "assign": case "scope":
+          walk(t.rest); return;
+        case "dcall": walk(t.rest); return;
+        case "if": walk(t.a); walk(t.b); return;
+        case "handle": walk(t.body); for (const c2 of t.cases) walk(c2.body); return;
+        default: return;
+      }
+    };
+    walk(c.term);
+    for (const fn of c.funcs) walk(fn.body);
+    expect(args.length).toBe(1); // the pure call converted as a dcall
+    expect(args[0].t).toBe("var"); // computed arg temp, not a literal
+    expect(args[0].t === "var" && args[0].stamp).toBeUndefined();
   });
 
   test("multi-shot resume crossing dcall-produced bindings", () => {

@@ -11,8 +11,8 @@
 // no linear memory) → binaryen shrink pass (optimizeBinary: in-process
 // npm `binaryen`, no external tools) → imports and run. No types needed at
 // emission time: the only checker output the backend consumes is the
-// runtime stamps the checker leaves on nodes (`e.div` for division,
-// `e.idx` for field access) plus the deep-resolved checker types the
+// stamp side-table `Checked.stamps` (`div` for division; `idx` is a
+// parser field on the node) plus the deep-resolved checker types the
 // numeric-entry eligibility resolves.
 //
 // Effects: every `perform` (builtin or user-declared op) boxes its args
@@ -163,8 +163,9 @@ export function compile(src: string): Uint8Array<ArrayBuffer> {
 // as the shipped bytes.
 function pipeline(src: string, interp?: EffectInterp): {mod: binaryen.Module, ops: string[], o: Opt, lay: Layout, funcs: Fn[]} {
   // prepare: parse + check before the backend runs — rejects ill-typed
-  // programs and stamps the runtime markers the phases read (`numKind` on
-  // literals, `div` on applications of `/`, `idx` on field accesses). The
+  // programs and fills the Checked.stamps side-table the phases read
+  // (`numKind` on literals, `div` on applications of `/`; `idx` is a
+  // parser field on the node). The
   // Checked result rides into the wasm pipeline as the numeric-entry
   // eligibility's type resolver (uni.deepRes resolves bound vars;
   // quantified vars stay unbound).
@@ -175,8 +176,8 @@ function pipeline(src: string, interp?: EffectInterp): {mod: binaryen.Module, op
   // any codegen — not as a mid-run host trap.
   rejectUnhandled(checked, interp);
   // Stage 2: the CPS IR — the single conversion both backends consume. The
-  // checker stamps the AST the converter reads (`numKind`/`div`/`idx`).
-  const ir = toCps(prog);
+  // checker's stamps side-table (Checked.stamps) feeds the converter.
+  const ir = toCps(prog, checked.stamps);
   // One compile at a time runs in-process; bind the module for the Buf
   // emitters (they construct binaryen expressions without threading it
   // through every call).
@@ -186,7 +187,7 @@ function pipeline(src: string, interp?: EffectInterp): {mod: binaryen.Module, op
   // Phase pipeline (free functions over plain artifact records),
   // then emission (one local Emit context) and assembly.
   const d = discover(ir, prog);
-  const o = optimize(prog);
+  const o = optimize(prog, checked.stamps);
   const plan = planIr(ir, (t) => checked.uni.deepRes(t));
   const ix = assignIndices(ir, plan, o);
   const lay = layoutStatics(d, ix, o, plan);

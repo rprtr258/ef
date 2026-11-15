@@ -1,11 +1,14 @@
-// Backend stamps: the runtime-emission metadata the checker writes onto the
-// AST — numeric widths (`numKind`), division width (`div`), suspension
-// classification (`sus`), array/tuple shape (`arrKind`), and the lambda
-// width-ambiguity bookkeeping (`unannParams`/`numTouched`). The evaluator
+// Backend stamps: the runtime-emission metadata the checker writes into a
+// per-check side table (Checked.stamps, keyed by ExprID) — numeric widths
+// (`numKind`), division width (`div`), suspension classification (`sus`),
+// and the lambda's resolved FunT (`typ`). The evaluator
 // normalizes every producing node's value to its stamped width (i32/u32/
 // f32/f64: JS number, i64/u64: BigInt; f32 nodes fround) and the wasm
 // backend reads the same stamps for typed boxes, statics, and fround
-// round-trips, so the stamps are backend ABI. A node variant that can carry
+// round-trips, so the stamps are backend ABI. Node fields the checker still
+// writes directly: array/tuple shape (`arrKind`), destructure `shape`,
+// resolved field `idx`, `asKind`, and the lambda width-ambiguity
+// bookkeeping (`unannParams`/`numTouched`). A node variant that can carry
 // a numeric width must classify its stamping here: stampSuspension switches
 // exhaustively over `e.t` and ends in assertNever, so a new variant fails
 // to compile until its call-site status is declared. Numeric widths are NOT
@@ -25,9 +28,24 @@ import {STAMPED_OPS} from "./ops.ts";
 import {TypeError_} from "./frontend/type_display.ts";
 import {
   FLOAT_NAMES, INT_NAMES, Unifier, widthOf,
-  type NumName, type Type,
+  type FunT, type NumName, type Type,
 } from "./frontend/unify.ts";
-import type {Expr} from "./frontend/parser.ts";
+import type {Expr, ExprID} from "./frontend/parser.ts";
+
+// Per-node stamp slot (Checked.stamps, indexed by ExprID). `typ` carries the
+// lambda's FunT (deep-resolved at its binding `let`) for the converter's
+// direct-style decision and the IR's func.typ.
+export type NodeStamps = {
+  numKind?: string,
+  div?: NumName,
+  sus?: boolean,
+  typ?: FunT,
+};
+
+// The node's stamp slot, created on first write (the table stays sparse).
+function slot(stamps: (NodeStamps | undefined)[], id: ExprID): NodeStamps {
+  return stamps[id] ?? (stamps[id] = {});
+}
 
 // Runtime shape stamp (mirrors numKind): the evaluator builds a slice for
 // homogeneous literals and a tuple record otherwise.
@@ -112,9 +130,9 @@ export function checkLamWidths(u: Unifier, lam: Expr & {unannParams?: {name: str
 // would be bool for comparisons). The operands' widths were resolved by
 // unification itself (flexWild/resolveWilds), so nothing is pinned here.
 // No-op when the op's result carries no width (string `+`).
-export function stampComputeWidth(uni: Unifier, e: Expr & {t: "app"}, widened: Type): void {
+export function stampComputeWidth(uni: Unifier, id: ExprID, widened: Type, stamps: (NodeStamps | undefined)[]): void {
   const wo = widthOf(uni.res(widened));
-  if (wo !== null) e.numKind = wo.w;
+  if (wo !== null) slot(stamps, id).numKind = wo.w;
 }
 
 // Numeric equality is stamped with the compute width too (concrete side
@@ -123,17 +141,17 @@ export function stampComputeWidth(uni: Unifier, e: Expr & {t: "app"}, widened: T
 // derivable from the node's type. The operands' widths were resolved by the
 // eq site's own unify (flexWild/resolveWilds); the fallback pick only
 // covers shared wildcard singletons (e.g. `PI == 3` → f64).
-export function stampEqWidth(uni: Unifier, e: Expr & {t: "app"}, at: Type, bt: Type): void {
+export function stampEqWidth(uni: Unifier, id: ExprID, at: Type, bt: Type, stamps: (NodeStamps | undefined)[]): void {
   const ea = widthOf(uni.res(at)), eb = widthOf(uni.res(bt));
   if (ea !== null && eb !== null)
-    e.numKind = ea.concrete ? ea.w : eb.concrete ? eb.w : (ea.w === "f64" || eb.w === "f64") ? "f64" : "i64";
+    slot(stamps, id).numKind = ea.concrete ? ea.w : eb.concrete ? eb.w : (ea.w === "f64" || eb.w === "f64") ? "f64" : "i64";
 }
 
 // The division's WIDTH goes on the node so the evaluator and the emitters
 // pick truncation and the signed/unsigned op variants.
-export function stampDivWidth(uni: Unifier, e: Expr & {t: "app"}, widened: Type): void {
+export function stampDivWidth(uni: Unifier, id: ExprID, widened: Type, stamps: (NodeStamps | undefined)[]): void {
   const rw = widthOf(uni.res(widened));
-  e.div = rw !== null ? rw.w : "f64";
+  slot(stamps, id).div = rw !== null ? rw.w : "f64";
 }
 
 // Width stamps: after resolveWilds has left every wildcard concrete, stamp
@@ -142,7 +160,7 @@ export function stampDivWidth(uni: Unifier, e: Expr & {t: "app"}, widened: Type)
 // (builtin signature wildcards), defaulting to i64/f64; fresh literal
 // wildcards never reach it. Unstamped nodes (type still an unbound var —
 // polymorphic uses) compute by value-based dispatch at runtime.
-export function stampNumKinds(nodes: Expr[], uni: Unifier, nodeTypes: (Type | undefined)[]): void {
+export function stampNumKinds(uni: Unifier, nodeTypes: (Type | undefined)[], stamps: (NodeStamps | undefined)[]): void {
   for (let id = 0; id < nodeTypes.length; id++) {
     const t = nodeTypes[id];
     if (t === undefined) continue;
@@ -154,7 +172,7 @@ export function stampNumKinds(nodes: Expr[], uni: Unifier, nodeTypes: (Type | un
       else if (n === "int") w = "i64";
       else if (n === "float") w = "f64";
     }
-    if (w !== null) (nodes[id] as Expr & {numKind?: string}).numKind = w;
+    if (w !== null) slot(stamps, id).numKind = w;
   }
 }
 
@@ -171,7 +189,7 @@ export function stampNumKinds(nodes: Expr[], uni: Unifier, nodeTypes: (Type | un
 // callees never reach `infer`, so they carry no callee type in nodeTypes and
 // never get a suspension stamp — the converter's own fast paths dispatch
 // them.
-export function stampSuspension(nodes: Expr[], uni: Unifier, nodeTypes: (Type | undefined)[]): void {
+export function stampSuspension(nodes: Expr[], uni: Unifier, nodeTypes: (Type | undefined)[], stamps: (NodeStamps | undefined)[]): void {
   for (let id = 0; id < nodeTypes.length; id++) {
     if (nodeTypes[id] === undefined) continue;
     const e = nodes[id];
@@ -206,6 +224,6 @@ export function stampSuspension(nodes: Expr[], uni: Unifier, nodeTypes: (Type | 
         if (rr.ops.size === 0 && rr.vars.size === 0) sus = false;
       }
     }
-    e.sus = sus;
+    slot(stamps, id).sus = sus;
   }
 }

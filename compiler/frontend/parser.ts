@@ -1,5 +1,5 @@
 import {
-  type FunT, type NumName, type TupField, type Type, type Var,
+  type TupField, type Type, type Var,
 } from "./unify.ts";
 import {
   TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TUNIT, TANY, TTYPE,
@@ -77,12 +77,12 @@ export type TypeTok = {pos: Loc, len: number, kind: "type" | "typeParameter" | "
 // here; a node's own `pos`-like fields (dlet field names, Param) are binder
 // name tokens, a different concern.
 export type Expr =
-  | { t: "num", v: number, isFloat: boolean, raw?: string, numKind?: string }
+  | { t: "num", v: number, isFloat: boolean, raw?: string }
   | { t: "str", v: string }
   | { t: "bool", v: boolean }
   | { t: "unit" }
   | { t: "sym", v: string }
-  | { t: "lambda", params: Param[], retTyp: Type | null, retEffs: Set<string> | null, body: ExprID, typ?: FunT,
+  | { t: "lambda", params: Param[], retTyp: Type | null, retEffs: Set<string> | null, body: ExprID,
       // Checker-stamped (width-ambiguity rule): unannotated params' type-var
       // ids, and the union-find roots of those vars that numeric ops touched
       // during body inference.
@@ -95,11 +95,7 @@ export type Expr =
   | { t: "block", stmts: ExprID[], semi: boolean }
   | { t: "perform", op: string, args: ExprID[] }
   | { t: "handle", body: ExprID, cases: HandlerCase[] }
-  | { t: "app", fn: ExprID, args: ExprID[], div?: NumName, numKind?: string,
-      // Checker-stamped (stampSuspension): false — dcall — when the callee's
-      // resolved FunT proves the call cannot suspend; true/absent otherwise.
-      sus?: boolean,
-    }
+  | { t: "app", fn: ExprID, args: ExprID[] } // width/suspension stamps live in Checked.stamps (stamps.ts), not on the node
   | { t: "as", e: ExprID, typ: Type, asKind?: "trunc" | "boolnum" } // `@as(expr, T)` numeric cast; asKind stamped by the checker.
   | { t: "arr", elems: ExprID[], arrKind?: "arr" | "tup" } // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous. The checker stamps `arrKind` so the evaluator picks the runtime shape.
   | { t: "field", obj: ExprID, name: string, idx?: number, shape?: "tup" | "arr" } // `obj.x` / `obj.0` field access; `idx` is resolved by the checker, `shape` stamped by it too.
