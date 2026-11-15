@@ -26,13 +26,16 @@ export type BinderKinds = "lambda" | "let" | "dlet" | "handle";
 // Call fn(name, pos) for every name a node binds, in the checker's checkBind
 // order (types.ts): a lambda's params, a let's own name, a dlet's field
 // names, and a handler case's params (Return has one) then its resume
-// binder, case by case. pos is the binder's name-token position when the
-// parser recorded one — undefined only on parse-recovery binders; the resume
-// binder always has one. Callers add the names to their scope before walking
-// the node's children — a binding is in scope in its own value (the
-// checker's recursive-let rule).
+// binder, case by case. nodePos is the node's start position
+// (Program.starts[id]) — the `let` binder's name token starts the statement,
+// so it is the node pos; the other binder kinds carry their own
+// Param/field/`resumePos` tokens. Positions are undefined only on
+// parse-recovery binders; the resume binder always has one. Callers add the
+// names to their scope before walking the node's children — a binding is in
+// scope in its own value (the checker's recursive-let rule).
 export function forEachBinder(
   e: Expr,
+  nodePos: Pos | undefined,
   fn: (name: string, pos?: Pos) => void,
 ): void {
   switch (e.t) {
@@ -41,7 +44,7 @@ export function forEachBinder(
         fn(p.name, p.pos);
       return;
     case "let":
-      fn(e.name, e.pos);
+      fn(e.name, nodePos);
       return;
     case "dlet":
       for (const f of e.fields)

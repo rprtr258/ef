@@ -65,7 +65,7 @@ export type Item =
 // Flat node slice: expressions reference their children by `ExprID` (an index
 // into `Program.nodes`), not by embedding child nodes.
 export type ExprID = number;
-export type Program = { nodes: Expr[], items: Item[], typeToks: TypeTok[], ends: Pos[] };
+export type Program = { nodes: Expr[], starts: (Pos | undefined)[], items: Item[], typeToks: TypeTok[], ends: Pos[] };
 
 // TypeTok: a type/effect name occurrence recorded while parsing — consumed by
 // the LSP's semantic-tokens provider (type/effect highlighting) and, for the
@@ -73,33 +73,36 @@ export type Program = { nodes: Expr[], items: Item[], typeToks: TypeTok[], ends:
 // effect-signature hover. Both backends ignore it. `len` is the token's
 // source length; pos is 1-based.
 export type TypeTok = {pos: Pos, len: number, kind: "type" | "typeParameter" | "macro" | "function" | "variable", name: string};
+// Node source positions live in Program.starts (parallel to nodes), not
+// here; a node's own `pos`-like fields (dlet field names, Param) are binder
+// name tokens, a different concern.
 export type Expr =
-  | { t: "num", v: number, isFloat: boolean, raw?: string, numKind?: string, pos?: Pos }
-  | { t: "str", v: string, pos?: Pos }
-  | { t: "bool", v: boolean, pos?: Pos }
-  | { t: "unit", pos?: Pos }
-  | { t: "sym", v: string, pos?: Pos }
-  | { t: "lambda", params: Param[], retTyp: Type | null, retEffs: Set<string> | null, body: ExprID, typ?: FunT, pos?: Pos,
+  | { t: "num", v: number, isFloat: boolean, raw?: string, numKind?: string }
+  | { t: "str", v: string }
+  | { t: "bool", v: boolean }
+  | { t: "unit" }
+  | { t: "sym", v: string }
+  | { t: "lambda", params: Param[], retTyp: Type | null, retEffs: Set<string> | null, body: ExprID, typ?: FunT,
       // Checker-stamped (width-ambiguity rule): unannotated params' type-var
       // ids, and the union-find roots of those vars that numeric ops touched
       // during body inference.
       unannParams?: {name: string, id: number}[], numTouched?: Set<number>, }
-  | { t: "let", name: string, typ: Type | null, val: ExprID, mut: boolean, pos?: Pos } // `name := e;` / `name :: e;` / `name: T = e;` / `name: T :: e;`
-  | { t: "dlet", fields: { name: string, typ: Type | null, pos?: Pos }[], val: ExprID, mut: boolean, pos?: Pos, shape?: "tup" | "arr" } // `[a, b] := val;` / `[a, b] :: val;` destructuring bind; field pos: the field name token (go-to-definition target). The checker stamps `shape` (tuple fields vs array window) for the evaluators.
-  | { t: "assign", name: string, val: ExprID, pos?: Pos }
-  | { t: "if", c: ExprID, a: ExprID, b: ExprID, pos?: Pos }
-  | { t: "while", c: ExprID, body: ExprID, pos?: Pos }
-  | { t: "block", stmts: ExprID[], pos?: Pos }
-  | { t: "perform", op: string, args: ExprID[], pos?: Pos }
-  | { t: "handle", body: ExprID, cases: HandlerCase[], pos?: Pos }
-  | { t: "app", fn: ExprID, args: ExprID[], div?: NumName, numKind?: string, pos?: Pos,
+  | { t: "let", name: string, typ: Type | null, val: ExprID, mut: boolean } // `name := e;` / `name :: e;` / `name: T = e;` / `name: T :: e;`
+  | { t: "dlet", fields: { name: string, typ: Type | null, pos?: Pos }[], val: ExprID, mut: boolean, shape?: "tup" | "arr" } // `[a, b] := val;` / `[a, b] :: val;` destructuring bind; field pos: the field name token (go-to-definition target). The checker stamps `shape` (tuple fields vs array window) for the evaluators.
+  | { t: "assign", name: string, val: ExprID }
+  | { t: "if", c: ExprID, a: ExprID, b: ExprID }
+  | { t: "while", c: ExprID, body: ExprID }
+  | { t: "block", stmts: ExprID[] }
+  | { t: "perform", op: string, args: ExprID[] }
+  | { t: "handle", body: ExprID, cases: HandlerCase[] }
+  | { t: "app", fn: ExprID, args: ExprID[], div?: NumName, numKind?: string,
       // Checker-stamped (stampSuspension): false — dcall — when the callee's
       // resolved FunT proves the call cannot suspend; true/absent otherwise.
       sus?: boolean,
     }
-  | { t: "as", e: ExprID, typ: Type, asKind?: "trunc" | "boolnum", pos?: Pos } // `@as(expr, T)` numeric cast; asKind stamped by the checker.
-  | { t: "arr", elems: ExprID[], pos?: Pos, arrKind?: "arr" | "tup" } // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous. The checker stamps `arrKind` so the evaluator picks the runtime shape.
-  | { t: "field", obj: ExprID, name: string, idx?: number, pos?: Pos, shape?: "tup" | "arr" } // `obj.x` / `obj.0` field access; `idx` is resolved by the checker, `shape` stamped by it too.
+  | { t: "as", e: ExprID, typ: Type, asKind?: "trunc" | "boolnum" } // `@as(expr, T)` numeric cast; asKind stamped by the checker.
+  | { t: "arr", elems: ExprID[], arrKind?: "arr" | "tup" } // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous. The checker stamps `arrKind` so the evaluator picks the runtime shape.
+  | { t: "field", obj: ExprID, name: string, idx?: number, shape?: "tup" | "arr" } // `obj.x` / `obj.0` field access; `idx` is resolved by the checker, `shape` stamped by it too.
 ;
 
 // Unescape a string literal token (with surrounding quotes).
@@ -190,12 +193,17 @@ export class Parser {
   // Flat node arena: every parsed expression is pushed here once and referred
   // to by `ExprID` (its index) from parents, items, and closures.
   nodes: Expr[] = [];
+  // Node source positions, parallel to `nodes`: each expression's start
+  // token — undefined only on synthesized nodes (the operator `sym`s
+  // desugared from `&&`/`||`/`!`). With `ends` this brackets every
+  // subexpression for the LSP's hover containment test. Backends ignore it.
+  starts: (Pos | undefined)[] = [];
   // Node source extents, parallel to `nodes`: exclusive end position of each
-  // expression. Together with `pos` this brackets every subexpression for the
-  // LSP's hover containment test. Backends ignore it.
+  // expression. Backends ignore it.
   ends: Pos[] = [];
-  add(e: Expr): ExprID {
+  add(e: Expr, pos?: Pos): ExprID {
     this.nodes.push(e);
+    this.starts.push(pos);
     // Every add site consumes the node's final token before adding (parents
     // are added after their children; statement binders add before eating
     // the trailing `;`), so the last consumed token's end is the node's end.
@@ -212,7 +220,7 @@ export class Parser {
         items.push(al ?? {e: this.parseStmt()});
       }
     }
-    return {nodes: this.nodes, items, typeToks: this.typeToks, ends: this.ends};
+    return {nodes: this.nodes, starts: this.starts, items, typeToks: this.typeToks, ends: this.ends};
   }
   parseEffect(): Item {
     this.next(); // effect
@@ -309,14 +317,14 @@ export class Parser {
       const name = this.next();
       this.next(); // :=
       const val = this.parseExpr();
-      e = this.add({t: "let", name, typ: null, val, mut: true, pos: p});
+      e = this.add({t: "let", name, typ: null, val, mut: true}, p);
       this.eat(";");
     } else if (nonKw && this.peek(1) === "::") {
       // `name :: val;` — const, inferred type.
       const name = this.next();
       this.next(); // ::
       const val = this.parseExpr();
-      e = this.add({t: "let", name, typ: null, val, mut: false, pos: p});
+      e = this.add({t: "let", name, typ: null, val, mut: false}, p);
       this.eat(";");
     } else if (nonKw && this.peek(1) === ":") {
       // `name: T = val;` — mutable, annotated; `name: T :: val;` — const, annotated.
@@ -327,7 +335,7 @@ export class Parser {
       if (isConst) this.next();
       else this.eat("=");
       const val = this.parseExpr();
-      e = this.add({t: "let", name, typ, val, mut: !isConst, pos: p});
+      e = this.add({t: "let", name, typ, val, mut: !isConst}, p);
       this.eat(";");
     } else if (this.is("[")) {
       // Destructuring bind (`[a: T, b] := val;` / `[a: T, b] :: val;`) or an
@@ -350,7 +358,7 @@ export class Parser {
         if (isConst) this.next();
         else this.eat(":=");
         const val = this.parseExpr();
-        e = this.add({t: "dlet", fields, val, mut: !isConst, pos: p});
+        e = this.add({t: "dlet", fields, val, mut: !isConst}, p);
         this.eat(";");
       } catch {
         this.i = save;
@@ -364,7 +372,7 @@ export class Parser {
       const name = this.next();
       this.next(); // =
       const val = this.parseExpr();
-      e = this.add({t: "assign", name, val, pos: p});
+      e = this.add({t: "assign", name, val}, p);
       if (this.is(";"))
         this.i++;
     } else {
@@ -408,7 +416,7 @@ export class Parser {
     const stmts: ExprID[] = [];
     while (!this.is("}")) stmts.push(this.parseStmt());
     this.eat("}");
-    return this.add({t: "block", stmts, pos: p});
+    return this.add({t: "block", stmts}, p);
   }
 
   // optional `! { op, op, ... }` effect annotation on a fn return type
@@ -532,11 +540,11 @@ export class Parser {
       this.next();
       const right = this.parseBinary(prec + 1);
       if (op === "&&")
-        left = this.add({t: "if", c: left, a: right, b: this.add({t: "bool", v: false}), pos: this.nodes[left].pos});
+        left = this.add({t: "if", c: left, a: right, b: this.add({t: "bool", v: false})}, this.starts[left]);
       else if (op === "||")
-        left = this.add({t: "if", c: left, a: this.add({t: "bool", v: true}), b: right, pos: this.nodes[left].pos});
+        left = this.add({t: "if", c: left, a: this.add({t: "bool", v: true}), b: right}, this.starts[left]);
       else
-        left = this.add({t: "app", fn: this.add({t: "sym", v: op}), args: [left, right], pos: this.nodes[left].pos});
+        left = this.add({t: "app", fn: this.add({t: "sym", v: op}), args: [left, right]}, this.starts[left]);
     }
     return left;
   }
@@ -545,11 +553,11 @@ export class Parser {
     const p = this.pos();
     if (this.is("-")) {
       this.next();
-      return this.add({t: "app", fn: this.add({t: "sym", v: OP_NEG}), args: [this.parseUnary()], pos: p});
+      return this.add({t: "app", fn: this.add({t: "sym", v: OP_NEG}), args: [this.parseUnary()]}, p);
     }
     if (this.is("!")) {
       this.next();
-      return this.add({t: "app", fn: this.add({t: "sym", v: OP_NOT}), args: [this.parseUnary()], pos: p});
+      return this.add({t: "app", fn: this.add({t: "sym", v: OP_NOT}), args: [this.parseUnary()]}, p);
     }
     return this.parsePostfix();
   }
@@ -563,11 +571,11 @@ export class Parser {
       this.recordTypeTok("macro", op);
       this.next(); // !
       const args = this.parseArgs();
-      e = this.add({t: "perform", op, args, pos: prim.pos});
+      e = this.add({t: "perform", op, args}, this.starts[e]);
     }
     while (this.is("(")) {
       const args = this.parseArgs();
-      e = this.add({t: "app", fn: e, args, pos: this.nodes[e].pos});
+      e = this.add({t: "app", fn: e, args}, this.starts[e]);
     }
     // field access: `obj.x` (named) or `obj.0` (positional). The lexer
     // reads `0.0` as a single float token, so a chained `m.0.0` arrives as
@@ -575,7 +583,7 @@ export class Parser {
     while (this.is(".")) {
       this.next();
       const name = this.next();
-      for (const part of name.split(".")) e = this.add({t: "field", obj: e, name: part, pos: this.nodes[e].pos});
+      for (const part of name.split(".")) e = this.add({t: "field", obj: e, name: part}, this.starts[e]);
     }
     return e;
   }
@@ -594,27 +602,27 @@ export class Parser {
       this.eat(",");
       const typ = this.parseType();
       this.eat(")");
-      return this.add({t: "as", e, typ, pos: p});
+      return this.add({t: "as", e, typ}, p);
     }
     if (/^-?\d/.test(t)) {
       this.next();
-      return this.add({t: "num", v: Number(t), isFloat: t.includes("."), raw: t.includes(".") ? undefined : t, pos: p});
+      return this.add({t: "num", v: Number(t), isFloat: t.includes("."), raw: t.includes(".") ? undefined : t}, p);
     }
     if (t.startsWith("\"")) {
       this.next();
-      return this.add({t: "str", v: parseStr(t), pos: p});
+      return this.add({t: "str", v: parseStr(t)}, p);
     }
     if (t === "true") {
       this.next();
-      return this.add({t: "bool", v: true, pos: p});
+      return this.add({t: "bool", v: true}, p);
     }
     if (t === "false") {
       this.next();
-      return this.add({t: "bool", v: false, pos: p});
+      return this.add({t: "bool", v: false}, p);
     }
     if (t === "unit") {
       this.next();
-      return this.add({t: "unit", pos: p});
+      return this.add({t: "unit"}, p);
     }
     if (t === "(") {
       this.next();
@@ -630,7 +638,7 @@ export class Parser {
         this.listSep("]");
       }
       this.eat("]");
-      return this.add({t: "arr", elems: els, pos: p});
+      return this.add({t: "arr", elems: els}, p);
     }
     if (this.isKw("fn")) {
       this.next();
@@ -638,7 +646,7 @@ export class Parser {
       const retTyp = this.is(":") ? (this.next(), this.parseType()) : null;
       const retEffs = this.parseEffAnnot();
       const body = this.parseBlock();
-      return this.add({t: "lambda", params, retTyp, retEffs, body, pos: p});
+      return this.add({t: "lambda", params, retTyp, retEffs, body}, p);
     }
     if (this.isKw("if")) {
       this.next();
@@ -646,14 +654,14 @@ export class Parser {
       const c = this.parseExpr();
       this.eat(")");
       const a = this.parseBlock();
-      let b: ExprID = this.add({t: "unit", pos: p});
+      let b: ExprID = this.add({t: "unit"}, p);
       if (this.isKw("else")) {
         this.next();
         b = this.isKw("if") ? this.parsePrimary() : this.parseBlock();
       } else if (this.is(";")) {
         this.i++;
       }
-      return this.add({t: "if", c, a, b, pos: p});
+      return this.add({t: "if", c, a, b}, p);
     }
     if (this.isKw("while")) {
       this.next();
@@ -661,7 +669,7 @@ export class Parser {
       const c = this.parseExpr();
       this.eat(")");
       const body = this.parseBlock();
-      return this.add({t: "while", c, body, pos: p});
+      return this.add({t: "while", c, body}, p);
     }
     if (this.isKw("handle")) {
       this.next();
@@ -678,7 +686,7 @@ export class Parser {
         const cbody = this.parseBlock();
         cases.push({op, params, resume, resumePos, body: cbody});
       }
-      return this.add({t: "handle", body, cases, pos: p});
+      return this.add({t: "handle", body, cases}, p);
     }
     // Fallthrough is ident-shaped tokens only (mirrors the lexer's ident
     // rule): every other token kind has a branch above. A stray punctuation
@@ -687,7 +695,7 @@ export class Parser {
     // `[x: 1, y: 2]`).
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(t)) this.fail(`Unexpected token "${t}"`);
     this.next();
-    return this.add({t: "sym", v: t, pos: p});
+    return this.add({t: "sym", v: t}, p);
   }
 }
 

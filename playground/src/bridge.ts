@@ -240,7 +240,7 @@ function outlineItems(src: string, prog: Program, checked: Checked | null): Outl
         items.push({
           kind: val.t === "lambda" ? "fn" : "let",
           name: e.name,
-          line: e.pos?.line ?? null,
+          line: prog.starts[it.e]?.line ?? null,
           // The written annotation (retEffs) is available pre-check; the
           // inferred row (typ.effs) once the checker has run.
           effs: val.t === "lambda" ?

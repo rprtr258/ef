@@ -217,13 +217,13 @@ function hoverAt(src: string, line: number, col: number): Hover | null {
   }
   const cands: ExprID[] = [];
   for (let id = 0; id < prog.nodes.length; id++) {
-    const e = prog.nodes[id];
-    if (e.pos === undefined || !posLE(e.pos, c) || !posLT(c, prog.ends[id])) continue;
-    if (checked.nodeTypes.has(id) || e.t === "sym") cands.push(id);
+    const s = prog.starts[id];
+    if (s === undefined || !posLE(s, c) || !posLT(c, prog.ends[id])) continue;
+    if (checked.nodeTypes.has(id) || prog.nodes[id].t === "sym") cands.push(id);
   }
   // Innermost first: greatest start, then smallest extent.
   cands.sort((a, b) => {
-    const sa = prog.nodes[a].pos!, sb = prog.nodes[b].pos!;
+    const sa = prog.starts[a]!, sb = prog.starts[b]!;
     if (sa.line !== sb.line) return sb.line - sa.line;
     if (sa.col !== sb.col) return sb.col - sa.col;
     const ea = prog.ends[a], eb = prog.ends[b];
@@ -246,8 +246,8 @@ type Binder = {name: string, pos: Pos, len: number};
 // Expr variant must extend forEachBinder, which extends this list.
 function binders(prog: Program): Binder[] {
   const out: Binder[] = [];
-  for (const e of prog.nodes)
-    forEachBinder(e, (name, pos) => {
+  for (const [id, e] of prog.nodes.entries())
+    forEachBinder(e, prog.starts[id], (name, pos) => {
       if (pos !== undefined) out.push({name, pos, len: name.length});
     });
   return out;
@@ -300,9 +300,12 @@ function definitionAt(uri: string, src: string, line: number, col: number): Loca
   for (const b of bs)
     if (inTok(b.pos, b.len)) return nameLoc(uri, b.pos, b.len);
   let ref: string | undefined;
-  for (const e of prog.nodes) {
-    if (e.t === "sym" && e.pos !== undefined && inTok(e.pos, e.v.length)) { ref = e.v; break; }
-    if (e.t === "assign" && e.pos !== undefined && inTok(e.pos, e.name.length)) { ref = e.name; break; }
+  for (const [id, e] of prog.nodes.entries()) {
+    if (ref !== undefined) break;
+    const s = prog.starts[id];
+    if (s === undefined) continue;
+    if (e.t === "sym" && inTok(s, e.v.length)) ref = e.v;
+    else if (e.t === "assign" && inTok(s, e.name.length)) ref = e.name;
   }
   if (ref === undefined || ref === "_") return null;
   const b = bs.find(b => b.name === ref);
