@@ -82,13 +82,9 @@ export type Expr =
   | { t: "bool", v: boolean }
   | { t: "unit" }
   | { t: "sym", v: string }
-  | { t: "lambda", params: Param[], retTyp: Type | null, retEffs: Set<string> | null, body: ExprID,
-      // Checker-stamped (width-ambiguity rule): unannotated params' type-var
-      // ids, and the union-find roots of those vars that numeric ops touched
-      // during body inference.
-      unannParams?: {name: string, id: number}[], numTouched?: Set<number>, }
+  | { t: "lambda", params: Param[], retTyp: Type | null, retEffs: Set<string> | null, body: ExprID }
   | { t: "let", name: string, typ: Type | null, val: ExprID, mut: boolean } // `name := e;` / `name :: e;` / `name: T = e;` / `name: T :: e;`
-  | { t: "dlet", fields: { name: string, typ: Type | null, pos?: Loc }[], val: ExprID, mut: boolean, shape?: "tup" | "arr" } // `[a, b] := val;` / `[a, b] :: val;` destructuring bind; field pos: the field name token (go-to-definition target). The checker stamps `shape` (tuple fields vs array window) for the evaluators.
+  | { t: "dlet", fields: { name: string, typ: Type | null, pos?: Loc }[], val: ExprID, mut: boolean } // `[a, b] := val;` / `[a, b] :: val;` destructuring bind; field pos: the field name token (go-to-definition target).
   | { t: "assign", name: string, val: ExprID }
   | { t: "if", c: ExprID, a: ExprID, b: ExprID }
   | { t: "while", c: ExprID, body: ExprID }
@@ -96,9 +92,9 @@ export type Expr =
   | { t: "perform", op: string, args: ExprID[] }
   | { t: "handle", body: ExprID, cases: HandlerCase[] }
   | { t: "app", fn: ExprID, args: ExprID[] } // width/suspension stamps live in Checked.stamps (stamps.ts), not on the node
-  | { t: "as", e: ExprID, typ: Type, asKind?: "trunc" | "boolnum" } // `@as(expr, T)` numeric cast; asKind stamped by the checker.
-  | { t: "arr", elems: ExprID[], arrKind?: "arr" | "tup" } // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous. The checker stamps `arrKind` so the evaluator picks the runtime shape.
-  | { t: "field", obj: ExprID, name: string, idx?: number, shape?: "tup" | "arr" } // `obj.x` / `obj.0` field access; `idx` is resolved by the checker, `shape` stamped by it too.
+  | { t: "as", e: ExprID, typ: Type } // `@as(expr, T)` numeric cast; asKind rides Checked.stamps (stamps.ts), not the node.
+  | { t: "arr", elems: ExprID[] } // `[a, b, c]` literal: array if homogeneous, tuple if heterogeneous. arrKind rides Checked.stamps (stamps.ts), not the node.
+  | { t: "field", obj: ExprID, name: string } // `obj.x` / `obj.0` field access; the resolved field index rides Checked.stamps (stamps.ts), not the node.
 ;
 
 // Unescape a string literal token (with surrounding quotes).

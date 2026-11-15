@@ -47,7 +47,7 @@ Why flat instead of embedded:
 
 | Consumer | What the `ExprID` buys |
 |----------|------------------------|
-| Type checker | stamps types on nodes after the fact (`nodeTypes`, `numKind`, `div`, `idx`, `asKind`) — impossible in an immutable tree |
+| Type checker | stamps types into side tables after the fact (`nodeTypes`, `Checked.stamps`: `numKind`, `div`, `arrKind`, `fieldIdx`, `asKind`) — impossible in an immutable tree |
 | Wasm backend | scopes, code labels and split sites keyed by `ExprID` |
 | Closures | a closure carries its own `nodes` slice, so it stays valid across REPL lines and separate programs |
 | Walks | `exprChildren(id, nodes)` gives uniform traversal for every pass (checker, analysis, lint, wasm) |
@@ -69,7 +69,7 @@ Why flat instead of embedded:
 | `num` | `1`, `1.5` | `isFloat` decides the untyped int/float wildcard; checker stamps `numKind` with the resolved width |
 | `str` · `bool` · `unit` | literals | escapes decoded here (`parseStr`) |
 | `sym` | names | variable references and desugared operator names |
-| `lambda` | `fn (p) { … }` | optional `: R` / `! { Effs }` annotations; checker adds `unannParams`/`numTouched` for the width-ambiguity rule |
+| `lambda` | `fn (p) { … }` | optional `: R` / `! { Effs }` annotations; the width-ambiguity bookkeeping for unannotated params lives in stamps.ts's `lamWidths` map, not on the node |
 | `let` | `x := e;` `x :: e;` `x: T = e;` | `mut` distinguishes `:=` from `::` |
 | `dlet` | `[a, b] := e;` | destructuring bind with optional per-field annotations |
 | `assign` | `x = e;` | mutation of an existing mutable binding |
@@ -77,9 +77,9 @@ Why flat instead of embedded:
 | `perform` | `Op!(args)` | name + arg nodes |
 | `handle` | `handle { … } case …` | body + `HandlerCase[]` (`op`, `params`, `resume`, `resumePos`, `body`) |
 | `app` | `f(x)` | checker stamps `div`/`numKind` on operator applications |
-| `as` | `@as(e, T)` | checker stamps `asKind` (`trunc` vs `boolnum`) |
-| `arr` | `[a, b, c]` | array if homogeneous, tuple if heterogeneous — decided by the *checker* |
-| `field` | `e.x` / `e.0` | checker resolves `idx` |
+| `as` | `@as(e, T)` | checker stamps `asKind` (`trunc` vs `boolnum`) into `Checked.stamps` |
+| `arr` | `[a, b, c]` | array if homogeneous, tuple if heterogeneous — decided by the *checker* (`arrKind` in `Checked.stamps`) |
+| `field` | `e.x` / `e.0` | checker resolves the field index into `Checked.stamps` (`fieldIdx`) |
 
 ## Items
 

@@ -9,7 +9,7 @@ import {
   type Effs, type FunT, type NumName, type Prim, type Type, type TupT,
 } from "./unify.ts";
 import {
-  beginLamWidths, checkLamWidths, endLamWidths,
+  beginLamWidths, checkLamWidths, endLamWidths, resetLamWidths,
   stampArrKind, stampComputeWidth, stampDivWidth, stampEqWidth, stampNumKinds,
   stampSuspension, touchNumericVar, type NodeStamps,
 } from "../stamps.ts";
@@ -152,7 +152,7 @@ function inferArr(
   if (expected !== null) {
     if (e.elems.length !== expected.fields.length)
       throw new TypeError_(`literal arity ${e.elems.length} ≠ tuple ${expected.fields.length}`);
-    stampArrKind(e, "tup");
+    stampArrKind(id, "tup", rec.stamps);
     for (let i = 0; i < e.elems.length; i++) {
       const ft = expected.fields[i].type;
       const el = e.elems[i];
@@ -171,11 +171,11 @@ function inferArr(
     const elem = env.uni.fresh();
     for (const et of elemTs)
       env.uni.unify(elem, et);
-    stampArrKind(e, "arr");
+    stampArrKind(id, "arr", rec.stamps);
     return tArr(env.uni.res(elem));
   } catch (_) {
     env.uni.restore(snap);
-    stampArrKind(e, "tup");
+    stampArrKind(id, "tup", rec.stamps);
     return tTup(elemTs.map(t => ({name: null, type: env.uni.res(t)})));
   }
 }
@@ -420,7 +420,7 @@ function inferNode(
           ? inferWith(e.body, nodes, rt, n, innerEffs, effects, rec)
           : infer(e.body, nodes, n, innerEffs, effects, rec);
       } finally {
-        endLamWidths(ctx, e, unann);
+        endLamWidths(ctx, id);
       }
       if (e.retTyp !== null) {
         env.uni.unify(e.retTyp, ret);
@@ -490,7 +490,7 @@ function inferNode(
         const st = rec.stamps[e.val];
         if (st?.typ !== undefined)
           st.typ = env.uni.deepRes(st.typ) as FunT;
-        checkLamWidths(env.uni, lam);
+        checkLamWidths(env.uni, e.val);
       }
       // Exclude the self-binding from the free-var context before
       // generalizing (otherwise its own vars read as free-in-env → no-op).
@@ -524,9 +524,9 @@ function inferNode(
         throw new TypeError_(`@as: cannot cast ${showT(at)} to ${showT(target)}`);
       const tn = target.name as NumName;
       if (INT_NAMES.has(tn) && at.tag === "prim" && (FLOAT_NAMES.has(at.name as NumName) || at.name === "float"))
-        e.asKind = "trunc";
+        (rec.stamps[id] ??= {}).asKind = "trunc";
       else if (at.tag === "prim" && at.name === "bool")
-        e.asKind = "boolnum";
+        (rec.stamps[id] ??= {}).asKind = "boolnum";
       return target;
     }
     // `obj.x` / `obj.0`: resolve the field index from the (tuple or array)
@@ -537,12 +537,10 @@ function inferNode(
         const idx = fieldIndex(e.name);
         if (idx === null)
           throw new TypeError_(`arrays use .N indexing, not .${e.name}`);
-        e.idx = idx;
-        e.shape = "arr";
+        (rec.stamps[id] ??= {}).fieldIdx = idx;
         return ot.elem;
       }
       if (ot.tag === "tup") {
-        e.shape = "tup";
         let idx: number | null = null;
         if (/^[0-9]+$/.test(e.name)) {
           idx = Number(e.name);
@@ -553,7 +551,7 @@ function inferNode(
           if (idx < 0)
             throw new TypeError_(`tuple has no field .${e.name}`);
         }
-        e.idx = idx;
+        (rec.stamps[id] ??= {}).fieldIdx = idx;
         return ot.fields[idx].type;
       }
       throw new TypeError_(`field access on non-record type: ${showT(ot)}`);
@@ -562,7 +560,6 @@ function inferNode(
     case "dlet": {
       const vt = env.uni.res(infer(e.val, nodes, env, effs, effects, rec));
       if (vt.tag === "tup") {
-        e.shape = "tup";
         if (vt.fields.length !== e.fields.length)
           throw new TypeError_(`destructure arity ${e.fields.length} ≠ tuple ${vt.fields.length}`);
         for (let i = 0; i < e.fields.length; i++) {
@@ -573,7 +570,6 @@ function inferNode(
           env.vars.set(e.fields[i].name, ft ?? vt.fields[i].type);
         }
       } else if (vt.tag === "arr") {
-        e.shape = "arr";
         for (const f of e.fields) {
           if (f.typ !== null)
             env.uni.unify(f.typ, vt.elem);
@@ -840,6 +836,7 @@ export function checkProgram(
   acc?: Checked,
 ): Checked {
   const uni = acc?.uni ?? new Unifier();
+  resetLamWidths();
   let env: Env;
   let effects: Map<string, EffectSig>;
   if (acc !== undefined) {

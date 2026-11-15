@@ -1,7 +1,7 @@
 // Higher-order CPS IR: the single intermediate representation both backends
-// consume. Produced by cps.ts from a checked program (checker stamps on the
-// AST nodes — numKind/div/idx/arrKind/asKind — are read during conversion and
-// carried into the term).
+// consume. Produced by cps.ts from a checked program (the checker's
+// Checked.stamps side table — numKind/div/arrKind/fieldIdx/asKind — is read
+// during conversion and carried into the term).
 //
 // Term shape: every value flows through an explicit continuation. `letk`
 // binds a continuation λv.body; tail positions name their continuation as a

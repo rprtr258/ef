@@ -1,14 +1,16 @@
 // Backend stamps: the runtime-emission metadata the checker writes into a
 // per-check side table (Checked.stamps, keyed by ExprID) — numeric widths
 // (`numKind`), division width (`div`), suspension classification (`sus`),
-// and the lambda's resolved FunT (`typ`). The evaluator
+// the lambda's resolved FunT (`typ`), array/tuple literal shape (`arrKind`),
+// resolved field index (`fieldIdx`), and the @as conversion kind (`asKind`).
+// The evaluator
 // normalizes every producing node's value to its stamped width (i32/u32/
 // f32/f64: JS number, i64/u64: BigInt; f32 nodes fround) and the wasm
 // backend reads the same stamps for typed boxes, statics, and fround
-// round-trips, so the stamps are backend ABI. Node fields the checker still
-// writes directly: array/tuple shape (`arrKind`), destructure `shape`,
-// resolved field `idx`, `asKind`, and the lambda width-ambiguity
-// bookkeeping (`unannParams`/`numTouched`). A node variant that can carry
+// round-trips, so the stamps are backend ABI. The AST itself stays
+// read-only after construction: every checker-discovered field rides this
+// table, and the lambda width-ambiguity bookkeeping lives in the module map
+// `lamWidths` below. A node variant that can carry
 // a numeric width must classify its stamping here: stampSuspension switches
 // exhaustively over `e.t` and ends in assertNever, so a new variant fails
 // to compile until its call-site status is declared. Numeric widths are NOT
@@ -40,6 +42,9 @@ export type NodeStamps = {
   div?: NumName,
   sus?: boolean,
   typ?: FunT,
+  arrKind?: "arr" | "tup",
+  fieldIdx?: number,
+  asKind?: "trunc" | "boolnum",
 };
 
 // The node's stamp slot, created on first write (the table stays sparse).
@@ -49,8 +54,8 @@ function slot(stamps: (NodeStamps | undefined)[], id: ExprID): NodeStamps {
 
 // Runtime shape stamp (mirrors numKind): the evaluator builds a slice for
 // homogeneous literals and a tuple record otherwise.
-export function stampArrKind(e: Expr & {t: "arr"}, kind: "arr" | "tup"): void {
-  e.arrKind = kind;
+export function stampArrKind(id: ExprID, kind: "arr" | "tup", stamps: (NodeStamps | undefined)[]): void {
+  slot(stamps, id).arrKind = kind;
 }
 
 // Width-ambiguity tracking (strict-width rule): while a lambda body is being
@@ -63,34 +68,38 @@ export function stampArrKind(e: Expr & {t: "arr"}, kind: "arr" | "tup"): void {
 // bodies by construction: inference is a synchronous single pass — `infer` is
 // module-private and `checkProgram` the only entry — so no second pass can
 // share this state concurrently.
-type LamCtx = { unann: Set<number>, touched: Set<number> };
+type LamCtx = { unannIds: Set<number>, unann: {name: string, id: number}[], touched: Set<number> };
 // One entry per lambda whose params include unannotated numerics, pushed for
 // the body's inference and popped at its end. Module state, not per-call:
 // inference is a single synchronous pass, so the stack is empty outside a
-// lambda body by construction.
+// lambda body by construction. Results land in `lamWidths` keyed by the
+// lambda's ExprID for checkLamWidths at the binding `let`.
 const lamStack: LamCtx[] = [];
+// Keyed by ExprID: the node slice is per-parse, so the map must be reset per
+// checkProgram — otherwise a stale entry (a lambda never let-bound) collides
+// with the next program's ExprIDs.
+const lamWidths = new Map<ExprID, LamCtx>();
+
+// Drop any leftover entries from a previous check (see lamWidths). Called
+// once per checkProgram before inference.
+export function resetLamWidths(): void { lamWidths.clear(); }
 
 // Register the lambda's unannotated param vars for the body's numeric ops.
 // Returns null when there is nothing to track (every param annotated) — the
 // caller's finally then skips the bookkeeping.
-export function beginLamWidths(unann: {id: number}[]): LamCtx | null {
+export function beginLamWidths(unann: {name: string, id: number}[]): LamCtx | null {
   if (unann.length === 0) return null;
-  const ctx: LamCtx = {unann: new Set(unann.map(p => p.id)), touched: new Set()};
+  const ctx: LamCtx = {unannIds: new Set(unann.map(p => p.id)), unann: unann.slice(), touched: new Set()};
   lamStack.push(ctx);
   return ctx;
 }
 
-// Pop the tracking context and record the body's results on the lambda node
-// for checkLamWidths at the binding `let`.
-export function endLamWidths(
-  ctx: LamCtx | null,
-  lam: Expr & {unannParams?: {name: string, id: number}[], numTouched?: Set<number>},
-  unann: {name: string, id: number}[],
-): void {
+// Pop the tracking context and record the body's results under the lambda's
+// ExprID for checkLamWidths at the binding `let`.
+export function endLamWidths(ctx: LamCtx | null, lamId: ExprID): void {
   if (ctx === null) return;
   lamStack.pop();
-  lam.unannParams = unann;
-  lam.numTouched = ctx.touched;
+  lamWidths.set(lamId, ctx);
 }
 
 // Numeric ops mark the unannotated param vars they see.
@@ -99,7 +108,7 @@ export function touchNumericVar(u: Unifier, t: Type): void {
   const r = u.res(t);
   if (r.tag !== "var") return;
   const root = u.find(r.id);
-  for (const c of lamStack) if (c.unann.has(root)) c.touched.add(root);
+  for (const c of lamStack) if (c.unannIds.has(root)) c.touched.add(root);
 }
 
 // Strict-width rejection for let-bound lambdas (runs at every let whose RHS
@@ -112,12 +121,13 @@ export function touchNumericVar(u: Unifier, t: Type): void {
 // and non-numeric pins (string, arrays, functions) pass. Directly-passed
 // lambdas never reach here: their params get concrete types from the
 // instantiation.
-export function checkLamWidths(u: Unifier, lam: Expr & {unannParams?: {name: string, id: number}[], numTouched?: Set<number>}): void {
-  if (lam.unannParams === undefined) return;
+export function checkLamWidths(u: Unifier, lamId: ExprID): void {
+  const rec = lamWidths.get(lamId);
+  if (rec === undefined) return;
+  lamWidths.delete(lamId);
   const touched = new Set<number>();
-  if (lam.numTouched !== undefined)
-    for (const r of lam.numTouched) touched.add(u.find(r)); // unions after a touch may have re-rooted
-  for (const p of lam.unannParams) {
+  for (const r of rec.touched) touched.add(u.find(r)); // unions after a touch may have re-rooted
+  for (const p of rec.unann) {
     const rt = u.res({tag: "var", id: p.id});
     if (rt.tag === "prim" && (rt.name === "int" || rt.name === "float"))
       throw new TypeError_(`ambiguous numeric width — annotate the parameter (e.g. ${p.name}: i64)`);

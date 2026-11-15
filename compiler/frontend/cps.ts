@@ -343,7 +343,7 @@ class Converter {
             this.callTail(k, nk, (kk) => ({t: "call", fn: vf, args: vas, k: kk, rstamp: nk})))});
       }
       case "as": {
-        const asKind = e.asKind;
+        const asKind = this.stamps[id]?.asKind;
         const stamp = this.stamps[id]?.numKind;
         return this.convert(e.e, {t: "fn", f: (v) => {
           // No asKind and no stamp: a pure pass-through conversion.
@@ -354,10 +354,15 @@ class Converter {
       }
       case "arr":
         return this.convArgs(e.elems, (vas) =>
-          this.primLet({t: "arr", args: vas, kind: e.arrKind === "tup" ? "tup" : "arr"}, k));
-      case "field":
+          this.primLet({t: "arr", args: vas, kind: this.stamps[id]?.arrKind === "tup" ? "tup" : "arr"}, k));
+      case "field": {
+        // Checked programs always stamp fieldIdx here; unchecked ones (the
+        // cps_opt tests' bare toCps) legitimately flow undefined, like e.idx
+        // did when it lived on the node.
+        const idx = this.stamps[id]?.fieldIdx as number;
         return this.convert(e.obj, {t: "fn", f: (vo) =>
-          this.primLet({t: "field", obj: vo, idx: e.idx!, name: e.name}, k)});
+          this.primLet({t: "field", obj: vo, idx, name: e.name}, k)});
+      }
       default:
         return assertNever(e);
     }
