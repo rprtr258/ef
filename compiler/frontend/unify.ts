@@ -30,8 +30,9 @@ export type TupT = { tag: "tup", fields: TupField[] };
 // into the ambient row, so polymorphic callers stay effect-tracked), with a
 // wholly-unbound row standing for row polymorphism. Effect variables unify
 // by union-find; a wholly-unbound row unifies with a concrete row by binding
-// to it; two concrete rows unify by matching op coverage, with each side's
-// variables absorbing the other's unmatched ops. This lets higher-order
+// to it; two concrete rows check by subset — the second row (the value's)
+// must be covered by the first row (the context's), with the context's
+// variables absorbing the value's unmatched ops. This lets higher-order
 // builtins be effect-polymorphic:
 // `map : ((a) -> b ! e, [a]) -> [b] ! e` for a fresh `e`.
 export type EffVar = { tag: "effvar", id: number };
@@ -79,8 +80,9 @@ export function widthOf(t: Type): {w: NumName, concrete: boolean} | null {
 // share state. A function's effect row (`Effs`) lists performed ops;
 // unbound effect variables in its `vars` stand for still-unknown effects
 // (row polymorphism): a wholly-unbound row unifies with a concrete row by
-// binding its variable to it; two concrete rows unify by matching op
-// coverage. This lets higher-order builtins be effect-polymorphic:
+// binding its variable to it; two concrete rows check by subset — the second
+// row (the value's) must be covered by the first row (the context's).
+// This lets higher-order builtins be effect-polymorphic:
 // `map : ((a) -> b ! e, [a]) -> [b] ! e` for a fresh `e`.
 export class Unifier {
   parent = new Map<number, number>();
@@ -275,14 +277,21 @@ export class Unifier {
   // the wholesale bind, re-binding the variable to a row containing itself:
   // the ρ = {ρ} shape recursion produces — semantically ∅ (resRow collapses
   // the cycle), while display and quantification keep the variable.
-  // Two concrete rows require matching op coverage — except the empty row
-  // `∅` is the polymorphic bottom: a function typed `... ! ∅` performs no
-  // effects and may be used wherever *any* effect row is expected (it is
-  // refined to the other row). When a concrete row carries unbound variables,
-  // the variables absorb the other side's unmatched ops: `! { x, e } ~
-  // ! { x, y }` binds `e := { y }`. This keeps unannotated HOF parameters
-  // flexible without let-generalization and lets polymorphic callers carry
-  // their callee's row.
+  // Two concrete rows check by subset, not equality: `a` is the context's
+  // row (an annotation, a callee's parameter row, the first if branch — the
+  // row every unifyEff consumer propagates onward) and `b` is the value's
+  // actual row, so `b`'s ops must all be covered by `a`'s ops or `a`'s
+  // variables. Effect subsumption is contravariant in function position:
+  // `fn ... ! { E }` checks against `fn ... ! { E, F }` — adding effects to
+  // the expected row is valid, the reverse is not — and the empty row `∅`
+  // needs no special case: as the value's row it is simply subsumed by any
+  // context row, while an effectful value against a `∅`-typed context is a
+  // genuine mismatch (letting it through would let the value's performed
+  // effects vanish from every ambient row). When a concrete row
+  // carries unbound variables, the variables absorb the other side's
+  // unmatched ops: `! { x, e } ~ ! { x, y }` binds `e := { y }`. This keeps
+  // unannotated HOF parameters flexible without let-generalization and lets
+  // polymorphic callers carry their callee's row.
   unifyEff(a: Effs, b: Effs): void {
     const fa = this.resRow(a), fb = this.resRow(b);
     if (fa.ops.size === 0 && fa.vars.size === 1 && fb.ops.size === 0 && fb.vars.size === 1) {
@@ -302,15 +311,11 @@ export class Unifier {
       this.effBinds.set(this.effFind(vb.id), a);
       return;
     }
-    if (fa.ops.size === 0 && fa.vars.size === 0) return; // ∅ unifies with anything (refine to fb)
-    if (fb.ops.size === 0 && fb.vars.size === 0) return;
-    const dA = [...fb.ops].filter(op => !fa.ops.has(op)); // ops only B has: A's vars must supply
-    const dB = [...fa.ops].filter(op => !fb.ops.has(op)); // ops only A has: B's vars must supply
+    const dA = [...fb.ops].filter(op => !fa.ops.has(op)); // ops only B has: A's ops + A's vars must cover
+    const dB = [...fa.ops].filter(op => !fb.ops.has(op)); // ops only A has: fine — the context row may exceed the value's
     const showA = () => [...fa.ops, ...[...fa.vars].map(v => `e${v.id}`)].join(", ");
     const showB = () => [...fb.ops, ...[...fb.vars].map(v => `e${v.id}`)].join(", ");
     if (dA.length > 0 && fa.vars.size === 0)
-      throw new TypeError_(`effect mismatch: { ${showA()} } ≠ { ${showB()} }`);
-    if (dB.length > 0 && fb.vars.size === 0)
       throw new TypeError_(`effect mismatch: { ${showA()} } ≠ { ${showB()} }`);
     for (const v of fa.vars) this.effBinds.set(this.effFind(v.id), rowOf(dA));
     for (const v of fb.vars) this.effBinds.set(this.effFind(v.id), rowOf(dB));
