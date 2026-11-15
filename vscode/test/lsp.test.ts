@@ -261,7 +261,7 @@ describe("ef language server", () => {
   });
 
   test("hover on an alias name shows its definition", async () => {
-    await s.change("Point :: [x: i64, y: i64];\np: Point :: [1, 2];\n");
+    await s.change("Point :: [x: i64, y: i64];\np: Point : [1, 2];\n");
     const h1 = await s.hover(0, 0); // the decl name
     expect(h1).not.toBeNull();
     expect(h1!.contents.value).toBe("```ef\nPoint = [x: i64, y: i64]\n```");
@@ -270,7 +270,7 @@ describe("ef language server", () => {
   });
 
   test("hover on a parametric alias shows its tparams", async () => {
-    await s.change("Pair :: fn(a: type, b: type): type { [fst: a, snd: b] };\nq: Pair(i64, string) :: [1, \"s\"];\n");
+    await s.change("Pair :: fn(a: type, b: type): type { [fst: a, snd: b] };\nq: Pair(i64, string) : [1, \"s\"];\n");
     const h1 = await s.hover(0, 0); // the decl name
     expect(h1).not.toBeNull();
     expect(h1!.contents.value).toBe("```ef\nPair(a, b) = [fst: a, snd: b]\n```");

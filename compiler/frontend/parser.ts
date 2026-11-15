@@ -83,7 +83,7 @@ export type Expr =
   | { t: "unit" }
   | { t: "sym", v: string }
   | { t: "lambda", params: Param[], retTyp: Type | null, retEffs: Set<string> | null, body: ExprID }
-  | { t: "let", name: string, typ: Type | null, val: ExprID, mut: boolean } // `name := e;` / `name :: e;` / `name: T = e;` / `name: T :: e;`
+  | { t: "let", name: string, typ: Type | null, val: ExprID, mut: boolean } // `name := e;` / `name :: e;` / `name: T = e;` / `name: T : e;`
   | { t: "dlet", fields: { name: string, typ: Type | null, pos?: Loc }[], val: ExprID, mut: boolean } // `[a, b] := val;` / `[a, b] :: val;` destructuring bind; field pos: the field name token (go-to-definition target).
   | { t: "assign", name: string, val: ExprID }
   | { t: "if", c: ExprID, a: ExprID, b: ExprID }
@@ -319,18 +319,18 @@ export class Parser {
       e = this.add({t: "let", name, typ: null, val, mut: false}, p);
       this.eat(";");
     } else if (nonKw && this.peek(1) === ":") {
-      // `name: T = val;` — mutable, annotated; `name: T :: val;` — const, annotated.
+      // `name: T = val;` — mutable, annotated; `name: T : val;` — const, annotated.
       const name = this.next();
       this.next(); // :
       const typ = this.parseType();
-      const isConst = this.is("::");
+      const isConst = this.is(":");
       if (isConst) this.next();
       else this.eat("=");
       const val = this.parseExpr();
       e = this.add({t: "let", name, typ, val, mut: !isConst}, p);
       this.eat(";");
     } else if (this.is("[")) {
-      // Destructuring bind (`[a: T, b] := val;` / `[a: T, b] :: val;`) or an
+      // Destructuring bind (`[a: T, b] := val;` / `[a: T, b] : val;`) or an
       // array literal as an expression statement (`[x, y]` as a block tail).
       // The bracketed prefix is ambiguous, so try destructuring and backtrack
       // to an expression unless a bind operator follows `]`.
@@ -346,7 +346,9 @@ export class Parser {
           this.listSep("]");
         }
         this.eat("]");
-        const isConst = this.is("::");
+        // Typed fields bind the value with `:` (const) or `:=` (mut);
+        // untyped fields keep the `::` / `:=` pair.
+        const isConst = fields.some((f) => f.typ !== null) ? this.is(":") : this.is("::");
         if (isConst) this.next();
         else this.eat(":=");
         const val = this.parseExpr();

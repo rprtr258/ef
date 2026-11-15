@@ -1,8 +1,8 @@
 # Aliasing and identity: p2 aliases p, so p == p2 is true (same object);
 # arrays grow with concat and report their length with len.
 
-p: [x: i64, y: i64] :: [10, 20];
-p2: [x: i64, y: i64] :: p;  # alias: same object as p
+p: [x: i64, y: i64] : [10, 20];
+p2: [x: i64, y: i64] : p;  # alias: same object as p
 same :: p == p2;            # same object -> true
 
 if (!same) {

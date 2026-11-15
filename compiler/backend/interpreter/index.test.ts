@@ -103,8 +103,8 @@ guard :: fn(x: i64): string {
 
 test("Type annotations on let", () => {
 expect(show(run(`
-x: i64 :: 5;
-y: i64 :: x + 3;
+x: i64 : 5;
+y: i64 : x + 3;
 y
 `))).toBe("8");
 });
@@ -144,7 +144,7 @@ handle {
     console.warn = (s: string) => { warned.push(s); };
     try {
       typeOf("g :: fn(x: any): any { x };");            // inferred (any) -> any  -> warn
-      typeOf("g: (any) -> any :: fn(x: any): any { x };"); // explicit annotation -> silent
+      typeOf("g: (any) -> any : fn(x: any): any { x };"); // explicit annotation -> silent
       typeOf("xs :: [1, 2, 3]; xs");     // array literal -> [i64]   -> silent
     } finally {
       console.warn = orig;
@@ -169,11 +169,11 @@ describe("Declarations: consts vs mutable bindings", () => {
   test("assignment inside a const's own initializer closure is rejected", () => {
     expect(() => run(`c :: fn(): i64 { c = 1; 0 }; c();`)).toThrow("cannot assign to const 'c'");
   });
-  test("typed forms: x: T = e (mutable) and x: T :: e (const)", () => {
+  test("typed forms: x: T = e (mutable) and x: T : e (const)", () => {
     expect(typeOf(`m: [f64, f64] = [1.0, 2.0]; m`)).toBe("[f64, f64]");
-    expect(typeOf(`k: i32 :: 1; k`)).toBe("i32");
+    expect(typeOf(`k: i32 : 1; k`)).toBe("i32");
     expect(show(run(`g: i64 = 5; g = g * 2; g`))).toBe("10");
-    expect(() => run(`k: i32 :: 1; k = 2;`)).toThrow("cannot assign to const 'k'");
+    expect(() => run(`k: i32 : 1; k = 2;`)).toThrow("cannot assign to const 'k'");
   });
   test("typed mutable destructuring [a: T, b] := e", () => {
     expect(show(run(`p: [i64, i64] = [3, 4]; [a: i64, b: i64] := p; a = a + b; a`))).toBe("7");
@@ -222,12 +222,12 @@ describe("Tuples, aliases, and field access", () => {
     expect(typeOf(`[1, "a", true]`)).toBe("[i64, string, bool]");
   });
   test("named tuple via annotation", () => {
-    expect(typeOf(`p: [x: f64, y: f64] :: [1.0, 2.0]; p`)).toBe("[x: f64, y: f64]");
+    expect(typeOf(`p: [x: f64, y: f64] : [1.0, 2.0]; p`)).toBe("[x: f64, y: f64]");
   });
   // Field names are type-position-only, so a named-field literal must fail
   // at parse time.
   test("named-field expression literal is rejected at parse time", () => {
-    expect(() => run(`p: [x: i64, y: i64] :: [x: 1, y: 2]; p`)).toThrow("Expected \",\" or \"]\", got \":\"");
+    expect(() => run(`p: [x: i64, y: i64] : [x: 1, y: 2]; p`)).toThrow("Expected \",\" or \"]\", got \":\"");
   });
   test("stray punctuation in expression position fails as a parse error, not a sym node", () => {
     expect(() => run(`f(:)`)).toThrow("Unexpected token \":\"");
@@ -251,7 +251,7 @@ describe("Tuples, aliases, and field access", () => {
   });
 
   test("array types reject named elements", () => {
-    expect(() => run(`p: [x: i64] :: [1]; p`)).toThrow("array type cannot have a named element");
+    expect(() => run(`p: [x: i64] : [1]; p`)).toThrow("array type cannot have a named element");
   });
 
   test("a backtracked array-literal statement still demands a semicolon", () => {
@@ -270,7 +270,7 @@ describe("Tuples, aliases, and field access", () => {
   });
   test("call args, fn params, and fn types demand commas", () => {
     expect(() => typeOf(`f :: fn(a: i64 b: i64): i64 { a + b };`)).toThrow("Expected \",\" or \")\", got \"b\"");
-    expect(() => typeOf(`f: (i64 i64) -> i64 :: 1;`)).toThrow("Expected \",\" or \")\", got \"i64\"");
+    expect(() => typeOf(`f: (i64 i64) -> i64 : 1;`)).toThrow("Expected \",\" or \")\", got \"i64\"");
     expect(show(run(`f :: fn(a: i64, b: i64,): i64 { a + b }; f(1, 2,)`))).toBe("3");
   });
   test("effect rows demand commas", () => {
@@ -279,49 +279,49 @@ describe("Tuples, aliases, and field access", () => {
     expect(typeOf(`effect A(): i64; f :: fn(): i64 ! { A, } { A!() }; f()`)).toBe("i64");
   });
   test("dot access on a tuple by name", () => {
-    expect(show(run(`p: [x: f64, y: f64] :: [1.0, 2.0]; p.x`))).toBe("1");
+    expect(show(run(`p: [x: f64, y: f64] : [1.0, 2.0]; p.x`))).toBe("1");
   });
   test("dot access on a tuple by index", () => {
-    expect(show(run(`p: [i64, string] :: [1, "a"]; p.1`))).toBe("\"a\"");
+    expect(show(run(`p: [i64, string] : [1, "a"]; p.1`))).toBe("\"a\"");
   });
   test("dot access on an array by index", () => {
     expect(show(run(`xs :: [10, 20, 30]; xs.0`))).toBe("10");
   });
   test("destructuring bind holds tuple fields", () => {
-    expect(show(run(`p: [i64, string] :: [1, "a"]; [n, s] :: p; s`))).toBe("\"a\"");
+    expect(show(run(`p: [i64, string] : [1, "a"]; [n, s] :: p; s`))).toBe("\"a\"");
   });
   test("destructuring bind on an array", () => {
     expect(show(run(`xs :: [10, 20]; [a, b] :: xs; a + b`))).toBe("30");
   });
   test("parametric type alias instantiates", () => {
-    expect(typeOf(`Pair :: fn(a: type, b: type): type {[a, b]}; p: Pair(i64, string) :: [1, "a"]; p`)).toBe("[i64, string]");
+    expect(typeOf(`Pair :: fn(a: type, b: type): type {[a, b]}; p: Pair(i64, string) : [1, "a"]; p`)).toBe("[i64, string]");
   });
   test("alias used in a function signature", () => {
     expect(typeOf(`Pair :: fn(a: type, b: type): type {[a, b]}; fst :: fn(p: Pair(i64, string)): i64 { p.0 }; fst`)).toBe("([i64, string]) -> i64");
   });
-  test("nullary alias sugar: name :: [T, T]", () => {
-    expect(typeOf(`V2 :: [f32, f32]; v: V2 :: [1.0, 2.0]; v`)).toBe("[f32, f32]");
+  test("nullary alias sugar: name : [T, T]", () => {
+    expect(typeOf(`V2 :: [f32, f32]; v: V2 : [1.0, 2.0]; v`)).toBe("[f32, f32]");
   });
   test("nullary alias to a bare type name", () => {
     expect(typeOf(`s32 :: i32; f :: fn(n: s32): i32 { n }; f`)).toBe("(i32) -> i32");
   });
   test("alias to an alias application", () => {
-    expect(typeOf(`Pair :: fn(a: type, b: type): type {[a, b]}; P2 :: Pair(i64, string); p: P2 :: [1, "a"]; p`)).toBe("[i64, string]");
+    expect(typeOf(`Pair :: fn(a: type, b: type): type {[a, b]}; P2 :: Pair(i64, string); p: P2 : [1, "a"]; p`)).toBe("[i64, string]");
   });
   test("type-annotated term lambda (ret not type) stays a term function", () => {
     expect(typeOf(`f :: fn(a: type): i64 { 0 }; f`)).toBe("(type) -> i64");
   });
   test("parametric alias refuses bracket syntax in type position", () => {
-    expect(() => typeOf(`Pair :: fn(a: type, b: type): type {[a, b]}; p: Pair[i64, string] :: [1, "a"]; p`)).toThrow("Expected");
+    expect(() => typeOf(`Pair :: fn(a: type, b: type): type {[a, b]}; p: Pair[i64, string] : [1, "a"]; p`)).toThrow("Expected");
   });
   test("the `type` keyword form is gone", () => {
     expect(() => typeOf(`type V = i64;`)).toThrow();
   });
   test("alias sugar with named fields and fn-type body", () => {
-    expect(typeOf(`P :: [x: f64, y: f64]; F :: (i64) -> i64; f: F :: fn(n: i64): i64 { n }; p: P :: [1.0, 2.0]; p.x`)).toBe("f64");
+    expect(typeOf(`P :: [x: f64, y: f64]; F :: (i64) -> i64; f: F : fn(n: i64): i64 { n }; p: P : [1.0, 2.0]; p.x`)).toBe("f64");
   });
   test("alias sugar chains with earlier aliases", () => {
-    expect(typeOf(`A :: [i64, i64]; B :: [A, A]; b: B :: [[1, 2], [3, 4]]; b`)).toBe("[[i64, i64], [i64, i64]]");
+    expect(typeOf(`A :: [i64, i64]; B :: [A, A]; b: B : [[1, 2], [3, 4]]; b`)).toBe("[[i64, i64], [i64, i64]]");
   });
   test("bracket RHS over value variables is still a const binding, not sugar", () => {
     expect(show(run(`a :: 1; b :: 2; pair :: [a, b]; pair.1`))).toBe("2");
@@ -340,7 +340,7 @@ describe("Negative tests (static type checker rejects)", () => {
   }
 
   test("Adding a string to an i64", () => {
-    assertTypeError(`s: string :: "hi"; s + 1`, "i64");
+    assertTypeError(`s: string : "hi"; s + 1`, "i64");
   });
 
   test("Calling a function with the wrong argument type", () => {
@@ -352,7 +352,7 @@ describe("Negative tests (static type checker rejects)", () => {
   });
 
   test("Tuple arity mismatch is rejected", () => {
-    assertTypeError(`p: [i64, string] :: [1, "a", true];`, "arity");
+    assertTypeError(`p: [i64, string] : [1, "a", true];`, "arity");
   });
 
   test("If branches with mismatched types", () => {
@@ -448,14 +448,14 @@ test("Numeric widths: six primitives, strict same-width arithmetic", () => {
   // Untyped literals flex to any numeric context and default to i64 / f64.
   expect(typeOf(`1`)).toBe("i64");
   expect(typeOf(`1.5`)).toBe("f64");
-  expect(typeOf(`x: i32 :: 1; x`)).toBe("i32");
-  expect(typeOf(`x: u64 :: 1; x + 1`)).toBe("u64");
-  expect(typeOf(`x: f32 :: 1.5; x`)).toBe("f32");
-  expect(typeOf(`x: i32 :: 1; x + 2`)).toBe("i32");       // literal flexes down
+  expect(typeOf(`x: i32 : 1; x`)).toBe("i32");
+  expect(typeOf(`x: u64 : 1; x + 1`)).toBe("u64");
+  expect(typeOf(`x: f32 : 1.5; x`)).toBe("f32");
+  expect(typeOf(`x: i32 : 1; x + 2`)).toBe("i32");       // literal flexes down
   expect(typeOf(`sqrt(100)`)).toBe("f64");                    // literal flexes up
-  expect(() => typeOf(`x: i32 :: 1; y: i64 :: 2; x + y`)).toThrow(/different numeric widths/);
-  expect(typeOf(`x: f32 :: 1; x + 1.5`)).toBe("f32");      // float literal flexes to f32
-  expect(() => typeOf(`x: i32 :: 1.5`)).toThrow();         // float literal never narrows
+  expect(() => typeOf(`x: i32 : 1; y: i64 : 2; x + y`)).toThrow(/different numeric widths/);
+  expect(typeOf(`x: f32 : 1; x + 1.5`)).toBe("f32");      // float literal flexes to f32
+  expect(() => typeOf(`x: i32 : 1.5`)).toThrow();         // float literal never narrows
   expect(() => typeOf(`get([10, 20], 1.5)`)).toThrow();       // indices are i64, not f64
 });
 
@@ -465,23 +465,23 @@ test("@as: the explicit numeric cast", () => {
   expect(show(run(`@as(-3.7, i32)`))).toBe("-3");
   expect(show(run(`@as(true, i32)`))).toBe("1");
   expect(show(run(`@as(false, i32)`))).toBe("0");
-  expect(show(run(`x: i64 :: 5; @as(x, f32) + @as(x, f32)`))).toBe("10");
+  expect(show(run(`x: i64 : 5; @as(x, f32) + @as(x, f32)`))).toBe("10");
   expect(() => typeOf(`@as(1, [i64])`)).toThrow(/numeric width/);
   expect(typeOf(`@as(true, i32) + 1`)).toBe("i32");
 });
 
 test("f32 arithmetic rounds to f32 precision (interp and wasm agree)", () => {
-  expect(show(run(`a: f32 :: 0.1; b: f32 :: 0.2; a + b`))).toBe("0.30000001192092896");
-  expect(show(run(`a: f32 :: 0.1; a * 10.0`))).toBe("1");
-  expect(show(run(`a: f64 :: 0.1; b: f64 :: 0.2; a + b`))).toBe("0.30000000000000004");
-  expect(show(run(`a: f32 :: 0.1; a / 3.0`))).toBe("0.03333333507180214");
+  expect(show(run(`a: f32 : 0.1; b: f32 : 0.2; a + b`))).toBe("0.30000001192092896");
+  expect(show(run(`a: f32 : 0.1; a * 10.0`))).toBe("1");
+  expect(show(run(`a: f64 : 0.1; b: f64 : 0.2; a + b`))).toBe("0.30000000000000004");
+  expect(show(run(`a: f32 : 0.1; a / 3.0`))).toBe("0.03333333507180214");
 });
 
 test("u32/u64 hold unsigned ranges; i64 goes past i32", () => {
-  expect(show(run(`x: u32 :: 4294967295; x`))).toBe("4294967295");
-  expect(show(run(`x: u64 :: 9007199254740992; x`))).toBe("9007199254740992");
-  expect(show(run(`x: i64 :: 9999999999; x * 2`))).toBe("19999999998");
-  expect(show(run(`x: u32 :: 3; y: u32 :: 5; x < y`))).toBe("true");
+  expect(show(run(`x: u32 : 4294967295; x`))).toBe("4294967295");
+  expect(show(run(`x: u64 : 9007199254740992; x`))).toBe("9007199254740992");
+  expect(show(run(`x: i64 : 9999999999; x * 2`))).toBe("19999999998");
+  expect(show(run(`x: u32 : 3; y: u32 : 5; x < y`))).toBe("true");
 });
 
 test("an untyped int literal flows into a f64-typed parameter", () => {
@@ -683,7 +683,7 @@ b`))).toBe("\"n=7\"");
   // Value restriction: a non-lambda RHS is NOT generalized, so a returned
   // function used at two types is a type error (stays monomorphic).
   // (Sanity: a lambda-typed `let` with an explicit annotation is monomorphic.)
-  expect(() => run(`id: (i64) -> i64 :: fn (x) { x };
+  expect(() => run(`id: (i64) -> i64 : fn (x) { x };
 s :: id("hi")`)).toThrow();
 });
 
@@ -697,8 +697,8 @@ test("show prints function arity and type, natives stay [fn]", () => {
 test("nested tuple field access chains (m.0.0)", () => {
   // The lexer reads `0.0` as one f64 token; the parser splits it so
   // `m.0.0` is two field accesses, not one.
-  expect(run(`m: [[i64,i64,i64],[i64,i64,i64],[i64,i64,i64]] :: [[1,2,3],[4,5,6],[7,8,9]]; m.0.0`)).toBe(1n);
-  expect(run(`m: [[i64,i64,i64],[i64,i64,i64],[i64,i64,i64]] :: [[1,2,3],[4,5,6],[7,8,9]]; m.2.1`)).toBe(8n);
+  expect(run(`m: [[i64,i64,i64],[i64,i64,i64],[i64,i64,i64]] : [[1,2,3],[4,5,6],[7,8,9]]; m.0.0`)).toBe(1n);
+  expect(run(`m: [[i64,i64,i64],[i64,i64,i64],[i64,i64,i64]] : [[1,2,3],[4,5,6],[7,8,9]]; m.2.1`)).toBe(8n);
 });
 
 test("array literal infers as tuple against a tuple-typed context", () => {
@@ -798,18 +798,18 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
   });
 
   test("calling a non-closure any fails at the apply boundary", () => {
-    expect(() => run(`f: any :: 1; f(2)`)).toThrow("Not callable: 1");
+    expect(() => run(`f: any : 1; f(2)`)).toThrow("Not callable: 1");
   });
 
   test("stamped comparisons coerce through widthOp", () => {
     // Concrete-typed operands stamp the site with their width, so the
     // comparison runs through widthOp's planes (i64 bigints, f64 numbers).
     for (const [src, expected] of [
-      ["x: i64 :: 2; y: i64 :: 1; x >= y", true],
-      ["x: f64 :: 2.5; y: f64 :: 1.5; x >= y", true],
-      ["x: f64 :: 2.5; y: f64 :: 1.5; x > y", true],
-      ["x: f64 :: 2.5; y: f64 :: 1.5; x <= y", false],
-      ["x: i64 :: 2; y: i64 :: 1; x < y", false],
+      ["x: i64 : 2; y: i64 : 1; x >= y", true],
+      ["x: f64 : 2.5; y: f64 : 1.5; x >= y", true],
+      ["x: f64 : 2.5; y: f64 : 1.5; x > y", true],
+      ["x: f64 : 2.5; y: f64 : 1.5; x <= y", false],
+      ["x: i64 : 2; y: i64 : 1; x < y", false],
     ] as [string, boolean][]) {
       expect(run(src)).toBe(expected);
     }
@@ -913,17 +913,17 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
       ["if (true) { fn(x: i64): i64 { x } } else { fn(x: i64, y: i64): i64 { x } }", /arity 1 ≠ 2/],
       ["effect E(): i64; effect U(): i64; g1 :: fn(): i64 ! { E } { E!() }; g2 :: fn(): i64 ! { U } { U!() }; if (true) { g1 } else { g2 }", /effect mismatch: \{ E \} ≠ \{ U \}/],
       ["@as(\"a\", i64)", /@as: cannot cast string to i64/],
-      ["xs: [i64] :: [1]; xs.foo", /arrays use \.N indexing, not \.foo/],
-      ["p: [i64, i64] :: [1, 2]; p.5", /\.5 out of range for tuple of 2/],
-      ["p: [x: i64, y: i64] :: [1, 2]; p.z", /tuple has no field \.z/],
-      ["x: i64 :: 1; x.0", /field access on non-record type: i64/],
-      ["p: [i64, i64] :: [1, 2]; [a, b, c] := p;", /destructure arity 3 ≠ tuple 2/],
-      ["x: i64 :: 1; [a, b] := x;", /cannot destructure non-record type: i64/],
+      ["xs: [i64] : [1]; xs.foo", /arrays use \.N indexing, not \.foo/],
+      ["p: [i64, i64] : [1, 2]; p.5", /\.5 out of range for tuple of 2/],
+      ["p: [x: i64, y: i64] : [1, 2]; p.z", /tuple has no field \.z/],
+      ["x: i64 : 1; x.0", /field access on non-record type: i64/],
+      ["p: [i64, i64] : [1, 2]; [a, b, c] := p;", /destructure arity 3 ≠ tuple 2/],
+      ["x: i64 : 1; [a, b] := x;", /cannot destructure non-record type: i64/],
       ["effect E(x: i64): i64; E!()", /effect E: 1 args, got 0/],
       ["handle { 1 } case Nope(n) => k { n }", /Handler for unknown effect: Nope/],
       ["f :: fn(x: i64): i64 { x }; f(1, 2)", /arity 1 ≠ 2/],
-      ["t: string :: \"x\"; t(1)", /Type mismatch/],
-      ["s: string :: \"x\"; (if (true) { s } else { s })(1)", /Type mismatch/],
+      ["t: string : \"x\"; t(1)", /Type mismatch/],
+      ["s: string : \"x\"; (if (true) { s } else { s })(1)", /Type mismatch/],
       ["(fn(x: i64): i64 { x })(\"s\")", /Type mismatch/],
       ["h :: fn(): [i64, i64] { fn(): [i64, i64] { [1, 2] } }; h()", /Type mismatch/],
     ] as [string, RegExp][]) {
@@ -953,11 +953,11 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
        "twice :: fn (f, xs) { map(f, map(f, xs)) };\ntwice(fn(x: string): string { x }, [\"a\"])", "[\"a\"]"],
       // hasPerformOutsideLambdas walks if/field spines inside handle bodies.
       ["handle body spine through if and field",
-       "effect E(): i64; p: [i64, i64] :: [1, 2]; handle { if (true) { p.0 } else { E!() } } case E(n) => k { n }", "1"],
+       "effect E(): i64; p: [i64, i64] : [1, 2]; handle { if (true) { p.0 } else { E!() } } case E(n) => k { n }", "1"],
       // hasPerformOutsideLambdas's as/while arms on a handle body spine
       // (the while must not perform: .some() short-circuits the walk).
       ["handle body spine through while and as",
-       "effect E(n: i64): i64; p: [i64, i64] :: [1, 2];\nf :: fn(): i64 {\n  handle {\n    while (false) { unit };\n    @as(if (true) { E!(p.0) } else { 2 }, i64)\n  } case E(n) => k { k(n) }\n};\nf()", "1"],
+       "effect E(n: i64): i64; p: [i64, i64] : [1, 2];\nf :: fn(): i64 {\n  handle {\n    while (false) { unit };\n    @as(if (true) { E!(p.0) } else { 2 }, i64)\n  } case E(n) => k { k(n) }\n};\nf()", "1"],
       // caseReferencesK walks as/if/while/app/arr/field/handle shapes in
       // case bodies that resume; the gate only runs over a perform-free body.
       ["k references through as/if/while/arr/field/nested handle",
@@ -967,10 +967,10 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
        "h :: fn(): [i64, i64] { fn(): [i64, i64] { [1, 2] } }; h()", "ERR"],
       // inferWith's block branch: non-final statements infer plainly.
       ["tuple expectation flows through a block tail",
-       "p: [i64, i64] :: [1, 2];\nf :: fn(): [i64, i64] { a := 1; [a, 2] };\nf()", "[1, 2]"],
+       "p: [i64, i64] : [1, 2];\nf :: fn(): [i64, i64] { a := 1; [a, 2] };\nf()", "[1, 2]"],
       // inferWith's sym fallback: a non-literal tail against a tuple type.
       ["tuple expectation applies to a sym tail",
-       "p: [i64, i64] :: [1, 2];\nf :: fn(): [i64, i64] { p };\nf()", "[1, 2]"],
+       "p: [i64, i64] : [1, 2];\nf :: fn(): [i64, i64] { p };\nf()", "[1, 2]"],
       // A dlet over an array window with annotated fields unifies each.
       ["annotated array destructure unifies the field types",
        "[a: i64, b: i64] := [1, 2];\na + b", "3"],
@@ -990,7 +990,7 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
 
     test("a concrete non-callable argument is caught and named", () => {
       expect(() => run(`k :: fn (f, x) { f(x) };
-s: string :: "x";
+s: string : "x";
 k(s, 1)`)).toThrow();
     });
 
@@ -1111,20 +1111,20 @@ describe("REPL acc regression: bindings after wrapper continuations", () => {
 // interpreter-side semantics that parity builds on.
 describe("numeric widths", () => {
   test("i32 sign-wraps", () => {
-    expect(show(run(`x: i32 :: 2147483647; x + 1`))).toBe("-2147483648");
-    expect(show(run(`x: i32 :: 2147483647; x * 2`))).toBe("-2");
-    expect(show(run(`x: i32 :: -2147483648; x - 1`))).toBe("2147483647");
+    expect(show(run(`x: i32 : 2147483647; x + 1`))).toBe("-2147483648");
+    expect(show(run(`x: i32 : 2147483647; x * 2`))).toBe("-2");
+    expect(show(run(`x: i32 : -2147483648; x - 1`))).toBe("2147483647");
   });
 
   test("u32 wraps mod 2^32", () => {
-    expect(show(run(`u: u32 :: 4294967295; u + 1`))).toBe("0");
-    expect(show(run(`u: u32 :: 4294967295; u * 2`))).toBe("4294967294");
-    expect(show(run(`u: u32 :: 1; u - 2`))).toBe("4294967295");
+    expect(show(run(`u: u32 : 4294967295; u + 1`))).toBe("0");
+    expect(show(run(`u: u32 : 4294967295; u * 2`))).toBe("4294967294");
+    expect(show(run(`u: u32 : 1; u - 2`))).toBe("4294967295");
   });
 
   test("i64 is exact beyond 2^53 (BigInt values)", () => {
-    expect(run(`big: i64 :: 9007199254740993; big + 1`)).toBe(9007199254740994n);
-    expect(run(`big: i64 :: 9007199254740993; big * 2`)).toBe(18014398509481986n);
+    expect(run(`big: i64 : 9007199254740993; big + 1`)).toBe(9007199254740994n);
+    expect(run(`big: i64 : 9007199254740993; big * 2`)).toBe(18014398509481986n);
     expect(show(run(`9007199254740993 % 1000`))).toBe("993");
     expect(show(run(`9007199254740993 / 1000`))).toBe("9007199254740");
   });
@@ -1137,17 +1137,17 @@ describe("numeric widths", () => {
   });
 
   test("u64 wraps mod 2^64", () => {
-    expect(show(run(`u: u64 :: 18446744073709551615; u + 1`))).toBe("0");
-    expect(show(run(`u: u64 :: 18446744073709551615; u * 2`))).toBe("18446744073709551614");
+    expect(show(run(`u: u64 : 18446744073709551615; u + 1`))).toBe("0");
+    expect(show(run(`u: u64 : 18446744073709551615; u * 2`))).toBe("18446744073709551614");
   });
 
   test("integer division/remainder traps: ÷0 and INT_MIN ÷ -1 (wasm div/rem parity)", () => {
     expect(() => run(`1 / 0`)).toThrow(/integer divide by zero/);
     expect(() => run(`17 % 0`)).toThrow(/integer divide by zero/);
-    expect(() => run(`b: i64 :: 0 - 9223372036854775807 - 1; b / -1`)).toThrow(/integer overflow/);
-    expect(() => run(`x: i32 :: 0 - 2147483648; x / -1`)).toThrow(/integer overflow/);
+    expect(() => run(`b: i64 : 0 - 9223372036854775807 - 1; b / -1`)).toThrow(/integer overflow/);
+    expect(() => run(`x: i32 : 0 - 2147483648; x / -1`)).toThrow(/integer overflow/);
     // INT_MIN % -1 does NOT trap (wasm rem has no overflow case).
-    expect(show(run(`b: i64 :: 0 - 9223372036854775807 - 1; b % -1`))).toBe("0");
+    expect(show(run(`b: i64 : 0 - 9223372036854775807 - 1; b % -1`))).toBe("0");
     // float division by zero is not a trap.
     expect(show(run(`1.0 / 0.0`))).toBe("Infinity");
   });
@@ -1196,14 +1196,14 @@ describe("numeric widths", () => {
   });
 
   test("arithmetic on any is a static error (use @as to pin a width)", () => {
-    expect(() => run(`a: any :: 1; a + 1`))
+    expect(() => run(`a: any : 1; a + 1`))
       .toThrow(/any is not a numeric width/);
-    expect(() => run(`a: any :: 1; a < 1`))
+    expect(() => run(`a: any : 1; a < 1`))
       .toThrow(/any is not a numeric width/);
-    expect(() => run(`a: any :: "s"; a + "!"`))
+    expect(() => run(`a: any : "s"; a + "!"`))
       .toThrow(/any is not a numeric width/);
     // equality on any stays allowed.
-    expect(run(`a: any :: 1; a == 1`)).toBe(true);
+    expect(run(`a: any : 1; a == 1`)).toBe(true);
   });
 });
 
@@ -1304,7 +1304,7 @@ collect(1);`)).toEqual([
   });
 
   test("operator desugars record nothing (spec AC-010)", () => {
-    expect(vt(`a: i64 :: 1;\nb: i64 :: 2;\np: bool :: true;\nq: bool :: false;\na + b;\n-a;\np && q;`)).toEqual([
+    expect(vt(`a: i64 : 1;\nb: i64 : 2;\np: bool : true;\nq: bool : false;\na + b;\n-a;\np && q;`)).toEqual([
       {kind: "variable", text: "a"}, // binder
       {kind: "variable", text: "b"}, // binder
       {kind: "variable", text: "p"}, // binder

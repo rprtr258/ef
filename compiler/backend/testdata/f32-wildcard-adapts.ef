@@ -1,2 +1,2 @@
 # Wildcard literal sources adapt at the f32 unbox.
-x: f32 :: 1; x + 1
+x: f32 : 1; x + 1

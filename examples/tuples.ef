@@ -10,7 +10,7 @@ vec3_add :: fn(a: [f64, f64, f64], b: [f64, f64, f64]): [f64, f64, f64] {
 do_nothing :: fn() { };  # empty body -> unit
 
 named :: fn(): i64 {
-  point: [x: i64, y: i64] :: [10, 20];  # fields named in the type
+  point: [x: i64, y: i64] : [10, 20];  # fields named in the type
   x :: point.x;
   y :: point.y;
   y - x
@@ -18,17 +18,17 @@ named :: fn(): i64 {
 
 # the same shape, expressed with the field access order swapped
 named_reorder :: fn(): i64 {
-  point: [x: i64, y: i64] :: [10, 20];
+  point: [x: i64, y: i64] : [10, 20];
   x :: point.x;
   y :: point.y;
   y - x
 };
 
-t: [i64, f64] :: [42, 3.14];  # heterogeneous -> tuple
+t: [i64, f64] : [42, 3.14];  # heterogeneous -> tuple
 do_nothing();
-v1: [f64, f64, f64] :: [1.0, 2.0, 3.0];
-v2: [f64, f64, f64] :: [4.0, 5.0, 6.0];
-v3: [f64, f64, f64] :: vec3_add(v1, v2);
+v1: [f64, f64, f64] : [1.0, 2.0, 3.0];
+v2: [f64, f64, f64] : [4.0, 5.0, 6.0];
+v3: [f64, f64, f64] : vec3_add(v1, v2);
 x :: named();
 y :: named_reorder();
 round(v3.0 + v3.1 + v3.2) + x + y

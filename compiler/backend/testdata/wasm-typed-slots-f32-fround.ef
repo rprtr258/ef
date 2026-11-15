@@ -1,4 +1,4 @@
 # f32 fround parity through typed slots.
-a: f32 :: 0.1;
-b: f32 :: 0.2;
+a: f32 : 0.1;
+b: f32 : 0.2;
 a + b == @as(0.3, f32)

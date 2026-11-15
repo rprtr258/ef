@@ -5,8 +5,8 @@
 
 # f32 rounds to f32 precision at every producing step: 0.1f32 + 0.2f32 is
 # 0.30000001192092896, not the f64 0.30000000000000004.
-a: f32 :: 0.1;
-b: f32 :: 0.2;
+a: f32 : 0.1;
+b: f32 : 0.2;
 Println!(a + b);
 Println!(@as(0.1 + 0.2, f64));
 Println!(@as(1.0 / 3.0, f32));
@@ -23,7 +23,7 @@ Println!(thirds.1);
 Println!(a + b == @as(0.3, f32));
 
 # Untyped literals default to i64/f64; annotations pin the other widths.
-i: i64 :: 9007199254740993;
+i: i64 : 9007199254740993;
 Println!(i / 1000000000000);
 
 # Integer division truncates toward zero; modulo takes the dividend's sign.

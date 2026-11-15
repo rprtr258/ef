@@ -24,14 +24,14 @@ size :: 200;
 step :: 4.0 / (size - 1);      # viewport maps pixel indices to [-2, 2]
 substep :: step / 4.0;
 
-camDir: V3 :: [0.1, 0.0, -2.5];   # camera at the origin, facing -z
+camDir: V3 : [0.1, 0.0, -2.5];   # camera at the origin, facing -z
 ambient :: 0.15;
 lightIntensity :: 0.85;
-light: V3 :: [2.4, 1.0, -3.0];    # point light
+light: V3 : [2.4, 1.0, -3.0];    # point light
 
 Sphere :: [center: V3, radius: f64, color: V3];
-s1: Sphere :: [[0.0, 0.0, -5.0], 1.5, [1.0, 0.4, 0.3]];    # warm orange
-s2: Sphere :: [[2.0, 0.5, -4.5], 1.0, [0.3, 0.5, 1.0]];    # cool blue
+s1: Sphere : [[0.0, 0.0, -5.0], 1.5, [1.0, 0.4, 0.3]];    # warm orange
+s2: Sphere : [[2.0, 0.5, -4.5], 1.0, [0.3, 0.5, 1.0]];    # cool blue
 
 planeZ :: -7.0;                # the ground plane z = planeZ
 checkSize :: 2.0;              # checkerboard cell size
@@ -81,7 +81,7 @@ checkerVal :: fn(x: f64, y: f64, cell: f64): f64 {
 
 # ---- Color of one ray through direction camDir + [dx, dy, 0] ----
 sample :: fn(dx: f64, dy: f64): V3 {
-  d: V3 :: [camDir.0 + dx, camDir.1 + dy, camDir.2];
+  d: V3 : [camDir.0 + dx, camDir.1 + dy, camDir.2];
   t1 :: sphereT(d, s1.center, s1.radius);
   if (t1 > 0.0) {
     sphereShade(s1, d, t1)

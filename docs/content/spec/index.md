@@ -52,7 +52,7 @@ aliases and effect declarations are not expressions and produce no value.
 ### 2.2 Declarations
 
 ```
-decl      ::= name (":=" expr | "::" expr | ":" type ("=" expr | "::" expr)) ";"
+decl      ::= name (":=" expr | "::" expr | ":" type ("=" expr | ":" expr)) ";"
             | tuple-pattern (":=" | "::") expr ";"
 tuple-pattern ::= "[" ((name (":" type)? ("," name (":" type)?)*) ","?)? "]"
 params    ::= "(" ((name (":" type)? ("," name (":" type)?)*) ","?)? ")"
@@ -75,7 +75,7 @@ There are two binding kinds:
 - `name :: e;` — a **const** (inferred type). Function declarations are
   consts: `f :: fn(...) { ... }`.
 - An optional `: T` annotation precedes the initializer operator:
-  `name: T = e;` is a mutable variable of type `T`, `name: T :: e;` a const
+  `name: T = e;` is a mutable variable of type `T`, `name: T : e;` a const
   of type `T`.
 - Destructuring: `[a, b] := e;` / `[a, b] :: e;` binds each name to the
   corresponding tuple/array element, with optional per-field `: type`

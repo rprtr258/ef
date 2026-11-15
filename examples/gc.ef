@@ -14,7 +14,7 @@ test_parser :: fn(): i64 {
 };
 
 test_basic :: fn(): i64 {
-  point: [x: i64, y: i64] :: [10, 20];
+  point: [x: i64, y: i64] : [10, 20];
   x_val :: point.x;
   y_val :: point.y;
   slice: [i64] = [];

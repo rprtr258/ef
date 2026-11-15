@@ -2,5 +2,5 @@
 # value, so a guarded dereference has nothing to guard — build the record,
 # read the field.
 
-val: [x: i64, y: i64] :: [10, 20];
+val: [x: i64, y: i64] : [10, 20];
 val.x

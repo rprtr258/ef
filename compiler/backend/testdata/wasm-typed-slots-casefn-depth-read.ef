@@ -1,4 +1,4 @@
 # A case-fn depth>0 read reaches across frames.
 effect Op(): i64;
-y: i64 :: 5;
+y: i64 : 5;
 handle { y + Op!() } case Op() => k { k(y + 1) }

@@ -62,7 +62,7 @@ describe("unused-arg traversal", () => {
     ["lambdas in arr/field/as/dlet positions", `
       f :: fn(x: i64): i64 {
         xs := [fn(a: i64): i64 { a }];
-        t: [i64, string] :: [1, "s"];
+        t: [i64, string] : [1, "s"];
         y := t.0;
         z := @as(@as(y, f64), i64);
         [q, r] := [x, z];

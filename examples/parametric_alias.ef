@@ -8,6 +8,6 @@ Vec :: fn(a: type): type {[x: a, y: a]};  # named fields from a parameter
 norm2 :: fn(v: Vec(f64)): f64 { v.x * v.x + v.y * v.y };
 swap :: fn(p: Pair(i64, string)): Pair(string, i64) { [p.1, p.0] };
 
-p: Pair(i64, string) :: [7, "cm"];
-v: Vec(f64) :: [3.0, 4.0];
+p: Pair(i64, string) : [7, "cm"];
+v: Vec(f64) : [3.0, 4.0];
 p.0 + swap(p).1 + @as(v.x + v.y, i64)

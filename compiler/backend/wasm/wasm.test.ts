@@ -502,20 +502,20 @@ handle { while (s < 3) { s = s + Op!() }; s } case Op() => k { k(3) }`;
 
   test("multi-shot rest-thunk read after resume: the read is cross-fn, the slot stays boxed", () => {
     const src = `effect Op(): i64;
-x: i64 :: 10;
+x: i64 : 10;
 handle { Op!() } case Op() => k { k(1); k(2) } + x`;
     assertUntyped(audit(src), "x");
   });
 
   test("escaping-closure capture: the captured slot stays boxed (env path)", () => {
-    const src = `mk :: fn() { x: i64 :: 7; fn() { x } };
+    const src = `mk :: fn() { x: i64 : 7; fn() { x } };
 mk()()`;
     assertUntyped(audit(src), "x");
   });
 
   test("case-fn depth>0 read: cross-fn reach keeps the site slot boxed", () => {
     const src = `effect Op(): i64;
-y: i64 :: 5;
+y: i64 : 5;
 handle { y + Op!() } case Op() => k { k(y + 1) }`;
     assertUntyped(audit(src), "y");
   });
@@ -528,8 +528,8 @@ bump :: fn(v: i64): i64 { acc = acc + v; acc };
   });
 
   test("f32 slots type and round at every producing node (fround parity)", () => {
-    const src = `a: f32 :: 0.1;
-b: f32 :: 0.2;
+    const src = `a: f32 : 0.1;
+b: f32 : 0.2;
 a + b == @as(0.3, f32)`;
     const levels = audit(src);
     // The literal binds survived classification as f32 typed slots.
@@ -549,11 +549,11 @@ describe("wasm host boundary (wasm_host.ts)", () => {
     for (const [src, expected, interp] of [
       // Custom interps returning tuples/slices exercise the tup and arr box
       // branches; the results unbox back through the matching arms.
-      ["effect Make(): [i64, i64]; f :: fn(): i64 { t: [i64, i64] :: Make!(); t.0 + t.1 }; f()", "3", {Make: (_args, k) => k(mkTup([1, 2]))}],
+      ["effect Make(): [i64, i64]; f :: fn(): i64 { t: [i64, i64] : Make!(); t.0 + t.1 }; f()", "3", {Make: (_args, k) => k(mkTup([1, 2]))}],
       ["effect Roll(): [i64]; Roll!()", "[5, 6]", {Roll: (_args, k) => k(mkSlice([5, 6]))}],
       // The typed slot forces the $U32 box; a bare @as at top level rides
       // the unstamped pass-through and crosses as an f64 num box instead.
-      ["u: u32 :: 4000000000; u", "4000000000", undefined],
+      ["u: u32 : 4000000000; u", "4000000000", undefined],
       ["\"hi there\"", "\"hi there\"", undefined],
       ["id :: fn(x: i64): i64 { x }; id", "[fn]", undefined],
     ] as [string, string, EffectInterp | undefined][]) {

@@ -1,2 +1,2 @@
 # f32 literals through f32-typed lets keep their box.
-a: f32 :: 0.1; b: f32 :: 0.2; a + b
+a: f32 : 0.1; b: f32 : 0.2; a + b

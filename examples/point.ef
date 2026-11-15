@@ -1,8 +1,8 @@
 # Aliasing a named tuple: p2 is the same object as p, so p == p2 is true;
 # arrays grow with concat and are read with len/get.
 
-p: [x: i64, y: i64] :: [10, 20];
-p2: [x: i64, y: i64] :: p;  # alias: same object as p
+p: [x: i64, y: i64] : [10, 20];
+p2: [x: i64, y: i64] : p;  # alias: same object as p
 same :: p == p2;            # true
 
 slice: [i64] = [];
