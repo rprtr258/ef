@@ -76,8 +76,8 @@ function runOnce(mode: "run" | "runwasm", src: string, file: string, args: strin
     let value: Value;
     try {
       value = mode === "run"
-        ? run(src, {Exit: a => { throw new ExitSignal(num(a[0])); }, Random: (_a, k) => k(rand())})
-        : runWasm(src, {Exit: a => { throw new ExitSignal(num(a[0])); }, Random: (_a, k) => k(rand())});
+        ? run(src, {Exit: a => { throw new ExitSignal(num(a[0])); }, Random: (_a, k) => k(rand())}, args)
+        : runWasm(src, {Exit: a => { throw new ExitSignal(num(a[0])); }, Random: (_a, k) => k(rand())}, args);
     } catch (e) {
       if (e instanceof ExitSignal) return {stdout: chunks.join(""), code: e.code};
       return {stdout: chunks.join("") + "ERR: " + (e as Error).message + "\n", code: 1};
@@ -341,9 +341,9 @@ const FIXTURES: Row[] = [
   {file: "wasm-handle-operator-operand.ef", want: "8\n"},
   {file: "wasm-served-builtin-char.ef", want: "\"a\"\n"},
   {file: "wasm-served-builtin-round-cos.ef", want: "100\n"},
-  {file: "wasm-args-builtin-len.ef", want: "2\n"},
+  {file: "wasm-args-builtin-len.ef", args: ["a", "b"], want: "2\n"},
   {file: "wasm-shadow-served-char-err.ef", want: "ERR: cannot shadow builtin 'char'\n", code: 1},
-  {file: "wasm-every-served-builtin.ef", want: "15\n15\n"},
+  {file: "wasm-every-served-builtin.ef", want: "13\n13\n"},
   {file: "wasm-binaryen-shrink-preserves-semantics.ef", want: "\"hi\"\n21\n42\n"},
   {file: "wasm-split-nested-if-else-land.ef", want: "1\nunit\n"},
   {file: "wasm-devirt-mixed-dcall.ef", want: "[102, 103]\n"},

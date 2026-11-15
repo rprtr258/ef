@@ -9,6 +9,9 @@ effect Read(): i64;
 effect Emit(e: i64): unit;
 effect Stop(): unit;
 
+av := args();
+vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 20000 };
+
 newline :: 10;
 dollar :: 36;
 
@@ -35,7 +38,7 @@ handle {
     handle {
       parse(0)
     } case Read() => k {
-      if (fi > 20000) {
+      if (fi > vi) {
         Stop!()
       } else {
         if (fj == 0) {

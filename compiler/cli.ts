@@ -57,7 +57,9 @@ function main(cmd: string, args: string[]) {
     }
 
     const src = readFileSync(args[0]).toString();
-    const result = run(src);
+    // Program args: everything after the source path — the `args` builtin's
+    // view of the command line.
+    const result = run(src, undefined, args.slice(1));
     console.log(show(result));
     return;
   }
@@ -66,7 +68,7 @@ function main(cmd: string, args: string[]) {
       break;
     }
     const src = readFileSync(args[0]).toString();
-    const result = runWasm(src);
+    const result = runWasm(src, undefined, args.slice(1));
     console.log(show(result));
     return;
   }

@@ -71,17 +71,16 @@ f()
   }, 15000); // two spawns + wasm compile; the 5s default flakes under parallel load
 
   test("run: passes program args through to the program", () => {
-    // No examples/*.ef takes args deterministically (approx_pi needs the
-    // Random! seed pin, star loops forever), so argv plumbing is probed
-    // with a throwaway program. Its argv counts the `run` subcommand —
-    // the quirk examples/approx_pi.ef relies on — hence len 4 for two
-    // program args, with index 2 holding the first of them.
+    // Program args are everything after the source path — the `run`
+    // subcommand and the file never reach args(). No examples/*.ef takes
+    // args deterministically (approx_pi needs the Random! seed pin, star
+    // loops forever), so argv plumbing is probed with a throwaway program.
     const file = join(tmpdir(), `ef-cli-test-${process.pid}-args.ef`);
-    writeFileSync(file, "argv :: args();\nPrintln!(len(argv));\nPrintln!(get(argv, 2));\n");
+    writeFileSync(file, "argv :: args();\nPrintln!(len(argv));\nPrintln!(get(argv, 0));\n");
     try {
       const r = cli("run", file, "1", "2");
       expect(r.code).toBe(0);
-      expect(r.stdout).toBe("4\n\"1\"\nunit\n");
+      expect(r.stdout).toBe("2\n\"1\"\nunit\n");
     } finally {
       rmSync(file, {force: true});
     }

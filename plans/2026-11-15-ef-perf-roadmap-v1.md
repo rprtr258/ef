@@ -97,7 +97,7 @@ compiler changes.
 
 **Rollback.** Delete `benchmarks/compare/` (no shared code touched).
 
-### Step 2 — argv support for ef programs
+### Step 2 — argv support for ef programs *(complete)*
 
 **Context.** The `args` builtin **already exists end-to-end** — table row
 `compiler/frontend/builtin_table.ts` (~line 78, `{kind: "fn", name: "args",
@@ -112,29 +112,44 @@ and `runwasm`/`buildwasm` behave the same. The work is plumbing, not a new
 builtin.
 
 **Tasks.**
-- [ ] cli.ts: compute program args = argv after the source path for
+- [x] cli.ts: compute program args = argv after the source path for
       `run`/`runwasm`; thread them through `run(src)`/`runWasm(src)` (add an
       optional args parameter — `run`/`exec`/`newCtx` in
       `backend/interpreter/eval.ts`, and the wasm host instantiation) so the
       interpreter and the `ef_args` host import report identical values.
-      REPL keeps `[]`.
-- [ ] Tests: interpreter suite (`index.test.ts`) — `args()` with trailing
+      REPL keeps `[]`. (Done: Ctx gains `args` in pipeline.ts's newCtx;
+      exec publishes it to builtins.ts's `setProgramArgs` at the one runner
+      boundary — the builtins table has no ctx access; runModule/runWasm
+      take args and feed `ef_args` directly. Existing argv-dependent tests
+      and examples updated to the trimmed semantics: approx_pi/star index
+      from 0, parity fixtures' wants, cli args probe, wasm.test ef_args.)
+- [x] Tests: interpreter suite (`index.test.ts`) — `args()` with trailing
       argv (exec-level: seed args and assert the program sees exactly them,
       without `run`/source path), empty case; shadowing rejection (`args` is
       a builtin name) if not already covered. Extend the wasm.test.ts
       `ef_args` host-import assertion for the trimmed args.
-- [ ] Docs: `docs/content/spec/index.md` §4 `args` row — fix it to describe
-      program args (everything after the source path), which it may not
-      currently state precisely; README only if the CLI usage line changes.
+- [x] Docs: `docs/content/spec/index.md` §4 `args` row — fixed to describe
+      program args (everything after the source path; `[]` in the REPL);
+      README's CLI usage line unchanged.
 
 **Verification.** `bun run ci` green. With `f.ef` = `args()`:
 `bun compiler/cli.ts run f.ef a b c` prints `["a", "b", "c"]` (no
 `run`/`f.ef` entries); the same file via `runwasm` prints identically; `ef
-run f.ef` prints `[]`.
+run f.ef` prints `[]`. All verified.
 
 **Exit criteria.** Benchmarks can read inputs from argv; the harness (step 1)
 gains a `--argv` mode that passes inputs to repo `benchmarks/*.ef` directly
 (keep sed mode as fallback). Gate: no benchmark time change ≥10%.
+Done: every `benchmarks/*.ef` reads its input from `args()` with the suite's
+large input as the hardcoded default; `compare.ts` always compiles the repo
+files directly and passes W_IN/I_IN as program args (the sed-scaled copies
+and their `--argv` flag were removed — argv is the only mode),
+`precompile.ts run <base> [args...]` threads them to the host.
+Gate measured with hyperfine (10 runs, sed vs argv commands interleaved in
+one invocation per benchmark, both backends): all deltas within ±6.2%, no
+row at ≥10%. Earlier non-interleaved sessions showed ±10–30% swings in both
+directions (documented run-to-run spread), which is why the interleaved
+measurement is the one that counts.
 
 **Rollback.** Revert the single PR; builtin rows are additive.
 

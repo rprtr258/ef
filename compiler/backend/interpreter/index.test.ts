@@ -32,6 +32,17 @@ test("exec drives a REPL session: bindings persist, lastType resolved", () => {
   expect(showT(l2.lastType)).toBe("i64");
 });
 
+test("program args flow to the args builtin (no run/source-path pollution)", () => {
+  // exec-level: the seeded args are exactly what the program sees — the CLI
+  // passes everything after the source path, never the subcommand or file.
+  expect(show(runLine(newCtx(undefined, ["a", "b"]), "args()").value))
+    .toBe("[\"a\", \"b\"]");
+  // A ctx without args reports [] (REPL and direct runner calls).
+  expect(show(runLine(newCtx(), "args()").value)).toBe("[]");
+  // One-shot run threads the same array through to the builtin.
+  expect(show(run("args()", undefined, ["x", "y", "z"]))).toBe("[\"x\", \"y\", \"z\"]");
+});
+
 test("run accepts a custom effect interpreter (fakes Read, no fs touched)", () => {
   expect(run("Read!(\"missing.txt\")", {Read: (_a, k) => k("faked")}))
     .toBe("faked");
@@ -192,6 +203,7 @@ describe("Declarations: consts vs mutable bindings", () => {
     expect(() => run(`x :: 1; g :: fn(): i64 { [x] := [2]; x }; g()`)).toThrow("cannot shadow 'x'");
     // Builtin names (incl. operators like `neg`) are reserved everywhere.
     expect(() => run(`len :: 1;`)).toThrow("cannot shadow builtin 'len'");
+    expect(() => run(`args :: 1;`)).toThrow("cannot shadow builtin 'args'");
     expect(() => run(`f :: fn(len: i64): i64 { len };`)).toThrow("cannot shadow builtin 'len'");
     expect(() => run(`effect T(n: i64): i64; handle { T!(1) } case T(len) => k { len }`))
       .toThrow("cannot shadow builtin 'len'");

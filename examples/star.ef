@@ -73,12 +73,12 @@ apply :: fn(p: V3, m: M3x3): V3 {
 };
 
 argv :: args();
-if (len(argv) != 4) {
+if (len(argv) != 2) {
   Out!("Usage: ef run examples/star.ef <num_of_vertices> <draw_step>\n<draw_step> must be in range (0..<num_of_vertices> / 2)\n");
   Exit!(1)
 }
-vertices :: round(number(get(argv, 2)));
-step :: round(number(get(argv, 3)));
+vertices :: round(number(get(argv, 0)));
+step :: round(number(get(argv, 1)));
 if (vertices <= 0) { Out!("Incorrect vertices value\n"); Exit!(1) }
 if (step < 0 || step > vertices / 2) { Out!("Incorrect step value\n"); Exit!(1) }
 

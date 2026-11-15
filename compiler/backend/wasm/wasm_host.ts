@@ -136,20 +136,22 @@ function hostStr(ex: Accessors, v: unknown): string {
   return s;
 }
 
-export function runWasm(src: string, interp?: EffectInterp): Value {
+export function runWasm(src: string, interp?: EffectInterp, args?: string[]): Value {
   // interp rides along for the static unhandled-op gate (pipeline.ts's
   // rejectUnhandled): a custom op the interp covers must compile.
   const {bytes, ops} = compileWithOps(src, interp);
-  return runModule(bytes, ops, interp);
+  return runModule(bytes, ops, interp, args);
 }
 
 // Instantiate and run an already-compiled module: used by runWasm and by hosts
 // that compile separately from running (the playground runs through here).
+// `args` is the program args the ef_args host import reports (everything
+// after the source path on the CLI; [] when the caller omits them).
 // Last entered emission sites (ef_trace calls), printed when a runtime
 // trap escapes under EFTRACE=1.
 const traceBuf: number[] = [];
 
-export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[], interp?: EffectInterp): Value {
+export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[], interp?: EffectInterp, args: string[] = []): Value {
   // The boundary's host-interpreter, in the canonical EffectInterp shape:
   // user interps first, then builtinEffectHosts adapted to it — a direct
   // host's returned Value flows through the delivery continuation k.
@@ -176,7 +178,7 @@ export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[]
     },
     ef_char: (v: unknown) => hostBox(ex(), String.fromCodePoint(ex().__num(v) | 0)),
     ef_number: (v: unknown) => hostBox(ex(), parseFloat(hostStr(ex(), v))),
-    ef_args: () => hostBox(ex(), mkSlice(process.argv.slice(2))),
+    ef_args: () => hostBox(ex(), mkSlice(args)),
     ef_cos: (v: unknown) => hostBox(ex(), Math.cos(ex().__num(v))),
     ef_sin: (v: unknown) => hostBox(ex(), Math.sin(ex().__num(v))),
     // Operator values (checker-unstamped sites) apply the interpreter's own

@@ -18,7 +18,7 @@ import {toCps, RET} from "../../frontend/cps.ts";
 import type {CAtom, CIr, CPrim, CTerm} from "../../frontend/cps_ir.ts";
 import {assertNever} from "../../assert.ts";
 import {errDivByZero, errIndexOOB, errIntOverflow, errUnhandled, OP_ADD, OP_DIV, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_MUL, OP_NE, OP_NEG, OP_REM, OP_SUB} from "../../ops.ts";
-import {builtinInterps} from "../../builtins.ts";
+import {builtinInterps, setProgramArgs} from "../../builtins.ts";
 
 function isNative(v: Value): v is Native {
   return v !== null && typeof v === "object" && v.tag === "native";
@@ -363,6 +363,10 @@ export function exec(prog: Program, ctx: Ctx, checked: Checked): {value: Value, 
   // leaves the REPL accumulator untouched, like a type error does.
   rejectUnhandled(checked, ctx.interp);
   ctx.checked = checked;
+  // Publish ctx's program args to the `args` builtin (builtins.ts's module
+  // table has no ctx access) — both runners' boundary is exec, so a
+  // REPL-line and a one-shot run report the same args.
+  setProgramArgs(ctx.args);
   // Bind builtins this program references that the env lacks yet (a later
   // REPL line can use a previously-unreferenced builtin; the checker's
   // no-shadowing rule keeps user bindings off builtin names, so seeding
@@ -383,10 +387,10 @@ export function exec(prog: Program, ctx: Ctx, checked: Checked): {value: Value, 
 // run: one-shot pipeline — prepare (parse + typecheck, before the
 // interpreter runs), then evaluate a source string with fresh state. Throws
 // on type error. `interp` optionally overrides the builtin interpretation of
-// unhandled effects.
-export function run(src: string, interp?: EffectInterp): Value {
+// unhandled effects; `args` is the program args the `args` builtin reports.
+export function run(src: string, interp?: EffectInterp, args?: string[]): Value {
   const {prog, checked} = prepare(src);
-  return exec(prog, newCtx(interp), checked).value;
+  return exec(prog, newCtx(interp, args), checked).value;
 }
 
 // runLine: the REPL's one-line protocol — prepare against ctx's checked

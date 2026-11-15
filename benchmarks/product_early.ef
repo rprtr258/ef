@@ -6,6 +6,9 @@
 # 100000 iterations.
 effect Abort(): i64;
 
+av := args();
+vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 100000 };
+
 n :: 1000;
 
 xs := map(fn(v) { n - v }, range(0, n + 1, 1));
@@ -21,7 +24,7 @@ prod :: fn(i: i64): i64 ! { Abort } {
 
 total := 0;
 i := 0;
-while (i < 100000) {
+while (i < vi) {
   total = total + (handle {
     prod(0)
   } case Abort() => k {

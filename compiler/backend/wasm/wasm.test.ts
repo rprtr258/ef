@@ -207,6 +207,14 @@ describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () =>
     expect(importsOf("args()")).toContain("ef_args");
   });
 
+  test("ef_args reports the runModule args, not raw process.argv", () => {
+    // The host import is seeded with the program args the runner passes —
+    // everything after the source path on the CLI, [] when omitted — never
+    // the raw argv (subcommand + source path would pollute it).
+    expect(show(runWasm("args()", undefined, ["a", "b c"]))).toBe("[\"a\", \"b c\"]");
+    expect(show(runWasm("args()"))).toBe("[]");
+  });
+
   test("shadowing a served builtin is rejected before codegen", () => {
     const src = "char :: fn(x: i64): i64 { x }; char(97)";
     expect(() => importsOf(src)).toThrow("cannot shadow builtin 'char'");

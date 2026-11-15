@@ -5,7 +5,8 @@
 effect Get(): i64;
 effect Set(v: i64): unit;
 
-s := 200000000;
+av := args();
+s := if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 200000000 };
 
 down :: fn(): i64 ! { Get, Set } {
   i := Get!();

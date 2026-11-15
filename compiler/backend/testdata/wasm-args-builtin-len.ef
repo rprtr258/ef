@@ -1,2 +1,2 @@
-# The args builtin reads the test runner's argv (subcommand + file), in both backends.
+# The args builtin reports the program args passed to the runner, in both backends.
 len(args())

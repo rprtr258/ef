@@ -7,6 +7,9 @@
 # nesting with deep resumption stacks.
 effect Prime(e: i64): bool;
 
+av := args();
+vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 60000 };
+
 sieve :: fn(i: i64, n: i64, a: i64): i64 ! { Prime } {
   if (i >= n) {
     a
@@ -30,7 +33,7 @@ sieve :: fn(i: i64, n: i64, a: i64): i64 ! { Prime } {
 };
 
 handle {
-  sieve(2, 60000, 0)
+  sieve(2, vi, 0)
 } case Prime(e) => k {
   k(true)
 } case Return(v) => k {

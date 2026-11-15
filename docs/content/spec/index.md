@@ -422,7 +422,7 @@ process control is via the `Exit`/`Wait` effects (§4.4), not functions.
 | `range` | `(i64, i64, i64) -> [i64]` | `range(start, end, step)`: half-open; `step` may be negative. |
 | `char` | `(i64) -> string` | Code point → single-char string. |
 | `number` | `(string) -> f64` | Parse a string to a number. |
-| `args` | `() -> [string]` | CLI args after the source file. |
+| `args` | `() -> [string]` | Program args — everything after the source path on the `ef run`/`ef runwasm` command line; `[]` in the REPL. |
 
 `each`/`flatmap`/`map` take the function **first**, matching `map`.
 

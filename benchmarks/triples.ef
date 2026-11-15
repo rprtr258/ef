@@ -8,6 +8,10 @@
 effect Flip(): bool;
 effect Fail(): i64;
 
+av := args();
+vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 300 };
+vj :: if (len(av) > 1) { @as(number(get(av, 1)), i64) } else { 300 };
+
 choice :: fn(n: i64): i64 ! { Flip, Fail } {
   if (n < 1) {
     Fail!()
@@ -32,7 +36,7 @@ triple :: fn(n: i64, s: i64): i64 ! { Flip, Fail } {
 };
 
 handle {
-  triple(300, 300)
+  triple(vi, vj)
 } case Flip() => k {
   l := k(true);
   r := k(false);

@@ -45,6 +45,15 @@ export type Builtin =
   }
 ;
 
+// Program args behind `args` / the wasm host's ef_args import: everything
+// after the source path on the ef command line (cli.ts's run/runwasm, the
+// benchmark precompile runner). Set by the runners at their boundary —
+// REPL, tests, and direct run()/runModule() calls default to []. The
+// builtins table is a module-level constant with no ctx access, so the
+// value has to ride in here rather than on Ctx.
+let programArgs: string[] = [];
+export function setProgramArgs(argv: string[]): void { programArgs = argv; }
+
 // Impls keyed by builtin name, one row per table entry (analysis.test.ts's
 // IMPL_KEYS audit pins the name sets together per kind). Plain fns lift to
 // runtime natives as `k(fn(...args))`; values bind as the value itself;
@@ -88,7 +97,7 @@ const FN_IMPLS: Record<string, (...args: Value[]) => Value> = {
   },
   char: a => String.fromCodePoint(num(a) | 0),
   number: a => parseFloat(a as string),
-  args: () => mkSlice(process.argv.slice(2)),
+  args: () => mkSlice(programArgs),
   get: (xs, i) => {
     const s = asSlice(xs);
     const idx = num(i);

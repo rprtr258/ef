@@ -8,6 +8,9 @@
 # design. 10 rounds, each seeded with the previous maximum.
 effect Choose(): bool;
 
+av := args();
+vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 16 };
+
 op2 :: fn(x: i64, y: i64): i64 {
   d := x - 503 * y + 37;
   a := if (d < 0) {
@@ -48,7 +51,7 @@ paths :: fn(h: i64): i64 {
 
 i := 0;
 while (i < 10) {
-  state = paths(16);
+  state = paths(vi);
   i = i + 1
 };
 state

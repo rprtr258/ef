@@ -1,9 +1,9 @@
 argv :: args();
-if (len(argv) != 3) {
+if (len(argv) != 1) {
   Out!("Usage: ef run examples/approx_pi.ef <n>\n");
   Exit!(1)
 }
-n :: number(get(argv, 2));
+n :: number(get(argv, 0));
 if (n <= 0) { Out!("Incorrect n value\n"); Exit!(1) }
 
 p := 0;

@@ -4,11 +4,14 @@
 # module-level cell.
 effect Emit(v: i64): unit;
 
+av := args();
+vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 40000000 };
+
 s := 0;
 
 handle {
   i := 0;
-  while (i <= 40000000) {
+  while (i <= vi) {
     Emit!(i);
     i = i + 1
   }

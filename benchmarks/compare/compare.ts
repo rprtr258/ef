@@ -2,9 +2,8 @@
 // compare.ts — ef vs effect-handlers-bench (OCaml/Koka/Effekt) benchmark harness.
 //
 // Reproduces the 2026-11-15 comparison from the repo: builds the suite's
-// docker images and compiled binaries, generates ef's scaled benchmark
-// sources (ef files hardcode inputs), precompiles ef wasm modules, runs
-// hyperfine, and prints the comparison tables.
+// docker images and compiled binaries, precompiles ef wasm modules from the
+// repo benchmarks, runs hyperfine, and prints the comparison tables.
 //
 // Usage:
 //   compare.ts                 # full run: Table B (same inputs) + Table A (suite inputs)
@@ -75,7 +74,7 @@ for (const tool of ["git", "python3"]) {
   if (shOut(["which", tool]) === null) die(`${tool} not found`);
 }
 if (docker && shOut(["which", "docker"]) === null) die("docker not found (or rerun with --no-docker)");
-for (const d of ["bin", "src", "interp", "pre", "results"]) mkdirSync(join(EB, d), {recursive: true});
+for (const d of ["bin", "pre", "results"]) mkdirSync(join(EB, d), {recursive: true});
 
 let HF: string;
 if (shOut(["which", "hyperfine"]) !== null) {
@@ -140,23 +139,10 @@ if (docker) {
 }
 
 // ---------------------------------------------------------------- ef sources + wasm
-// ef benchmark files hardcode the suite's large inputs (too slow for ef); the
-// input site is replaced down to two levels: wasm inputs (ef-wasm rows) and
-// interp inputs (ef-int rows). A null pattern copies the source unchanged.
-const SCALED: Record<string, {wasm: [string, string] | null, interp: [string, string]}> = {
-  countdown:       {wasm: ["200000000", "10000000"],    interp: ["200000000", "1000000"]},
-  fib_recursive:   {wasm: ["fib(42)", "fib(36)"],       interp: ["fib(42)", "fib(24)"]},
-  product_early:   {wasm: ["i < 100000", "i < 20000"],  interp: ["i < 100000", "i < 1000"]},
-  iterator:        {wasm: ["i <= 40000000", "i <= 8000000"], interp: ["i <= 40000000", "i <= 1000000"]},
-  nqueens:         {wasm: ["run(12)", "run(10)"],       interp: ["run(12)", "run(8)"]},
-  generator:       {wasm: ["gen(25)", "gen(23)"],       interp: ["gen(25)", "gen(17)"]},
-  tree_explore:    {wasm: ["paths(16)", "paths(12)"],   interp: ["paths(16)", "paths(10)"]},
-  triples:         {wasm: null,                         interp: ["triple(300, 300)", "triple(150, 150)"]},
-  parsing_dollars: {wasm: ["fi > 20000", "fi > 5000"],  interp: ["fi > 20000", "fi > 1000"]},
-  resume_nontail:  {wasm: ["run(10000, s)", "run(2000, s)"], interp: ["run(10000, s)", "run(400, s)"]},
-  handler_sieve:   {wasm: ["sieve(2, 60000, 0)", "sieve(2, 20000, 0)"], interp: ["sieve(2, 60000, 0)", "sieve(2, 5000, 0)"]},
-};
-
+// ef benchmark files read their input from args() (program args) with the
+// suite's large input as the hardcoded default. W_IN/I_IN pass the level's
+// input as program args: wasm inputs (ef-wasm rows) and interp inputs
+// (ef-int rows).
 const W_IN: Record<string, string> = {
   countdown: "10000000", fib_recursive: "36", product_early: "20000",
   iterator: "8000000", nqueens: "10", generator: "23", tree_explore: "12",
@@ -176,23 +162,10 @@ const STD_IN: Record<string, string> = {
   handler_sieve: "60000",
 };
 
-function scaled(b: string, level: "wasm" | "interp"): string {
-  const src = readFileSync(join(REPO, "benchmarks", `${b}.ef`), "utf8");
-  const pat = SCALED[b][level];
-  if (pat === null) return src;
-  const [from, to] = pat;
-  if (!src.includes(from)) die(`benchmarks/${b}.ef: input pattern '${from}' not found — file drifted, update SCALED`);
-  return src.replaceAll(from, to);
-}
-
-for (const b of benches) {
-  writeFileSync(join(EB, "src", `${b}.ef`), scaled(b, "wasm"));
-  writeFileSync(join(EB, "interp", `${b}.ef`), scaled(b, "interp"));
-}
 log("precompiling ef wasm modules");
 // The map's result is hoisted to a variable: bun's parser (1.4.4) chokes on a
 // nested template literal in trailing position of a nested call argument.
-const preSpecs = benches.map(b => `${b}=${join(EB, "src", `${b}.ef`)}`);
+const preSpecs = benches.map(b => `${b}=${join(REPO, "benchmarks", `${b}.ef`)}`);
 if (sh(["bun", join(REPO, "benchmarks/compare/precompile.ts"), "build", join(EB, "pre"),
         ...preSpecs]) !== 0) {
   die("precompile failed");
@@ -203,7 +176,8 @@ if (sh(["bun", join(REPO, "benchmarks/compare/precompile.ts"), "build", join(EB,
 if (docker) {
   for (const b of benches) {
     const oc = shOut([join(EB, "bin", `ocaml-${suiteName(b)}`), ...W_IN[b].split(" ")]);
-    const ef = shOut(["bun", join(REPO, "benchmarks/compare/precompile.ts"), "run", join(EB, "pre", b)]);
+    const ef = shOut(["bun", join(REPO, "benchmarks/compare/precompile.ts"), "run", join(EB, "pre", b),
+      ...W_IN[b].split(" ")]);
     if (oc !== ef) die(`output mismatch on ${b}: ocaml='${oc}' ef='${ef}'`);
   }
   log("output cross-check vs ocaml: all match");
@@ -233,8 +207,9 @@ if (mode !== "std") {
                 `${join(EB, "bin", `koka-${sb}`)} ${w}`);
       if (hasEffekt) cmds.push(`${join(EB, "bin", `effekt-${sb}`)} ${effW}`);
     }
-    cmds.push(`bun ${join(REPO, "benchmarks/compare/precompile.ts")} run ${join(EB, "pre", b)}`,
-              `bun ${join(REPO, "compiler/cli.ts")} run ${join(EB, "interp", `${b}.ef`)}`);
+    // The level's input is passed as program args to the repo file.
+    cmds.push(`bun ${join(REPO, "benchmarks/compare/precompile.ts")} run ${join(EB, "pre", b)} ${w}`,
+      `bun ${join(REPO, "compiler/cli.ts")} run ${join(REPO, "benchmarks", `${b}.ef`)} ${I_IN[b]}`);
     log(`bench ${b} (wasm input: ${w})`);
     if (!hb(join(EB, "results", `${sb}.csv`), cmds)) {
       log(`WARN: ${b} partially failed (see results/${b}.csv rows)`);

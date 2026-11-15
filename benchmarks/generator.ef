@@ -5,6 +5,9 @@
 # mirrors make_tree's DAG sharing (t = make(n-1) used as both children).
 effect Yield(v: i64): unit;
 
+av := args();
+vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 25 };
+
 s := 0;
 
 gen :: fn(h: i64): unit ! { Yield } {
@@ -16,7 +19,7 @@ gen :: fn(h: i64): unit ! { Yield } {
 };
 
 handle {
-  gen(25)
+  gen(vi)
 } case Yield(v) => k {
   s = s + v;
   k(unit)

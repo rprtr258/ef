@@ -10,4 +10,7 @@ fib :: fn(n: i64): i64 {
   }
 };
 
-fib(42)
+av := args();
+vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 42 };
+
+fib(vi)

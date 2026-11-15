@@ -21,21 +21,25 @@ import {errUnhandled} from "../ops.ts";
 export type EffectInterp = Partial<Record<string, (args: Value[], k: Cont) => Outcome>>;
 
 // Pipeline state for incremental execution (REPL): runtime env, checker
-// accumulator, and an optional effect-interpretation override.
+// accumulator, an optional effect-interpretation override, and the program
+// args the `args` builtin / ef_args host import report (everything after the
+// source path on the CLI; [] for the REPL and direct runner calls).
 export type Ctx = {
   env: Env,
   checked: Checked,
   interp?: EffectInterp,
+  args: string[],
 };
 
 // newCtx: fresh pipeline state, seeded with the builtins.
-export function newCtx(interp?: EffectInterp): Ctx {
+export function newCtx(interp?: EffectInterp, args: string[] = []): Ctx {
   return {
     // Seeded empty: exec binds exactly the builtins each program references
     // (builtinRefs), matching the wasm module's tree-shaken builtin table.
     env: globalEnv(new Set()),
     checked: checkProgram({nodes: [], locs: [], items: [], typeToks: []}),
     interp,
+    args,
   };
 }
 
