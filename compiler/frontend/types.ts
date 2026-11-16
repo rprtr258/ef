@@ -516,7 +516,7 @@ function inferNode(
       const at = uniRes(env.uni, infer(e.e, nodes, env, effs, effects, rec));
       const target = e.typ;
       if (target.tag !== "prim" || target.name === "int" || target.name === "float" || !NUMERIC_NAMES.has(target.name as NumName))
-        throw new TypeError_(`@as: target must be a numeric width (i32 i64 u32 u64 f32 f64), got ${showT(target)}`);
+        throw new TypeError_(`@as: target must be a numeric width (u8 i32 i64 u32 u64 f32 f64), got ${showT(target)}`);
       const srcOk = at.tag === "any" || (at.tag === "prim" && (NUMERIC_NAMES.has(at.name as NumName) || at.name === "bool"));
       if (!srcOk)
         throw new TypeError_(`@as: cannot cast ${showT(at)} to ${showT(target)}`);

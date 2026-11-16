@@ -239,17 +239,19 @@ function evalPrim(p: CPrim, env: Env): Value {
   }
 }
 
-// Normalize a value to its stamped width's representation: i32 wraps via |0,
-// u32 via >>>0, f32 rounds via fround, f64 is a plain number, i64/u64 are
-// BigInt (exact beyond 2^53) wrapped mod 2^64 signed/unsigned. Non-numeric
-// values (unit/bool/string/array/fn) pass through — stamps only exist on
-// numeric-typed nodes, so this only guards polymorphic flow.
+// Normalize a value to its stamped width's representation: u8 wraps via
+// & 255, i32 via |0, u32 via >>>0, f32 rounds via fround, f64 is a plain
+// number, i64/u64 are BigInt (exact beyond 2^53) wrapped mod 2^64
+// signed/unsigned. Non-numeric values (unit/bool/string/array/fn) pass
+// through — stamps only exist on numeric-typed nodes, so this only guards
+// polymorphic flow.
 function normWidth(v: Value, nk: string): Value {
   if (typeof v !== "number" && typeof v !== "bigint") return v;
   switch (nk) {
     // BigInt values wrap through their exact bits (asIntN/asUintN) — a
     // Number detour would round beyond 2^53 before the mod-2^32 wrap and
     // diverge from the wasm backend's i32.wrap_i64.
+    case "u8": return (typeof v === "bigint" ? Number(BigInt.asUintN(8, v)) : v) & 255;
     case "i32": return typeof v === "bigint" ? Number(BigInt.asIntN(32, v)) : v | 0;
     case "u32": return typeof v === "bigint" ? Number(BigInt.asUintN(32, v)) : v >>> 0;
     case "f32": return Math.fround(Number(v));
@@ -277,7 +279,7 @@ function toBig(v: Value): bigint {
 function widthOp(op: string, a: Value, b: Value | undefined, nk: string): Value {
   const big = nk === "i64" || nk === "u64";
   if (op === OP_DIV || op === OP_REM) {
-    if (big || nk === "i32" || nk === "u32") {
+    if (big || nk === "u8" || nk === "i32" || nk === "u32") {
       const ba = toBig(a), bb = toBig(b!);
       if (bb === 0n) throw new Error(errDivByZero());
       if (op === OP_DIV && bb === -1n) {

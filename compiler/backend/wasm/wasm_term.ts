@@ -269,7 +269,11 @@ function adaptRaw(f: Fn, wkn: string): void {
   else if (wkn === "i32") b.num(w.TRUNC_F64);
   else if (wkn === "u32") b.num(w.TRUNC_F64_U);
   else if (wkn === "i64") b.num(w.I64_TRUNC_F64);
-  else {
+  else if (wkn === "u8") {
+    b.num(w.TRUNC_F64_U);
+    b.i32Const(255);
+    b.num(w.AND);
+  } else {
     b.num(w.TRUNC_F64_U);
     b.num(w.I64_EXTEND_I32_U);
   }
@@ -278,7 +282,7 @@ function adaptRaw(f: Fn, wkn: string): void {
 function widthHelper(em: Emit, wkn: string): number {
   return wkn === "f32" ? em.ix.fF32of
     : wkn === "i32" ? em.ix.fI32of
-    : wkn === "u32" ? em.ix.fU32of
+    : wkn === "u8" || wkn === "u32" ? em.ix.fU32of
     : wkn === "i64" ? em.ix.fI64of
     : em.ix.fU64of;
 }
@@ -488,6 +492,14 @@ function emitAsPrim(wk: Walk, p: CPrim & {t: "as"}): number {
       b.localSet(t);
       b.localGet(t);
       b.structNew(8);
+    } else if (targetW === "u8") {
+      b.num(w.TRUNC_F64_U);
+      b.i32Const(255);
+      b.num(w.AND);
+      const t = i32(f);
+      b.localSet(t);
+      b.localGet(t);
+      b.structNew(8);
     } else if (targetW === "i32") {
       b.num(w.TRUNC_F64);
       const t = i32(f);
@@ -533,6 +545,11 @@ function emitAsPrim(wk: Walk, p: CPrim & {t: "as"}): number {
       b.localSet(t);
       b.localGet(t);
       b.structNew(8);
+    } else if (targetW === "u8") {
+      const t = i32(f);
+      b.localSet(t);
+      b.localGet(t);
+      b.structNew(8); // 0/1 are in byte range — no mask
     } else if (targetW === "i64") {
       b.num(w.I64_EXTEND_I32_S);
       const t = i64(f);
@@ -557,8 +574,15 @@ function emitAsPrim(wk: Walk, p: CPrim & {t: "as"}): number {
     }
   } else {
     // Width adaptation: adaptive unbox to the target, rebox at its shape.
+    // u8 masks after the helper: sources outside the f64-plane conversion
+    // path (e.g. @as of an i64) can exceed 255, and the interpreter's
+    // normWidth(& 255) wraps where the raw unbox does not.
     b.localGet(v);
     if (targetW !== undefined && targetW !== "f64") b.callFn(widthHelper(em, targetW));
+    if (targetW === "u8") {
+      b.i32Const(255);
+      b.num(w.AND);
+    }
     if (targetW === undefined || targetW === "f64") {
       b.callFn(em.ix.fNum64); // adaptive unbox: the source rides in its own box
       b.callFn(em.ix.fBox);
@@ -576,7 +600,12 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
   const wkName = p.stamp;
   const isF32 = wkName === "f32", isI32 = wkName === "i32", isU32 = wkName === "u32";
   const isI64 = wkName === "i64", isU64 = wkName === "u64";
-  const isNarrow = isI32 || isU32, isWide = isI64 || isU64;
+  const isU8 = wkName === "u8";
+  // u8 arithmetic runs on the i32 plane but wraps mod 256 — wasm's i32 ops
+  // only wrap mod 2^32, so every u8-producing op masks its result; div/rem
+  // of masked operands stay in range and need no mask.
+  const mask8 = (): void => { if (isU8) { b.i32Const(255); b.num(w.AND); } };
+  const isNarrow = isI32 || isU32 || isU8, isWide = isI64 || isU64;
   const name = p.op;
   // A stamped operand at the site's width reads its box payload directly
   // (the checker's stamps-before-calls discipline guarantees the shape);
@@ -677,6 +706,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
         b.localGet(x);
         b.localGet(y);
         b.num(isF32 ? w.F32_ADD : isWide ? w.I64_ADD : w.ADD);
+        mask8();
         boxW();
       }
       break;
@@ -688,6 +718,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
       b.num(name === OP_SUB
         ? (isF32 ? w.F32_SUB : isNarrow ? w.SUB : isWide ? w.I64_SUB : w.FSUB)
         : (isF32 ? w.F32_MUL : isNarrow ? w.MUL : isWide ? w.I64_MUL : w.FMUL));
+      mask8();
       boxW();
       break;
     }
@@ -717,8 +748,8 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
         b.localGet(x);
         b.localGet(y);
         b.num(name === OP_DIV
-          ? (isI32 ? w.DIVS : isU32 ? w.DIVU : isI64 ? w.I64_DIVS : w.I64_DIVU)
-          : (isI32 ? w.REMS : isU32 ? w.REMU : isI64 ? w.I64_REMS : w.I64_REMU));
+          ? (isI32 ? w.DIVS : isU32 || isU8 ? w.DIVU : isI64 ? w.I64_DIVS : w.I64_DIVU)
+          : (isI32 ? w.REMS : isU32 || isU8 ? w.REMU : isI64 ? w.I64_REMS : w.I64_REMU));
         boxW();
         break;
       }
@@ -757,6 +788,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
         b.localGet(x); b.num(w.F32_NEG);
       } else if (isNarrow) {
         b.i32Const(0); b.localGet(x); b.num(w.SUB);
+        mask8();
       } else if (isWide) {
         b.i64Const(0n); b.localGet(x); b.num(w.I64_SUB);
       } else {

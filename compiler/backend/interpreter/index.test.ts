@@ -421,13 +421,20 @@ test("Builtin Read/Write round-trip through real files", () => {
   const p = tmpPath("rw");
   if (existsSync(p)) unlinkSync(p);
   // Write then Read via the builtin default handler (no user handler).
+  // Write! takes raw bytes ([u8]) — text goes through `bytes`.
   expect(show(run(`
-Write!(${JSON.stringify(p)}, "hello ef");
+Write!(${JSON.stringify(p)}, bytes("hello ef"));
 Read!(${JSON.stringify(p)})
 `))).toBe("\"hello ef\"");
   // The file really exists on disk.
   expect(readFileSync(p, "utf8")).toBe("hello ef");
   unlinkSync(p);
+  // Binary content: [u8] elements land as raw bytes (zero is writable).
+  const b = tmpPath("bin");
+  if (existsSync(b)) unlinkSync(b);
+  run(`Write!(${JSON.stringify(b)}, [104, 0, 255]);`);
+  expect([...readFileSync(b)]).toEqual([104, 0, 255]);
+  unlinkSync(b);
 });
 
 test("A user handler can intercept builtin Read (effects stay abstract)", () => {
@@ -459,7 +466,7 @@ test("Untyped literals flex and default to i64 / f64", () => {
   expect(typeOf(`2.0`)).toBe("f64");
 });
 
-test("Numeric widths: six primitives, strict same-width arithmetic", () => {
+test("Numeric widths: seven primitives, strict same-width arithmetic", () => {
   // Untyped literals flex to any numeric context and default to i64 / f64.
   expect(typeOf(`1`)).toBe("i64");
   expect(typeOf(`1.5`)).toBe("f64");
@@ -1136,6 +1143,32 @@ describe("numeric widths", () => {
     expect(show(run(`u: u32 : 4294967295; u + 1`))).toBe("0");
     expect(show(run(`u: u32 : 4294967295; u * 2`))).toBe("4294967294");
     expect(show(run(`u: u32 : 1; u - 2`))).toBe("4294967295");
+  });
+
+  test("u8 wraps mod 256", () => {
+    expect(show(run(`u: u8 : 255; u + 1`))).toBe("0");
+    expect(show(run(`u: u8 : 255; u * 2`))).toBe("254");
+    expect(show(run(`u: u8 : 1; u - 2`))).toBe("255");
+    expect(show(run(`@as(300, u8)`))).toBe("44");
+    expect(show(run(`@as(-1, u8)`))).toBe("255");
+    expect(show(run(`@as(100, u8) / @as(7, u8)`))).toBe("14");
+    expect(show(run(`@as(100, u8) % @as(7, u8)`))).toBe("2");
+    expect(show(run(`@as(200, u8) > @as(100, u8)`))).toBe("true");
+    // Elements are plain JS numbers; arrays of them pass through get/set.
+    expect(show(run(`xs: [u8] : [1, 2, 3]; get(xs, 1) + @as(254, u8)`))).toBe("0");
+    expect(typeOf(`bytes("hi")`)).toBe("[u8]");
+    expect(show(run(`bytes("AB")`))).toBe("[65, 66]");
+  });
+
+  test("strings are UTF-8: strlen counts bytes, bytes() exposes them", () => {
+    expect(run(`strlen("abc")`)).toBe(3n);
+    expect(run(`strlen("héllo")`)).toBe(6n);   // é is two UTF-8 bytes
+    expect(run(`strlen("😀")`)).toBe(4n);      // astral: four bytes
+    expect(run(`strlen("")`)).toBe(0n);
+    expect(show(run(`bytes("héllo")`))).toBe("[104, 195, 169, 108, 108, 111]");
+    expect(show(run(`char(128512)`))).toBe("\"😀\"");   // astral code point
+    // Concat/equality are byte operations — invisible for valid UTF-8.
+    expect(run(`"héllo" == "h" + "é" + "llo"`)).toBe(true);
   });
 
   test("i64 is exact beyond 2^53 (BigInt values)", () => {

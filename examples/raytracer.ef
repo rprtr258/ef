@@ -1,14 +1,14 @@
 # A 3D raytracer: two spheres over a checkerboard plane, lit by one
 # point light, rendered with 2x2 supersampling. Vectors and colors are
 # [x, y, z] tuples; a sphere packs center, radius, and color into a
-# single tuple. The camera sits at the origin looking down -z. Each
-# pixel prints its R, G, B channels on three lines; a -1.0 line after
-# each scanline separates rows.
+# single tuple. The camera sits at the origin looking down -z. The
+# image is saved as a truecolor PNG with uncompressed deflate (stored)
+# blocks — the whole encoder below (chunk framing, CRC-32 via a 256x256
+# xor lookup table since ef has no bitwise ops, adler-32, zlib wrapper)
+# is pure ef, writing the [u8] byte buffer through Write!.
 #
-# Render to a PNG (the script derives the resolution from the output):
-#
-#   bun run cli.ts runwasm examples/raytracer.ef > /tmp/rt.txt
-#   bun scripts/rt-to-png.ts /tmp/rt.txt /tmp/raytracer.png
+#   bun compiler/cli.ts run examples/raytracer.ef [out.png]     # default: raytracer.png
+#   bun compiler/cli.ts runwasm examples/raytracer.ef [out.png]
 
 # ---- Math on [x, y, z] vectors ----
 V3 :: [f64, f64, f64];
@@ -111,17 +111,181 @@ pixel :: fn(px: i64, py: i64): V3 {
     0.25)
 };
 
-# ---- Scan the viewport row by row ----
+# ---- Pixel color as a byte ----
+# Truncate-then-shift rounds half up for the in-range values the renderer
+# produces; the clamps guard degenerate shading values.
+chan :: fn(v: f64): i64 {
+  x :: @as(v * 255.0 + 0.5, i64);
+  if (x < 0) { 0 } else if (x > 255) { 255 } else { x }
+};
+
+# ---- XOR via lookup tables (ef has no bitwise operators) ----
+# xor8tab[a*256+b] = a xor b for bytes, built by the doubling identity
+# a xor b = 2*((a>>1) xor (b>>1)) + (low bits differ); row a/2 is already
+# filled when row a is built. xor32 splices four byte lanes.
+xor8tab :: range(0, 65536, 1);
+xb := 0;
+while (xb < 256) { set(xor8tab, xb, xb); xb = xb + 1; };
+xa := 1;
+while (xa < 256) {
+  xj := 0;
+  while (xj < 256) {
+    hi :: get(xor8tab, (xa / 2) * 256 + (xj / 2));
+    bit :: if (xa % 2 == xj % 2) { 0 } else { 1 };
+    set(xor8tab, xa * 256 + xj, hi * 2 + bit);
+    xj = xj + 1;
+  };
+  xa = xa + 1;
+};
+
+xor8 :: fn(a: i64, b: i64): i64 { get(xor8tab, (a % 256) * 256 + (b % 256)) };
+
+xor32 :: fn(a: i64, b: i64): i64 {
+  xor8(a % 256, b % 256)
+    + 256 * xor8((a / 256) % 256, (b / 256) % 256)
+    + 65536 * xor8((a / 65536) % 256, (b / 65536) % 256)
+    + 16777216 * xor8(a / 16777216, b / 16777216)
+};
+
+# ---- CRC-32 (IEEE, reflected) over data[from..to) ----
+crcT :: range(0, 256, 1);
+ci := 0;
+while (ci < 256) {
+  c := get(crcT, ci);
+  cj := 0;
+  while (cj < 8) {
+    c = if (c % 2 == 1) { xor32(c / 2, 3988292384) } else { c / 2 };   # 0xEDB88320
+    cj = cj + 1;
+  };
+  set(crcT, ci, c);
+  ci = ci + 1;
+};
+
+crc32 :: fn(data: [u8], from: i64, to: i64): i64 {
+  c := 4294967295;              # 0xFFFFFFFF
+  i := from;
+  while (i < to) {
+    idx :: get(xor8tab, (c % 256) * 256 + @as(get(data, i), i64));   # (c xor byte) & 0xFF
+    c = xor32(c / 256, get(crcT, idx));
+    i = i + 1;
+  };
+  xor32(c, 4294967295)
+};
+
+# ---- Adler-32 over data[from..to) ----
+adler32 :: fn(data: [i64], from: i64, to: i64): i64 {
+  a := 1;
+  b := 0;
+  i := from;
+  while (i < to) {
+    a = (a + get(data, i)) % 65521;
+    b = (b + a) % 65521;
+    i = i + 1;
+  };
+  b * 65536 + a
+};
+
+# ---- Layout ----
+stride :: size * 3 + 1;              # per scanline: filter byte + RGB triplets
+rawSize :: stride * size;
+nblocks :: (rawSize + 65534) / 65535;          # stored-block count, ceiling
+idatLen :: 2 + nblocks * 5 + rawSize + 4;      # zlib hdr + blocks + adler32
+offIDAT :: 8 + 25;                             # signature + IHDR chunk
+offIEND :: offIDAT + 12 + idatLen;
+total :: offIEND + 12;
+
+# ---- Render into the raw scanline buffer ----
+# range(0, n, 1) enumerates 0..n-1, so every byte position is written
+# explicitly — the filter byte leading each scanline included.
+raw :: range(0, rawSize, 1);
 py := 0;
 while (py < size) {
+  set(raw, py * stride, 0);          # filter type: None
   px := 0;
   while (px < size) {
     c :: pixel(px, py);
-    Println!(c.0);
-    Println!(c.1);
-    Println!(c.2);
+    base :: py * stride + 1 + px * 3;
+    set(raw, base, chan(c.0));
+    set(raw, base + 1, chan(c.1));
+    set(raw, base + 2, chan(c.2));
     px = px + 1;
   };
-  Println!(-1.0);                 # row separator
   py = py + 1;
-}
+};
+
+# ---- Assemble the PNG ----
+# A zero-filled [u8] buffer via map over range (the closure pins the
+# element width) — the IHDR's compression/filter/interlace zeros and
+# every other untouched byte stay 0.
+out :: map(fn(i: i64): u8 { 0 }, range(0, total, 1));
+sig :: [137, 80, 78, 71, 13, 10, 26, 10];
+si := 0;
+while (si < 8) { set(out, si, @as(get(sig, si), u8)); si = si + 1; };
+
+# writeChunk: frame a chunk at `o` — big-endian length, the four type
+# bytes, then CRC-32 over type+data; the data must already sit at o+8.
+writeChunk :: fn(buf: [u8], o: i64, n: i64, t0: u8, t1: u8, t2: u8, t3: u8) {
+  set(buf, o, @as(n / 16777216, u8));
+  set(buf, o + 1, @as((n / 65536) % 256, u8));
+  set(buf, o + 2, @as((n / 256) % 256, u8));
+  set(buf, o + 3, @as(n % 256, u8));
+  set(buf, o + 4, t0);
+  set(buf, o + 5, t1);
+  set(buf, o + 6, t2);
+  set(buf, o + 7, t3);
+  c :: crc32(buf, o + 4, o + 8 + n);
+  set(buf, o + 8 + n, @as(c / 16777216, u8));
+  set(buf, o + 9 + n, @as((c / 65536) % 256, u8));
+  set(buf, o + 10 + n, @as((c / 256) % 256, u8));
+  set(buf, o + 11 + n, @as(c % 256, u8));
+};
+
+# IHDR: width, height, bit depth 8, color type 2 (truecolor).
+set(out, 16, @as(size / 16777216, u8));
+set(out, 17, @as((size / 65536) % 256, u8));
+set(out, 18, @as((size / 256) % 256, u8));
+set(out, 19, @as(size % 256, u8));
+set(out, 20, @as(size / 16777216, u8));
+set(out, 21, @as((size / 65536) % 256, u8));
+set(out, 22, @as((size / 256) % 256, u8));
+set(out, 23, @as(size % 256, u8));
+set(out, 24, 8);
+set(out, 25, 2);
+writeChunk(out, 8, 13, 73, 72, 68, 82);        # IHDR
+
+# IDAT: zlib wrapper 0x78 0x01 around stored deflate blocks (max 65535
+# raw bytes each), then the adler-32 of the raw data.
+set(out, offIDAT + 8, 120);                    # 0x78: CM=8, CINFO=7
+set(out, offIDAT + 9, 1);                      # 0x01: (CMF*256+FLG) % 31 == 0
+dataStart :: offIDAT + 10 + nblocks * 5;
+pos := offIDAT + 10;
+src := 0;
+remaining := rawSize;
+while (remaining > 0) {
+  n :: if (remaining > 65535) { 65535 } else { remaining };
+  set(out, pos, if (n == remaining) { 1 } else { 0 });   # BFINAL on the last block
+  set(out, pos + 1, @as(n % 256, u8));
+  set(out, pos + 2, @as((n / 256) % 256, u8));
+  set(out, pos + 3, @as((65535 - n) % 256, u8));   # NLEN: one's complement of LEN
+  set(out, pos + 4, @as(((65535 - n) / 256) % 256, u8));
+  bi := 0;
+  while (bi < n) { set(out, pos + 5 + bi, @as(get(raw, src + bi), u8)); bi = bi + 1; };
+  pos = pos + 5 + n;
+  src = src + n;
+  remaining = remaining - n;
+};
+# adler-32 over the pure data stream — raw itself, since block 2's
+# header would otherwise sit inside any contiguous span of out.
+adler :: adler32(raw, 0, rawSize);
+set(out, pos, @as(adler / 16777216, u8));
+set(out, pos + 1, @as((adler / 65536) % 256, u8));
+set(out, pos + 2, @as((adler / 256) % 256, u8));
+set(out, pos + 3, @as(adler % 256, u8));
+writeChunk(out, offIDAT, idatLen, 73, 68, 65, 84);   # IDAT
+writeChunk(out, offIEND, 0, 73, 69, 78, 68);         # IEND
+
+# ---- Save ----
+argv :: args();
+outPath :: if (len(argv) > 0) { get(argv, 0) } else { "raytracer.png" };
+Write!(outPath, out);
+Println!(outPath);

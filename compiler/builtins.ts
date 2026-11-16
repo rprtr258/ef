@@ -83,7 +83,8 @@ const FN_IMPLS: Record<string, (...args: Value[]) => Value> = {
     return mkSlice(out);
   },
   len: xs => BigInt(asSlice(xs).len),
-  strlen: s => BigInt((s as string).length),
+  // Strings are UTF-8: strlen counts bytes (the wasm $STR array's length).
+  strlen: s => BigInt(Buffer.byteLength(s as string)),
   cos: a => Math.cos(num(a)),
   sin: a => Math.sin(num(a)),
   abs: a => Math.abs(num(a)),
@@ -97,6 +98,8 @@ const FN_IMPLS: Record<string, (...args: Value[]) => Value> = {
   },
   char: a => String.fromCodePoint(num(a) | 0),
   number: a => parseFloat(a as string),
+  // Declared [TU8] — elements are plain JS numbers masked to a byte.
+  bytes: a => mkSlice(Array.from(Buffer.from(a as string, "utf8"), b => b & 255)),
   args: () => mkSlice(programArgs),
   get: (xs, i) => {
     const s = asSlice(xs);
@@ -177,7 +180,13 @@ function sleepSync(secs: number): void {
 const INTERPS: Record<string, (args: Value[], k: Cont) => Outcome> = {
   Read: (args, k) => k(readFileSync(args[0] as string, "utf8")),
   Write: (args, k) => {
-    writeFileSync(args[0] as string, args[1] as string);
+    const path = args[0] as string;
+    // A [u8] slice is raw bytes (one per element) — the binary-write path
+    // for formats like PNG; text goes through `bytes(s)`.
+    const s = asSlice(args[1]);
+    const bytes = Buffer.alloc(s.len);
+    for (let i = 0; i < s.len; i++) bytes[i] = num(s.data[s.off + i]);
+    writeFileSync(path, bytes);
     return k(null);
   },
   Println: (args, k) => {

@@ -49,6 +49,7 @@ export const NODE_DOCS: Record<string, string> = {
   "field": "Field or index access.",
   "as": "`@as` conversion — the one numeric/bool width conversion.",
   // numeric widths (grammar "type" tokens)
+  "u8": "8-bit unsigned byte width (0..255, wrapping) — element type of `bytes`.",
   "i32": "32-bit signed integer width.",
   "i64": "64-bit signed integer width — the default for untyped integer literals.",
   "u32": "32-bit unsigned integer width.",
@@ -84,7 +85,7 @@ export const EF_IR_KEYWORDS = [
   "bool", "unit", "arr", "tup", "field", "as",
 ];
 
-export const EF_IR_TYPES = ["i32", "i64", "u32", "u64", "f32", "f64"];
+export const EF_IR_TYPES = ["u8", "i32", "i64", "u32", "u64", "f32", "f64"];
 
 type Rule = [RegExp, string];
 

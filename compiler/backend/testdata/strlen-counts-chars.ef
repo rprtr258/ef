@@ -1,2 +1,0 @@
-# strlen on a multi-byte string counts unicode code points.
-Println!(strlen("héllo"))

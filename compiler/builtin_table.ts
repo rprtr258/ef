@@ -8,7 +8,7 @@
 import type {Type, Unifier} from "./frontend/unify.ts";
 import {uniFresh, uniFreshEff} from "./frontend/unify.ts";
 import type {EffectSig} from "./frontend/types.ts";
-import {TI64, TANY, TF64, TFLOAT, TINT, TUNIT, TSTR, rowOf, tArr, tFun} from "./prims.ts";
+import {TU8, TI64, TANY, TF64, TFLOAT, TINT, TUNIT, TSTR, rowOf, tArr, tFun} from "./prims.ts";
 import {
   OP_ADD, OP_SUB, OP_MUL, OP_REM, OP_NEG,
   OP_LT, OP_GT, OP_LE, OP_GE, OP_EQ, OP_NE, OP_NOT,
@@ -76,17 +76,19 @@ export const BUILTIN_TABLE: readonly BuiltinDecl[] = [
     {kind: "fn", name: "range", t: tFun([TI64, TI64, TI64], tArr(TI64), rowOf()), params: 3, pnames: ["from", "to", "step"]},
     {kind: "fn", name: "char", t: tFun([TINT], TSTR, rowOf()), params: 1, pnames: ["code"]},
     {kind: "fn", name: "number", t: tFun([TSTR], TFLOAT, rowOf()), params: 1, pnames: ["s"]},
+    {kind: "fn", name: "bytes", t: tFun([TSTR], tArr(TU8), rowOf()), params: 1, pnames: ["s"]},   // UTF-8 encode: text → a byte slice for Write
     {kind: "fn", name: "args", t: tFun([], tArr(TSTR), rowOf()), params: 0},
     {kind: "fn", name: "get", t: (u: Unifier) => { const a = uniFresh(u); return tFun([tArr(a), TI64], a, rowOf()); }, params: 2, pnames: ["xs", "i"]},
     {kind: "fn", name: "set", t: (u: Unifier) => { const a = uniFresh(u); return tFun([tArr(a), TI64, a], TUNIT, rowOf()); }, params: 3, pnames: ["xs", "i", "v"]},
 
     // Builtin effects, declared to the checker via `sig` and interpreted by
     // the runtime when left unhandled. `Read(path): string` reads a file;
-    // `Write(path, content): null` writes one. `Println(v: any): null` and
-    // `Out(s: string): null` are the console effects. User `effect` decls
-    // may add or override these.
+    // `Write(path, bytes): null` writes raw bytes — one [u8] element per
+    // byte (text goes through `bytes(s)`) — for binary or text formats.
+    // `Println(v: any): null` and `Out(s: string): null` are the console
+    // effects. User `effect` decls may add or override these.
     {kind: "effect", name: "Read", sig: {params: [TSTR], ret: TSTR, names: ["path"]}},
-    {kind: "effect", name: "Write", sig: {params: [TSTR, TSTR], ret: TUNIT, names: ["path", "content"]}},
+    {kind: "effect", name: "Write", sig: {params: [TSTR, tArr(TU8)], ret: TUNIT, names: ["path", "bytes"]}},
     {kind: "effect", name: "Println", sig: {params: [TANY], ret: TUNIT, names: ["v"]}},
     {kind: "effect", name: "Out", sig: {params: [TSTR], ret: TUNIT, names: ["s"]}},
     // `Exit(code: i64): unit` terminates the process by default (never

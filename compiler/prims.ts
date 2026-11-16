@@ -4,8 +4,9 @@
 // a runtime dependency on the checker.
 import type {AnyT, ArrT, EffVar, Effs, FunT, Prim, TupField, TupT, Type} from "./frontend/unify.ts";
 
-// The six machine widths. Arithmetic between distinct widths is a type
-// error; @as converts.
+// The seven machine widths. Arithmetic between distinct widths is a type
+// error; @as converts. u8 stores one byte (0..255, wrapping).
+export const TU8: Prim = {tag: "prim", name: "u8"};
 export const TI32: Prim = {tag: "prim", name: "i32"};
 export const TI64: Prim = {tag: "prim", name: "i64"};
 export const TU32: Prim = {tag: "prim", name: "u32"};

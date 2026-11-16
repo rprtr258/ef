@@ -5,8 +5,8 @@
 import {BUILTINS} from "../../frontend/analysis.ts";
 import {OP_ADD, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_NE, OP_NOT} from "../../ops.ts";
 import {OPS} from "../../env.ts";
-import {WasmError} from "./wasm_types.ts";
-import {Buf, Fn, allocArrBlk, anyref, boxArr, constF64, elemAddr, elemAddrOff, f64, fnLoop, i32, i64, newFn, pushRef, slot, slotF64, unboxArr, unboxSlice} from "./wasm_body.ts";
+import {_T, WasmError} from "./wasm_types.ts";
+import {Buf, Fn, allocArrBlk, anyref, boxArr, constF64, elemAddr, elemAddrOff, f64, fnLoop, i32, i64, newFn, pushRef, slot, slotF64, typed, unboxArr, unboxSlice} from "./wasm_body.ts";
 import {type Indices, type IndexRegistrar, type Opt, register} from "./wasm_pipeline.ts";
 import {type Emit, emitCallClosure, emitDirectEntryCall, emitDispatch, emitFail, i31of, ladderBody, makeRestThunk, rebox, selectBool, NUM64_ARMS} from "./wasm_emit.ts";
 import * as w from "./wasm_consts.ts";
@@ -269,7 +269,7 @@ export function emitBuiltins(em: Emit): Fn[] {
       case "len":
       case "strlen": {
         // len: the wrapper's len field (the view's length); strlen: the
-        // $STR itself.
+        // $STR's byte count (UTF-8).
         slot(f, 0);
         if (name === "len") { b.refCast(3, true); b.structGet(3, 2); }
         else { b.refCast(2, true); b.arrayLen(); }
@@ -423,6 +423,30 @@ export function emitBuiltins(em: Emit): Fn[] {
         slot(f, 0);
         b.callFn(em.o.impIdx.get("ef_number")!);
         break;
+      case "bytes": {
+        // UTF-8 bytes are the string representation itself: a fresh boxed
+        // [u8] array over the string's own bytes. A string value is a bare
+        // $STR array (no slice wrapper); packed array.get loads unsigned,
+        // so elements are already 0..255 for the $U32 box.
+        const sd = typed(f, _T.RN[2]), sl = i32(f);   // (ref $STR) local
+        slot(f, 0);
+        b.refCast(2, false);
+        b.localSet(sd);
+        b.localGet(sd);
+        b.arrayLen();
+        b.localSet(sl);
+        const blk = allocArrBlk(f, sl);
+        fnLoop(f, () => { b.localGet(sl); }, i => {
+          elemAddr(f, blk, i);
+          b.localGet(sd);
+          b.localGet(i);
+          b.arrayGet(2);
+          b.structNew(8);   // $U32 box — u8 shares the masked-i32 box
+          b.arraySet();
+        });
+        boxArr(f, blk);
+        break;
+      }
       case "args":
         b.callFn(em.o.impIdx.get("ef_args")!);
         break;
@@ -762,7 +786,7 @@ export function emitInits(em: Emit, mainFn: Fn): void {
     b.refCast(2, false);
     b.arrayLen();
   });
-  // __str_get(v, i) -> i32
+  // __str_get(v, i) -> i32 — UTF-8 byte; packed array.get loads unsigned.
   acc(2, 20, (b) => {
     b.localGet(0);
     b.refCast(2, false);

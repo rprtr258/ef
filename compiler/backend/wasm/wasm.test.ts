@@ -145,7 +145,7 @@ test("effects reach the host: Read/Write files", () => {
     const p = join(tmpdir(), `ef-wasm-test-${process.pid}.txt`);
     writeFileSync(p, "hello wasm");
     expect(show(runWasm(`Read!("${p}")`))).toBe("\"hello wasm\"");
-    expect(show(runWasm(`Write!("${p}", "rewritten")`))).toBe("unit");
+    expect(show(runWasm(`Write!("${p}", bytes("rewritten"))`))).toBe("unit");
     expect(readFileSync(p, "utf8")).toBe("rewritten");
   });
 

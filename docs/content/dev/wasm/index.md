@@ -44,7 +44,7 @@ Each phase has its own page under this one in the sidebar.
   <text x="320" y="58" text-anchor="middle" class="faint">$NUM{f64} ×6 widths</text>
   <rect class="box" x="400" y="20" width="128" height="56" rx="8"/>
   <text x="464" y="40" text-anchor="middle">string</text>
-  <text x="464" y="58" text-anchor="middle" class="faint">$STR mut i16[] UTF-16</text>
+  <text x="464" y="58" text-anchor="middle" class="faint">$STR mut i8[] UTF-8</text>
   <rect class="box" x="544" y="20" width="164" height="56" rx="8"/>
   <text x="626" y="40" text-anchor="middle">array / list · tuple</text>
   <text x="626" y="58" text-anchor="middle" class="faint">$ARR slice {data, off, len} · $TUP</text>
@@ -55,7 +55,7 @@ Each phase has its own page under this one in the sidebar.
 | unit | `ref.null any` |
 | bool | i31ref `0`/`1` |
 | number | `$NUM {f64}` immutable struct — one box shape per width (`$F64 $F32 $I32 $U32 $I64 $U64`) |
-| string | `$STR` — mutable i16 array, UTF-16 code units (matches JS `strlen`/`char`/`Out`) |
+| string | `$STR` — mutable i8 array, UTF-8 bytes (a string value is a bare array, no slice wrapper; `strlen` = `array.len`) |
 | array / list | `$ARR` slice fat pointer `{(ref null $ELEMS) data, i32 off, i32 len}` — immutable; **views (`sub`) share the backing with a shifted window**, only backing elements mutate |
 | tuple | `$TUP {(ref null $ELEMS)}` — immutable, struct-like: no offset/length, distinct from slices |
 | closure | `$CLO {i31 fnIdx, (ref null $FRAME) env, i31 fsize, i31 direct flag}` — immutable |

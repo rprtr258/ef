@@ -292,7 +292,7 @@ the README's opening, and compiler-internal changes update
 
 ## Key design decisions (don't accidentally undo)
 
-- **Six numeric widths, strict arithmetic.** `i32 i64 u32 u64 f32 f64`
+- **Seven numeric widths, strict arithmetic.** `u8 i32 i64 u32 u64 f32 f64`
   replace int/float. Operands of a numeric op must share a width (`i32 +
   i64` is a type error); `@as(expr, T)` is the one conversion (float→int
   truncates, bool→numeric gives 0/1). Untyped literals (`1`, `1.5`) check

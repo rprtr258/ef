@@ -68,8 +68,6 @@ exports[`fixtures (testdata/*.ef) str-concat-literals.ef 1`] = `"Println("abcd")
 
 exports[`fixtures (testdata/*.ef) len-rejects-strings.ef 1`] = `""`;
 
-exports[`fixtures (testdata/*.ef) strlen-counts-chars.ef 1`] = `"Println(5) -> unit"`;
-
 exports[`fixtures (testdata/*.ef) while-sums-0-to-4.ef 1`] = `"Println(10) -> unit"`;
 
 exports[`fixtures (testdata/*.ef) block-lambda-lets-share-frame.ef 1`] = `"Println(6) -> unit"`;
@@ -854,3 +852,17 @@ exports[`benchmarks (benchmarks/*.ef) Sieve of Eratosthenes over map/each and sl
 exports[`benchmarks (benchmarks/*.ef) tree traversal with per-node resumption 1`] = `"Println(1006) -> unit"`;
 
 exports[`benchmarks (benchmarks/*.ef) Pythagorean triple enumeration 1`] = `"Println(164182976) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) utf8-strings.ef 1`] = `
+"Println(3) -> unit
+Println(6) -> unit
+Println(4) -> unit
+Println(11) -> unit
+Println("héllo 😀") -> unit
+Println([195, 169, 65]) -> unit
+Println("é") -> unit
+Println("😀") -> unit
+Println(4) -> unit
+Println("eq") -> unit
+Println("ne") -> unit"
+`;

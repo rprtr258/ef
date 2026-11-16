@@ -81,8 +81,8 @@ function lift(fn: (...a: Value[]) => Value): Native {
 // Width dispatch for the interpreter's operator natives: i64/u64 values are
 // BigInt, every other width a JS number — the operator computes on the
 // representation it receives, and the app node's width stamp (evalE's norm)
-// normalizes the result (i32 |0, u32 >>>0, f32 fround, i64/u64 asIntN/
-// asUintN). Mixed number/bigint operands (possible only through polymorphic
+// normalizes the result (u8 & 255, i32 |0, u32 >>>0, f32 fround, i64/u64
+// asIntN/asUintN). Mixed number/bigint operands (possible only through polymorphic
 // uses) compute as BigInt.
 function asBig(v: Value): bigint {
   return typeof v === "bigint" ? v : BigInt(Math.trunc(num(v)));

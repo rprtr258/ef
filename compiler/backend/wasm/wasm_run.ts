@@ -15,6 +15,9 @@ import {assertNever} from "../../assert.ts";
 import {errDivByZero, errIndexOOB, errIntOverflow, errSubRangeOOB, errUnhandled} from "../../ops.ts";
 import {runTraced, type RunTrace} from "../../trace.ts";
 
+const STR_ENC = new TextEncoder();   // JS string → $STR's UTF-8 bytes
+const STR_DEC = new TextDecoder();   // $STR's UTF-8 bytes → JS string
+
 // The accessor ABI: exported accessor functions — the only way JS can touch
 // GC structs. hostBox/hostUnbox rebuild interpreter Values through them; the
 // field names are the wasm export names.
@@ -102,9 +105,11 @@ function hostBox(ex: Accessors, v: Value): unknown {
     return v >= (1n << 63n) ? ex.__mk_u64(v) : ex.__mk_i64(BigInt.asIntN(64, v));
   }
   if (typeof v === "string") {
-    const s = ex.__str_new(v.length);
-    for (let i = 0; i < v.length; i++)
-      ex.__str_set(s, i, v.charCodeAt(i));
+    // $STR is a UTF-8 byte array — encode at the boundary.
+    const bytes = STR_ENC.encode(v);
+    const s = ex.__str_new(bytes.length);
+    for (let i = 0; i < bytes.length; i++)
+      ex.__str_set(s, i, bytes[i]);
     return s;
   }
   if (v.tag === "slice") {
@@ -163,10 +168,10 @@ function hostUnbox(ex: Accessors, v: unknown): Value {
 
 function hostStr(ex: Accessors, v: unknown): string {
   const n = ex.__str_len(v);
-  let s = "";
+  const bytes = new Uint8Array(n);
   for (let i = 0; i < n; i++)
-    s += String.fromCharCode(ex.__str_get(v, i));
-  return s;
+    bytes[i] = ex.__str_get(v, i);
+  return STR_DEC.decode(bytes);   // $STR is UTF-8 bytes
 }
 
 // Instantiate and run an already-compiled module: used by wasm_host.ts's

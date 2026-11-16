@@ -172,8 +172,8 @@ case        ::= "case" ("Return" | name) params "=>" name block
 - **Builtin effects.** Two effects are pre-declared and interpreted by the
   runtime when they reach the top level unhandled:
   - `Read(path: string): string` — reads a file, resumes with its contents.
-  - `Write(path: string, content: string): unit` — writes a file, resumes
-    with `unit`.
+  - `Write(path: string, bytes: [u8]): unit` — writes raw bytes (one array
+    element per byte), resumes with `unit`; text goes through `bytes(s)`.
   They are still ordinary algebraic effects: a user `handle` can intercept
   either (e.g. to mock the filesystem) before the builtin interpretation
   applies.
@@ -211,13 +211,17 @@ type   ::= "[" type "]"                      -- array
          | "[" tup-field ("," tup-field)* ","? "]"  -- tuple
          | "(" type ("," type)* ","? ")" "->" type ("!" "{" (name ("," name)* ","?)? "}")?
          | name ("(" type ("," type)* ","? ")")?    -- alias instantiation
-         | "i32" | "i64" | "u32" | "u64" | "f32" | "f64"
+         | "u8" | "i32" | "i64" | "u32" | "u64" | "f32" | "f64"
          | "string" | "bool" | "unit" | "any"
 tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
 ```
 
-- `i32 i64 u32 u64 f32 f64` — the six **numeric widths**. `string`, `bool`,
+- `u8 i32 i64 u32 u64 f32 f64` — the seven **numeric widths**. `string`, `bool`,
   `unit` are the other primitives.
+  - **Strings are UTF-8 byte sequences**: `strlen` counts bytes (non-ASCII
+    characters count more than one), `bytes(s)` exposes the raw encoding,
+    `+`/`==` operate on bytes, and `char(n)` encodes the code point `n`. The
+    runtime stores the bytes directly (no host string representation).
   - **Arithmetic is strict per width**: both operands of a numeric op must
     have the same width; `i32 + i64` is a type error. Comparisons and
     equality likewise require equal widths.
@@ -233,12 +237,12 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
   - **@as(expr, T)** is the one explicit conversion between widths (and from
     `bool`): float → int truncates toward zero, bool → numeric gives `0/1`,
     every other conversion preserves the value. `@as` targets must be one of
-    the six widths.
+    the seven widths.
   - **Runtime semantics (width-exact in both backends)**: `f32` values round
     to f32 precision after every producing step
     (`0.1f32 + 0.2f32 == 0.30000001192092896`); integer widths **wrap around**
-    like wasm's arithmetic (`i32`/`u32` mod 2^32, `i64`/`u64` mod 2^64 —
-    `2147483647i32 + 1 == -2147483648`, `u32`/`u64` hold unsigned ranges);
+    like wasm's arithmetic (`u8` mod 256, `i32`/`u32` mod 2^32, `i64`/`u64` mod 2^64 —
+    `2147483647i32 + 1 == -2147483648`, `u8`/`u32`/`u64` hold unsigned ranges);
     `i64`/`u64` values are **exact beyond 2^53** — the interpreter represents
     them as BigInt (and BigInt values flowing through the wasm host boundary
     are exact too). Integer `/` and `%` **trap** on division by zero, and `/`
@@ -391,7 +395,7 @@ The type checker stamps each `/` node as integer or float division at check time
 | `concat` | `([A], [A]) -> [A]` | Append; allocates a fresh backing, never aliases its operands — the only way a slice grows. |
 | `flat` | `([[A]]) -> [A]` | Flatten one level. |
 | `len` | `([A]) -> i64` | Array length. |
-| `strlen` | `(string) -> i64` | String length. |
+| `strlen` | `(string) -> i64` | Length in bytes — strings are UTF-8 byte sequences. |
 | `map` | `((A) -> B, [A]) -> [B]` | Apply; fresh `A`/`B` per use. |
 | `get` | `([A], i64) -> A` | Array index through the view's window; indices are `i64` (untyped int literals flex). Out of bounds → `get: index i out of bounds [0, len)` (reported against the view's length). |
 | `set` | `([A], i64, A) -> unit` | Index assignment: writes through the view into the shared backing — every view over the same window (and the original) sees it. Strictly in-window: it never grows (`set: index i out of bounds [0, len)` otherwise); growth is `concat`'s job only. |
@@ -428,6 +432,7 @@ process control is via the `Exit`/`Wait` effects (§4.4), not functions.
 | `range` | `(i64, i64, i64) -> [i64]` | `range(start, end, step)`: half-open; `step` may be negative. |
 | `char` | `(i64) -> string` | Code point → single-char string. |
 | `number` | `(string) -> f64` | Parse a string to a number. |
+| `bytes` | `(string) -> [u8]` | A string's UTF-8 bytes — strings are stored UTF-8-encoded, so this is the raw representation. |
 | `args` | `() -> [string]` | Program args — everything after the source path on the `ef run`/`ef runwasm` command line; `[]` in the REPL. |
 
 `each`/`flatmap`/`map` take the function **first**, matching `map`.
@@ -439,7 +444,7 @@ These are pre-declared like user effects and invoked with the `!` postfix. With 
 | Effect | Signature | Default behaviour |
 |--------|-----------|-------------------|
 | `Read` | `(path: string): string` | `readFileSync` the path. |
-| `Write` | `(path: string, content: string): unit` | `writeFileSync` the path. |
+| `Write` | `(path: string, bytes: [u8]): unit` | `writeFileSync` raw bytes — one array element per byte (text goes through `bytes(s)`). |
 | `Println` | `(v: any): unit` | `console.log(show(v))` — print a value + newline. |
 | `Out` | `(s: string): unit` | `process.stdout.write(s)` — raw string, no newline. |
 | `Exit` | `(code: i64): unit` | `process.exit(code)` — terminates without resuming. |
@@ -557,10 +562,14 @@ ask
 
 ```ef
 # Write then read; with no user handler, the runtime performs real I/O.
-Write!("hello.txt", "hello ef");
+# Write! takes raw bytes — `bytes(s)` UTF-8-encodes text into a [u8].
+Write!("hello.txt", bytes("hello ef"));
 Read!("hello.txt")
 # → "hello ef"
 ```
+
+Binary content: any `[u8]` array writes as raw bytes, one element per
+byte — `examples/raytracer.ef` saves its render as a PNG this way.
 
 ```ef
 # A user handler can intercept Read to mock the filesystem.

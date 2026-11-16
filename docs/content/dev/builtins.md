@@ -35,7 +35,7 @@ views of the same table:
 | Effect | Default behaviour | Knob |
 |--------|-------------------|------|
 | `Read(path)` | `readFileSync(path)` | — |
-| `Write(path, s)` | `writeFileSync(path, s)` | — |
+| `Write(path, bytes)` | `writeFileSync(path, bytes)` — raw [u8] bytes | — |
 | `Println(v)` | `console.log(show(v))` | — |
 | `Out(s)` | `process.stdout.write(s)` | — |
 | `Exit(code)` | `process.exit(code)` — never resumes | — |

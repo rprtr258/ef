@@ -1,0 +1,15 @@
+# UTF-8 string representation: strlen counts bytes, bytes() exposes the
+# encoding, char() encodes astral code points, concat/== are byte ops.
+# Exercises the wasm $STR byte-array representation against the interpreter.
+Println!(strlen("abc"));
+Println!(strlen("héllo"));
+Println!(strlen("😀"));
+s :: "héllo" + " " + "😀";
+Println!(strlen(s));
+Println!(s);
+Println!(bytes("éA"));
+Println!(char(233));
+Println!(char(128512));
+Println!(strlen(char(128512)));
+if (s == "héllo 😀") { Println!("eq"); };
+if ("é" != "e") { Println!("ne"); };

@@ -7,7 +7,8 @@ export {WasmError};
 // are process-global interned ids, so they build once and are reused by every
 // compiled module. HT[i] = bare heap type (the immediate GC instruction
 // builders take); RF[i] = (ref null $i) (params, fields, ref.null);
-// RN[i] = (ref $i) (non-null casts). $STR packs i16 over an i32 element type.
+// RN[i] = (ref $i) (non-null casts). $STR packs UTF-8 bytes over an i32
+// element type — the 8-bit packed width; loads are get_u (unsigned, 0..255).
 // Shapes 0–6 are the base plane ($F64 is the f64-backed number box); 7–11
 // are the per-width number boxes; 12 is $TUP.
 export const _T: {
@@ -20,7 +21,7 @@ export const _T: {
   const fld = (ty: binaryen.Type, mutable: boolean) => ({type: ty, packedType: binaryen.notPacked, mutable});
   tb.setStructType(0, [fld(binaryen.f64, false)]);                       // 0 $F64 (f64 plane)
   tb.setArrayType(1, binaryen.anyref, binaryen.notPacked, true);         // 1 $ELEMS
-  tb.setArrayType(2, binaryen.i32, binaryen.i16, true);                  // 2 $STR
+  tb.setArrayType(2, binaryen.i32, binaryen.i8, true);                   // 2 $STR (UTF-8 bytes)
   tb.setStructType(3, [                                                  // 3 $ARR — the slice
     // fat pointer {data, off, len}: immutable fields, views (sub) share the
     // backing; only the backing's elements mutate.

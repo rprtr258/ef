@@ -18,6 +18,8 @@ import {registerBuiltins} from "./wasm_module.ts";
 import {type CIr, type CAtom, type CPrim, type CTerm} from "../../frontend/cps_ir.ts";
 import * as w from "./wasm_consts.ts";
 
+const STR_ENC = new TextEncoder();   // string literals encode to UTF-8 at compile time
+
 // --- compile phases ----------------------------------------------------------
 // The backend pipeline is a composition of free functions over plain artifact
 // records: each phase returns a fresh record with its additions, and no phase
@@ -448,11 +450,12 @@ function staticInit(m: binaryen.Module, d: StaticDesc): binaryen.ExpressionRef {
     case "null": return m.ref.null(binaryen.anyref);
     case "i31": return m.ref.i31(m.i32.const(d.v));
     case "num": {
-      // Per-width const form + box shape: f32 as $F32, i32/u32 as their
-      // own narrow boxes.
+      // Per-width const form + box shape: f32 as $F32, i32/u32/u8 as their
+      // own narrow boxes (u8 masked to a byte).
       if (d.w === "f32") return m.struct.new([m.f32.const(d.v)], HT[11]);
       if (d.w === "i32") return m.struct.new([m.i32.const(d.v)], HT[7]);
       if (d.w === "u32") return m.struct.new([m.i32.const(d.v)], HT[8]);
+      if (d.w === "u8") return m.struct.new([m.i32.const(d.v & 255)], HT[8]);
       // The 64-bit widths are exact beyond 2^53: the const form reads the
       // literal's full lexeme as a BigInt (m.i64.const takes bigint).
       if (d.w === "i64") return m.struct.new([m.i64.const(d.big ?? BigInt(d.v))], HT[9]);
@@ -460,8 +463,10 @@ function staticInit(m: binaryen.Module, d: StaticDesc): binaryen.ExpressionRef {
       return m.struct.new([m.f64.const(d.v)], HT[0]);
     }
     case "str": {
+      // Literals UTF-8-encode at compile time — the module's string
+      // representation is a byte array.
       const cs: binaryen.ExpressionRef[] = [];
-      for (let i = 0; i < d.s.length; i++) cs.push(m.i32.const(d.s.charCodeAt(i)));
+      for (const byte of STR_ENC.encode(d.s)) cs.push(m.i32.const(byte));
       return m.array.new_fixed(HT[2], cs);
     }
     case "clo":

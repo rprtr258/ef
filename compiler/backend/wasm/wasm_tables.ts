@@ -73,10 +73,10 @@ export const SIGS: Record<number, {p: (number | number[])[], r: number | number[
   [w.T_TRACE]: {p: [0x7f, 0x7f], r: null},             // ef_trace(site, val) — EFTRACE only
 };
 
-// Width name -> valtype byte. numSig's inputs are only the six widths.
+// Width name -> valtype byte. numSig's inputs are only the seven widths.
 function widthByte(name: string): number {
   switch (name) {
-    case "i32": case "u32": return 0x7f;
+    case "u8": case "i32": case "u32": return 0x7f;
     case "i64": case "u64": return 0x7e;
     case "f32": return 0x7d;
     case "f64": return 0x7c;

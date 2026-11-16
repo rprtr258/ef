@@ -12,13 +12,13 @@ import {showT, TypeError_} from "./type_display.ts";
 
 export type Type = Prim | ArrT | TupT | FunT | Var | AnyT;
 
-export type NumName = "i32" | "i64" | "u32" | "u64" | "f32" | "f64" | "int" | "float";
+export type NumName = "u8" | "i32" | "i64" | "u32" | "u64" | "f32" | "f64" | "int" | "float";
 
 export type Prim = { tag: "prim", name: NumName | "string" | "bool" | "unit" | "type" };
 // "int" / "float" are the untyped numeric-literal types (produced only by
 // num literals): `1` accepts any numeric context and defaults to i64, `1.5`
 // any float context and defaults to f64. They are not writable in source.
-export const INT_NAMES = new Set<NumName>(["i32", "i64", "u32", "u64"]);
+export const INT_NAMES = new Set<NumName>(["u8", "i32", "i64", "u32", "u64"]);
 export const FLOAT_NAMES = new Set<NumName>(["f32", "f64"]);
 export const NUMERIC_NAMES = new Set<NumName>([...INT_NAMES, ...FLOAT_NAMES, "int", "float"]);
 

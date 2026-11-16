@@ -47,6 +47,7 @@ value exactly like the wasm backend's per-width ops:
 
 | Stamp | Normalization |
 |-------|---------------|
+| `u8` | `v \& 255` (BigInt input: `Number(BigInt.asUintN(8, v)) \& 255`) |
 | `i32` | `v \| 0` (BigInt input: `Number(BigInt.asIntN(32, v))`) |
 | `u32` | `v >>> 0` / `asUintN` |
 | `f32` | `Math.fround(v)` |

@@ -2,7 +2,7 @@ import {
   type TupField, type Type, type Var,
 } from "./unify.ts";
 import {
-  TI32, TI64, TU32, TU64, TF32, TF64, TSTR, TBOOL, TUNIT, TANY, TTYPE,
+  TI32, TI64, TU8, TU32, TU64, TF32, TF64, TSTR, TBOOL, TUNIT, TANY, TTYPE,
   rowOf, tArr, tTup, tFun,
 } from "../prims.ts";
 import type {EffectSig} from "./types.ts";
@@ -522,6 +522,7 @@ eat(st, ")");
 return instantiateAlias(al, args);
 }
 switch (name) {
+case "u8": return TU8;
 case "i32": return TI32;
 case "i64": return TI64;
 case "u32": return TU32;

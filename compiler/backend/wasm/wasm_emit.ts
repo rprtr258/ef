@@ -46,9 +46,12 @@ export type Emit = {
 };
 export const i31of = (b: Buf): void => { b.refCast(w.I31REF, false); b.i31Get(); };
 
-// Number-box shape by width name ($F64 is shape 0, the per-width boxes 7..11).
+// Number-box shape by width name ($F64 is shape 0, the per-width boxes
+// 7..11). u8 rides the $U32 box — its values are masked i32s, so raw bits
+// are width-agnostic and the host's __u32 accessor reads them unchanged.
 export function boxShapeOf(wkn: string): number {
   switch (wkn) {
+    case "u8": return 8;
     case "i32": return 7;
     case "u32": return 8;
     case "i64": return 9;
@@ -387,13 +390,17 @@ export function emitHelpers(em: Emit): Fn[] {
       b.end();
       b.end();
     }
-    // str == str: i16 content.
+    // str == str: UTF-8 byte content. This path answers — mark it decided,
+    // or the identity fallback below overwrites the result with a ref
+    // compare (two equal strings are equal even when not the same object).
     b.localGet(0);
     b.refTest(2, true);
     b.localGet(1);
     b.refTest(2, true);
     b.num(w.AND);
     b.if();
+    b.i32Const(1);
+    b.localSet(decided);
     const la = i32(eq), lb = i32(eq);
     b.localGet(0);
     b.refCast(2, true);
@@ -407,8 +414,10 @@ export function emitHelpers(em: Emit): Fn[] {
     b.localGet(lb);
     b.num(w.EQ);
     b.localSet(res);
+    // Bound by `res` too: unequal lengths already answer false — iterating
+    // the longer string's count would read past the shorter array.
     fnLoop(eq, () => {
-      b.localGet(la);
+      b.localGet(res);
     }, i => {
       b.localGet(res);
       b.localGet(0);
@@ -849,9 +858,9 @@ export function selectBool(em: Emit, f: Fn, emitCond?: () => void): void {
 }
 
 export const CMP_OPS: Record<string, Record<string, number>> = {
-  "<":  {f32: w.F32_LT, i32: w.LTS, u32: w.LTU, i64: w.I64_LTS, u64: w.I64_LTU, f64: w.FLT},
-  ">":  {f32: w.F32_GT, i32: w.GTS, u32: w.GTU, i64: w.I64_GTS, u64: w.I64_GTU, f64: w.FGT},
-  "<=": {f32: w.F32_LE, i32: w.LES, u32: w.LEU, i64: w.I64_LES, u64: w.I64_LEU, f64: w.FLE},
-  ">=": {f32: w.F32_GE, i32: w.GES, u32: w.GEU, i64: w.I64_GES, u64: w.I64_GEU, f64: w.FGE},
+  "<":  {f32: w.F32_LT, u8: w.LTU, i32: w.LTS, u32: w.LTU, i64: w.I64_LTS, u64: w.I64_LTU, f64: w.FLT},
+  ">":  {f32: w.F32_GT, u8: w.GTU, i32: w.GTS, u32: w.GTU, i64: w.I64_GTS, u64: w.I64_GTU, f64: w.FGT},
+  "<=": {f32: w.F32_LE, u8: w.LEU, i32: w.LES, u32: w.LEU, i64: w.I64_LES, u64: w.I64_LEU, f64: w.FLE},
+  ">=": {f32: w.F32_GE, u8: w.GEU, i32: w.GES, u32: w.GEU, i64: w.I64_GES, u64: w.I64_GEU, f64: w.FGE},
 };
 

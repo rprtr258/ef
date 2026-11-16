@@ -25,7 +25,7 @@ performed without a matching handler surface in the program's residual row.
 
 | Variant | Written as | Notes |
 |---------|-----------|-------|
-| `Prim` | `i32 i64 u32 u64 f32 f64 string bool unit` | six numeric widths — arithmetic is strict per width |
+| `Prim` | `u8 i32 i64 u32 u64 f32 f64 string bool unit` | seven numeric widths — arithmetic is strict per width |
 | untyped num types | *(internal)* `int` / `float` | produced **only** by literals; flex to any numeric (resp. float) context, default `i64` / `f64`; never writable in source |
 | `ArrT` | `[T]` | homogeneous array |
 | `TupT` | `[x: f64, y: f64]` / `[i64, string]` | fixed arity; field names are for access only — unification compares arity + positional types, not names |
