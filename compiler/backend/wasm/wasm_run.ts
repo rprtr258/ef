@@ -13,6 +13,7 @@ import type {EffectInterp} from "../../frontend/pipeline.ts";
 import {DBGTRACE, TRACE_SITES} from "./wasm_trace.ts";
 import {assertNever} from "../../assert.ts";
 import {errDivByZero, errIndexOOB, errIntOverflow, errSubRangeOOB, errUnhandled} from "../../ops.ts";
+import {runTraced, type RunTrace} from "../../trace.ts";
 
 // The accessor ABI: exported accessor functions — the only way JS can touch
 // GC structs. hostBox/hostUnbox rebuild interpreter Values through them; the
@@ -176,7 +177,7 @@ function hostStr(ex: Accessors, v: unknown): string {
 // runtime trap escapes under EFTRACE=1.
 const traceBuf: number[] = [];
 
-export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[], interp?: EffectInterp, args: string[] = []): Value {
+export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[], interp?: EffectInterp, args: string[] = [], trace?: RunTrace): Value {
   // The boundary's host-interpreter, in the canonical EffectInterp shape:
   // user interps first, then builtinEffectHosts adapted to it — a direct
   // host's returned Value flows through the delivery continuation k.
@@ -196,9 +197,13 @@ export function runModule(bytes: Uint8Array<ArrayBuffer>, ops: readonly string[]
       // eval.ts's runTop driver: loop until a host delivers a value, then
       // box it back into the paused module. The delivery k is the only
       // bridge across the boundary — one done outcome per perform, so the
-      // boxed value is the resumed value at the perform site.
-      let out = hostFor(op)(argv, (v) => ({tag: "done", value: v}));
-      while (out.tag === "eff") out = hostFor(out.op)(out.args, out.k);
+      // boxed value is the resumed value at the perform site. Every host
+      // call goes through trace.ts's runTraced, mirroring runTop so the
+      // run trace (the parity observation contract) captures the wasm
+      // boundary's interpretations exactly like the interpreter's
+      // (trace === undefined: untraced run).
+      let out = runTraced(op, argv, (v) => ({tag: "done", value: v}), hostFor(op), trace);
+      while (out.tag === "eff") out = runTraced(out.op, out.args, out.k, hostFor(out.op), trace);
       return hostBox(ex(), out.value);
     },
     ef_char: (v: unknown) => hostBox(ex(), String.fromCodePoint(ex().__num(v) | 0)),

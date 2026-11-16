@@ -1,0 +1,856 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`fixtures (testdata/*.ef) arith-i64-div-truncs.ef 1`] = `"Println(3) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) arith-f64-div.ef 1`] = `"Println(3.5) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) arith-neg-then-add.ef 1`] = `"Println(-2) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handler-arity-mix-resume.ef 1`] = `"Println(3) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handler-second-resume-reperform.ef 1`] = `"Println(1) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handler-tail-resume-loop.ef 1`] = `"Println(0) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) nqueens-pick-fail-6.ef 1`] = `"Println(4) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) arith-i64-rem.ef 1`] = `"Println(2) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) arith-i64-div-by-zero-traps.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) arith-i64-div-neg-truncs.ef 1`] = `"Println(-3) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) str-concat-unstamped-site.ef 1`] = `"Println("ab") -> unit"`;
+
+exports[`fixtures (testdata/*.ef) str-lt-unstamped-host-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) str-gt-unstamped-host-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) cmp-if-branches.ef 1`] = `"Println(10) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) cmp-string-eq.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) cmp-string-neq.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) cmp-array-identity.ef 1`] = `"Println(false) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) cmp-i64-neq.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) any-eq-f64.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) any-eq-f32.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) any-eq-i32-u32.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) any-eq-i32.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) any-eq-i64-u64.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) any-eq-i64-neg1-u64-max.ef 1`] = `"Println(false) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) any-eq-i64-vs-f64.ef 1`] = `"Println(false) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) any-eq-i32-vs-i64.ef 1`] = `"Println(false) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) any-eq-bool.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) any-eq-string.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) any-eq-distinct-numbers.ef 1`] = `"Println(false) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) tail-op-land-div.ef 1`] = `"Println(6) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) tail-op-land-mul.ef 1`] = `"Println(22) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) tail-op-performing-operand.ef 1`] = `"Println(6) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) str-concat-literals.ef 1`] = `"Println("abcd") -> unit"`;
+
+exports[`fixtures (testdata/*.ef) len-rejects-strings.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) strlen-counts-chars.ef 1`] = `"Println(5) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) while-sums-0-to-4.ef 1`] = `"Println(10) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) block-lambda-lets-share-frame.ef 1`] = `"Println(6) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) arr-get.ef 1`] = `"Println(20) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) arr-set-strict-window.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) arr-sub-view-write-through.ef 1`] = `"Println([99, 3]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) arr-sub-oob.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) arr-get-huge-index.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) arr-flat-len.ef 1`] = `"Println(3) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) arr-concat.ef 1`] = `"Println([1, 2, 3]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) arr-map-range-squares.ef 1`] = `"Println([0, 1, 4, 9]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) arr-nested-get.ef 1`] = `"Println(3) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) closure-addn-returned-call.ef 1`] = `"Println(15) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) closure-counter-state.ef 1`] = `"Println(3) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) closure-curried-three.ef 1`] = `"Println(6) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) closure-id-as-value.ef 1`] = `"Println(3) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) rec-fib-15.ef 1`] = `"Println(610) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) rec-tail-100k.ef 1`] = `"Println(5000050000) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) math-sqrt-abs.ef 1`] = `"Println(144) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) math-cos-sin-zero.ef 1`] = `"Println(10) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) math-pi-value.ef 1`] = `"Println(314) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-add-rounds.ef 1`] = `"Println(0.30000001192092896) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-literal-sum-demotes.ef 1`] = `"Println(0.30000001192092896) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-third.ef 1`] = `"Println(0.3333333432674408) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-eq-after-sum.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f64-sum-keeps-precision.ef 1`] = `"Println(0.30000000000000004) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-typed-lets.ef 1`] = `"Println(0.30000001192092896) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-param-sig.ef 1`] = `"Println(6.050000190734863) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-num-adapts.ef 1`] = `"Println(2) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-map-squares-elem0.ef 1`] = `"Println(0.25) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-sqrt.ef 1`] = `"Println(2) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-neg.ef 1`] = `"Println(-1.5) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-mul.ef 1`] = `"Println(9.051400184631348) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-to-f64-promotes.ef 1`] = `"Println(0.10000000149011612) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f64-to-f32-demotes.ef 1`] = `"Println(0.10000000149011612) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-lt.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-div.ef 1`] = `"Println(0.3333333432674408) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-rem.ef 1`] = `"Println(1.5) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) f32-rem-via-fn.ef 1`] = `"Println(1.3000001907348633) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i32-add-wraps.ef 1`] = `"Println(-2147483648) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i32-sub-wraps.ef 1`] = `"Println(2147483647) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i32-mul-wraps.ef 1`] = `"Println(-2) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) u32-add-wraps.ef 1`] = `"Println(0) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) u32-sub-wraps.ef 1`] = `"Println(4294967295) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) u32-mul-wraps.ef 1`] = `"Println(410065408) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i32-cmp-signed.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) u32-cmp-unsigned.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i32-u32-mixed-cmp-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) as-wrap-down-i32.ef 1`] = `"Println(1) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) as-wrap-down-u32.ef 1`] = `"Println(1) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) as-neg1-i32.ef 1`] = `"Println(-1) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) as-neg1-u32.ef 1`] = `"Println(4294967295) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) as-i32-to-i64.ef 1`] = `"Println(5) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) as-neg5-i32-to-i64.ef 1`] = `"Println(-5) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) as-u32-max-to-i64.ef 1`] = `"Println(4294967295) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i32-eq-payload-bits.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i32-eq-distinct-payloads.ef 1`] = `"Println(false) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i32-div-zero-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) i32-rem-zero-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) u32-div-zero-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) i32-min-div-neg1-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) i32-min-rem-neg1-zero.ef 1`] = `"Println(0) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i64-add-wraps.ef 1`] = `"Println(-9223372036854775808) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i64-sub-wraps.ef 1`] = `"Println(9223372036854775807) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i64-mul-wraps-2p62.ef 1`] = `"Println(-9223372036854775808) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i64-mul-wraps-2p64.ef 1`] = `"Println(0) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) u64-add-wraps.ef 1`] = `"Println(0) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) u64-sub-wraps.ef 1`] = `"Println(18446744073709551615) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i64-exact-beyond-2p53.ef 1`] = `"Println(9007199254740993) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i64-cmp-positive.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i64-2p63-compares-negative.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) u64-2p63-compares-positive.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i64-u64-mixed-cmp-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) as-i64-no-trunc.ef 1`] = `"Println(4294967297) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) as-u64-max-to-u32.ef 1`] = `"Println(4294967295) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) as-i64-to-u64.ef 1`] = `"Println(5) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i64-eq-payload-bits.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i64-eq-beyond-2p53.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i64-neq-beyond-2p53.ef 1`] = `"Println(false) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) i64-div-zero-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) u64-rem-zero-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) i64-min-div-neg1-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) builtin-as-arg.ef 1`] = `"Println(3) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) builtin-two-as-args.ef 1`] = `"Println(6) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) builtin-returned-and-called.ef 1`] = `"Println(3) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) err-unbound-var.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) err-mixed-add.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) err-get-oob.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) err-unbound-head.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) assign-lam-rebind-type-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) assign-lam-rebind-call-ok.ef 1`] = `"Println(2) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) assign-lam-rebind-captured-type-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) lam-immutable-generalizes.ef 1`] = `"Println(["s", 1]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handle-const-case.ef 1`] = `"Println(7) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handle-resume-twice.ef 1`] = `"Println(6) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handle-lambda-perform-nonresume.ef 1`] = `"Println(1) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handle-return-case-passthrough.ef 1`] = `"Println(5) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handle-propagates-past-inner.ef 1`] = `"Println(5) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handle-inner-matches-first.ef 1`] = `"Println(10) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handle-multishot-choose.ef 1`] = `"Println([[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handle-nonresume-aborts.ef 1`] = `"Println(["div by zero"]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handle-deep-log-nesting.ef 1`] = `"Println(["a", "b", "42"]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handle-propagates-from-case-body.ef 1`] = `"Println(["hi"]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handle-inner-return-wraps-resume.ef 1`] = `"Println([4]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handle-intercepts-builtin-read.ef 1`] = `"Println(41) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) handle-exit-no-resume.ef 1`] = `
+"Println("pre") -> unit
+Println(42) -> unit"
+`;
+
+exports[`fixtures (testdata/*.ef) handle-perform-in-call-args.ef 1`] = `"Println(6) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) mixed-island-dret-boundary.ef 1`] = `"Println(72) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) mixed-tail-handle.ef 1`] = `"Println(42) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) mixed-inside-foreign-island.ef 1`] = `"Println(108) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) mixed-multishot-amb-shape.ef 1`] = `"Println([[1], [2]]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-multi-param-two-shot.ef 1`] = `"Println(3) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-single-param-two-shot.ef 1`] = `"Println(10) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-flat-scalar-passthrough.ef 1`] = `"Println([7, 8]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-flatmap-no-handler.ef 1`] = `"Println([1, 10, 2, 20, 3, 30]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-arr-lit-perform-head.ef 1`] = `"Println([7, 7]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-arr-lit-perform-mid.ef 1`] = `"Println([1, 2, 7, 7]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-arr-lit-perform-nested.ef 1`] = `"Println([[7, 1], [2, [7]]]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-div-cut-f64-both-operands.ef 1`] = `"Println(0.5) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-div-cut-i64-both-operands.ef 1`] = `"Println(1) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-while-cond-resuming.ef 1`] = `"Println(3) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-while-cond-nonresuming.ef 1`] = `"Println(0) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-while-cond-and-body-perform.ef 1`] = `"Println(7) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-while-cond-two-performs.ef 1`] = `"Println(4) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-handle-stmt-in-while-body.ef 1`] = `"Println(20) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-dlet-destructure-performs.ef 1`] = `"Println(52) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-loop-frozen-reload.ef 1`] = `"Println(23) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-loop-frozen-reload-as.ef 1`] = `"Println(23) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-abort-idiom-kfree-case.ef 1`] = `"Println(42) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-transforming-len-outside.ef 1`] = `"Println(2) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-multishot-map-deliveries.ef 1`] = `"Println([11, 11]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-each-multishot-index-land.ef 1`] = `"Println([7, 8, 9]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-flatmap-multishot-land.ef 1`] = `"Println([11, 0, 12, 1]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) reg-each-multishot-unit-shape.ef 1`] = `"Println(35) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) split-if-both-arms-print.ef 1`] = `
+"Println("else-arm") -> unit
+Println("after-else") -> unit
+Println("after") -> unit"
+`;
+
+exports[`fixtures (testdata/*.ef) split-if-one-arm-tail-print.ef 1`] = `
+"Println("then") -> unit
+Println("tail") -> unit"
+`;
+
+exports[`fixtures (testdata/*.ef) split-nested-operand-land.ef 1`] = `"Println(-18.740000000000002) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) devirt-mutual-nested-closures.ef 1`] = `"Println([4, 0, 9]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) devirt-inline-rest-while.ef 1`] = `"Println(15) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) devirt-dcall-on-resumed-path.ef 1`] = `"Println(4) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) devirt-captured-assign-after-dcall.ef 1`] = `"Println([43, 42]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) devirt-map-pure-direct.ef 1`] = `"Println([2, 3, 4]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) devirt-each-pure-direct.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) devirt-flatmap-pure-direct.ef 1`] = `"Println([1, 1, 2, 2]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) devirt-each-performing-generic.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) devirt-each-multishot-land-reenter.ef 1`] = `"Println(0) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) devirt-map-single-resume.ef 1`] = `"Println([10, 10]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) numabi-i32.ef 1`] = `"Println(42) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) numabi-u32.ef 1`] = `"Println(42) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) numabi-i64.ef 1`] = `"Println(42) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) numabi-u64.ef 1`] = `"Println(42) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) numabi-f32-double.ef 1`] = `"Println(3) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) numabi-f64-double.ef 1`] = `"Println(3) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) numabi-multiarg-div.ef 1`] = `"Println(3) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) numabi-div-zero-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) numabi-u64-div.ef 1`] = `"Println(9223372036854775807) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) numabi-mixed-string-param.ef 1`] = `"Println(42) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) numabi-poly-boxed-i64.ef 1`] = `"Println(7) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) numabi-poly-boxed-f64.ef 1`] = `"Println(2.5) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) numabi-poly-boxed-string.ef 1`] = `"Println("s") -> unit"`;
+
+exports[`fixtures (testdata/*.ef) numabi-handler-island.ef 1`] = `"Println(17) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) numabi-closure-env-capts.ef 1`] = `"Println(203) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) host-arr-field-oob-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) wasm-shadow-builtin-len-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) wasm-unhandled-effect-static-reject.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) wasm-handle-operator-operand.ef 1`] = `"Println(8) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) wasm-served-builtin-char.ef 1`] = `"Println("a") -> unit"`;
+
+exports[`fixtures (testdata/*.ef) wasm-served-builtin-round-cos.ef 1`] = `"Println(100) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) wasm-args-builtin-len.ef 1`] = `"Println(2) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) wasm-shadow-served-char-err.ef 1`] = `""`;
+
+exports[`fixtures (testdata/*.ef) wasm-every-served-builtin.ef 1`] = `
+"Println(13) -> unit
+Println(13) -> unit"
+`;
+
+exports[`fixtures (testdata/*.ef) wasm-binaryen-shrink-preserves-semantics.ef 1`] = `
+"Println("hi") -> unit
+Println(21) -> unit
+Println(42) -> unit"
+`;
+
+exports[`fixtures (testdata/*.ef) wasm-split-nested-if-else-land.ef 1`] = `"Println(1) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) wasm-devirt-mixed-dcall.ef 1`] = `"Println([102, 103]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) wasm-numeric-entry-shape-tag.ef 1`] = `"Println(45) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) wasm-typed-slots-i64-assign-exact.ef 1`] = `
+"Println(1) -> unit
+Println(2) -> unit
+Println(9007199254740995) -> unit"
+`;
+
+exports[`fixtures (testdata/*.ef) wasm-typed-slots-scope-elision.ef 1`] = `"Println(3) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) wasm-typed-slots-rest-thunk-read.ef 1`] = `"Println(12) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) wasm-typed-slots-escaping-closure.ef 1`] = `"Println(7) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) wasm-typed-slots-casefn-depth-read.ef 1`] = `"Println(11) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) wasm-typed-slots-toplevel-assign.ef 1`] = `"Println([1, 3, 3]) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) wasm-typed-slots-f32-fround.ef 1`] = `"Println(true) -> unit"`;
+
+exports[`fixtures (testdata/*.ef) wasm-typed-slots-numeric-join.ef 1`] = `"Println(6) -> unit"`;
+
+exports[`examples (examples/*.ef) nondeterministic search finds Pythagorean triples 1`] = `
+"Println([3, 4, 5]) -> unit
+Println([5, 12, 13]) -> unit
+Println([6, 8, 10]) -> unit"
+`;
+
+exports[`examples (examples/*.ef) polymorphic apply calls functions stored in values 1`] = `
+"Println(42) -> unit
+Println("n=7") -> unit
+Println(99) -> unit"
+`;
+
+exports[`examples (examples/*.ef) logical bool ops; widths with @as; shifts as arithmetic 1`] = `"Println(25) -> unit"`;
+
+exports[`examples (examples/*.ef) bool equality converted to int via @as 1`] = `"Println(1) -> unit"`;
+
+exports[`examples (examples/*.ef) && / || classification 1`] = `"Println(6) -> unit"`;
+
+exports[`examples (examples/*.ef) parenthesized grouping 1`] = `"Println(8) -> unit"`;
+
+exports[`examples (examples/*.ef) i64 -> f64 -> +1 -> i64 via @as 1`] = `"Println(42) -> unit"`;
+
+exports[`examples (examples/*.ef) f32 precision, @as conversions, division and wraparound parity 1`] = `
+"Println(0.30000001192092896) -> unit
+Println(0.30000000000000004) -> unit
+Println(0.3333333432674408) -> unit
+Println(0.3333333333333333) -> unit
+Println(10) -> unit
+Println(0.03333333507180214) -> unit
+Println(0.06666667014360428) -> unit
+Println(true) -> unit
+Println(9007) -> unit
+Println(-3) -> unit
+Println(-1) -> unit
+Println(1) -> unit
+Println(3) -> unit
+Println(-3) -> unit
+Println(3.5) -> unit
+Println(1) -> unit
+Println(-2147483648) -> unit
+Println(2147483647) -> unit
+Println(-2) -> unit
+Println(0) -> unit
+Println(4294967295) -> unit
+Println(410065408) -> unit
+Println(true) -> unit
+Println(true) -> unit
+Println(-2147483648) -> unit
+Println(9007199254740993) -> unit
+Println(false) -> unit
+Println(-9223372036854775808) -> unit
+Println(0) -> unit
+Println(true) -> unit
+Println(true) -> unit
+Println(0) -> unit"
+`;
+
+exports[`examples (examples/*.ef) Monte Carlo pi estimate (Random!) needs an n argument 1`] = `
+"Out("Usage: ef run examples/approx_pi.ef <n>
+") -> unit
+Exit(1) -> throw: exit 1"
+`;
+
+exports[`examples (examples/*.ef) a block runs statements in order and yields the last value 1`] = `
+"Println(42) -> unit
+Println(99) -> unit
+Println(123) -> unit"
+`;
+
+exports[`examples (examples/*.ef) closure reads enclosing binding 1`] = `"Println(10) -> unit"`;
+
+exports[`examples (examples/*.ef) returned closure adds 3 1`] = `"Println(7) -> unit"`;
+
+exports[`examples (examples/*.ef) returned closure adds 10 1`] = `"Println(15) -> unit"`;
+
+exports[`examples (examples/*.ef) apply_twice(inc)(5) 1`] = `"Println(7) -> unit"`;
+
+exports[`examples (examples/*.ef) closure without captures 1`] = `"Println(1) -> unit"`;
+
+exports[`examples (examples/*.ef) Println! from nested while/if loops 1`] = `
+"Println(7) -> unit
+Println(22) -> unit
+Println(11) -> unit
+Println(34) -> unit
+Println(17) -> unit
+Println(52) -> unit
+Println(26) -> unit
+Println(13) -> unit
+Println(40) -> unit
+Println(20) -> unit
+Println(10) -> unit
+Println(5) -> unit
+Println(16) -> unit
+Println(8) -> unit
+Println(4) -> unit
+Println(2) -> unit
+Println(1) -> unit
+Println(55) -> unit
+Println(1) -> unit"
+`;
+
+exports[`examples (examples/*.ef) comments plus naive Fibonacci 1`] = `"Println(55) -> unit"`;
+
+exports[`examples (examples/*.ef) expression as element index 1`] = `"Println(3) -> unit"`;
+
+exports[`examples (examples/*.ef) if/while nesting, done-flag break 1`] = `
+"Println(1234) -> unit
+Println(617) -> unit
+Println(1852) -> unit
+Println(926) -> unit
+Println(463) -> unit
+Println(1390) -> unit
+Println(695) -> unit
+Println(2086) -> unit
+Println(1043) -> unit
+Println(3130) -> unit
+Println(1565) -> unit
+Println(4696) -> unit
+Println(2348) -> unit
+Println(1174) -> unit
+Println(587) -> unit
+Println(1762) -> unit
+Println(881) -> unit
+Println(2644) -> unit
+Println(1322) -> unit
+Println(661) -> unit
+Println(1984) -> unit
+Println(992) -> unit
+Println(496) -> unit
+Println(248) -> unit
+Println(124) -> unit
+Println(62) -> unit
+Println(31) -> unit
+Println(94) -> unit
+Println(47) -> unit
+Println(142) -> unit
+Println(71) -> unit
+Println(214) -> unit
+Println(107) -> unit
+Println(322) -> unit
+Println(161) -> unit
+Println(484) -> unit
+Println(242) -> unit
+Println(121) -> unit
+Println(364) -> unit
+Println(182) -> unit
+Println(91) -> unit
+Println(274) -> unit
+Println(137) -> unit
+Println(412) -> unit
+Println(206) -> unit
+Println(103) -> unit
+Println(310) -> unit
+Println(155) -> unit
+Println(466) -> unit
+Println(233) -> unit
+Println(700) -> unit
+Println(350) -> unit
+Println(175) -> unit
+Println(526) -> unit
+Println(263) -> unit
+Println(790) -> unit
+Println(395) -> unit
+Println(1186) -> unit
+Println(593) -> unit
+Println(1780) -> unit
+Println(890) -> unit
+Println(445) -> unit
+Println(1336) -> unit
+Println(668) -> unit
+Println(334) -> unit
+Println(167) -> unit
+Println(502) -> unit
+Println(251) -> unit
+Println(754) -> unit
+Println(377) -> unit
+Println(1132) -> unit
+Println(566) -> unit
+Println(283) -> unit
+Println(850) -> unit
+Println(425) -> unit
+Println(1276) -> unit
+Println(638) -> unit
+Println(319) -> unit
+Println(958) -> unit
+Println(479) -> unit
+Println(1438) -> unit
+Println(719) -> unit
+Println(2158) -> unit
+Println(1079) -> unit
+Println(3238) -> unit
+Println(1619) -> unit
+Println(4858) -> unit
+Println(2429) -> unit
+Println(7288) -> unit
+Println(3644) -> unit
+Println(1822) -> unit
+Println(911) -> unit
+Println(2734) -> unit
+Println(1367) -> unit
+Println(4102) -> unit
+Println(2051) -> unit
+Println(6154) -> unit
+Println(3077) -> unit
+Println(9232) -> unit
+Println(4616) -> unit
+Println(2308) -> unit
+Println(1154) -> unit
+Println(577) -> unit
+Println(1732) -> unit
+Println(866) -> unit
+Println(433) -> unit
+Println(1300) -> unit
+Println(650) -> unit
+Println(325) -> unit
+Println(976) -> unit
+Println(488) -> unit
+Println(244) -> unit
+Println(122) -> unit
+Println(61) -> unit
+Println(184) -> unit
+Println(92) -> unit
+Println(46) -> unit
+Println(23) -> unit
+Println(70) -> unit
+Println(35) -> unit
+Println(106) -> unit
+Println(53) -> unit
+Println(160) -> unit
+Println(80) -> unit
+Println(40) -> unit
+Println(20) -> unit
+Println(10) -> unit
+Println(5) -> unit
+Println(16) -> unit
+Println(8) -> unit
+Println(4) -> unit
+Println(2) -> unit
+Println(44) -> unit"
+`;
+
+exports[`examples (examples/*.ef) a returned closure keeps reading its captured environment 1`] = `"Println(7) -> unit"`;
+
+exports[`examples (examples/*.ef) handler loops over a whole search space 1`] = `"Println([[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]) -> unit"`;
+
+exports[`examples (examples/*.ef) int equality 1`] = `"Println(1) -> unit"`;
+
+exports[`examples (examples/*.ef) variable as element index 1`] = `"Println(20) -> unit"`;
+
+exports[`examples (examples/*.ef) element store through a variable index 1`] = `"Println(43) -> unit"`;
+
+exports[`examples (examples/*.ef) Println! then a discarded value 1`] = `
+"Println(42) -> unit
+Println(0) -> unit"
+`;
+
+exports[`examples (examples/*.ef) f32 addition rounds to f32 precision 1`] = `"Println(6) -> unit"`;
+
+exports[`examples (examples/*.ef) f64 comparison converted to int via @as 1`] = `"Println(1) -> unit"`;
+
+exports[`examples (examples/*.ef) recursion via if expression 1`] = `"Println(120) -> unit"`;
+
+exports[`examples (examples/*.ef) fib(10) 1`] = `"Println(55) -> unit"`;
+
+exports[`examples (examples/*.ef) let-generalized polymorphic id 1`] = `
+"Println(1) -> unit
+Println(0) -> unit"
+`;
+
+exports[`examples (examples/*.ef) exponential recursion through the CPS evaluator 1`] = `"Println(196418) -> unit"`;
+
+exports[`examples (examples/*.ef) aliases, slices, element reads 1`] = `"Println(115) -> unit"`;
+
+exports[`examples (examples/*.ef) aliasing plus identity tuple equality 1`] = `"Println(79) -> unit"`;
+
+exports[`examples (examples/*.ef) mutable state via a state effect 1`] = `"Println(9) -> unit"`;
+
+exports[`examples (examples/*.ef) discarded expression statements 1`] = `
+"Println(42) -> unit
+Println(0) -> unit"
+`;
+
+exports[`examples (examples/*.ef) one discarded expression 1`] = `
+"Println(42) -> unit
+Println(0) -> unit"
+`;
+
+exports[`examples (examples/*.ef) minimal program value 1`] = `"Println(0) -> unit"`;
+
+exports[`examples (examples/*.ef) a := binding inside a block is local to that block 1`] = `"Println(5) -> unit"`;
+
+exports[`examples (examples/*.ef) decimal rewrites of binary/hex/scientific forms across the six widths 1`] = `"Println(1571) -> unit"`;
+
+exports[`examples (examples/*.ef) named-tuple field access 1`] = `"Println(25) -> unit"`;
+
+exports[`examples (examples/*.ef) flag replaces break/continue 1`] = `"Println(15) -> unit"`;
+
+exports[`examples (examples/*.ef) Knuth's man-or-boy test: mutable capture across recursive closures 1`] = `"Println(-67) -> unit"`;
+
+exports[`examples (examples/*.ef) iterative numeric effect loop 1`] = `"Println(1.4142156862745097) -> unit"`;
+
+exports[`examples (examples/*.ef) alias, identity equality, one-element array 1`] = `"Println(42) -> unit"`;
+
+exports[`examples (examples/*.ef) parametric aliases substitute into annotations and signatures 1`] = `"Println(21) -> unit"`;
+
+exports[`examples (examples/*.ef) dereferences as binding aliases 1`] = `"Println(52) -> unit"`;
+
+exports[`examples (examples/*.ef) deliberately ill-typed, but runs under \`any\` 1`] = `"Println(5) -> unit"`;
+
+exports[`examples (examples/*.ef) no null in ef: direct field read 1`] = `"Println(10) -> unit"`;
+
+exports[`examples (examples/*.ef) literal-returning functions 1`] = `"Println(255) -> unit"`;
+
+exports[`examples (examples/*.ef) effectful pipeline produces primes up to 100 1`] = `
+"Println(2) -> unit
+Println(3) -> unit
+Println(5) -> unit
+Println(7) -> unit
+Println(11) -> unit
+Println(13) -> unit
+Println(17) -> unit
+Println(19) -> unit
+Println(23) -> unit
+Println(29) -> unit
+Println(31) -> unit
+Println(37) -> unit
+Println(41) -> unit
+Println(43) -> unit
+Println(47) -> unit
+Println(53) -> unit
+Println(59) -> unit
+Println(61) -> unit
+Println(67) -> unit
+Println(71) -> unit
+Println(73) -> unit
+Println(79) -> unit
+Println(83) -> unit
+Println(89) -> unit
+Println(97) -> unit"
+`;
+
+exports[`examples (examples/*.ef) Apply effect via the default host interpretation 1`] = `"Println(2) -> unit"`;
+
+exports[`examples (examples/*.ef) len/get/sub on a three-element array 1`] = `"Println(5) -> unit"`;
+
+exports[`examples (examples/*.ef) final expression evaluates to 30 1`] = `"Println(30) -> unit"`;
+
+exports[`examples (examples/*.ef) separately built tuples differ 1`] = `"Println(0) -> unit"`;
+
+exports[`examples (examples/*.ef) recursive sum via if expression 1`] = `"Println(55) -> unit"`;
+
+exports[`examples (examples/*.ef) deep tail recursion does not overflow 1`] = `"Println(0) -> unit"`;
+
+exports[`examples (examples/*.ef) positional literals, named access, vec3_add 1`] = `"Println(41) -> unit"`;
+
+exports[`examples (examples/*.ef) top-level statements run in order 1`] = `
+"Println(6) -> unit
+Println(7) -> unit"
+`;
+
+exports[`examples (examples/*.ef) ! and unary minus, @as as bool-to-int cast 1`] = `"Println(-5) -> unit"`;
+
+exports[`examples (examples/*.ef) type unifier picks the right branch 1`] = `"Println(2) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) Knuth's man-or-boy through closures with mutable capture 1`] = `"Println(-138) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) Get!/Set! round-trips decrement a module-level cell 1`] = `"Println(0) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) naive doubly-recursive Fibonacci through the boxed call ABI 1`] = `"Println(317811) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) deeper pure recursion, no effects 1`] = `"Println(610) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) an op forwarded through two enclosing handlers 1`] = `"Println(100000) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) depth-first tree walk yielding once per node 1`] = `"Println(2036) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) prime sieve via nested rejecting handlers 1`] = `"Println(21536) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) shallow perform/resume round-trips 1`] = `"Println(2000) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) one perform/resume per element against a module-level cell 1`] = `"Println(500500) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) pure boxed while-loop arithmetic (small parity input) 1`] = `"Println(4999950000) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) n-queens backtracking with per-candidate resumption 1`] = `"Println(4) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) stacked Read! feed + parse handlers over simulated input 1`] = `"Println(5050) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) non-tail recursion aborted deep by a sentinel op 1`] = `"Println(0) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) raytracer-derived f64 checksum (pure compute) 1`] = `"Println(30629.161597878126) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) resumption in non-tail position grows the stack per round 1`] = `"Println(62) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) Sieve of Eratosthenes over map/each and slices 1`] = `"Println(9592) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) tree traversal with per-node resumption 1`] = `"Println(1006) -> unit"`;
+
+exports[`benchmarks (benchmarks/*.ef) Pythagorean triple enumeration 1`] = `"Println(164182976) -> unit"`;

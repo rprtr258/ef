@@ -8,10 +8,15 @@
 //
 // 1. Each test runs the program through both backends in-process and
 //    asserts they agree on everything observable: the full stdout (every
-//    Println!/Out! effect), the exit code, and error lines
-//    ("ERR: <message>").
+//    Println!/Out! effect), the exit code, error lines
+//    ("ERR: <message>"), and the run trace — the ordered log of every
+//    builtin-effect host interpretation (trace.ts), so ordering and value
+//    divergences stdout comparison misses (Out!/Println! interleavings,
+//    Read! contents, Random! draw counts) fail the parity gate too.
 // 2. The interpreter's result must match the row's expected stdout (want,
-//    or wantFile for a huge golden output) and exit code (code, default 0).
+//    or wantFile for a huge golden output), exit code (code, default 0),
+//    and golden run trace (toMatchSnapshot, or a gzipped wantTraceFile
+//    golden for huge traces).
 //
 // A fixture without a table row (and a row without its fixture) fails the
 // per-table coverage guard, in both directions.
@@ -32,13 +37,19 @@ import {join} from "node:path";
 import {run} from "./interpreter/eval.ts";
 import {runWasm} from "./wasm/wasm_host.ts";
 import {num} from "../env.ts";
+import {showTrace, type RunTrace} from "../trace.ts";
 
 const compilerDir = join(import.meta.dir, ".."); // compiler/ — cli.ts and examples/ are relative to it
 const examplesDir = join(compilerDir, "..", "examples");
 const benchmarksDir = join(compilerDir, "..", "benchmarks");
 const testdataDir = join(import.meta.dir, "testdata");
 
-type RunResult = {stdout: string, code: number};
+type RunResult = {stdout: string, code: number, trace: string};
+
+// Traces longer than this must be pinned by a gzipped wantTraceFile golden
+// instead of a text snapshot: __snapshots__ files are plain text, and the
+// raytracer/approx_pi traces would put multi-MB blobs in the repo.
+const MAX_SNAP_TRACE = 100000;
 
 // The default host interpretation of Exit! is process.exit, which would
 // kill the test runner; runOnce swaps it for this sentinel and maps it back
@@ -67,9 +78,13 @@ function mulberry42(): () => number {
 // row's program unit-typed, so stdout is exactly the effects' output. A
 // thrown error (a failed check, a runtime trap) becomes an
 // "ERR: <message>" line with exit code 1, so error output is asserted with
-// the same machinery as values and effects.
+// the same machinery as values and effects. Every run also collects its
+// capability trace (trace.ts's RunTrace through the backend's host
+// boundary) into the result — the trace, not stdout alone, is the
+// observation contract both backends are compared on.
 function runOnce(mode: "run" | "runwasm", src: string, file: string, args: string[]): RunResult {
   const rand = mulberry42();
+  const trace: RunTrace = [];
   const chunks: string[] = [];
   const realLog = console.log.bind(console);
   const realWrite = process.stdout.write.bind(process.stdout);
@@ -80,14 +95,14 @@ function runOnce(mode: "run" | "runwasm", src: string, file: string, args: strin
   try {
     try {
       if (mode === "run")
-        run(src, {Exit: a => { throw new ExitSignal(num(a[0])); }, Random: (_a, k) => k(rand())}, args);
+        run(src, {Exit: a => { throw new ExitSignal(num(a[0])); }, Random: (_a, k) => k(rand())}, args, trace);
       else
-        runWasm(src, {Exit: a => { throw new ExitSignal(num(a[0])); }, Random: (_a, k) => k(rand())}, args);
+        runWasm(src, {Exit: a => { throw new ExitSignal(num(a[0])); }, Random: (_a, k) => k(rand())}, args, trace);
     } catch (e) {
-      if (e instanceof ExitSignal) return {stdout: chunks.join(""), code: e.code};
-      return {stdout: chunks.join("") + "ERR: " + (e as Error).message + "\n", code: 1};
+      if (e instanceof ExitSignal) return {stdout: chunks.join(""), code: e.code, trace: showTrace(trace)};
+      return {stdout: chunks.join("") + "ERR: " + (e as Error).message + "\n", code: 1, trace: showTrace(trace)};
     }
-    return {stdout: chunks.join(""), code: 0};
+    return {stdout: chunks.join(""), code: 0, trace: showTrace(trace)};
   } finally {
     console.log = realLog;
     process.stdout.write = realWrite;
@@ -95,12 +110,25 @@ function runOnce(mode: "run" | "runwasm", src: string, file: string, args: strin
   }
 }
 
+// The trace format pinned once here (the parity tables assert trace
+// equality implicitly through RunResult's trace field): op, serialized
+// args, delivered result — and a throwing host (the Exit! sentinel) still
+// records its usage with the thrown message as the result.
+test("run trace: one event per host interpretation, op/args/result", () => {
+  const res = runOnce("run", `Println!("hi"); Exit!(7);`, "trace_format.ef", []);
+  expect(res.code).toBe(7);
+  expect(res.trace).toBe("Println(\"hi\") -> unit\nExit(7) -> throw: exit 7");
+  const resWasm = runOnce("runwasm", `Println!("hi"); Exit!(7);`, "trace_format.ef", []);
+  expect(resWasm).toEqual(res);
+});
+
 type Row = {
   file: string,
   label?: string, // test name; defaults to the fixture filename
   args?: string[],
   want?: string, // exact expected stdout (effects + result line + ERR lines)
   wantFile?: string, // gzip-compressed golden file in testdata/ holding the expected stdout
+  wantTraceFile?: string, // gzip-compressed golden in testdata/ holding the expected run trace (for traces too big to keep as a text snapshot)
   code?: number, // expected exit code, default 0
   bounded?: true, // star.ef: compare a bounded output prefix instead of exact stdout
 };
@@ -387,7 +415,7 @@ const EXAMPLES: Row[] = [
   {file: "approx_pi.ef", label: "Monte Carlo pi estimate (Random!) needs an n argument",
     want: "Usage: ef run examples/approx_pi.ef <n>\n", code: 1},
   {file: "approx_pi.ef", label: "converges toward pi for large n", args: ["10000"],
-    want: "3.1576\n"},
+    want: "3.1576\n", wantTraceFile: "approx_pi.trace.txt.gz"},
   {file: "block.ef", label: "a block runs statements in order and yields the last value",
     want: "42\n99\n123\n"},
   {file: "closure_capture.ef", label: "closure reads enclosing binding",
@@ -484,7 +512,7 @@ const EXAMPLES: Row[] = [
   {file: "return_literals.ef", label: "literal-returning functions",
     want: "255\n"},
   {file: "raytracer.ef", label: "renders two spheres over a checkerboard plane",
-    wantFile: "raytracer.expected.txt.gz"},
+    wantFile: "raytracer.expected.txt.gz", wantTraceFile: "raytracer.trace.txt.gz"},
   {file: "sieve.ef", label: "effectful pipeline produces primes up to 100",
     want: `${[
       2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47,
@@ -585,8 +613,9 @@ for (const {name, dir, rows} of TABLES) {
         const interp = runOnce("run", src, row.file, row.args ?? []);
         const wasm = runOnce("runwasm", src, row.file, row.args ?? []);
         // The interpreter↔wasm parity check: both backends must agree on
-        // the full stdout and exit code — values, every side effect, and
-        // error messages alike.
+        // everything observable — full stdout, exit code, error lines, and
+        // the capability trace (values, every side effect, ordering and
+        // interleaving alike).
         expect(wasm).toEqual(interp);
         const want = row.wantFile !== undefined
           ? new TextDecoder().decode(Bun.gunzipSync(readFileSync(join(testdataDir, row.wantFile))))
@@ -594,6 +623,20 @@ for (const {name, dir, rows} of TABLES) {
         if (want === undefined) throw new Error(`no expected output for ${row.file}`);
         expect(interp.stdout).toBe(want);
         expect(interp.code).toBe(row.code ?? 0);
+        // The golden trace: the run trace is pinned per row — text snapshot
+        // (snap file in __snapshots__/, regenerate with `bun test -u`) for
+        // normal rows, a gzip golden in testdata/ for traces too big to
+        // keep as plain text. Regenerate after an intentional trace change —
+        // renaming a row or its file loses the snapshot's key, so the old
+        // entry goes stale.
+        if (row.wantTraceFile !== undefined)
+          expect(interp.trace).toBe(new TextDecoder().decode(Bun.gunzipSync(readFileSync(join(testdataDir, row.wantTraceFile)))));
+        else {
+          // Enforce the snapshot/gzip split: a row outgrowing the cap must
+          // declare a wantTraceFile, or the snap file bloats the repo.
+          expect(interp.trace.length).toBeLessThanOrEqual(MAX_SNAP_TRACE);
+          expect(interp.trace).toMatchSnapshot();
+        }
       }, 60000);
     }
     test(`${name}: table files are exactly the directory's .ef files`, () => {

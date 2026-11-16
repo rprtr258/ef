@@ -44,7 +44,10 @@ views of the same table:
 
 Injectability: `runTop`/`run`/`newCtx` (interpreter) and `runWasm` (host)
 accept an `EffectInterp` override checked **before** the builtin defaults —
-tests inject fake fs/time/randomness there.
+tests inject fake fs/time/randomness there. Both boundaries route every
+interpretation through trace.ts's `runTraced`, so a run with a trace
+records each builtin effect's op, arguments, and delivered result — the
+capability trace parity.test.ts compares between backends.
 
 ## Freshness
 

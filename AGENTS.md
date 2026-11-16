@@ -17,7 +17,11 @@ Hindley-Milner-flavoured type system with effect tracking.
   those rows; a new builtin is one row in builtin_table.ts plus one impl
   row here — and for fn/native/value kinds reachable from wasm code, a
   case in backend/wasm/wasm_module.ts's `emitBuiltins` switch, whose default throws
-  `internal: builtin <name> not implemented`), `frontend/analysis.ts` (frontend passes: op discovery, builtin-ref
+  `internal: builtin <name> not implemented`), `trace.ts` (the run-trace
+  leaf module over env.ts: `RunTrace`/`showTrace` + `runTraced`, the host
+  wrap both backends' boundaries share — one `{op, args, result}` event per
+  builtin-effect host interpretation, the observation contract parity
+  compares), `frontend/analysis.ts` (frontend passes: op discovery, builtin-ref
   tree-shaking; re-exports the builtin surface declared in builtin_table.ts
   — shared by the wasm backend, parser-types-only leaf module), `frontend/pipeline.ts`
   (the preparation seam: prepare + the staged prepareStaged, Ctx/newCtx, the
@@ -39,7 +43,8 @@ Hindley-Milner-flavoured type system with effect tracking.
   and owning the `__p` annotations consumed via accessors)/
   `wasm_emit.ts`/`wasm_module.ts` — see item 11),
   `backend/wasm/wasm_run.ts` (binaryen-free wasm host runtime:
-  instantiation, GC↔JS boxing, effect interpretation),
+  instantiation, GC↔JS boxing, effect interpretation routed through
+  trace.ts's `runTraced`),
   `backend/wasm/wasm_trace.ts` (the EFTRACE emission-site leaf shared by
   emitter and runtime), `backend/wasm/wasm_host.ts` (compile + run seam:
   `compileWithOps` + `runModule`), `stamps.ts` (the one backend-stamp concern: width/
@@ -58,8 +63,12 @@ suspension/arrKind emission over an exhaustive `Expr` switch — widths come
   `backend/parity.test.ts` (table-driven interpreter↔wasm parity over
   `examples/*.ef`, the `benchmarks/*.ef` at small parity inputs, and the
   fine-grained fixtures in `compiler/backend/testdata/*.ef` —
-  three tables, one runner asserting backend agreement on stdout effects, exit
-  codes and errors, plus exact expected output per row; `Exit!` sentinel +
+  three tables, one runner asserting backend agreement on the full
+  capability trace (trace.ts — the observation contract: any backend or
+  optimization change must leave it bit-identical), stdout effects, exit
+  codes and errors, plus exact expected output and a golden run trace per
+  row (text snapshot, or a gzipped wantTraceFile golden for huge traces);
+  `Exit!` sentinel +
   seeded `Random!` override; wasm.test.ts keeps only wasm-internal assertions —
   module structure, host imports, plan/slot annotations, ABI, host
   injections) + `cli.test.ts` (CLI integration smoke: argv, exit codes, stdout/stderr),
@@ -184,9 +193,12 @@ suspension/arrKind emission over an exhaustive `Expr` switch — widths come
    A dcall whose callee is a direct closure applies it inline at the site
    (frame over the closure's env, the site's continuation serving as both
    the ambient k and `$ret`) instead of going through `apply`.
-   `runTop(out, interp?)`
+   `runTop(out, interp?, trace?)`
    interprets unhandled effects; `interp` optionally overrides builtin
-   interpretations (tests inject fake fs/time/randomness there). The
+   interpretations (tests inject fake fs/time/randomness there); every
+   host call — override or default — routes through trace.ts's `runTraced`,
+   so an optional `RunTrace` collects one `{op, args, result}` event per
+   host interpretation (the capability log parity.test.ts compares). The
    eval⇄builtins import cycle is runtime-only on eval's side (`apply` is
    called from builtin closures; unhandled effects read builtins.ts's
    top-level `builtinInterps`, which is entry-order safe because it is
