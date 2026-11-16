@@ -107,10 +107,14 @@ performed inside a case body propagates to the next enclosing handler.
 
 ## `runTop` and interpretation
 
-`runTop(out, interp?)` loops over a trapped outcome: an `interp` override is
+`runTop(out, interp?, trace?)` loops over a trapped outcome: an `interp` override is
 checked first (tests inject fake fs/time/randomness there), then
 `builtinInterps` (the builtin table's default interpretations — real I/O),
-else `throw new Error("Unhandled effect: …")`.
+else `throw new Error("Unhandled effect: …")`. Every host call — override or
+default — goes through trace.ts's `runTraced`, which appends one event
+(`{op, args, result}`) to the run trace when `trace` is given (trace.ts, the
+run-trace leaf module): the capability log the parity harness compares
+between backends.
 
 ## The `exec` pipeline
 
@@ -134,7 +138,8 @@ checks once after parsing; a REPL line checks against
    `{value, lastType, lastIsExpr}` — `lastIsExpr` implements the REPL echo
    rule (declarations print nothing).
 
-`run(src, interp?)` = one-shot parse → entrypoint gate → `exec`: run is the
+`run(src, interp?, args?, trace?)` = one-shot parse → entrypoint gate →
+`exec`: run is the
 file-entrypoint seam, so `requireUnitEntry` (frontend/pipeline.ts, next to
 `rejectUnhandled`) throws before evaluation unless the program ends in a
 bare unit-typed expression — the CLI prints no result for the same reason.

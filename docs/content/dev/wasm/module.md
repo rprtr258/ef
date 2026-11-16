@@ -47,3 +47,7 @@ Effects with no matching handler in the chain flow back through `ef_perform`
 and are interpreted by the same builtin host table the interpreter uses
 (optionally overridden via the runner's effect-interpretation argument), so
 `Exit!` behaves identically in both backends: it terminates the process.
+Every host call — override or default — goes through trace.ts's `runTraced`,
+mirroring `runTop`, so a `runModule` run with a trace collects the same
+capability log (`{op, args, result}` per host interpretation) as the
+interpreter side — the parity observation contract.

@@ -19,6 +19,7 @@ import type {CAtom, CIr, CPrim, CTerm} from "../../frontend/cps_ir.ts";
 import {assertNever} from "../../assert.ts";
 import {errDivByZero, errIndexOOB, errIntOverflow, errUnhandled, OP_ADD, OP_DIV, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_MUL, OP_NE, OP_NEG, OP_REM, OP_SUB} from "../../ops.ts";
 import {builtinInterps, setProgramArgs} from "../../builtins.ts";
+import {runTraced, type RunTrace} from "../../trace.ts";
 
 function isNative(v: Value): v is Native {
   return v !== null && typeof v === "object" && v.tag === "native";
@@ -328,20 +329,23 @@ function widthOp(op: string, a: Value, b: Value | undefined, nk: string): Value 
 // is a top-level const there — entry-order safe only same-module; deriving
 // it here instead would read `builtins` during eval's own init and be TDZ-
 // sensitive in the eval⇄builtins import cycle.
-function runTop(out: Outcome, interp?: EffectInterp): Value {
+function runTop(out: Outcome, interp?: EffectInterp, trace?: RunTrace): Value {
   while (true) {
     if (out.tag === "done")
       return out.value;
     // Builtin effect interpretation: when Read/Write/Println/Out reach the
-    // top unhandled, perform real I/O and resume the continuation.
+    // top unhandled, perform real I/O and resume the continuation. Every
+    // host call goes through trace.ts's runTraced — the run trace is the
+    // parity observation contract, so it must capture custom and builtin
+    // interpretations identically (trace === undefined: untraced run).
     const custom = interp?.[out.op];
     if (custom !== undefined) {
-      out = custom(out.args, out.k);
+      out = runTraced(out.op, out.args, out.k, custom, trace);
       continue;
     }
     if (!(out.op in builtinInterps))
       throw new Error(errUnhandled(out.op));
-    out = builtinInterps[out.op](out.args, out.k);
+    out = runTraced(out.op, out.args, out.k, builtinInterps[out.op], trace);
   }
 }
 
@@ -353,7 +357,7 @@ export {newCtx, type Ctx};
 // program (prepare(src, ctx.checked) for REPL lines) in ctx's runtime env. Returns the last item's value (null after a pure
 // declaration), its resolved type, and whether the program ends in a bare
 // expression (the REPL echo rule: declarations print nothing).
-export function exec(prog: Program, ctx: Ctx, checked: Checked): {value: Value, lastType: Type, lastIsExpr: boolean} {
+export function exec(prog: Program, ctx: Ctx, checked: Checked, trace?: RunTrace): {value: Value, lastType: Type, lastIsExpr: boolean} {
   // Fail fast on statically unhandled ops before evaluating anything —
   // pipeline.ts's rejectUnhandled, the gate both backends apply right after
   // prepare: an op in `checked.unhandled` (performed with no matching
@@ -380,7 +384,7 @@ export function exec(prog: Program, ctx: Ctx, checked: Checked): {value: Value, 
   let lastIsExpr = false;
   for (const it of prog.items)
     lastIsExpr = "e" in it ? prog.nodes[it.e].t !== "let" : false; // effect decl / alias: not echoable
-  const value = runTop(evalTerm(ir.term, ir, ctx.env, v => ({tag: "done", value: v})), ctx.interp);
+  const value = runTop(evalTerm(ir.term, ir, ctx.env, v => ({tag: "done", value: v})), ctx.interp, trace);
   return {value, lastType: ctx.checked.lastType, lastIsExpr};
 }
 
@@ -391,10 +395,10 @@ export function exec(prog: Program, ctx: Ctx, checked: Checked): {value: Value, 
 // (tests that assert values go through runLine + exec instead). `interp`
 // optionally overrides the builtin interpretation of unhandled effects;
 // `args` is the program args the `args` builtin reports.
-export function run(src: string, interp?: EffectInterp, args?: string[]): Value {
+export function run(src: string, interp?: EffectInterp, args?: string[], trace?: RunTrace): Value {
   const {prog, checked} = prepare(src);
   requireUnitEntry(prog, checked);
-  return exec(prog, newCtx(interp, args), checked).value;
+  return exec(prog, newCtx(interp, args), checked, trace).value;
 }
 
 // runLine: the REPL's one-line protocol — prepare against ctx's checked

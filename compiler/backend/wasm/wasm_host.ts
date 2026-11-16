@@ -5,10 +5,11 @@
 // and never load binaryen.
 import {prepare, requireUnitEntry, type EffectInterp} from "../../frontend/pipeline.ts";
 import type {Value} from "../../env.ts";
+import {type RunTrace} from "../../trace.ts";
 import {compileWithOps} from "./wasm.ts";
 import {runModule} from "./wasm_run.ts";
 
-export function runWasm(src: string, interp?: EffectInterp, args?: string[]): Value {
+export function runWasm(src: string, interp?: EffectInterp, args?: string[], trace?: RunTrace): Value {
   // The entrypoint gate (pipeline.ts's requireUnitEntry — the interpreter
   // run's twin): a module run from source is a file entrypoint, so its last
   // expression must be unit-typed. Applied here, not inside compile: the
@@ -19,5 +20,5 @@ export function runWasm(src: string, interp?: EffectInterp, args?: string[]): Va
   // interp rides along for the static unhandled-op gate (pipeline.ts's
   // rejectUnhandled): a custom op the interp covers must compile.
   const {bytes, ops} = compileWithOps(pre, interp);
-  return runModule(bytes, ops, interp, args);
+  return runModule(bytes, ops, interp, args, trace);
 }
