@@ -1,4 +1,4 @@
-effect Choose(opts: [i64]): i64;            # Choose yields an i64
+Choose :: effect(opts: [i64]): i64;            # Choose yields an i64
 Println!(handle {
   x :: Choose!([1, 2, 3]);        # pause, ask the handler
   y :: Choose!([10, 20]);

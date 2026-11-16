@@ -622,7 +622,7 @@ function inferNode(
     case "perform": {
       const sig = effects.get(e.op);
       if (sig === undefined)
-        throw new TypeError_(`Unknown effect: ${e.op} (declare with: effect ${e.op}(...);)`);
+        throw new TypeError_(`Unknown effect: ${e.op} (declare with: ${e.op} :: effect(...);)`);
       if (e.args.length !== sig.params.length)
         throw new TypeError_(`effect ${e.op}: ${sig.params.length} args, got ${e.args.length}`);
       const argTs = e.args.map(a => infer(a, nodes, env, effs, effects, rec));

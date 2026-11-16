@@ -1,2 +1,2 @@
 # Split-mode while: a resuming handler drives the loop; the case body returns the live i.
-effect Op(): i64; i := 0; Println!(handle { while (Op!() < 3) { i = i + 1 }; i } case Op() => k { k(i) })
+Op :: effect(): i64; i := 0; Println!(handle { while (Op!() < 3) { i = i + 1 }; i } case Op() => k { k(i) })

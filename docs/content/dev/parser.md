@@ -86,7 +86,7 @@ Why flat instead of embedded:
 | Item | Source | Notes |
 |------|--------|-------|
 | `{e}` | expression statement | the program's value is the last one |
-| `{effect, sig}` | `effect Op(p): ret;` | the only way `Op!` becomes legal (see [Type checker](types.md)) |
+| `{effect, sig}` | `Op :: effect(p): ret;` | the only way `Op!` becomes legal (see [Type checker](types.md)) |
 | `{alias}` | `type Pair(a, b) = [a, b];` | parametric type alias |
 
 ## Aliases and parser-allocated type variables

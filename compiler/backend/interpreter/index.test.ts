@@ -57,7 +57,7 @@ test("run accepts a custom effect interpreter (fakes Read, no fs touched)", () =
 
 test("Nondeterminism — multi-shot resume, declared effect + return type", () => {
 expect(show(run(`
-effect Choose(opts: [i64]): i64;
+Choose :: effect(opts: [i64]): i64;
 handle {
   x :: Choose!([1, 2, 3]);
   y :: Choose!([10, 20]);
@@ -69,7 +69,7 @@ handle {
 
 test("Exception — non-resuming handler aborts", () => {
 expect(show(run(`
-effect Div(a: i64, b: i64): i64;
+Div :: effect(a: i64, b: i64): i64;
 handle {
   r :: Div!(10, 0);
   [r]
@@ -81,8 +81,8 @@ handle {
 
 test("Deep handler threading a log across resumes", () => {
 expect(show(run(`
-effect Log(msg: string): unit;
-effect Result(v: string): unit;
+Log :: effect(msg: string): unit;
+Result :: effect(v: string): unit;
 handle {
   Log!("a");
   Log!("b");
@@ -94,8 +94,8 @@ handle {
 
 test("Effect propagation through an inner handler to an outer one", () => {
 expect(show(run(`
-effect Emit(m: string): unit;
-effect Other(m: string): unit;
+Emit :: effect(m: string): unit;
+Other :: effect(m: string): unit;
 handle {
   handle { Emit!("hi") } case Other(m) => k { ["should-not-match"] }
 } case Emit(m) => k { [m] }
@@ -212,7 +212,7 @@ describe("Declarations: consts vs mutable bindings", () => {
     expect(() => run(`len :: 1;`)).toThrow("cannot shadow builtin 'len'");
     expect(() => run(`args :: 1;`)).toThrow("cannot shadow builtin 'args'");
     expect(() => run(`f :: fn(len: i64): i64 { len };`)).toThrow("cannot shadow builtin 'len'");
-    expect(() => run(`effect T(n: i64): i64; handle { T!(1) } case T(len) => k { len }`))
+    expect(() => run(`T :: effect(n: i64): i64; handle { T!(1) } case T(len) => k { len }`))
       .toThrow("cannot shadow builtin 'len'");
     // `_` is the discard wildcard: repeatable, rebindable, shadowing-free.
     expect(show(run(`[_, x] := [1, 2]; [_, y] := [3, 4]; [x, y]`))).toBe("[2, 4]");
@@ -289,9 +289,9 @@ describe("Tuples, aliases, and field access", () => {
     expect(show(run(`f :: fn(a: i64, b: i64,): i64 { a + b }; f(1, 2,)`))).toBe("3");
   });
   test("effect rows demand commas", () => {
-    expect(() => typeOf(`effect A(): i64; effect B(): i64; f :: fn(): i64 ! { A B } { A!() };`))
+    expect(() => typeOf(`A :: effect(): i64; B :: effect(): i64; f :: fn(): i64 ! { A B } { A!() };`))
       .toThrow("Expected \",\" or \"}\", got \"B\"");
-    expect(typeOf(`effect A(): i64; f :: fn(): i64 ! { A, } { A!() }; f()`)).toBe("i64");
+    expect(typeOf(`A :: effect(): i64; f :: fn(): i64 ! { A, } { A!() }; f()`)).toBe("i64");
   });
   test("dot access on a tuple by name", () => {
     expect(show(run(`p: [x: f64, y: f64] : [1.0, 2.0]; p.x`))).toBe("1");
@@ -401,7 +401,7 @@ test("Effectful function signature carries its effect set", () => {
   // ask echoes its arg via the Emit effect and returns it; the signature
   // declares `! { Emit }`, which the checker verifies against the body.
   expect(typeOf(`
-effect Emit(m: i64): i64;
+Emit :: effect(m: i64): i64;
 ask :: fn(n: i64): i64 ! { Emit } { Emit!(n) };
 ask
 `)).toBe("(i64) -> i64 ! { Emit }");
@@ -410,8 +410,8 @@ ask
 test("Declaring an effect set rejects effects not listed", () => {
   // Body performs Emit but the signature only declares Log.
   expect(() => run(`
-effect Emit(m: i64): i64;
-effect Log(m: i64): i64;
+Emit :: effect(m: i64): i64;
+Log :: effect(m: i64): i64;
 f :: fn(n: i64): i64 ! { Log } { Emit!(n) };
 f(1)
 `)).toThrow("not declared");
@@ -740,7 +740,7 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
     const orig = console.log;
     console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
     try {
-      expect(() => run(`effect T(x: i64): i64; Println!("boom"); T!(1)`))
+      expect(() => run(`T :: effect(x: i64): i64; Println!("boom"); T!(1)`))
         .toThrow("Unhandled effect: T");
     } finally {
       console.log = orig;
@@ -750,26 +750,26 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
 
   test("an interp override covers a program op (the same path runTop uses)", () => {
     const seen: Value[][] = [];
-    expect(run(`effect T(x: i64): i64; 1 + T!(2)`, {
+    expect(run(`T :: effect(x: i64): i64; 1 + T!(2)`, {
       T: (args, k) => { seen.push(args); return k(Number(args[0]) * 10); },
     })).toBe(21n);
     expect(seen).toEqual([[2n]]);
   });
 
   test("handled ops pass; performs inside lambdas are handled at the call site", () => {
-    expect(run(`effect T(x: i64): i64; handle { T!(2) } case T(n) => k { n * 3 }`)).toBe(6n);
-    expect(run(`effect T(x: i64): i64; f :: fn(y: i64): i64 ! { T } { T!(y) }; handle { f(5) } case T(n) => k { n + 1 }`)).toBe(6n);
+    expect(run(`T :: effect(x: i64): i64; handle { T!(2) } case T(n) => k { n * 3 }`)).toBe(6n);
+    expect(run(`T :: effect(x: i64): i64; f :: fn(y: i64): i64 ! { T } { T!(y) }; handle { f(5) } case T(n) => k { n + 1 }`)).toBe(6n);
   });
 
   test("an unhandled op through a call is caught statically, not just a bare perform", () => {
-    expect(() => run(`effect T(x: i64): i64; f :: fn(y: i64): i64 ! { T } { T!(y) }; f(1)`))
+    expect(() => run(`T :: effect(x: i64): i64; f :: fn(y: i64): i64 ! { T } { T!(y) }; f(1)`))
       .toThrow("Unhandled effect: T");
   });
 
   test("case bodies run outside their handler: ops they perform must be handled too", () => {
-    expect(() => run(`effect T(x: i64): i64; effect U(x: i64): i64; handle { T!(1) } case T(n) => k { U!(2) }`))
+    expect(() => run(`T :: effect(x: i64): i64; U :: effect(x: i64): i64; handle { T!(1) } case T(n) => k { U!(2) }`))
       .toThrow("Unhandled effect: U");
-    expect(run(`effect T(x: i64): i64; effect U(x: i64): i64; handle { T!(1) } case T(n) => k { U!(2) }`,
+    expect(run(`T :: effect(x: i64): i64; U :: effect(x: i64): i64; handle { T!(1) } case T(n) => k { U!(2) }`,
       {U: (_args, k) => k(7)})).toBe(7n);
   });
 
@@ -777,7 +777,7 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
     // A case body re-performing its own op reads as handled statically (the
     // handler covers T), but the body runs outside the handler — only the
     // interpreter's unhandled-effect throw catches it.
-    expect(() => run(`effect T(x: i64): i64; handle { T!(1) } case T(n) => k { T!(2) }`))
+    expect(() => run(`T :: effect(x: i64): i64; handle { T!(1) } case T(n) => k { T!(2) }`))
       .toThrow("Unhandled effect: T");
   });
 
@@ -837,7 +837,7 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
     // row names E and exec's fail-fast gate rejects before any side effect —
     // no runtime backstop involved.
     expect(() => run(`
-      effect E(): i64;
+      E :: effect(): i64;
       call :: fn (f) { f() };
       escape :: fn (h) { handle { h() } case E(n) => k { h } };
       r :: escape(fn(): i64 ! { E } { E!() });
@@ -850,8 +850,8 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
     // declared set — the function performs exactly what it declares, and a
     // callee stepping outside fails at the call site.
     expect(() => run(`
-      effect E(): i64;
-      effect U(): i64;
+      E :: effect(): i64;
+      U :: effect(): i64;
       run :: fn (f): i64 ! { E } { f() };
       g :: fn(): i64 ! { U } { U!() };
       handle { run(g) } case E(n) => k { n }
@@ -859,7 +859,7 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
     // An empty declaration cannot pin unknown parameter effects to anything,
     // so a body whose unannotated parameter performs is rejected outright.
     expect(() => run(`
-      effect E(): i64;
+      E :: effect(): i64;
       run :: fn (f): i64 ! { } { f() };
       g :: fn(): i64 ! { E } { E!() };
       run(g)
@@ -875,7 +875,7 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
     // call binds the circle at the call site and passes typecheck — f is
     // never invoked, so nothing performs).
     expect(typeOf(`
-      effect E(): i64;
+      E :: effect(): i64;
       run :: fn (f): i64 ! { E } { run(fn () { f() }) };
       run
     `)).toBe("(() -> a ! { e1 }) -> i64 ! { E }");
@@ -886,15 +886,15 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
     // declaration, so a callee stepping outside the declaration fails at the
     // call site even though f is only reached at the recursion's base.
     expect(() => run(`
-      effect E(): i64;
-      effect U(): i64;
+      E :: effect(): i64;
+      U :: effect(): i64;
       run :: fn (f, n: i64): i64 ! { E } { if (n == 0) { f() } else { run(f, n - 1) } };
       g :: fn(): i64 ! { U } { U!() };
       handle { run(g, 2) } case E(n) => k { n }
     `)).toThrow("effect mismatch: { E } ≠ { U }");
     // A callee within the declaration runs to completion under the handler.
     run(`
-      effect E(): i64;
+      E :: effect(): i64;
       run :: fn (f, n: i64): i64 ! { E } { if (n == 0) { f() } else { run(f, n - 1) } };
       g :: fn(): i64 ! { E } { E!() };
       handle { run(g, 2) } case E(n) => k { n }
@@ -905,7 +905,7 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
     // The gate fires before evaluation: the Println before the escaping call
     // must not run.
     expect(() => run(`
-      effect E(): i64;
+      E :: effect(): i64;
       call :: fn (f) { f() };
       escape :: fn (h) { handle { h() } case E(n) => k { h } };
       r :: escape(fn(): i64 ! { E } { E!() });
@@ -914,7 +914,7 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
     `)).toThrow("Unhandled effect: E");
     // The delivered closure carries the handled op in its row.
     expect(typeOf(`
-      effect E(): i64;
+      E :: effect(): i64;
       escape :: fn (h) { handle { h() } case E(n) => k { h } };
       r :: escape(fn(): i64 ! { E } { E!() });
       r
@@ -927,7 +927,7 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
       ["x := [];\nx = [x];", /recursive type/],
       ["if (true) { [1, \"a\"] } else { [1, \"a\", true] }", /tuple arity 2 ≠ 3/],
       ["if (true) { fn(x: i64): i64 { x } } else { fn(x: i64, y: i64): i64 { x } }", /arity 1 ≠ 2/],
-      ["effect E(): i64; effect U(): i64; g1 :: fn(): i64 ! { E } { E!() }; g2 :: fn(): i64 ! { U } { U!() }; if (true) { g1 } else { g2 }", /effect mismatch: \{ E \} ≠ \{ U \}/],
+      ["E :: effect(): i64; U :: effect(): i64; g1 :: fn(): i64 ! { E } { E!() }; g2 :: fn(): i64 ! { U } { U!() }; if (true) { g1 } else { g2 }", /effect mismatch: \{ E \} ≠ \{ U \}/],
       ["@as(\"a\", i64)", /@as: cannot cast string to i64/],
       ["xs: [i64] : [1]; xs.foo", /arrays use \.N indexing, not \.foo/],
       ["p: [i64, i64] : [1, 2]; p.5", /\.5 out of range for tuple of 2/],
@@ -935,7 +935,7 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
       ["x: i64 : 1; x.0", /field access on non-record type: i64/],
       ["p: [i64, i64] : [1, 2]; [a, b, c] := p;", /destructure arity 3 ≠ tuple 2/],
       ["x: i64 : 1; [a, b] := x;", /cannot destructure non-record type: i64/],
-      ["effect E(x: i64): i64; E!()", /effect E: 1 args, got 0/],
+      ["E :: effect(x: i64): i64; E!()", /effect E: 1 args, got 0/],
       ["handle { 1 } case Nope(n) => k { n }", /Handler for unknown effect: Nope/],
       ["f :: fn(x: i64): i64 { x }; f(1, 2)", /arity 1 ≠ 2/],
       ["t: string : \"x\"; t(1)", /Type mismatch/],
@@ -969,15 +969,15 @@ describe("Fail-fast unhandled ops (exec rejects before evaluating)", () => {
        "twice :: fn (f, xs) { map(f, map(f, xs)) };\ntwice(fn(x: string): string { x }, [\"a\"])", "[\"a\"]"],
       // hasPerformOutsideLambdas walks if/field spines inside handle bodies.
       ["handle body spine through if and field",
-       "effect E(): i64; p: [i64, i64] : [1, 2]; handle { if (true) { p.0 } else { E!() } } case E(n) => k { n }", "1"],
+       "E :: effect(): i64; p: [i64, i64] : [1, 2]; handle { if (true) { p.0 } else { E!() } } case E(n) => k { n }", "1"],
       // hasPerformOutsideLambdas's as/while arms on a handle body spine
       // (the while must not perform: .some() short-circuits the walk).
       ["handle body spine through while and as",
-       "effect E(n: i64): i64; p: [i64, i64] : [1, 2];\nf :: fn(): i64 {\n  handle {\n    while (false) { unit };\n    @as(if (true) { E!(p.0) } else { 2 }, i64)\n  } case E(n) => k { k(n) }\n};\nf()", "1"],
+       "E :: effect(n: i64): i64; p: [i64, i64] : [1, 2];\nf :: fn(): i64 {\n  handle {\n    while (false) { unit };\n    @as(if (true) { E!(p.0) } else { 2 }, i64)\n  } case E(n) => k { k(n) }\n};\nf()", "1"],
       // caseReferencesK walks as/if/while/app/arr/field/handle shapes in
       // case bodies that resume; the gate only runs over a perform-free body.
       ["k references through as/if/while/arr/field/nested handle",
-       "effect E(n: i64): i64;\ng :: fn(): i64 ! { E } { E!(1) };\nf :: fn(): i64 {\n  handle {\n    g()\n  } case E(n) => k {\n    x := @as(n, i64);\n    if (x < 9) { x } else { 0 };\n    y := [x, x].1;\n    while (y < 1) { y = y + 1 };\n    h := handle { y } case Return(v) => r { k(v) };\n    k(h)\n  }\n};\nf()", "1"],
+       "E :: effect(n: i64): i64;\ng :: fn(): i64 ! { E } { E!(1) };\nf :: fn(): i64 {\n  handle {\n    g()\n  } case E(n) => k {\n    x := @as(n, i64);\n    if (x < 9) { x } else { 0 };\n    y := [x, x].1;\n    while (y < 1) { y = y + 1 };\n    h := handle { y } case Return(v) => r { k(v) };\n    k(h)\n  }\n};\nf()", "1"],
       // inferWith's lambda branch: a lambda body under a tuple return type.
       ["tuple expectation flows into a nested lambda body",
        "h :: fn(): [i64, i64] { fn(): [i64, i64] { [1, 2] } }; h()", "ERR"],
@@ -1051,7 +1051,7 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
 
   test("ef types prints symbols, then the program result type and effect row", () => {
     const f = join(tmpdir(), "ef-types-test.ef");
-    writeFileSync(f, `effect T(x: i64): i64; Println!("a"); handle { T!(1) } case T(n) => k { n }`);
+    writeFileSync(f, `T :: effect(x: i64): i64; Println!("a"); handle { T!(1) } case T(n) => k { n }`);
     try {
       const out = execSync(`bun run ../../cli.ts types ${f}`, {
         encoding: "utf8",
@@ -1281,7 +1281,7 @@ describe("Semantic tokens (typeToks feed the LSP's type/effect highlighting)", (
   });
 
   test("effect names record as macro: decl, rows, performs, case labels (spec AC-004)", () => {
-    expect(toks(`effect Read(): i32;
+    expect(toks(`Read :: effect(): i32;
 f :: fn(): i32 ! { Read } { Read!() };
 g :: (unit) -> i32 ! { Read };
 h :: fn(): i32 ! { Read } { handle { Read!() } case Read(x) => k { x } case Return(v) => k { v } };`)).toEqual([
@@ -1336,7 +1336,7 @@ collect(1);`)).toEqual([
   test("handler case params bind with their effect-sig types (spec FR-007)", () => {
     // `k { v }` is resume-with syntax — k is never an expression identifier,
     // so only the case param (binder + use) and the handler binder record.
-    expect(vt(`effect Read(): i64;\nh :: fn(): i64 ! { Read } { handle { Read!() } case Read(v) => k { v } };`)).toEqual([
+    expect(vt(`Read :: effect(): i64;\nh :: fn(): i64 ! { Read } { handle { Read!() } case Read(v) => k { v } };`)).toEqual([
       {kind: "function", text: "h"}, // binder
       {kind: "variable", text: "v"}, // case-param binder
       {kind: "variable", text: "v"}, // use (resumed value)
@@ -1420,7 +1420,7 @@ describe("selective CPS: dcall/dret classification", () => {
 
   test("effectful function calling pure helpers: dcalls inside a CPS body", () => {
     const src = `
-      effect Log(n: i64): i64;
+      Log :: effect(n: i64): i64;
       helper :: fn(x: i64): i64 { x + 1 };
       main :: fn(): i64 { Log!(helper(10)) };
       handle {
@@ -1470,7 +1470,7 @@ describe("selective CPS: dcall/dret classification", () => {
 
   test("multi-shot resume crossing dcall-produced bindings", () => {
     expect(show(run(`
-      effect Pick(opts: [i64]): i64;
+      Pick :: effect(opts: [i64]): i64;
       pure :: fn(x: i64): i64 { x * 10 };
       handle {
         a :: pure(1);
@@ -1484,13 +1484,13 @@ describe("selective CPS: dcall/dret classification", () => {
 
   test("any-typed callee and row-polymorphic native callee stay suspending", () => {
     expect(show(run(`
-      effect Ask(n: i64): i64;
+      Ask :: effect(n: i64): i64;
       f :: fn(x: i64): i64 { Ask!(x) };
       a: any = f;
       handle { a(3) } case Ask(n) => k { k(n * 2) } case Return(v) => k { v }
     `))).toBe("6");
     expect(show(run(`
-      effect Tick(n: i64): i64;
+      Tick :: effect(n: i64): i64;
       cb :: fn(x: i64): i64 ! { Tick } { Tick!(x) };
       handle { map(cb, [1, 2]) } case Tick(n) => k { k(n + 100) } case Return(v) => k { v }
     `))).toBe("[101, 102]");
@@ -1498,7 +1498,7 @@ describe("selective CPS: dcall/dret classification", () => {
 
   test("anyTaint: suspending function through an any binding into a pure-typed param still suspends", () => {
     const src = `
-      effect Ask(n: i64): i64;
+      Ask :: effect(n: i64): i64;
       run1 :: fn(f: (i64) -> i64): i64 { f(3) };
       susp :: fn(x: i64): i64 ! { Ask } { Ask!(x) };
       a: any = susp;
@@ -1515,7 +1515,7 @@ describe("selective CPS: dcall/dret classification", () => {
 
   test("contCall: invoking a resume binder stays suspending and re-performs (multi-shot)", () => {
     const src = `
-      effect Ask(n: i64): i64;
+      Ask :: effect(n: i64): i64;
       handle {
         x :: Ask!(1);
         y :: Ask!(x);
@@ -1533,7 +1533,7 @@ describe("selective CPS: dcall/dret classification", () => {
 
   test("mixed function: internal handle keeps the direct boundary (row {})", () => {
     const src = `
-      effect Tick(n: i64): i64;
+      Tick :: effect(n: i64): i64;
       mix :: fn(x: i64): i64 {
         handle { Tick!(x) + 1 } case Tick(n) => k { k(n * 10) }
       };
@@ -1554,7 +1554,7 @@ describe("selective CPS: dcall/dret classification", () => {
 
   test("mixed function with a tail handle: boundary rides the terminal cell", () => {
     const src = `
-      effect Tick(n: i64): i64;
+      Tick :: effect(n: i64): i64;
       mix :: fn(x: i64): i64 {
         handle { Tick!(x) } case Tick(n) => k { n * 2 }
       };
@@ -1571,8 +1571,8 @@ describe("selective CPS: dcall/dret classification", () => {
 
   test("multi-shot resume inside a mixed function (the amb shape)", () => {
     const src = `
-      effect Choose(lo: i64, hi: i64): i64;
-      effect Emit(t: [i64]): unit;
+      Choose :: effect(lo: i64, hi: i64): i64;
+      Emit :: effect(t: [i64]): unit;
       inner :: fn(n: i64): unit ! { Choose, Emit } {
         a :: Choose!(1, n);
         Emit!([a])
@@ -1608,13 +1608,13 @@ describe("Spine-gated resume typing (multi-shot resume over HOF loops)", () => {
   const cb = "cb :: fn(x: i64): i64 { Op!() }";
 
   test("double resume over map: delivery must match the body type (named callback)", () => {
-    expect(() => run(`effect Op(): i64; ${cb};
+    expect(() => run(`Op :: effect(): i64; ${cb};
       handle { map(cb, [1, 2]) } case Op() => k { k(k(10)) }`))
       .toThrow("expected : [i64]");
   });
 
   test("double resume over map: same rejection with an inline callback", () => {
-    expect(() => run(`effect Op(): i64;
+    expect(() => run(`Op :: effect(): i64;
       handle { map(fn(x: i64): i64 { Op!() }, [1, 2]) } case Op() => k { k(k(10)) }`))
       .toThrow("expected : [i64]");
   });
@@ -1622,7 +1622,7 @@ describe("Spine-gated resume typing (multi-shot resume over HOF loops)", () => {
   test("single resume over map: the delivery constraint surfaces at the use site", () => {
     // k(10)'s type stays a fresh var at the case body, so the mismatch is
     // not forced there — it surfaces where the handle's result is consumed.
-    expect(() => run(`effect Op(): i64; ${cb};
+    expect(() => run(`Op :: effect(): i64; ${cb};
       s := handle { map(cb, [1, 2]) } case Op() => k { k(10) };
       s + 0`))
       .toThrow("+: [a] and i64 are not both numeric or both string");
@@ -1632,7 +1632,7 @@ describe("Spine-gated resume typing (multi-shot resume over HOF loops)", () => {
     // k(10) flows into len's [a] param, binding k's return to [a]; the
     // body-completion boundary then rejects the case body's i64 — matching
     // the shape's garbage runtime (len of a delivery window).
-    expect(() => run(`effect Op(): i64; ${cb};
+    expect(() => run(`Op :: effect(): i64; ${cb};
       handle { map(cb, [1, 2]) } case Op() => k { len(k(10)) }`))
       .toThrow(/got\s+: \[a\]\nexpected : i64/);
   });
@@ -1641,18 +1641,18 @@ describe("Spine-gated resume typing (multi-shot resume over HOF loops)", () => {
     // The delivery is the body's completion; discarding it (Println!) would
     // misreport the body's result. Escape: return the delivery and observe
     // outside the handle.
-    expect(() => run(`effect Op(): i64; ${cb};
+    expect(() => run(`Op :: effect(): i64; ${cb};
       handle { map(cb, [1, 2]) } case Op() => k { Println!(k(10)) }`))
       .toThrow(/got\s+: unit\nexpected : \[i64\]/);
   });
 
   test("abort idiom: a k-free case body skips the delivery constraint", () => {
-    expect(show(run(`effect Op(): i64; ${cb};
+    expect(show(run(`Op :: effect(): i64; ${cb};
       handle { map(cb, [1, 2]) } case Op() => k { 42 }`))).toBe("42");
   });
 
   test("transforming handler: len outside, k(10) inside", () => {
-    const src = `effect Op(): i64; ${cb};
+    const src = `Op :: effect(): i64; ${cb};
       len(handle { map(cb, [1, 2]) } case Op() => k { k(10) })`;
     expect(typeOf(src)).toBe("i64");
     expect(show(run(src))).toBe("2");
@@ -1662,21 +1662,21 @@ describe("Spine-gated resume typing (multi-shot resume over HOF loops)", () => {
     // Each resume re-runs the body; map's land re-writes the shared window
     // (last write wins per element). The wasm backend diverges here —
     // pinned in wasm.test.ts until the per-element land state change.
-    const src = `effect Op(): i64; ${cb};
+    const src = `Op :: effect(): i64; ${cb};
       handle { map(cb, [1, 2]) } case Op() => k { q := k(10); k(11); q }`;
     expect(typeOf(src)).toBe("[i64]");
     expect(show(run(src))).toBe("[11, 11]");
   });
 
   test("single-shot resume over map is unchanged", () => {
-    expect(show(run(`effect Op(): i64; ${cb};
+    expect(show(run(`Op :: effect(): i64; ${cb};
       handle { map(cb, [1, 2]) } case Op() => k { k(10) }`))).toBe("[10, 10]");
   });
 
   test("each multi-shot with a trailing spine perform is unchanged", () => {
     // The trailing Op! puts a perform on the body's spine, so the delivery
     // constraint never fires — the looser boundary holds.
-    expect(show(run(`effect Op(): i64; cb :: fn(x: i64, i: i64): i64 { Op!() };
+    expect(show(run(`Op :: effect(): i64; cb :: fn(x: i64, i: i64): i64 { Op!() };
       handle {
         each(cb, [1, 2]);
         Op!()
@@ -1684,12 +1684,12 @@ describe("Spine-gated resume typing (multi-shot resume over HOF loops)", () => {
   });
 
   test("each under a handler resumes single-shot: unit result", () => {
-    expect(show(run(`effect Op(): i64; cb :: fn(x: i64, i: i64): i64 { Op!() };
+    expect(show(run(`Op :: effect(): i64; cb :: fn(x: i64, i: i64): i64 { Op!() };
       handle { each(cb, [1, 2]) } case Op() => k { k(0) }`))).toBe("unit");
   });
 
   test("design-B: k(1) + k(2) over a perform-spined body is unchanged", () => {
-    expect(show(run(`effect Op(): i64;
+    expect(show(run(`Op :: effect(): i64;
       handle { Op!() } case Op() => k { k(1) + k(2) }`))).toBe("3");
   });
 

@@ -99,7 +99,7 @@ describe("unused-arg traversal", () => {
       };
     `],
     ["lambdas in perform args", `
-      effect Ask(n: i64): i64;
+      Ask :: effect(n: i64): i64;
       f :: fn(x: i64): i64 ! { Ask } {
         Ask!(fn(u: i64): i64 { u }, x)
       };
@@ -125,7 +125,7 @@ describe("unused-arg traversal", () => {
     [
     "params inside handler case bodies are linted; resume and case params shadow",
     `
-      effect Ask(n: i64): i64;
+      Ask :: effect(n: i64): i64;
       f :: fn(x: i64): i64 {
         handle {
           Ask!(x)

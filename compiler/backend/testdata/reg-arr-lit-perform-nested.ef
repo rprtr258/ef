@@ -1,2 +1,2 @@
 # Performs inside nested array literals.
-effect Op(): i64; Println!(handle { [[Op!(), 1], [2, [Op!()]]] } case Op() => k { k(7) })
+Op :: effect(): i64; Println!(handle { [[Op!(), 1], [2, [Op!()]]] } case Op() => k { k(7) })

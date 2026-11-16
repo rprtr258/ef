@@ -18,8 +18,8 @@ export const DEFAULT_PROJECT: Project = {
       name: "effects.ef",
       code: `# Algebraic effects in ef: declare with \`effect\`, perform with Op!(...),
 # interpret with handle ... case Op(...) => k { ... }.
-effect Choose(lo: i64, hi: i64): i64;
-effect Emit(t: [i64]): unit;
+Choose :: effect(lo: i64, hi: i64): i64;
+Emit :: effect(t: [i64]): unit;
 
 # Nondeterministic search: the Choose handler resumes the continuation once
 # per option, so pyth branches into every path (examples/amb.ef has the tour).
@@ -63,7 +63,7 @@ each(fn(t: [i64], _) { Println!(t) }, triples(14));`,
       code: `# Builtin effects interpreted by handlers instead of the host:
 # Tick! performs, the handler owns the count in a cell and resumes with
 # the next value. Resume k is multi-shot, so map over Tick! just works.
-effect Tick(): i64;
+Tick :: effect(): i64;
 
 counter :: fn(steps: i64): [i64] {
   cell :: [0];

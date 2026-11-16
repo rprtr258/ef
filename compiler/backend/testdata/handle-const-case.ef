@@ -1,2 +1,2 @@
 # Single op, constant result, no resume.
-effect Op(): i64; Println!(handle { 1 + Op!() } case Op() => k { 7 })
+Op :: effect(): i64; Println!(handle { 1 + Op!() } case Op() => k { 7 })

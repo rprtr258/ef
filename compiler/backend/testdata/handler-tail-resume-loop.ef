@@ -1,6 +1,6 @@
 # Tail-resumption loop: every iteration resumes through the same boundary;
 # the pending completion continuations must not chain across iterations.
-effect Get(): i64;
+Get :: effect(): i64;
 
 s := 40;
 

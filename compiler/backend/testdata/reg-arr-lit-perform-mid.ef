@@ -1,2 +1,2 @@
 # Literal elements on both sides of a perform.
-effect Op(): i64; Println!(handle { [1, 2, Op!(), Op!()] } case Op() => k { k(7) })
+Op :: effect(): i64; Println!(handle { [1, 2, Op!(), Op!()] } case Op() => k { k(7) })

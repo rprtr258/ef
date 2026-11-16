@@ -214,7 +214,7 @@ function add(st: Parser, e: Expr, pos?: Loc): ExprID {
 function program(st: Parser): Program {
   const items: Item[] = [];
   while (!atEnd(st)) {
-    if (isKw(st, "effect")) items.push(parseEffect(st));
+    if (peek(st, 1) === "::" && peek(st, 2) === "effect") items.push(parseEffect(st));
     else {
       const al = tryParseAliasItem(st);
       items.push(al ?? {e: parseStmt(st)});
@@ -222,11 +222,16 @@ function program(st: Parser): Program {
   }
   return {nodes: st.nodes, locs: st.locs, items, typeToks: st.typeToks};
 }
+// Effect declarations, in the uniform `E :: effect(A): B;` binding form — the
+// same `name :: ...` convention as type aliases, with `effect` keywording the
+// RHS. The declared name is a regular binding in the separate effect
+// namespace.
 function parseEffect(st: Parser): Item {
-  next(st); // effect
   const p = pos(st);
   const name = next(st);
   recordTypeTok(st, "macro", name);
+  eat(st, "::");
+  next(st); // effect
   const params = parseParams(st);
   eat(st, ":");
   const ret = parseType(st);

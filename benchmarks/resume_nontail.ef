@@ -4,7 +4,7 @@
 # grows to depth n per round and the round result folds op2 over the whole
 # chain (op2(x, y) = abs(x - 503*y + 37) mod 1009). 1000 rounds, each
 # seeded with the previous round's value.
-effect Operator(x: i64): unit;
+Operator :: effect(x: i64): unit;
 
 av := args();
 vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 10000 };

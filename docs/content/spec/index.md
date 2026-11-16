@@ -38,7 +38,7 @@ effect declaration, or a type alias:
 ```
 program  ::= item*
 item     ::= effect-decl | type-alias | stmt
-effect-decl ::= "effect" name params ":" type ";"
+effect-decl ::= name "::" "effect" params ":" type ";"
 type-alias ::= name "::" type ";"
              | name "::" "fn" "(" ((name ":" "type" ("," name ":" "type")*) ","?)? ")"
                  ":" "type" "{" type "}" ";"    -- see §3.1
@@ -160,12 +160,12 @@ check time) and yields `unit` — the mutation primitive that makes `while`
 useful.
 
 ```
-effect-decl ::= "effect" name "(" params ")" ":" type ";"
+effect-decl ::= name "::" "effect" "(" params ")" ":" type ";"
 handle      ::= "handle" block case+
 case        ::= "case" ("Return" | name) params "=>" name block
 ```
 
-- An **effect declaration** `effect Op(args): ret` introduces a named operation
+- An **effect declaration** `Op :: effect(args): ret` introduces a named operation
   with parameter types and a return type. `ret` is the type that
   `Op!(...)` evaluates to — equivalently, the type the continuation
   `k` expects to be resumed with.
@@ -338,7 +338,7 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
 - `f(a1, ..., an)` — `f : (T1,...,Tn) -> R ! {E}`, each `ai : Ti`, the call has type `R` and adds `E` to the caller's effects. Mismatched arity or argument types are errors.
 - **Effect rows are unified, not just propagated.** A function's `! { ... }` is a row: a concrete set of effect names, or an unbound *effect variable*. Two function types unify their effect rows by union-find: variable+variable unions, variable+set binds. Concrete set+set checks by subset, not equality — the value's row must be covered by the context's row (a parameter's, an annotation's), so `fn (i32) -> i32 ! { E }` checks against `fn (i32) -> i32 ! { E, F }`: the declared row is an upper bound on what the callee may perform, and the reverse (a callee performing outside the declared row) is an error. The empty set `∅` needs no special case: as the value's row it is subsumed by any context row (a function typed `... ! ∅` may be used wherever any effect set is expected), while an effectful value against a `∅`-typed context is a mismatch. Unannotated higher-order parameters stay flexible through unbound row variables, without let-generalization.
 - **Higher-order builtins are effect-polymorphic.** `map : ((a) -> b ! e, [a]) -> [b] ! e`, `each : ((a, i64) -> b ! e, [a]) -> unit ! e`, `flatmap : ((a, i64) -> [b] ! e, [a]) -> [b] ! e` — each with a fresh effect variable `e` per instantiation, shared between the callback's effect row and the call's performed effects. So `map(pureF, xs)` performs `∅` while `map(fn(x){ Out!(x); x }, xs)` performs exactly `{ Out }` — neither over- nor under-approximated.
-- `Op!(a1, ..., an)` — requires a declared `effect Op(p1,...): ret`; each `ai : pi`; the expression has type `ret` and adds `Op` to the effects.
+- `Op!(a1, ..., an)` — requires a declared `Op :: effect(p1,...): ret`; each `ai : pi`; the expression has type `ret` and adds `Op` to the effects.
 - `handle { body } case Return(v) => k { rb } case Op(pi) => k { ob } ...`
   - The body is inferred with its own effect set `B`.
   - `Return(v)`: `v : bodyType`; the result type `R` unifies with `infer(rb)` (no `k` used).
@@ -470,7 +470,7 @@ handle {
 ### Nondeterminism (multi-shot resume)
 
 ```ef
-effect Choose(opts: [i64]): i64;
+Choose :: effect(opts: [i64]): i64;
 handle {
   x :: Choose!([1, 2, 3]);
   y :: Choose!([10, 20]);
@@ -499,7 +499,7 @@ against the annotated tuple `[x: f64, y: f64]`, so `p.x` and `p.y` are
 ### Exceptions (non-resuming handler)
 
 ```ef
-effect Div(a: i64, b: i64): i64;
+Div :: effect(a: i64, b: i64): i64;
 handle {
   r :: Div!(10, 0);
   [r]
@@ -512,8 +512,8 @@ handle {
 ### Threading a log across resumes
 
 ```ef
-effect Log(msg: i64): unit;
-effect Result(v: i64): unit;
+Log :: effect(msg: i64): unit;
+Result :: effect(v: i64): unit;
 handle {
   Log!(1);
   Log!(2);
@@ -526,8 +526,8 @@ handle {
 ### Effect propagation through nested handlers
 
 ```ef
-effect Emit(m: string): unit;
-effect Other(m: string): unit;
+Emit :: effect(m: string): unit;
+Other :: effect(m: string): unit;
 handle {
   handle { Emit!("hi") } case Other(m) => k { ["should-not-match"] }
 } case Emit(m) => k { [m] }
@@ -547,7 +547,7 @@ fact(5)
 ### Short-circuit and an effectful signature
 
 ```ef
-effect Emit(m: i64): i64;
+Emit :: effect(m: i64): i64;
 ask :: fn(n: i64): i64 ! { Emit } { Emit!(n) };
 ask
 # inferred type: "(i64) -> i64 ! { Emit }"

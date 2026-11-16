@@ -1,5 +1,5 @@
 # set's index is the callback's i: a shared land state would double-advance past the element and misindex the stores.
-effect Op(): unit; a := [0, 0, 0];
+Op :: effect(): unit; a := [0, 0, 0];
 cb :: fn(x: i64, i: i64): unit { Op!(); set(a, i, x); unit };
 handle { each(cb, [7, 8, 9]) } case Op() => k { q := k(unit); k(unit); q };
 Println!(a)

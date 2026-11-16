@@ -1,5 +1,5 @@
 # A handler island performs across a numeric call: the entry stays boxed-free and the island machinery is untouched.
-effect Op(): i64;
+Op :: effect(): i64;
 h :: fn(x: i64): i64 { handle { Op!() + x } case Op() => k { k(2) } };
 g :: fn(n: i64): i64 { n * 3 };
 Println!(h(g(5)))

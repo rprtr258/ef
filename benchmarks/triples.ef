@@ -5,8 +5,8 @@
 # abandons a dead branch without resuming, so it contributes 0 to the
 # pending resumption. Valid triples hash as (53a + 2809b + 148877c) mod
 # 1000000007; no symmetries, no short-circuiting.
-effect Flip(): bool;
-effect Fail(): i64;
+Flip :: effect(): bool;
+Fail :: effect(): i64;
 
 av := args();
 vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 300 };

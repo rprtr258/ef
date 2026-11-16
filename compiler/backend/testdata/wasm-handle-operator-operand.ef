@@ -1,2 +1,2 @@
 # A handle as an operator operand.
-effect Op(): i64; Println!(1 + handle { Op!() } case Op() => k { 7 })
+Op :: effect(): i64; Println!(1 + handle { Op!() } case Op() => k { 7 })

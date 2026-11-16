@@ -1,2 +1,2 @@
 # A loop-carried operand of a performing app must reload from the letk's frozen freeze, never the live frame.
-effect Op(): i64; Println!(handle { s := 0; i := 0; while (i < 2) { s = s + i + Op!(); i = i + 1 }; s } case Op() => k { k(k(7)) })
+Op :: effect(): i64; Println!(handle { s := 0; i := 0; while (i < 2) { s = s + i + Op!(); i = i + 1 }; s } case Op() => k { k(k(7)) })

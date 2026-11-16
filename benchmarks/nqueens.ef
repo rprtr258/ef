@@ -5,8 +5,8 @@
 # the results; Fail! abandons a dead placement without resuming, so the
 # candidate contributes 0. place threads the partial solution as an
 # immutable array; the multi-shot discipline freezes it at each perform.
-effect Pick(size: i64): i64;
-effect Fail(): [i64];
+Pick :: effect(size: i64): i64;
+Fail :: effect(): [i64];
 
 safe :: fn(q: i64, d: i64, xs: [i64]): bool {
   ok := true;

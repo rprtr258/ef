@@ -1,5 +1,5 @@
 # A tail handle: the HDL's next chains to the terminal return-cell; the case completion returns.
-effect Tick(n: i64): i64;
+Tick :: effect(n: i64): i64;
 mix :: fn(x: i64): i64 {
   handle { Tick!(x) } case Tick(n) => k { n * 2 }
 };
