@@ -4,8 +4,8 @@
 # re-walked on resume) before the outermost handler resumes with acc + 2.
 # Regression control for the forwarding path — compare against handlers.ef
 # (single handler, no forwarding) to isolate the per-forward cost.
-effect Inner(acc: i64): i64;
-effect Outer(acc: i64): i64;
+Inner :: effect(acc: i64): i64;
+Outer :: effect(acc: i64): i64;
 
 inner :: fn(n: i64, acc: i64): i64 ! { Outer } {
   if (n == 0) {

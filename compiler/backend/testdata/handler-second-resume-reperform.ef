@@ -1,8 +1,8 @@
 # Two resumptions per case invocation whose subtrees re-perform: the second
 # resumption must deliver through the op resume binder even after a Return
 # completion through the same boundary.
-effect Flip(): bool;
-effect Fail(): i64;
+Flip :: effect(): bool;
+Fail :: effect(): i64;
 
 choice :: fn(n: i64): i64 ! { Flip, Fail } {
   if (n < 1) {

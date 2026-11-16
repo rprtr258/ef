@@ -3,8 +3,8 @@
 # before the next resume (the handler's loop is multi-shot), and Fail!
 # abandons a dead placement un-resumed — recursion through dcall sites with
 # rests re-entering after resumption, over raw i64 slots.
-effect Pick(size: i64): i64;
-effect Fail(): [i64];
+Pick :: effect(size: i64): i64;
+Fail :: effect(): [i64];
 
 safe :: fn(q: i64, d: i64, xs: [i64]): bool {
   ok := true;

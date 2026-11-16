@@ -1,6 +1,6 @@
 # Mixed-arity handler: 0-arg op case + Return case. The resume binders of
 # unequal-arity rows must land in disjoint hframe slots.
-effect Get(): i64;
+Get :: effect(): i64;
 
 s := 3;
 

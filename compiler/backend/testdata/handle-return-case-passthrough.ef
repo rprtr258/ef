@@ -1,2 +1,2 @@
 # A Return-less handle whose case ignores k.
-effect Op(): i64; Println!(handle { 5 } case Op() => k { 0 })
+Op :: effect(): i64; Println!(handle { 5 } case Op() => k { 0 })

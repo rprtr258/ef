@@ -14,8 +14,8 @@ describe("effect rows check by subset, not equality", () => {
     // Contravariant subsumption: the declared row is the context's upper
     // bound, not an exact match.
     expect(() => typeOf(`
-      effect E(): i64;
-      effect U(): i64;
+      E :: effect(): i64;
+      U :: effect(): i64;
       run :: fn (f): i64 ! { E, U } { f() };
       g :: fn(): i64 ! { E } { E!() };
       handle { run(g) } case E(n) => k { n } case U(n) => k { n }
@@ -24,8 +24,8 @@ describe("effect rows check by subset, not equality", () => {
 
   test("a callee performing outside the parameter's row is rejected", () => {
     expect(() => typeOf(`
-      effect E(): i64;
-      effect U(): i64;
+      E :: effect(): i64;
+      U :: effect(): i64;
       run :: fn (f): i64 ! { E } { f() };
       g :: fn(): i64 ! { E, U } { E!(); U!() };
       handle { run(g) } case E(n) => k { n } case U(n) => k { n }
@@ -34,7 +34,7 @@ describe("effect rows check by subset, not equality", () => {
 
   test("the empty row needs no special case: pure fn into an effectful context", () => {
     expect(() => typeOf(`
-      effect E(): i64;
+      E :: effect(): i64;
       f :: fn(): i64 ! { E } { if (true) { 1 } else { E!(); 2 } };
       g :: fn(): i64 ! { } { 7 };
       h :: fn(p: () -> i64 ! { E }): i64 { p() };
@@ -46,7 +46,7 @@ describe("effect rows check by subset, not equality", () => {
     // Letting it through would let the value's performed effects vanish
     // from the ambient row — the branch join keeps the FIRST branch's row.
     expect(() => typeOf(`
-      effect E(): i64;
+      E :: effect(): i64;
       f :: if (true) { fn(): i64 ! { } { 1 } } else { fn(): i64 ! { E } { E!() } };
       handle { f() } case E(n) => k { n }
     `)).toThrow("effect mismatch: {  } ≠ { E }");

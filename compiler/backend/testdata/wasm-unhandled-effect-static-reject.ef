@@ -1,2 +1,2 @@
 # Unhandled non-builtin ops are rejected statically at both runners' entries, before anything runs.
-effect Foo(n: i64): i64; Println!(Foo!(1) + 2)
+Foo :: effect(n: i64): i64; Println!(Foo!(1) + 2)

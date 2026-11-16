@@ -5,7 +5,7 @@ handlers**, C/Go-flavoured syntax, and a Hindley-Milner-flavoured type system
 that tracks effects.
 
 ```ef
-effect Choose(opts: [i64]): i64;
+Choose :: effect(opts: [i64]): i64;
 
 handle {
   x :: Choose!([1, 2, 3]);

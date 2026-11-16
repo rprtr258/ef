@@ -1,4 +1,4 @@
 # A performing callback: generic loop path under a resuming handler.
-effect Op(): i64;
+Op :: effect(): i64;
 performer :: fn(x: i64, i: i64): i64 { Op!() };
 handle { each(performer, [1, 2, 3]) } case Op() => k { k(0) }

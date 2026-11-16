@@ -1,2 +1,2 @@
 # Perform in the cond and a body perform whose case abandons the continuation.
-effect Op(): i64; effect Twice(): i64; i := 0; Println!(handle { s := 0; while (Op!() < 3) { s = s + Twice!(); i = i + 1 }; s } case Op() => k { k(i) } case Twice() => k { 7 })
+Op :: effect(): i64; Twice :: effect(): i64; i := 0; Println!(handle { s := 0; while (Op!() < 3) { s = s + Twice!(); i = i + 1 }; s } case Op() => k { k(i) } case Twice() => k { 7 })

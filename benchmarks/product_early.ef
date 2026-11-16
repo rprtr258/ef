@@ -4,7 +4,7 @@
 # 1000-element list is only reached 1000 frames deep; Abort! there discards
 # the whole stack without resuming. The handled product is summed over
 # 100000 iterations.
-effect Abort(): i64;
+Abort :: effect(): i64;
 
 av := args();
 vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 100000 };

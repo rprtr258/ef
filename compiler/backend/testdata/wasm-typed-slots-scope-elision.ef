@@ -1,4 +1,4 @@
 # Scope-frame elision keeps the resume-side hops right.
-effect Op(): i64;
+Op :: effect(): i64;
 s := 0;
 Println!(handle { while (s < 3) { s = s + Op!() }; s } case Op() => k { k(3) })

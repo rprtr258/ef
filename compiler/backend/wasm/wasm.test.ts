@@ -152,11 +152,11 @@ test("effects reach the host: Read/Write files", () => {
 test("user effects compile and escape to the host", () => {
     // The `ef wasm` entry has no runner: the static gate rejects the same
     // ops `ef run` rejects, before a module is emitted.
-    expect(() => compile("effect Foo(n: i64): i64; Foo!(1) + 2")).toThrow("Unhandled effect: Foo");
+    expect(() => compile("Foo :: effect(n: i64): i64; Foo!(1) + 2")).toThrow("Unhandled effect: Foo");
     // One-shot interp injection overrides the default interpretation — an
     // op the interp covers passes the gate and runs.
     // i64 args unbox to BigInt at the host boundary.
-    expect(show(runWasm("effect Foo(n: i64): i64; Foo!(21) * 2", {Foo: (args, k) => k(Number(args[0]) + 1)}))).toBe("44");
+    expect(show(runWasm("Foo :: effect(n: i64): i64; Foo!(21) * 2", {Foo: (args, k) => k(Number(args[0]) + 1)}))).toBe("44");
   });
 
 test("static gate rejects before any side effect (same timing as exec)", () => {
@@ -167,7 +167,7 @@ test("static gate rejects before any side effect (same timing as exec)", () => {
     const orig = console.log;
     console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
     try {
-      expect(() => runWasm(`effect T(x: i64): i64; Println!("boom"); T!(1)`))
+      expect(() => runWasm(`T :: effect(x: i64): i64; Println!("boom"); T!(1)`))
         .toThrow("Unhandled effect: T");
     } finally {
       console.log = orig;
@@ -187,7 +187,7 @@ test("interp injection overrides builtin effects (Read mock)", () => {
 
 describe("wasm effect codegen regressions", () => {
   test("handle as an operator operand compiles to a valid module", () => {
-    const src = "effect Op(): i64; 1 + handle { Op!() } case Op() => k { 7 }";
+    const src = "Op :: effect(): i64; 1 + handle { Op!() } case Op() => k { 7 }";
     assertModule(compile(src));
   });
 
@@ -217,7 +217,7 @@ describe("wasm host-import elimination (OPT_PASSES: dropDeadHostImports)", () =>
 
   test("an effect use keeps ef_perform imported (any op, even under a handler)", () => {
     expect(importsOf("Println!(1)")).toContain("ef_perform");
-    expect(importsOf("effect Op(): i64; handle { Op!() } case Op() => k { 7 }"))
+    expect(importsOf("Op :: effect(): i64; handle { Op!() } case Op() => k { 7 }"))
       .toContain("ef_perform");
   });
 
@@ -351,7 +351,7 @@ fib(28)`;
     // mixed is direct-classified but impure (its island performs): the dcall
     // still devirtualizes (static T_DABI call — mixed's entry ABI), but the
     // rest must NOT inline (an escaped perform would lose it).
-    const src = `effect Op(): i64;
+    const src = `Op :: effect(): i64;
 mixed :: fn(x: i64): i64 { handle { x + Op!() } case Op() => k2 { k2(100) } };
 caller :: fn(x: i64): i64 { mixed(x) + 1 };
 [caller(1), caller(2)]`;
@@ -368,7 +368,7 @@ caller :: fn(x: i64): i64 { mixed(x) + 1 };
     // and every gate off this chain; the wasm op-discovery miss behind the
     // any-call is a pre-existing known limitation (see plan Non-goals) —
     // pinned here as an interp/wasm divergence smoke test.
-    const src = `effect Op(): i64;
+    const src = `Op :: effect(): i64;
 g :: fn(a: any): i64 { a(0) };
 h :: fn(f: any): i64 { g(f) };
 performer :: fn(x: i64): i64 { Op!() };
@@ -521,7 +521,7 @@ x`;
     // The perform sits inside the loop body scope: its continuation thunk
     // re-enters through the elided level, so the resume-side frame walk
     // must skip the elided hop together with the skipped extend.
-    const src = `effect Op(): i64;
+    const src = `Op :: effect(): i64;
 s := 0;
 handle { while (s < 3) { s = s + Op!() }; s } case Op() => k { k(3) }`;
     const levels = audit(src);
@@ -529,7 +529,7 @@ handle { while (s < 3) { s = s + Op!() }; s } case Op() => k { k(3) }`;
   });
 
   test("multi-shot rest-thunk read after resume: the read is cross-fn, the slot stays boxed", () => {
-    const src = `effect Op(): i64;
+    const src = `Op :: effect(): i64;
 x: i64 : 10;
 handle { Op!() } case Op() => k { k(1); k(2) } + x`;
     assertUntyped(audit(src), "x");
@@ -542,7 +542,7 @@ mk()()`;
   });
 
   test("case-fn depth>0 read: cross-fn reach keeps the site slot boxed", () => {
-    const src = `effect Op(): i64;
+    const src = `Op :: effect(): i64;
 y: i64 : 5;
 handle { y + Op!() } case Op() => k { k(y + 1) }`;
     assertUntyped(audit(src), "y");
@@ -577,8 +577,8 @@ describe("wasm host boundary (wasm_host.ts)", () => {
     for (const [src, expected, interp] of [
       // Custom interps returning tuples/slices exercise the tup and arr box
       // branches; the results unbox back through the matching arms.
-      ["effect Make(): [i64, i64]; f :: fn(): i64 { t: [i64, i64] : Make!(); t.0 + t.1 }; f()", "3", {Make: (_args, k) => k(mkTup([1, 2]))}],
-      ["effect Roll(): [i64]; Roll!()", "[5, 6]", {Roll: (_args, k) => k(mkSlice([5, 6]))}],
+      ["Make :: effect(): [i64, i64]; f :: fn(): i64 { t: [i64, i64] : Make!(); t.0 + t.1 }; f()", "3", {Make: (_args, k) => k(mkTup([1, 2]))}],
+      ["Roll :: effect(): [i64]; Roll!()", "[5, 6]", {Roll: (_args, k) => k(mkSlice([5, 6]))}],
       // The typed slot forces the $U32 box; a bare @as at top level rides
       // the unstamped pass-through and crosses as an f64 num box instead.
       ["u: u32 : 4000000000; u", "4000000000", undefined],
@@ -590,7 +590,7 @@ describe("wasm host boundary (wasm_host.ts)", () => {
   });
 
   test("unboxable interp results are rejected with the box error", () => {
-    expect(() => runWasm("effect Foo(n: i64): i64; Foo!(1)", {Foo: (_args, k) => k({tag: "fn"} as Value)}))
+    expect(() => runWasm("Foo :: effect(n: i64): i64; Foo!(1)", {Foo: (_args, k) => k({tag: "fn"} as Value)}))
     .toThrow(/cannot box value \[fn\]/);
   });
 

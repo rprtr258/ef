@@ -3,7 +3,7 @@
 # yields its value once (2^25 - 1 performs) and the handler accumulates the
 # sum. The tree is never materialized: gen(h) recursing on the same height
 # mirrors make_tree's DAG sharing (t = make(n-1) used as both children).
-effect Yield(v: i64): unit;
+Yield :: effect(v: i64): unit;
 
 av := args();
 vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 25 };

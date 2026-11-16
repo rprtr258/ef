@@ -222,7 +222,7 @@ describe("ef language server", () => {
   });
 
   test("hover on an effect op shows its signature like a function", async () => {
-    await s.change("effect Choose(): bool;\nn :: Choose!();\n");
+    await s.change("Choose :: effect(): bool;\nn :: Choose!();\n");
     const h1 = await s.hover(1, 5); // over `Choose` in the perform
     expect(h1).not.toBeNull();
     expect(h1!.contents.value).toBe("```ef\nChoose : () -> bool\n```");
@@ -231,7 +231,7 @@ describe("ef language server", () => {
   });
 
   test("hover on an effect op with params shows them resolved", async () => {
-    await s.change("effect Get(v: i64): i64;\nm :: Get!(42);\n");
+    await s.change("Get :: effect(v: i64): i64;\nm :: Get!(42);\n");
     const h = await s.hover(1, 5); // over `Get`
     expect(h).not.toBeNull();
     expect(h!.contents.value).toBe("```ef\nGet : (v: i64) -> i64\n```");
@@ -279,15 +279,15 @@ describe("ef language server", () => {
   });
 
   test("hover on a handler case label shows the op's signature", async () => {
-    await s.change("effect Get(): i64;\nn :: handle { Get!(); } case Get() => k { k(42) };\n");
+    await s.change("Get :: effect(): i64;\nn :: handle { Get!(); } case Get() => k { k(42) };\n");
     const h = await s.hover(1, 29); // over `Get` in the case label
     expect(h).not.toBeNull();
     expect(h!.contents.value).toBe("```ef\nGet : () -> i64\n```");
   });
 
   test("hover on an effect decl or row name shows the op's signature", async () => {
-    await s.change("effect Get(): i64;\nf :: fn(): i64 ! { Get } { Get!() };\n");
-    const h1 = await s.hover(0, 7); // the decl name
+    await s.change("Get :: effect(): i64;\nf :: fn(): i64 ! { Get } { Get!() };\n");
+    const h1 = await s.hover(0, 0); // the decl name
     expect(h1).not.toBeNull();
     expect(h1!.contents.value).toBe("```ef\nGet : () -> i64\n```");
     const h2 = await s.hover(1, 19); // the `! { … }` row name
@@ -295,14 +295,14 @@ describe("ef language server", () => {
   });
 
   test("hover on a handler resume binder shows the resume type", async () => {
-    await s.change("effect Get(): i64;\nn :: handle { Get!(); } case Get() => k { k(42) };\n");
+    await s.change("Get :: effect(): i64;\nn :: handle { Get!(); } case Get() => k { k(42) };\n");
     const h = await s.hover(1, 38); // the resume binder `k` after `=>`
     expect(h).not.toBeNull();
     expect(h!.contents.value).toBe("```ef\nk : (i64) -> a\n```");
   });
 
   test("hover on a resume binder shows the resolved result type", async () => {
-    await s.change("effect Get(): i64;\nm :: handle { Get!() } case Get() => k { k(42); unit } case Return(v) => k { unit };\n");
+    await s.change("Get :: effect(): i64;\nm :: handle { Get!() } case Get() => k { k(42); unit } case Return(v) => k { unit };\n");
     const h1 = await s.hover(1, 37); // Get's resume
     expect(h1).not.toBeNull();
     expect(h1!.contents.value).toBe("```ef\nk : (i64) -> unit\n```");
@@ -350,7 +350,7 @@ describe("ef language server", () => {
   });
 
   test("semantic tokens cover effect decls, rows, performs, and case labels (spec AC-004)", async () => {
-    const src = "effect Read(): i32;\nf :: fn(): i32 ! { Read } { Read!() };\nh :: fn(): i32 ! { Read } { handle { Read!() } case Read(x) => k { x } };\n";
+    const src = "Read :: effect(): i32;\nf :: fn(): i32 ! { Read } { Read!() };\nh :: fn(): i32 ! { Read } { handle { Read!() } case Read(x) => k { x } };\n";
     await s.change(src);
     expect(decode(src, (await s.semanticTokens()).data)).toEqual([
       {text: "Read", kind: 2}, // macro
@@ -398,19 +398,19 @@ describe("ef language server", () => {
   });
 
   test("definition on an effect row and perform jumps to the decl", async () => {
-    await s.change("effect Get(): i64;\nf :: fn(): i64 ! { Get } { Get!() };\n");
-    const want = {uri: URI, range: {start: {line: 0, character: 7}, end: {line: 0, character: 10}}};
+    await s.change("Get :: effect(): i64;\nf :: fn(): i64 ! { Get } { Get!() };\n");
+    const want = {uri: URI, range: {start: {line: 0, character: 0}, end: {line: 0, character: 3}}};
     expect(await s.definition(1, 19)).toEqual(want); // the `! { … }` row name
     expect(await s.definition(1, 27)).toEqual(want); // the perform
   });
 
   test("definition works from an effect use above its hoisted decl", async () => {
-    await s.change("f :: fn(): i64 ! { Get } { Get!() };\neffect Get(): i64;\n");
-    expect(await s.definition(0, 19)).toEqual({uri: URI, range: {start: {line: 1, character: 7}, end: {line: 1, character: 10}}});
+    await s.change("f :: fn(): i64 ! { Get } { Get!() };\nGet :: effect(): i64;\n");
+    expect(await s.definition(0, 19)).toEqual({uri: URI, range: {start: {line: 1, character: 0}, end: {line: 1, character: 3}}});
   });
 
   test("definition on handler case param and resume binder is self-targeted", async () => {
-    await s.change("effect Get(): i64;\nn :: handle { Get!(); } case Get(x) => k { x };\n");
+    await s.change("Get :: effect(): i64;\nn :: handle { Get!(); } case Get(x) => k { x };\n");
     const want = {uri: URI, range: {start: {line: 1, character: 33}, end: {line: 1, character: 34}}};
     expect(await s.definition(1, 33)).toEqual(want); // the case param binder
     expect(await s.definition(1, 43)).toEqual(want); // the use in the body

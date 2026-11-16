@@ -208,7 +208,7 @@ function aliasT(al: Alias): string {
 function declLine(src: string, kw: "effect" | "type", name: string): number | null {
   const toks = lex(src);
   for (let i = 0; i < toks.length - 1; i++) {
-    if (kw === "effect" && toks[i].v === "effect" && toks[i + 1].v === name) return toks[i].pos.line;
+    if (kw === "effect" && toks[i].v === name && toks[i + 1].v === "::" && toks[i + 2].v === "effect") return toks[i].pos.line;
     if (kw === "type" && toks[i].v === name && toks[i + 1].v === "::") return toks[i].pos.line;
   }
   return null;

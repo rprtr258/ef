@@ -101,9 +101,9 @@ describe("builtinRefs (tree-shake pass)", () => {
   test("handler case params and resume binder shadow", () => {
     // The case param `len` shadows the builtin inside the case body; the
     // handle body's `len([1])` is a genuine builtin reference.
-    expect(refs("effect Foo(n: i64): i64; handle { Foo!(len([1])) } case Foo(len) => k { len }"))
+    expect(refs("Foo :: effect(n: i64): i64; handle { Foo!(len([1])) } case Foo(len) => k { len }"))
       .toEqual(new Set(["len"]));
-    expect(refs("effect Foo(n: i64): i64; handle { Foo!(1) } case Foo(len) => k { len }"))
+    expect(refs("Foo :: effect(n: i64): i64; handle { Foo!(1) } case Foo(len) => k { len }"))
       .toEqual(new Set());
   });
 
@@ -142,35 +142,35 @@ describe("builtinValueUses (pool-closure / operator-trampoline split)", () => {
 
 describe("collectEffectOps (op discovery)", () => {
   test("performed ops in first-appearance order, builtin names included", () => {
-    expect(ops("effect A(): i64; effect B(): i64; A!(); B!(); A!()")).toEqual(["A", "B"]);
+    expect(ops("A :: effect(): i64; B :: effect(): i64; A!(); B!(); A!()")).toEqual(["A", "B"]);
     expect(ops("Println!(1)")).toEqual(["Println"]);
   });
 
   test("a handler's case ops intern before ops in its body", () => {
-    expect(ops("effect A(): i64; effect B(): i64; handle { A!() } case B() => k { 1 }"))
+    expect(ops("A :: effect(): i64; B :: effect(): i64; handle { A!() } case B() => k { 1 }"))
       .toEqual(["B", "A"]);
   });
 
   test("Return is a pseudo-case, never an op", () => {
-    expect(ops("effect A(): i64; handle { 7 } case Return(v) => k { v }")).toEqual([]);
+    expect(ops("A :: effect(): i64; handle { 7 } case Return(v) => k { v }")).toEqual([]);
   });
 
   test("ops inside nested lambdas/blocks/conditions are found", () => {
-    expect(ops("effect A(): i64; fn() { if (true) { while (false) { A!() } } }"))
+    expect(ops("A :: effect(): i64; fn() { if (true) { while (false) { A!() } } }"))
       .toEqual(["A"]);
   });
 });
 
 describe("performsAnyOp (import liveness)", () => {
   test("handler without performs is perform-free", () => {
-    expect(anyOp("effect A(): i64; handle { 1 } case A() => k { 2 }")).toBe(false);
+    expect(anyOp("A :: effect(): i64; handle { 1 } case A() => k { 2 }")).toBe(false);
   });
 
   test("a perform anywhere (lambda body, call argument, condition) counts", () => {
-    expect(anyOp("effect A(): i64; fn() { A!() }")).toBe(true);
-    expect(anyOp("effect A(): i64; len([A!()])")).toBe(true);
-    expect(anyOp("effect A(): i64; if (A!() == 1) { 2 } else { 3 }")).toBe(true);
-    expect(anyOp("effect A(): i64; handle { 1 } case A() => k { 2 } case Return(v) => k { v }"))
+    expect(anyOp("A :: effect(): i64; fn() { A!() }")).toBe(true);
+    expect(anyOp("A :: effect(): i64; len([A!()])")).toBe(true);
+    expect(anyOp("A :: effect(): i64; if (A!() == 1) { 2 } else { 3 }")).toBe(true);
+    expect(anyOp("A :: effect(): i64; handle { 1 } case A() => k { 2 } case Return(v) => k { v }"))
       .toBe(false);
   });
 });

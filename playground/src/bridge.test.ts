@@ -21,7 +21,7 @@ describe("bridge", () => {
   test("custom effects are interpreted by handlers, not the host", () => {
     let buf = "";
     const src = [
-      "effect Ask(who: string): string;",
+      "Ask :: effect(who: string): string;",
       "hi :: handle { \"hi, \" + Ask!(\"ef\") } case Ask(w) => k { k(w) };",
       "Println!(hi);",
     ].join("\n");
@@ -58,14 +58,14 @@ describe("bridge", () => {
   test("topLevelEffs: the residual row `ef types` prints on its _ line", () => {
     expect(topLevelEffs("fib :: fn(n: i64): i64 { n };\nPrintln!(fib(27))")).toEqual(["Println"]);
     // lambdas defer their performs, and internally-handled ops don't escape
-    expect(topLevelEffs("effect E(): unit;\nf :: fn() { E!() };\n1")).toEqual([]);
-    expect(topLevelEffs("effect E(): unit;\nhandle { E!() } case E() => k { k(unit) }")).toEqual([]);
-    expect(topLevelEffs("effect E(): unit;\nE!()")).toEqual(["E"]);
+    expect(topLevelEffs("E :: effect(): unit;\nf :: fn() { E!() };\n1")).toEqual([]);
+    expect(topLevelEffs("E :: effect(): unit;\nhandle { E!() } case E() => k { k(unit) }")).toEqual([]);
+    expect(topLevelEffs("E :: effect(): unit;\nE!()")).toEqual(["E"]);
   });
 
   test("outline, entry detection and project concat", () => {
     const src = [
-      "effect Tick(v: i64): i64;",
+      "Tick :: effect(v: i64): i64;",
       "Pair :: [i64, i64];",
       "f :: fn(x: i64): i64 ! { Tick } { Tick!(x) };",
       "f(1)",

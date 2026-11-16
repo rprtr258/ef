@@ -5,7 +5,7 @@
 # prime outward and the base handler answers true. The nesting depth grows
 # to the number of primes below 60000 (6057) — statically unbounded handler
 # nesting with deep resumption stacks.
-effect Prime(e: i64): bool;
+Prime :: effect(e: i64): bool;
 
 av := args();
 vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 60000 };

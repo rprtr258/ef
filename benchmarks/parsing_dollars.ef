@@ -5,9 +5,9 @@
 # Emit!s each count, and the outer handler sums the emissions. Stop!
 # abandons the parse without resuming — non-local control flow across all
 # three boundaries.
-effect Read(): i64;
-effect Emit(e: i64): unit;
-effect Stop(): unit;
+Read :: effect(): i64;
+Emit :: effect(e: i64): unit;
+Stop :: effect(): unit;
 
 av := args();
 vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 20000 };

@@ -27,7 +27,7 @@ unhandled-effect program before it runs.
   language server also runs standalone via `ef lsp`).
 
 ```ef
-effect Choose(opts: [i64]): i64;    # Choose yields an i64
+Choose :: effect(opts: [i64]): i64;    # Choose yields an i64
 
 handle {
   x :: Choose!([1, 2, 3]);          # pause, ask the handler

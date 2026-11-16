@@ -1,5 +1,5 @@
 # A mixed fn (row {} with an internal handle) reached by dcall.
-effect Op(): i64;
+Op :: effect(): i64;
 mixed :: fn(x: i64): i64 { handle { x + Op!() } case Op() => k2 { k2(100) } };
 caller :: fn(x: i64): i64 { mixed(x) + 1 };
 Println!([caller(1), caller(2)])

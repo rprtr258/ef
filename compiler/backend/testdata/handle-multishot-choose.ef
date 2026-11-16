@@ -1,5 +1,5 @@
 # Multi-shot resume via map: the cross-product of two choices.
-effect Choose(opts: [i64]): i64;
+Choose :: effect(opts: [i64]): i64;
 Println!(handle { x :: Choose!([1,2,3]); y :: Choose!([10,20]); [x, y] }
 case Return(v) => k { [v] }
 case Choose(opts) => k { flat(map(k, opts)) })

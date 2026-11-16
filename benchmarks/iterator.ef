@@ -2,7 +2,7 @@
 # 800000020000000). Emits 0..n inclusive via Emit! and the handler
 # accumulates the sum — one shallow perform/resume per element against a
 # module-level cell.
-effect Emit(v: i64): unit;
+Emit :: effect(v: i64): unit;
 
 av := args();
 vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 40000000 };

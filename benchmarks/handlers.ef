@@ -2,7 +2,7 @@
 # Tick! and the handler resumes the continuation with acc + 1 — a shallow
 # continuation capture per iteration. Regression control for the effect
 # path.
-effect Tick(acc: i64): i64;
+Tick :: effect(acc: i64): i64;
 
 go :: fn(n: i64, acc: i64): i64 ! { Tick } {
   if (n == 0) {

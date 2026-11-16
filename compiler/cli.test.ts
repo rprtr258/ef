@@ -155,7 +155,7 @@ Println!(f())
     // the same ops `ef run` rejects.
     const file = join(tmpdir(), `ef-cli-test-${process.pid}-unhandled.ef`);
     const out = join(tmpdir(), `ef-cli-test-${process.pid}-unhandled.wasm`);
-    writeFileSync(file, "effect T(x: i64): unit;\nT!(1)\n");
+    writeFileSync(file, "T :: effect(x: i64): unit;\nT!(1)\n");
     try {
       expect(cli("runwasm", file)).toEqual({
         code: 1,

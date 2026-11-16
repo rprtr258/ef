@@ -129,7 +129,7 @@ describe("cps_opt via toCps: read-temp substitution", () => {
   });
 
   test("frozen read temps snapshot the source var across a resume", () => {
-    const src = "effect F(): i64;\nx :: 10;\nh :: handle { x + F!() } case F() => k { k(5) };\nh";
+    const src = "F :: effect(): i64;\nx :: 10;\nh :: handle { x + F!() } case F() => k { k(5) };\nh";
     const ir = conv(src);
     // the read of x crosses the perform suspension: the freeze list names x
     // itself now, and the resume restores x's slot with its snapshot
@@ -173,7 +173,7 @@ describe("cps_opt via toCps: exit-continuation beta", () => {
   });
 
   test("resume still drives a loop with a reduced exit", () => {
-    const src = "effect F(): i64;\nn := 0;\nh :: handle { while (n < 2) { n = n + F!() } } case F() => k { k(1) } case Return(v) => k { v };\nh; n";
+    const src = "F :: effect(): i64;\nn := 0;\nh :: handle { while (n < 2) { n = n + F!() } } case F() => k { k(1) } case Return(v) => k { v };\nh; n";
     expect(run(src)).toBe(2n);
   });
 
@@ -240,7 +240,7 @@ describe("cps_opt via toCps: dcall/dret through the rewrites", () => {
   });
 
   test("dcall result frozen across a later suspension in the same body", () => {
-    const src = `effect F(n: i64): i64;
+    const src = `F :: effect(n: i64): i64;
 add1 :: fn(x: i64): i64 { x + 1 };
 f :: fn(a: i64): i64 { add1(1) + add1(F!(a)) };
 h :: handle { f(10) } case F(n) => k { k(n) } case Return(v) => k { v };

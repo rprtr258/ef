@@ -2,8 +2,8 @@
 # state 0). Each iteration performs Get! to read the state and Set! to
 # decrement it — two perform/resume round-trips per step against a
 # module-level cell, the second carrying the new state inward.
-effect Get(): i64;
-effect Set(v: i64): unit;
+Get :: effect(): i64;
+Set :: effect(v: i64): unit;
 
 av := args();
 s := if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 200000000 };

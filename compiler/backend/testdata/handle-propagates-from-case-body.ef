@@ -1,5 +1,5 @@
 # Propagation from inside a case body to the next handler.
-effect Emit(m: string): unit;
-effect Other(m: string): unit;
+Emit :: effect(m: string): unit;
+Other :: effect(m: string): unit;
 Println!(handle { handle { Emit!("hi") } case Other(m) => k { ["should-not-match"] } }
 case Emit(m) => k { [m] })

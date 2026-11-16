@@ -1,2 +1,2 @@
 # An unhandled op propagates past a non-matching inner handler.
-effect A(): i64; effect B(): i64; Println!(handle { handle { A!() } case B() => k { 99 } } case A() => k { 5 })
+A :: effect(): i64; B :: effect(): i64; Println!(handle { handle { A!() } case B() => k { 99 } } case A() => k { 5 })

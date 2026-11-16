@@ -1,3 +1,3 @@
 # len observes the handler's transformed result; k(10) inside.
-effect Op(): i64; cb :: fn(x: i64): i64 { Op!() };
+Op :: effect(): i64; cb :: fn(x: i64): i64 { Op!() };
 Println!(len(handle { map(cb, [1, 2]) } case Op() => k { k(10) }))

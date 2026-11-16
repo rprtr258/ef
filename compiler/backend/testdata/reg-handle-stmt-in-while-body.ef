@@ -1,2 +1,2 @@
 # A handle as a statement inside a while body, nested in the outer handler.
-effect Op(): i64; Println!(handle { s := 0; i := 0; while (i < 2) { s = s + handle { Op!() } case Op() => k2 { k2(10) }; i = i + 1 }; s } case Op() => k { k(3) })
+Op :: effect(): i64; Println!(handle { s := 0; i := 0; while (i < 2) { s = s + handle { Op!() } case Op() => k2 { k2(10) }; i = i + 1 }; s } case Op() => k { k(3) })

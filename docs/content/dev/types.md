@@ -115,7 +115,7 @@ generic row on the argument type.
 | Num-type literals | `1` flexes to any numeric width, `1.5` to any float width — each read flexes its own copy of the num type; backends lower unresolved num types to `i64`/`f64` via `widthOf`, never widened at parse time; the REPL alone echoes them as untyped num types (`42 : int`, `x := 42; x` → `42 : int`, `PI : float`) |
 | f32 stamping | every producing node is stamped; interp frounds, wasm emits a demote/promote round-trip — f32 precision holds end to end |
 | `any` is absorbing | escape hatch; inferred-`any` bindings warn (explicit annotation silences) |
-| `Op!` needs a declaration | `effect Op(args): ret` — `ret` is what `Op!(…)` evaluates to, i.e. what `resume` injects |
+| `Op!` needs a declaration | `Op :: effect(args): ret` — `ret` is what `Op!(…)` evaluates to, i.e. what `resume` injects |
 | Effectful bodies need `! { … }` | a `::`/`fn` whose body performs effects must declare a superset; pure bodies may omit it; the declaration pins unannotated parameters' effect variables to the declared set (empty declaration + performing parameter → rejected) |
 | No-Return handle rule | body effectful → result type is *not* unified with the body type (handlers transform results); body pure → `R ~ bodyType` |
 | `resume` `k` type | `k : (effectRet) -> R` where `R` is the handle result type, not the body type |

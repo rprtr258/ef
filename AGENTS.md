@@ -303,7 +303,7 @@ the README's opening, and compiler-internal changes update
 - **`any` is absorbing.** Unifies with everything and stays `any`. Escape
   hatch for type demos. `list` uses it
   intentionally; `Println` takes `any` for the same reason.
-- **Effect declarations required for `Op!`.** `effect Op(args): ret` — the
+- **Effect declarations required for `Op!`.** `Op :: effect(args): ret` — the
   checker rejects `Op!` of an undeclared effect. `ret` is the type
   `Op!(...)` evaluates to (i.e. what `resume` injects).
 - **No shadowing.** Every binding site (`let`, destructure field, lambda

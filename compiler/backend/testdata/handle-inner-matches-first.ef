@@ -1,2 +1,2 @@
 # The matching inner handler fires first.
-effect A(): i64; Println!(handle { handle { A!() } case A() => k { 10 } } case A() => k { 20 })
+A :: effect(): i64; Println!(handle { handle { A!() } case A() => k { 10 } } case A() => k { 20 })

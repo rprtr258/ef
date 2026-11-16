@@ -6,7 +6,7 @@
 # resumes the continuation twice per choice — left fully, then right — and
 # keeps the max; the shared mutable state carries across resumptions by
 # design. 10 rounds, each seeded with the previous maximum.
-effect Choose(): bool;
+Choose :: effect(): bool;
 
 av := args();
 vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 16 };
