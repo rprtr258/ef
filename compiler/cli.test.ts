@@ -94,10 +94,10 @@ f()
     expect(r.stdout).toBe("Usage: ef run examples/approx_pi.ef <n>\n");
   });
 
-  test("buildwasm: writes a valid .wasm module to the requested path", () => {
+  test("wasm: writes a valid .wasm module to the requested path", () => {
     const out = join(tmpdir(), `ef-cli-test-${process.pid}.wasm`);
     try {
-      const r = cli("buildwasm", join(compilerDir, "..", "examples", "squares_sum.ef"), out);
+      const r = cli("wasm", join(compilerDir, "..", "examples", "squares_sum.ef"), out);
       expect(r.code).toBe(0);
       expect(r.stdout).toMatch(/^wrote .* \(\d+ bytes\)\n$/);
       expect(WebAssembly.validate(readFileSync(out))).toBe(true);
@@ -106,9 +106,9 @@ f()
     }
   });
 
-  test("runwasm/buildwasm: the unified unhandled-op gate exits 1 and emits nothing", () => {
+  test("runwasm/wasm: the unified unhandled-op gate exits 1 and emits nothing", () => {
     // The static gate (pipeline.ts's rejectUnhandled) covers both wasm
-    // entries: runwasm rejects before running, buildwasm before emitting —
+    // entries: runwasm rejects before running, wasm before emitting —
     // the same ops `ef run` rejects.
     const file = join(tmpdir(), `ef-cli-test-${process.pid}-unhandled.ef`);
     const out = join(tmpdir(), `ef-cli-test-${process.pid}-unhandled.wasm`);
@@ -117,7 +117,7 @@ f()
       const run = cli("runwasm", file);
       expect(run.code).toBe(1);
       expect(run.stderr).toContain("Unhandled effect: T");
-      const build = cli("buildwasm", file, out);
+      const build = cli("wasm", file, out);
       expect(build.code).toBe(1);
       expect(build.stderr).toContain("Unhandled effect: T");
       expect(existsSync(out)).toBe(false); // nothing emitted
@@ -126,6 +126,41 @@ f()
       rmSync(out, {force: true});
     }
   }, 15000); // two spawns + wasm compile; the 5s default flakes under parallel load
+
+  test("runwasm: a prebuilt .wasm produces the same stdout as compiling from source", () => {
+    // build→run roundtrip: the module carries its own ops table (ef_ops
+    // custom section), so the binaryen-free runModule path executes it with
+    // nothing else on disk.
+    const file = join(tmpdir(), `ef-cli-test-${process.pid}-pre.ef`);
+    const out = join(tmpdir(), `ef-cli-test-${process.pid}-pre.wasm`);
+    writeFileSync(file, "f :: fn(n: i64): i64 { n * 2 };\nf(21)\n");
+    try {
+      expect(cli("wasm", file, out).code).toBe(0);
+      expect(existsSync(out.replace(/\.wasm$/, "") + ".ops.json")).toBe(false); // self-contained: no sidecar
+      const prebuilt = cli("runwasm", out);
+      expect(prebuilt.code).toBe(0);
+      expect(prebuilt.stdout).toBe(cli("runwasm", file).stdout);
+    } finally {
+      rmSync(file, {force: true});
+      rmSync(out, {force: true});
+    }
+  }, 15000); // two spawns + wasm compile; the 5s default flakes under parallel load
+
+  test("runwasm: a .wasm without an embedded ops table exits 1 with a rebuild hint", () => {
+    // A bare module (no ef_ops custom section) cannot run: the wasm
+    // pipeline tree-shakes builtin ops, so the module alone does not
+    // determine the op table.
+    const out = join(tmpdir(), `ef-cli-test-${process.pid}-noops.wasm`);
+    writeFileSync(out, Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0, 0, 0]));
+    try {
+      const r = cli("runwasm", out);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain("no embedded ops table");
+      expect(r.stderr).toContain("ef wasm");
+    } finally {
+      rmSync(out, {force: true});
+    }
+  });
 
   test("types: prints top-level bindings and the program type", () => {
     const r = cli("types", join(compilerDir, "..", "examples", "simple_add.ef"));

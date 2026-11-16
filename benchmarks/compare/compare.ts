@@ -162,13 +162,12 @@ const STD_IN: Record<string, string> = {
   handler_sieve: "60000",
 };
 
-log("precompiling ef wasm modules");
-// The map's result is hoisted to a variable: bun's parser (1.4.4) chokes on a
-// nested template literal in trailing position of a nested call argument.
-const preSpecs = benches.map(b => `${b}=${join(REPO, "benchmarks", `${b}.ef`)}`);
-if (sh(["bun", join(REPO, "benchmarks/compare/precompile.ts"), "build", join(EB, "pre"),
-        ...preSpecs]) !== 0) {
-  die("precompile failed");
+log("precompiling ef wasm modules (ef wasm: self-contained binaries)");
+for (const b of benches) {
+  if (sh(["bun", join(REPO, "compiler/cli.ts"), "wasm",
+          join(REPO, "benchmarks", `${b}.ef`), join(EB, "pre", `${b}.wasm`)]) !== 0) {
+    die(`precompile failed: ${b}`);
+  }
 }
 
 // Cross-check ef's output against the ocaml reference at the same input
@@ -176,7 +175,9 @@ if (sh(["bun", join(REPO, "benchmarks/compare/precompile.ts"), "build", join(EB,
 if (docker) {
   for (const b of benches) {
     const oc = shOut([join(EB, "bin", `ocaml-${suiteName(b)}`), ...W_IN[b].split(" ")]);
-    const ef = shOut(["bun", join(REPO, "benchmarks/compare/precompile.ts"), "run", join(EB, "pre", b),
+    // ef runwasm on the prebuilt module: compiles nothing (binaryen never
+    // loads), so the cross-check exercises only the runtime host.
+    const ef = shOut(["bun", join(REPO, "compiler/cli.ts"), "runwasm", join(EB, "pre", `${b}.wasm`),
       ...W_IN[b].split(" ")]);
     if (oc !== ef) die(`output mismatch on ${b}: ocaml='${oc}' ef='${ef}'`);
   }
@@ -208,7 +209,7 @@ if (mode !== "std") {
       if (hasEffekt) cmds.push(`${join(EB, "bin", `effekt-${sb}`)} ${effW}`);
     }
     // The level's input is passed as program args to the repo file.
-    cmds.push(`bun ${join(REPO, "benchmarks/compare/precompile.ts")} run ${join(EB, "pre", b)} ${w}`,
+    cmds.push(`bun ${join(REPO, "compiler/cli.ts")} runwasm ${join(EB, "pre", `${b}.wasm`)} ${w}`,
       `bun ${join(REPO, "compiler/cli.ts")} run ${join(REPO, "benchmarks", `${b}.ef`)} ${I_IN[b]}`);
     log(`bench ${b} (wasm input: ${w})`);
     if (!hb(join(EB, "results", `${sb}.csv`), cmds)) {

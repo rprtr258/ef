@@ -195,7 +195,7 @@ subcommand pays it. Fix is pure plumbing; no semantics.
 
 **Rollback.** Revert PR; import graph returns to previous shape.
 
-### Step 4 — Prebuilt binaries: build once, run without compiling
+### Step 4 — Prebuilt binaries: build once, run without compiling *(complete)*
 
 **Context.** After step 3, `runwasm` still compiles on every invocation. `compile(src)` returns bare bytes; the op list needed by the host's effect
 interpretation is only returned by `compileWithOps` — so a `.wasm` on disk
@@ -204,28 +204,68 @@ sidecar or embedded encoding for ops; keep `buildwasm`'s output
 wasm-tools-valid.
 
 **Tasks.**
-- [ ] `buildwasm` persists the ops list next to the binary: `.ops.json`
+- [x] `buildwasm` persists the ops list next to the binary: `.ops.json`
       sidecar (simple) or a wasm custom section (cleaner; keeps one file).
       Implement one; document the choice in `AGENTS.md`.
-- [ ] `runwasm` accepts `.ef` (compile + run, unchanged) or `.wasm` (+ sidecar
+      Done: sidecar route — `<base>.ops.json` beside `<base>.wasm`, the same
+      layout precompile.ts already uses; `buildwasm` now calls
+      `compileWithOps` and writes the sidecar via cli.ts's `sidecarOf`.
+      Output stays wasm-tools-valid (`wasm-tools validate` checked).
+      Documented in AGENTS.md (frontends bullet + quick orientation) and
+      docs/content/spec/cli.md.
+- [x] `runwasm` accepts `.ef` (compile + run, unchanged) or `.wasm` (+ sidecar
       if sidecar route) and executes via the step-3 binaryen-free path.
+      Done: cli.ts's `runwasm` branches on the `.wasm` extension — loads the
+      sidecar (missing → exit 1 with an `ef buildwasm` rebuild hint) and
+      dynamically imports `runModule` from wasm_run.ts, never wasm_host.ts.
 - [ ] Optional (same PR if small, else defer): `ef build <file>` →
       self-contained executable (`bun build --compile` of a tiny runner +
       embedded module) so short benchmarks skip bun startup entirely.
-- [ ] cli.test.ts integration coverage: build→run roundtrip, missing-sidecar
+      Deferred: not small (embedding convention for module + ops, per-target
+      packaging); orthogonal to the timed-row cost this step removes — the
+      hyperfine commands already measure a warm prebuilt run.
+- [x] cli.test.ts integration coverage: build→run roundtrip, missing-sidecar
       error, `.ef` passthrough.
-- [ ] Update the harness for the new invocation shape: `compare.ts`'s
+      Done: prebuilt roundtrip test (same stdout as compiling from source),
+      missing-sidecar test (exit 1, rebuild hint); `.ef` passthrough stays
+      covered by the existing `runwasm`-from-source test.
+- [x] Update the harness for the new invocation shape: `compare.ts`'s
       cross-check and ef-wasm hyperfine commands switch from `precompile.ts
       run` to `ef runwasm <file>.wasm`, and `report.ts`'s PREFIXES gain an
       `ef-wasm` pattern for it — note `"cli.ts run"` substring-matches `cli.ts
       runwasm`, so the ef-wasm pattern must be matched before ef-int's
       (first-match-wins in report.ts).
+      Done: compare.ts builds via `ef buildwasm` (per-bench) and times/cross-
+      checks via `ef runwasm <pre>.wasm`. report.ts needed no change: the
+      new command matches the existing `"cli.ts runwasm"` ef-wasm pattern,
+      and ef-wasm already precedes ef-int's trailing-space `"cli.ts run "`
+      pattern; `"precompile.ts run"` stays as the fallback pattern, and
+      precompile.ts remains a working fallback tool unchanged.
 
-**Verification.** `bun run ci` green; `ef buildwasm x.ef && ef runwasm x.wasm` prints the same result as `ef runwasm x.ef`; harness uses `ef buildwasm`+`ef runwasm` instead of the ad-hoc `precompile.ts` (keep precompile.ts as fallback).
+**Verification.** `bun run ci` green; `ef buildwasm x.ef && ef runwasm x.wasm` prints the same result as `ef runwasm x.ef` (verified on examples/factorial.ef); harness uses `ef buildwasm`+`ef runwasm` instead of the ad-hoc `precompile.ts` (keep precompile.ts as fallback). Done: `bun run ci` exit 0 (typecheck + eslint + deps + 672 tests); `compare.ts --quick --no-docker --bench countdown` end-to-end green with the CSV ef-wasm row on `cli.ts runwasm` and ef-int on `cli.ts run `.
 
 **Exit criteria.** Compile cost fully amortized out of timed runs using repo CLI only.
 
 **Rollback.** Revert; step-3 module layout is unaffected.
+
+**2026-11-16 note (follow-up request).** Two refinements, both landed:
+`buildwasm` renamed to `wasm`, and the ops sidecar replaced by embedding the
+op table in the binary itself — `compileWithOps` appends it as an `ef_ops`
+custom section (JSON op-name array; survives binaryen's shrink pass, opaque
+to validators), and `runwasm` reads it back with `readEmbeddedOps` in
+wasm_run.ts (raw LEB section scan — no parser, keeps the module binaryen-
+free). A `.wasm` is now fully self-contained; `readEmbeddedOps` = null exits
+1 with an `ef wasm` rebuild hint. precompile.ts's sidecar fallback is
+unaffected (it writes its own sidecar and calls runModule directly). Docs
+(spec/cli.md, README, AGENTS.md) and cli/compare harness updated in the same
+change; `bun run ci` green.
+
+**2026-11-16 note (follow-up request).** precompile.ts deleted — the sidecar
+fallback is gone; the repo CLI (`ef wasm` / `ef runwasm`) is the only
+precompile path. report.ts's ef-wasm patterns keep `run_precompiled.ts` /
+`precompile.ts run` as historical-only classifiers (baseline/'s CSVs predate
+the ops embedding; BASELINE.md's documented reproduce command depends on
+them) — marked in a comment.
 
 ### Step 5 — Raw (unboxed) values across devirtualized calls
 

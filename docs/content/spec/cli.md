@@ -12,8 +12,8 @@ bun compiler/cli.ts run examples/star.ef
 | Command | Behaviour |
 |---------|-----------|
 | `ef run <file> [args...]` | Typecheck, then evaluate on the interpreter. Extra args reach the program via `args()`. The last expression's value is printed unless the program calls `Exit!` itself. |
-| `ef buildwasm <file> [out]` | Compile to a binary `.wasm` module (default out: `<file>.ef` → `<file>.wasm`). |
-| `ef runwasm <file>` | Compile and run on the embedded wasm host — same observable output as `ef run`. |
+| `ef wasm <file> [out]` | Compile to a binary `.wasm` module (default out: `<file>.ef` → `<file>.wasm`). Self-contained: the module's effect-op table rides inside it (below). |
+| `ef runwasm <file>` | Compile and run on the embedded wasm host — same observable output as `ef run`. A path ending in `.wasm` executes a prebuilt module instead: no compile, the module's embedded `ef_ops` section supplies the op table. |
 | `ef types <file>` | Print every top-level symbol with its inferred type, then the program's result type with its **residual effect row** (below). |
 | `ef lint <file>` | Run the [linter](lint.md); exit 1 on findings. |
 | `ef lsp` | Start the [language server](vscode.md) over stdio for LSP-speaking editors (VS Code and others). |
@@ -25,13 +25,17 @@ bun compiler/cli.ts run examples/star.ef
 run until killed. Effects with no matching handler in the chain are
 interpreted by the builtin table (or an injected override); a statically
 unhandled op with nothing to interpret it is rejected before evaluation
-starts — the same shared gate `ef runwasm` and `ef buildwasm` apply before
+compilation starts — the same shared gate `ef runwasm` and `ef wasm` apply before
 compilation.
 
 ## WebAssembly target
 
 `ef runwasm` compiles the whole program to a binary WebAssembly module (no
-external toolchain) and executes it in the host's WebAssembly engine. Output
+external toolchain) and executes it in the host's WebAssembly engine. A
+`.wasm` path skips compilation entirely: the module is self-contained — the
+wasm pipeline tree-shakes builtin ops, so `ef wasm` embeds the module's
+effect-op table as an `ef_ops` custom section inside the binary, and
+`ef runwasm <file>.wasm` reads it back. Output
 matches `ef run` for the supported subset: values, control flow, closures,
 arrays/strings, `handle` with multi-shot `resume`, and user effect ops.
 
@@ -40,7 +44,7 @@ the host and is interpreted by the same builtin host table `ef run` uses
 (optionally overridden via the runner's effect-interpretation argument), so
 `Exit!` behaves identically in both backends: it terminates the process.
 The static gate `ef run` applies gates the wasm commands too: `ef runwasm`
-and `ef buildwasm` reject a program whose residual ops neither the builtin
+and `ef wasm` reject a program whose residual ops neither the builtin
 table nor the runner's interpreter override covers — before any module is
 compiled, with the same message and nonzero exit.
 

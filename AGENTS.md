@@ -63,7 +63,7 @@ suspension/arrKind emission over an exhaustive `Expr` switch — widths come
   module structure, host imports, plan/slot annotations, ABI, host
   injections) + `cli.test.ts` (CLI integration smoke: argv, exit codes, stdout/stderr),
   with the shared runner (`runOnce`) defined in parity.test.ts (`bun:test`).
-- Run a file: `bun compiler/cli.ts run <file>` (subcommands: `run`, `buildwasm`,
+- Run a file: `bun compiler/cli.ts run <file>` (subcommands: `run`, `wasm`,
   `runwasm`, `types`, `lint`, `repl`, `lsp`).
 - Gates: `bun run ci` = typecheck + eslint + runtime-deps check + tests; all must stay clean.
 - `playground/` workspace: browser studio (multi-file ef IDE). Bundles the
@@ -77,7 +77,7 @@ suspension/arrKind emission over an exhaustive `Expr` switch — widths come
   suite. Published to the `gh-pages` branch by the monorepo's
   `.github/workflows/docs.yml` on pushes to master.
 - `benchmarks/` workspace: the performance-benchmark harness
-  (`compare/compare.ts`, `compare/precompile.ts`, `compare/report.ts` — see
+  (`compare/compare.ts`, `compare/report.ts` — see
   `compare/BASELINE.md`); a package.json exists mainly so knip tracks the
   scripts as workspace entry points.
 - `vscode/` workspace: VS Code extension for ef — TextMate grammar for `.ef`,
@@ -228,9 +228,13 @@ suspension/arrKind emission over an exhaustive `Expr` switch — widths come
 12. **`frontend/lint.ts`** — lint passes over a parsed program (`LINT_PASSES`);
    rules: `unused-arg`, and `derived-any` (typecheck-backed — `lint` runs
    `checkProgram` best-effort, type-aware passes skip unchecked programs).
-13. **Frontends** — `cli.ts` (`ef run|buildwasm|runwasm|types|lint <file>`,
+13. **Frontends** — `cli.ts` (`ef run|wasm|runwasm|types|lint <file>`,
     `ef repl`, `ef lsp`) and `repl.ts`
    (line loop over eval.ts's `runLine`; bindings accumulate across lines).
+   `wasm` embeds the module's ops table in the binary (the `ef_ops` custom
+   section — the wasm pipeline tree-shakes builtin ops, so the code alone
+   doesn't determine the host's op table); `runwasm` of a `.wasm` path reads
+   it back through the binaryen-free wasm_run.ts path.
 ## Working rules
 
 - **Keep the layout docs in step.** When moving, renaming, or adding compiler
@@ -337,6 +341,7 @@ bun run ci                # typecheck + lint + deps check + tests
 bun test                  # test suite only
 bun compiler/cli.ts run examples/star.ef
 bun compiler/cli.ts repl       # interactive REPL
-bun compiler/cli.ts buildwasm examples/squares_sum.ef  # emit examples/squares_sum.wasm
+bun compiler/cli.ts wasm examples/squares_sum.ef  # emit examples/squares_sum.wasm (ops table embedded as ef_ops section)
+bun compiler/cli.ts runwasm examples/squares_sum.wasm  # execute the prebuilt module — no compile, no binaryen
 wasm-tools print|validate <file.wasm>  # inspect wasm output (WasmGC) — wabt's wasm2wat can't parse it at any version
 ```

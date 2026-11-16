@@ -46,8 +46,8 @@ export type Builtin =
 ;
 
 // Program args behind `args` / the wasm host's ef_args import: everything
-// after the source path on the ef command line (cli.ts's run/runwasm, the
-// benchmark precompile runner). Set by the runners at their boundary —
+// after the source/module path on the ef command line (cli.ts's run/runwasm).
+// Set by the runners at their boundary —
 // REPL, tests, and direct run()/runModule() calls default to []. The
 // builtins table is a module-level constant with no ctx access, so the
 // value has to ride in here rather than on Ctx.

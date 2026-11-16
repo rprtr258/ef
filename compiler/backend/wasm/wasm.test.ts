@@ -130,7 +130,7 @@ test("effects reach the host: Read/Write files", () => {
   });
 
 test("user effects compile and escape to the host", () => {
-    // The buildwasm entry has no runner: the static gate rejects the same
+    // The `ef wasm` entry has no runner: the static gate rejects the same
     // ops `ef run` rejects, before a module is emitted.
     expect(() => compile("effect Foo(n: i64): i64; Foo!(1) + 2")).toThrow("Unhandled effect: Foo");
     // One-shot interp injection overrides the default interpretation — an

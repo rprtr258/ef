@@ -25,6 +25,37 @@ import {errDivByZero, errIndexOOB, errIntOverflow, errSubRangeOOB, errUnhandled}
 // it). Typing it as the literal union makes the unbox switch exhaustively
 // typechecked.
 type HostTag = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+
+// The ops table rides inside the module itself: `compileWithOps` embeds a
+// JSON array of op names as an `ef_ops` custom section, so a prebuilt binary
+// carries everything its host needs (`ef runwasm x.wasm` never recompiles).
+// Custom sections are opaque to validators and survive binaryen's passes.
+export const OP_SECTION = "ef_ops";
+
+// Extracts the embedded ops table; null when absent. Scans raw sections with
+// a LEB reader — a full wasm parser would drag the compiler back into this
+// execute-only module.
+export function readEmbeddedOps(bytes: Uint8Array): string[] | null {
+  const text = new TextDecoder();
+  let p = 8; // magic + version
+  const leb = (): number => {
+    let r = 0, s = 0, b: number;
+    do { b = bytes[p++]!; r |= (b & 0x7f) << s; s += 7; } while ((b & 0x80) !== 0);
+    return r;
+  };
+  while (p < bytes.length) {
+    const id = bytes[p++];
+    const size = leb();
+    if (id === 0) {
+      const nameLen = leb();
+      if (text.decode(bytes.subarray(p, p + nameLen)) === OP_SECTION) {
+        return JSON.parse(text.decode(bytes.subarray(p + nameLen, p + size))) as string[];
+      }
+    }
+    p += size;
+  }
+  return null;
+}
 type Accessors = {
   __tag(v: unknown): HostTag,
   __num(v: unknown): number,

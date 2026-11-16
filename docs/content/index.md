@@ -37,7 +37,7 @@ ordinary multi-shot resumption.
 ## The shape of the project
 
 - One compiler, two backends: a **CPS interpreter** (`ef run`) and a
-  **WebAssembly backend** (`ef buildwasm` / `ef runwasm`), sharing the same
+  **WebAssembly backend** (`ef wasm` / `ef runwasm`), sharing the same
   frontend — lexer, parser, checker, analysis.
 - The test suite is the executable form of the spec.
 - [playground](spec/cli.md) — a browser studio for ef; this site reuses its theme.

@@ -1,8 +1,12 @@
 // ef CLI. `ef run <file>` typechecks then evaluates a source file.
 // `ef runwasm <file>` compiles the file to WebAssembly and runs it on the
-// embedded host runtime (same observable output as `ef run`).
-// `ef buildwasm <file> [out]` compiles the file to a binary .wasm module and
-// writes it to `out` (default: the input path with `.ef` replaced by `.wasm`).
+// embedded host runtime (same observable output as `ef run`); `ef runwasm
+// <file>.wasm` executes a prebuilt module instead — no compile, no
+// binaryen. The module carries its effect op table in an `ef_ops` custom
+// section (see wasm_run.ts), so a prebuilt binary is self-contained.
+// `ef wasm <file> [out]` compiles the file to a binary .wasm module and
+// writes it to `out` (default: the input path with `.ef` replaced by
+// `.wasm`).
 // `ef types <file>` prints every top-level symbol and its inferred type,
 // then the whole program's result type with its residual effect row (the
 // ops that reach the top level — unhandled builtin effects included,
@@ -65,6 +69,23 @@ async function main(cmd: string, args: string[]) {
     if (args.length === 0) {
       break;
     }
+    // Prebuilt module: execute directly — no compile, no binaryen
+    // (wasm_run.ts, not wasm_host.ts). The op table comes from the module's
+    // own ef_ops custom section; the wasm pipeline tree-shakes builtin ops,
+    // so a bare module is not enough for the host's effect interpretation.
+    if (args[0].endsWith(".wasm")) {
+      const wasmPath = args[0];
+      const {runModule, readEmbeddedOps} = await import("./backend/wasm/wasm_run.ts");
+      const buf = readFileSync(wasmPath);
+      const bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      const ops = readEmbeddedOps(bytes);
+      if (ops === null) {
+        throw new Error(`${wasmPath}: no embedded ops table (ef_ops custom section) — rebuild with ef wasm`);
+      }
+      const result = runModule(bytes, ops, undefined, args.slice(1));
+      console.log(show(result));
+      return;
+    }
     const src = readFileSync(args[0]).toString();
     // Dynamic import: runwasm compiles, so it pays binaryen; the other
     // subcommands must never load it (wasm_host.ts → wasm.ts).
@@ -73,14 +94,14 @@ async function main(cmd: string, args: string[]) {
     console.log(show(result));
     return;
   }
-  case "buildwasm": {
+  case "wasm": {
     if (args.length === 0) {
       break;
     }
     const src = readFileSync(args[0]).toString();
     const out = args[1] ??
       (args[0].endsWith(".ef") ? args[0].slice(0, -3) + ".wasm" : args[0] + ".wasm");
-    // Dynamic import: buildwasm is the only compile-only subcommand; the
+    // Dynamic import: wasm is the only compile-only subcommand; the
     // binaryen engine must not initialize for run/types/lint/repl/lsp.
     const {compile} = await import("./backend/wasm/wasm.ts");
     const bytes = compile(src);
@@ -124,7 +145,7 @@ async function main(cmd: string, args: string[]) {
     process.exit(1);
   }
   }
-  console.error("Usage: ef run <file> [args...] | ef buildwasm <file> [out] | ef runwasm <file> | ef types <file> | ef lint <file> | ef repl | ef lsp");
+  console.error("Usage: ef run <file> [args...] | ef wasm <file> [out] | ef runwasm <file.ef|.wasm> | ef types <file> | ef lint <file> | ef repl | ef lsp");
   process.exit(2);
 }
 

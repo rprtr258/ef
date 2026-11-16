@@ -514,7 +514,7 @@ const EXAMPLES: Row[] = [
 // its files are exactly the .ef files in its directory. A file without a
 // table entry fails the guard, and so does a stale entry after a file is
 // deleted. (Non-.ef files — the raytracer golden output, .wasm artifacts
-// dropped next to the example sources by `buildwasm` — are not programs.)
+// dropped next to the example sources by `ef wasm` — are not programs.)
 const TABLES = [
   {name: "fixtures (testdata/*.ef)", dir: testdataDir, rows: FIXTURES},
   {name: "examples (examples/*.ef)", dir: examplesDir, rows: EXAMPLES},

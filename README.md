@@ -52,7 +52,7 @@ bun compiler/cli.ts repl                            # interactive REPL; bindings
 ```
 
 `ef run` typechecks first, then evaluates; the last expression's value is
-printed. Full command table (`buildwasm`, `types`, `lint`), the wasm target,
+printed. Full command table (`wasm`, `types`, `lint`), the wasm target,
 and REPL details: [CLI & REPL](docs/content/spec/cli.md). To open ef in the
 browser: `cd playground && bun run dev`.
 

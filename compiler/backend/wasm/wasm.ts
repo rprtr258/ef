@@ -114,6 +114,7 @@ import {type Emit, emitHelpers} from "./wasm_emit.ts";
 import {emitBuiltins, emitInits, emitTightMaps} from "./wasm_module.ts";
 import {type CIr} from "../../frontend/cps_ir.ts";
 import {planIr, type Plan} from "./wasm_plan.ts";
+import {OP_SECTION} from "./wasm_run.ts";
 // The binary format layer is gone: Buf's emit methods build binaryen AST
 // directly (wasm_body.ts); opcode constants survive only as the data keys
 // of the numeric-op tables (BIN_OPS/UN_OPS, CMP_OPS, ladder defOps). Buf's
@@ -197,6 +198,10 @@ function pipeline(src: string, interp?: EffectInterp): {mod: binaryen.Module, op
 
 export function compileWithOps(src: string, interp?: EffectInterp): {bytes: Uint8Array<ArrayBuffer>, ops: string[]} {
   const {mod, ops, o, lay, funcs} = pipeline(src, interp);
+  // The ops table rides in the module itself (ef_ops custom section — see
+  // wasm_run.ts), so the emitted binary is self-contained: no sidecar, and
+  // `ef runwasm <out>.wasm` runs without recompiling.
+  mod.addCustomSection(OP_SECTION, new TextEncoder().encode(JSON.stringify(ops)));
   return {bytes: buildModule(mod, o, lay, funcs), ops};
 }
 

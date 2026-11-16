@@ -15,7 +15,9 @@ type Rows = Record<string, number | undefined>;
 
 // command-substring → system name; FIRST match wins, so ef-wasm's patterns
 // precede ef-int's. ef-int's pattern carries a trailing space so it cannot
-// match `cli.ts runwasm`, a wasm invocation.
+// match `cli.ts runwasm`, a wasm invocation. The run_precompiled.ts /
+// precompile.ts run patterns match only historical CSVs (the baseline
+// directory predates the ops embedding; those tools are gone).
 const PREFIXES: [string, string[]][] = [
   ["ocaml", ["bin/ocaml-"]],
   ["koka", ["bin/koka-"]],
