@@ -106,10 +106,11 @@
 import binaryen from "binaryen";
 import {rejectUnhandled, type EffectInterp, type Prepared} from "../../frontend/pipeline.ts";
 import {toCps} from "../../frontend/cps.ts";
+import {uniDeepRes} from "../../frontend/unify.ts";
 import {bindMOD} from "./wasm_tables.ts";
 import {buildModule, discover, layoutStatics, optimize, assignIndices, type Discovery, type Indices, type Layout, type Opt} from "./wasm_pipeline.ts";
 import {emitCfns, emitCaseFns, emitRetResumes, emitResumeFn, emitTerminalRet, emitMain} from "./wasm_term.ts";
-import {Fn} from "./wasm_body.ts";
+import {type Fn} from "./wasm_body.ts";
 import {type Emit, emitHelpers} from "./wasm_emit.ts";
 import {emitBuiltins, emitInits, emitTightMaps} from "./wasm_module.ts";
 import {type CIr} from "../../frontend/cps_ir.ts";
@@ -193,7 +194,7 @@ function pipeline(pre: Prepared, interp?: EffectInterp): {mod: binaryen.Module, 
   // then emission (one local Emit context) and assembly.
   const d = discover(ir, prog);
   const o = optimize(prog, checked.stamps);
-  const plan = planIr(ir, (t) => checked.uni.deepRes(t));
+  const plan = planIr(ir, (t) => uniDeepRes(checked.uni, t));
   const ix = assignIndices(ir, plan, o);
   const lay = layoutStatics(d, ix, o, plan);
   const funcs = emit(ir, d, o, ix, lay, plan);

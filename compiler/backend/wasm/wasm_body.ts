@@ -483,233 +483,240 @@ export class Buf {
   }
 }
 
+// The trace discriminator fid: idx repeats across fns.
+let nextFnId = 0;
 
-// --- per-function emitter ---------------------------------------------------
-
-export class Fn {
-  static nextId = 0;
-  readonly fid = Fn.nextId++; // trace discriminator (idx repeats across fns)
-  body: Buf;
-  locals: binaryen.Type[] = []; // extra locals in allocation order
-  typeIdx = w.T_KABI; // program functions share (frame, k) -> i32; helpers may differ
+// Per-function emitter state: plain data threaded through the free
+// functions below.
+export type Fn = {
+  fid: number,
+  body: Buf,
+  locals: binaryen.Type[], // extra locals in allocation order
+  typeIdx: number, // program functions share (frame, k) -> i32; helpers may differ
   // Funcref table index (assigned by the IndexRegistrar at the definition site).
-  idx = 0;
+  idx: number,
   // The owning emission context: Buf handlers reach per-compile state
   // (import tables, funcref sigs) through it instead of module globals. Fn
   // is created context-free during the pre-emission phases (discover /
   // assignIndices); the context is attached when its body is emitted.
-  constructor(public params: number, public em?: FnOwner) {
-    this.body = new Buf(this);
-  }
-  i32(): number { return this.typed(binaryen.i32); }
-  i64(): number { return this.typed(binaryen.i64); }
-  f64(): number { return this.typed(binaryen.f64); }
-  f32(): number { return this.typed(binaryen.f32); }
-  anyref(): number { return this.typed(binaryen.anyref); }
-  // Precise-type local (GC ref locals keep their exact ref types).
-  typed(t: binaryen.Type): number {
-    this.locals.push(t);
-    return this.params + this.locals.length - 1;
-  }
+  params: number,
+  em?: FnOwner,
+  };
 
-  // Frame slot i (anyref) of the current frame (local 0) — the args/builtin
-  // access path. Writes push (arrayref, index) + value + aset at the .
-  slot(i: number): void {
-    this.body.localGet(0);
-    this.body.structGet(4, 1);
-    this.body.i32Const(i);
-    this.body.arrayGet(1);
-  }
-
-  // Store pushVal() into frame slot i of this fn's frame (local 0) — the
-  // write half of slot().
-  storeSlot(i: number, pushVal: () => void): void {
-    this.body.localGet(0);
-    this.body.structGet(4, 1);
-    this.body.i32Const(i);
-    pushVal();
-    this.body.arraySet();
-  }
-
-  // f64 payload of slot i's number; ref.cast traps on non-numbers (the
-  // frozen trap deviation — see wasm.ts's "Known deviations"; unreachable
-  // in well-typed programs).
-  slotF64(i: number): number {
-    const l = this.f64();
-    this.slot(i);
-    this.body.readBoxPayload(0);
-    this.body.localSet(l);
-    return l;
-  }
-
-  // Unbox the slice wrapper's backing field — $ELEMS in local `into`
-  // (pushRef(...)/slot(i) precedes for the wrapper's source). For the full
-  // fat-pointer read use unboxSlice.
-  unboxArr(into: number): void {
-    this.body.refCast(3, true);
-    this.body.structGet(3, 0);
-    this.body.localSet(into);
-  }
-
-  // Full triple read of the wrapper on the stack: data → `data`, off →
-  // `off`, len → `len` (the fat pointer {data, off, len}). The wrapper is
-  // popped once into a temp local; each field re-reads from it.
-  unboxSlice(data: number, off: number, len: number): void {
-    const w = this.anyref();
-    this.body.localSet(w);
-    const g = (): void => { this.body.localGet(w); this.body.refCast(3, true); };
-    g();
-    this.body.structGet(3, 0);
-    this.body.localSet(data);
-    g();
-    this.body.structGet(3, 1);
-    this.body.localSet(off);
-    g();
-    this.body.structGet(3, 2);
-    this.body.localSet(len);
-  }
-
-  // String concatenation of $STR locals a, b → new $STR on the stack.
-  emitStrCat(a: number, b: number): void {
-    const body = this.body;
-    const res = this.anyref();
-    body.localGet(a); body.refCast(2, true); body.arrayLen();
-    body.localGet(b); body.refCast(2, true); body.arrayLen();
-    body.num(w.ADD);
-    body.arrayNew(2);
-    body.localSet(res);
-    // copy a then b (b starts at unit offset la)
-    body.localGet(res);
-    body.refCast(2, true);
-    body.i32Const(0);
-    body.localGet(a); body.refCast(2, true);
-    body.i32Const(0);
-    body.localGet(a); body.refCast(2, true); body.arrayLen();
-    body.arrayCopy(2, 2);
-    body.localGet(res);
-    body.refCast(2, true);
-    body.localGet(a); body.refCast(2, true); body.arrayLen();
-    body.localGet(b); body.refCast(2, true);
-    body.i32Const(0);
-    body.localGet(b); body.refCast(2, true); body.arrayLen();
-    body.arrayCopy(2, 2);
-    body.localGet(res);
-  }
-
-  // for (i = 0; i < n; i++) iter(i) — n pushed by pushN (const or local).
-  // Emits BLOCK { LOOP { cond; br_if out; iter; incr; br; } }.
-  loop(pushN: () => void, iter: (i: number) => void): void {
-    const b = this.body;
-    const i = this.i32();
-    b.i32Const(0);
-    b.localSet(i); // reset: a loop nested in another loop's body reuses this local across outer iterations
-    b.block();
-    b.loop();
-    b.localGet(i);
-    pushN();
-    b.num(w.GEU);
-    b.brIf(1);
-    iter(i);
-    b.localGet(i);
-    b.i32Const(1);
-    b.num(w.ADD);
-    b.localSet(i);
-    b.br(0);
-    b.end();
-    b.end();
-  }
-
-  // Pointer-walk loop: BLOCK { LOOP { cond; br_if out; body; br; } } —
-  // cond pushes an i32 (nonzero exits); body is one walk step. The
-  // counting-loop analogue is loop().
-  walkLoop(cond: () => void, body: () => void): void {
-    const b = this.body;
-    b.block();
-    b.loop();
-    cond();
-    b.brIf(1);
-    body();
-    b.br(0);
-    b.end();
-    b.end();
-  }
-
-  // Viewland pointer: pushes (arrayref, off + i) of element i (local) of
-  // the $ELEMS local `blk` viewed at offset local `off`.
-  elemAddrOff(blk: number, i: number, off: number): void {
-    this.body.localGet(blk);
-    this.body.refCast(1, true);
-    this.body.localGet(i);
-    this.body.localGet(off);
-    this.body.num(w.ADD);
-  }
-
-  // Pushes (arrayref, index) of element i (local) of raw $ELEMS local
-  // `blk`; callers finish with aget (read) or push the value + aset (write).
-  elemAddr(blk: number, i: number): void {
-    this.body.localGet(blk);
-    this.body.refCast(1, true);
-    this.body.localGet(i);
-  }
-
-  // Allocates a raw $ELEMS array of length local `n`; returns the local.
-  allocArrBlk(n: number): number {
-    const blk = this.anyref();
-    this.body.localGet(n);
-    this.body.arrayNew(1);
-    this.body.localSet(blk);
-    return blk;
-  }
-
-  // Wraps the raw $ELEMS local `blk` → fresh slice wrapper {blk, 0, n} on
-  // the stack. Producers of fresh backings only — views are built by `sub`
-  // sharing an existing wrapper's fields.
-  boxArr(blk: number): void {
-    const b = this.body;
-    b.localGet(blk);
-    b.refCast(1, true);
-    b.i32Const(0);
-    b.localGet(blk);
-    b.refCast(1, true);
-    b.arrayLen();
-    b.structNew(3);
-  }
-
-  // Materialize a ValueRef onto the operand stack, at its consume point.
-  // This is the ONLY sanctioned place short-lived stack values cross an
-  // emitter boundary (the helper fully balances the stack per ref).
-  pushRef(r: ValueRef): void {
-    const b = this.body;
-    if (r.k === "g") b.globalGet(r.gi);
-    else if (r.k === "bool") { b.i32Const(r.v); b.refI31(); }
-    else if (r.k === "local") b.localGet(r.l);
-    else if (r.k === "raw") throw new WasmError("internal: raw param local reached pushRef (box it first)");
-    else { b.localGet(0); b.structGet(4, 1); b.i32Const(r.i); b.arrayGet(1); }
-  }
-
-  constF64(x: number): () => void { return () => this.body.f64Const(x); }
-
-  // A RET cell {K_RET, fragIdx, $fp, next}: the continuation cell that
-  // tail-calls the thunk `fragIdx` (T_III_I) over the caller's frame (local
-  // 0). `nextE` pushes the cell's next-pointer operand. `frameE` overrides
-  // the frame operand — the map-like loops install a fresh per-iteration
-  // frame so each captured cell freezes its own loop state; default: local
-  // `frameLocal`. Returns the cell.
-  retCell(fragIdx: number, nextE: () => void, frameLocal = 0, frameE?: () => void): number {
-    const b = this.body;
-    const cell = this.anyref();
-    b.i31Const(w.K_RET);
-    b.i31Const(fragIdx);
-    if (frameE === undefined) b.localGet(frameLocal); // b = the frame the fragment runs over
-    else frameE();
-    nextE();
-    b.refCast(5, true);
-    b.structNew(5);
-    b.localSet(cell);
-    return cell;
-  }
+export function newFn(params: number, em?: FnOwner): Fn {
+  // Buf's scope stack reads f.fid/fn.idx for debug tracing, so the buffer is
+  // constructed after the record exists (Buf ↔ Fn back-reference).
+  const f: Partial<Fn> = {fid: nextFnId++, locals: [], typeIdx: w.T_KABI, idx: 0, params, em};
+  f.body = new Buf(f as Fn);
+  return f as Fn;
+}
+export function i32(f: Fn): number { return typed(f, binaryen.i32); }
+export function i64(f: Fn): number { return typed(f, binaryen.i64); }
+export function f64(f: Fn): number { return typed(f, binaryen.f64); }
+export function f32(f: Fn): number { return typed(f, binaryen.f32); }
+export function anyref(f: Fn): number { return typed(f, binaryen.anyref); }
+// Precise-type local (GC ref locals keep their exact ref types).
+export function typed(f: Fn, t: binaryen.Type): number {
+  f.locals.push(t);
+  return f.params + f.locals.length - 1;
 }
 
+// Frame slot i (anyref) of the current frame (local 0) — the args/builtin
+// access path. Writes push (arrayref, index) + value + aset at the .
+export function slot(f: Fn, i: number): void {
+  f.body.localGet(0);
+  f.body.structGet(4, 1);
+  f.body.i32Const(i);
+  f.body.arrayGet(1);
+}
+
+// Store pushVal() into frame slot i of this fn's frame (local 0) — the
+// write half of slot().
+export function storeSlot(f: Fn, i: number, pushVal: () => void): void {
+  f.body.localGet(0);
+  f.body.structGet(4, 1);
+  f.body.i32Const(i);
+  pushVal();
+  f.body.arraySet();
+}
+
+// f64 payload of slot i's number; ref.cast traps on non-numbers (the
+// frozen trap deviation — see wasm.ts's "Known deviations"; unreachable
+// in well-typed programs).
+export function slotF64(f: Fn, i: number): number {
+  const l = f64(f);
+  slot(f, i);
+  f.body.readBoxPayload(0);
+  f.body.localSet(l);
+  return l;
+}
+
+// Unbox the slice wrapper's backing field — $ELEMS in local `into`
+// (pushRef(...)/slot(i) precedes for the wrapper's source). For the full
+// fat-pointer read use unboxSlice.
+export function unboxArr(f: Fn, into: number): void {
+  f.body.refCast(3, true);
+  f.body.structGet(3, 0);
+  f.body.localSet(into);
+}
+
+// Full triple read of the wrapper on the stack: data → `data`, off →
+// `off`, len → `len` (the fat pointer {data, off, len}). The wrapper is
+// popped once into a temp local; each field re-reads from it.
+export function unboxSlice(f: Fn, data: number, off: number, len: number): void {
+  const w = anyref(f);
+  f.body.localSet(w);
+  const g = (): void => { f.body.localGet(w); f.body.refCast(3, true); };
+  g();
+  f.body.structGet(3, 0);
+  f.body.localSet(data);
+  g();
+  f.body.structGet(3, 1);
+  f.body.localSet(off);
+  g();
+  f.body.structGet(3, 2);
+  f.body.localSet(len);
+}
+
+// String concatenation of $STR locals a, b → new $STR on the stack.
+export function emitStrCat(f: Fn, a: number, b: number): void {
+  const body = f.body;
+  const res = anyref(f);
+  body.localGet(a); body.refCast(2, true); body.arrayLen();
+  body.localGet(b); body.refCast(2, true); body.arrayLen();
+  body.num(w.ADD);
+  body.arrayNew(2);
+  body.localSet(res);
+  // copy a then b (b starts at unit offset la)
+  body.localGet(res);
+  body.refCast(2, true);
+  body.i32Const(0);
+  body.localGet(a); body.refCast(2, true);
+  body.i32Const(0);
+  body.localGet(a); body.refCast(2, true); body.arrayLen();
+  body.arrayCopy(2, 2);
+  body.localGet(res);
+  body.refCast(2, true);
+  body.localGet(a); body.refCast(2, true); body.arrayLen();
+  body.localGet(b); body.refCast(2, true);
+  body.i32Const(0);
+  body.localGet(b); body.refCast(2, true); body.arrayLen();
+  body.arrayCopy(2, 2);
+  body.localGet(res);
+}
+
+// for (i = 0; i < n; i++) iter(i) — n pushed by pushN (const or local).
+// Emits BLOCK { LOOP { cond; br_if out; iter; incr; br; } }.
+export function fnLoop(f: Fn, pushN: () => void, iter: (i: number) => void): void {
+  const b = f.body;
+  const i = i32(f);
+  b.i32Const(0);
+  b.localSet(i); // reset: a loop nested in another loop's body reuses this local across outer iterations
+  b.block();
+  b.loop();
+  b.localGet(i);
+  pushN();
+  b.num(w.GEU);
+  b.brIf(1);
+  iter(i);
+  b.localGet(i);
+  b.i32Const(1);
+  b.num(w.ADD);
+  b.localSet(i);
+  b.br(0);
+  b.end();
+  b.end();
+}
+
+// Pointer-walk loop: BLOCK { LOOP { cond; br_if out; body; br; } } —
+// cond pushes an i32 (nonzero exits); body is one walk step. The
+// counting-loop analogue is loop().
+export function walkLoop(f: Fn, cond: () => void, body: () => void): void {
+  const b = f.body;
+  b.block();
+  b.loop();
+  cond();
+  b.brIf(1);
+  body();
+  b.br(0);
+  b.end();
+  b.end();
+}
+
+// Viewland pointer: pushes (arrayref, off + i) of element i (local) of
+// the $ELEMS local `blk` viewed at offset local `off`.
+export function elemAddrOff(f: Fn, blk: number, i: number, off: number): void {
+  f.body.localGet(blk);
+  f.body.refCast(1, true);
+  f.body.localGet(i);
+  f.body.localGet(off);
+  f.body.num(w.ADD);
+}
+
+// Pushes (arrayref, index) of element i (local) of raw $ELEMS local
+// `blk`; callers finish with aget (read) or push the value + aset (write).
+export function elemAddr(f: Fn, blk: number, i: number): void {
+  f.body.localGet(blk);
+  f.body.refCast(1, true);
+  f.body.localGet(i);
+}
+
+// Allocates a raw $ELEMS array of length local `n`; returns the local.
+export function allocArrBlk(f: Fn, n: number): number {
+  const blk = anyref(f);
+  f.body.localGet(n);
+  f.body.arrayNew(1);
+  f.body.localSet(blk);
+  return blk;
+}
+
+// Wraps the raw $ELEMS local `blk` → fresh slice wrapper {blk, 0, n} on
+// the stack. Producers of fresh backings only — views are built by `sub`
+// sharing an existing wrapper's fields.
+export function boxArr(f: Fn, blk: number): void {
+  const b = f.body;
+  b.localGet(blk);
+  b.refCast(1, true);
+  b.i32Const(0);
+  b.localGet(blk);
+  b.refCast(1, true);
+  b.arrayLen();
+  b.structNew(3);
+}
+
+// Materialize a ValueRef onto the operand stack, at its consume point.
+// This is the ONLY sanctioned place short-lived stack values cross an
+// emitter boundary (the helper fully balances the stack per ref).
+export function pushRef(f: Fn, r: ValueRef): void {
+  const b = f.body;
+  if (r.k === "g") b.globalGet(r.gi);
+  else if (r.k === "bool") { b.i32Const(r.v); b.refI31(); }
+  else if (r.k === "local") b.localGet(r.l);
+  else if (r.k === "raw") throw new WasmError("internal: raw param local reached pushRef (box it first)");
+  else { b.localGet(0); b.structGet(4, 1); b.i32Const(r.i); b.arrayGet(1); }
+}
+
+export function constF64(f: Fn, x: number): () => void { return () => f.body.f64Const(x); }
+
+// A RET cell {K_RET, fragIdx, $fp, next}: the continuation cell that
+// tail-calls the thunk `fragIdx` (T_III_I) over the caller's frame (local
+// 0). `nextE` pushes the cell's next-pointer operand. `frameE` overrides
+// the frame operand — the map-like loops install a fresh per-iteration
+// frame so each captured cell freezes its own loop state; default: local
+// `frameLocal`. Returns the cell.
+export function retCell(f: Fn, fragIdx: number, nextE: () => void, frameLocal = 0, frameE?: () => void): number {
+  const b = f.body;
+  const cell = anyref(f);
+  b.i31Const(w.K_RET);
+  b.i31Const(fragIdx);
+  if (frameE === undefined) b.localGet(frameLocal); // b = the frame the fragment runs over
+  else frameE();
+  nextE();
+  b.refCast(5, true);
+  b.structNew(5);
+  b.localSet(cell);
+  return cell;
+}
 function sigOf(em: FnOwner, funcrefIdx: number): {ps: binaryen.Type[], r: binaryen.Type | null} {
   const typeIdx = funcrefIdx < em.o.liveImports.length
     ? w.impType(em.o.liveImports[funcrefIdx])

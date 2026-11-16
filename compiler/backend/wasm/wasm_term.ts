@@ -49,8 +49,8 @@ import {BUILTINS} from "../../frontend/analysis.ts";
 import {OP_ADD, OP_DIV, OP_EQ, OP_GE, OP_GT, OP_LE, OP_LT, OP_MUL, OP_NE, OP_NEG, OP_NOT, OP_REM, OP_SUB} from "../../ops.ts";
 import {mapLikeFrameWords, numSig} from "./wasm_tables.ts";
 import {type CIr, type CTerm, type CAtom, type CPrim, type CFn} from "../../frontend/cps_ir.ts";
-import {type Buf, Fn} from "./wasm_body.ts";
-import {type Indices, type IndexRegistrar} from "./wasm_pipeline.ts";
+import {Buf, Fn, anyref, constF64, emitStrCat, f32, f64, i32, i64, newFn, pushRef, retCell, slot, storeSlot, typed, unboxSlice, walkLoop} from "./wasm_body.ts";
+import {type Indices, type IndexRegistrar, register} from "./wasm_pipeline.ts";
 import {type Emit, emitDispatch, emitCaseScan, selectBool, emitFail, i31of, makeRestThunk, hdlGet, CMP_OPS, emitCallClosure, emitDirectEntryCall, emitNumericEntryCall, rebox, boxShapeOf, planeLocal, reboxCallResult, tracePoint} from "./wasm_emit.ts";
 import {type Plan, type TLevel, type TScope, type LetkP, type DcallP, type CallP, letkP, hdlP, scopeP, dcallP, callP, entryLevel, thunkBase, analyzeEscapes} from "./wasm_plan.ts";
 
@@ -162,8 +162,8 @@ function pushAtom(wk: Walk, a: CAtom): void {
       return;
     }
     if (a.stamp !== undefined) pushStampedVar(wk, a);
-    else f.pushRef(atomRef(wk, a));
-  } else f.pushRef(atomRef(wk, a));
+    else pushRef(f, atomRef(wk, a));
+  } else pushRef(f, atomRef(wk, a));
 }
 
 // Load an atom's value ref. Literals ride the static pools (i64/u64
@@ -179,7 +179,7 @@ function atomRef(wk: Walk, a: CAtom): ValueRef {
       const key = `${a.stamp ?? "f64"}:${a.raw ?? String(a.v)}`;
       const g = wk.em.lay.numStatics.get(key);
       if (g === undefined) throw new WasmError(`internal: no static for num ${key}`);
-      const v = f.anyref();
+      const v = anyref(f);
       b.globalGet(g, binaryen.anyref);
       b.localSet(v);
       return {k: "local", l: v};
@@ -187,7 +187,7 @@ function atomRef(wk: Walk, a: CAtom): ValueRef {
     if (typeof a.v === "string") {
       const g = wk.em.lay.strStatics.get(a.v);
       if (g === undefined) throw new WasmError(`internal: no static for string literal`);
-      const v = f.anyref();
+      const v = anyref(f);
       b.globalGet(g, binaryen.anyref);
       b.localSet(v);
       return {k: "local", l: v};
@@ -207,7 +207,7 @@ function atomRef(wk: Walk, a: CAtom): ValueRef {
         if (tw === undefined) continue;
         const tl = typedLocal(wk, l, a.name, tw);
         if (a.stamp === tw) return {k: "raw", l: tl, w: tw};
-        const v = f.anyref();
+        const v = anyref(f);
         b.localGet(tl);
         rebox(wk.em, f, tw);
         b.localSet(v);
@@ -216,7 +216,7 @@ function atomRef(wk: Walk, a: CAtom): ValueRef {
     }
     if (r.local !== null) return {k: "local", l: r.local};
     if (r.d === 0) return {k: "slot", i: r.i};
-    const v = f.anyref();
+    const v = anyref(f);
     b.localGet(0);
     for (let k = 0; k < frameHops(wk.ts, r.d); k++) b.structGet(4, 0); // walk parent frames
     b.structGet(4, 1);
@@ -243,7 +243,7 @@ function pushStampedVar(wk: Walk, a: CAtom & {t: "var"}): void {
     rebox(wk.em, f, r.w);
     return;
   }
-  f.pushRef(r);
+  pushRef(f, r);
   const wkn = a.stamp!;
   if (a.adaptFrom !== undefined) {
     // The stored box rides the binding's own width (adaptFrom), this read
@@ -342,7 +342,7 @@ function typedLocal(wk: Walk, l: TLevel, name: string, w: string): number {
 // reason).
 function extendFrame(wk: Walk, size: number): number {
   const f = wk.f, b = f.body;
-  const fp = f.typed(_T.RF[4]);
+  const fp = typed(f, _T.RF[4]);
   b.localGet(0);
   b.i32Const(size);
   b.arrayNew(1);
@@ -366,19 +366,19 @@ function emitPrim(wk: Walk, p: CPrim, rawW?: string): number {
         b.localSet(res);
         return res;
       }
-      const res = f.anyref();
+      const res = anyref(f);
       emitOpPrim(wk, p);
       b.localSet(res);
       return res;
     }
     case "arr": {
-      const blk = f.anyref();
+      const blk = anyref(f);
       b.i32Const(p.args.length);
       b.arrayNew(1);
       b.localSet(blk);
       for (let k = 0; k < p.args.length; k++) {
         // Value-explicit order: the element's ref before the destination.
-        const r = f.anyref();
+        const r = anyref(f);
         pushAtom(wk, p.args[k]);
         b.localSet(r);
         b.localGet(blk);
@@ -395,14 +395,14 @@ function emitPrim(wk: Walk, p: CPrim, rawW?: string): number {
         b.i32Const(p.args.length);
         b.structNew(3); // slice window {data, 0, n}
       }
-      const res = f.anyref();
+      const res = anyref(f);
       b.localSet(res);
       return res;
     }
     case "as":
       return emitAsPrim(wk, p);
     case "field": {
-      const o = f.anyref();
+      const o = anyref(f);
       pushAtom(wk, p.obj);
       b.localSet(o);
       return emitFieldRead(wk, o, p.idx, p.name);
@@ -416,12 +416,12 @@ function emitPrim(wk: Walk, p: CPrim, rawW?: string): number {
 // evalPrim).
 function emitFieldRead(wk: Walk, o: number, idx: number, name: string): number {
   const f = wk.f, b = f.body;
-  const res = f.anyref();
+  const res = anyref(f);
   b.localGet(o);
   b.refTest(12, false); // $TUP
   b.if(w.ANYREF); // both arms leave the field value (an anyref box)
   {
-    const blk = f.anyref();
+    const blk = anyref(f);
     b.localGet(o);
     b.refCast(12, true);
     b.structGet(12, 0);
@@ -433,9 +433,9 @@ function emitFieldRead(wk: Walk, o: number, idx: number, name: string): number {
     b.num(w.LEU);
     b.if();
     emitFail(wk.em, f, 2, wk.em.lay.strStatics.get(name) ?? null,
-      f.constF64(idx),
+      constF64(f, idx),
       () => { b.localGet(blk); b.refCast(1, true); b.arrayLen(); b.num(w.CONV_I32); },
-      f.constF64(0));
+      constF64(f, 0));
     b.end();
     b.localGet(blk);
     b.refCast(1, true);
@@ -444,17 +444,17 @@ function emitFieldRead(wk: Walk, o: number, idx: number, name: string): number {
   }
   b.els();
   {
-    const d = f.anyref(), off = f.i32(), len = f.i32();
+    const d = anyref(f), off = i32(f), len = i32(f);
     b.localGet(o);
-    f.unboxSlice(d, off, len);
+    unboxSlice(f, d, off, len);
     b.localGet(len);
     b.i32Const(idx);
     b.num(w.LEU);
     b.if();
     emitFail(wk.em, f, 2, wk.em.lay.strStatics.get(name) ?? null,
-      f.constF64(idx),
+      constF64(f, idx),
       () => { b.localGet(len); b.num(w.CONV_I32); },
-      f.constF64(0));
+      constF64(f, 0));
     b.end();
     b.localGet(d);
     b.refCast(1, true);
@@ -474,7 +474,7 @@ function emitFieldRead(wk: Walk, o: number, idx: number, name: string): number {
 function emitAsPrim(wk: Walk, p: CPrim & {t: "as"}): number {
   const em = wk.em, f = wk.f, b = f.body;
   const targetW = p.stamp;
-  const v = f.anyref();
+  const v = anyref(f);
   pushAtom(wk, p.arg);
   b.localSet(v);
   if (p.asKind === "trunc") {
@@ -484,33 +484,33 @@ function emitAsPrim(wk: Walk, p: CPrim & {t: "as"}): number {
     b.readBoxPayload(0);
     if (targetW === "u32") {
       b.num(w.TRUNC_F64_U);
-      const t = f.i32();
+      const t = i32(f);
       b.localSet(t);
       b.localGet(t);
       b.structNew(8);
     } else if (targetW === "i32") {
       b.num(w.TRUNC_F64);
-      const t = f.i32();
+      const t = i32(f);
       b.localSet(t);
       b.localGet(t);
       b.structNew(7);
     } else if (targetW === "u64") {
       b.num(w.TRUNC_F64_U);
       b.num(w.I64_EXTEND_I32_U);
-      const t = f.i64();
+      const t = i64(f);
       b.localSet(t);
       b.localGet(t);
       b.structNew(10);
     } else if (targetW === "i64") {
       b.num(w.TRUNC_F64);
       b.num(w.I64_EXTEND_I32_S);
-      const t = f.i64();
+      const t = i64(f);
       b.localSet(t);
       b.localGet(t);
       b.structNew(9);
     } else if (targetW === "f32") {
       b.num(w.CONV_F32_I32);
-      const t = f.f32();
+      const t = f32(f);
       b.localSet(t);
       b.localGet(t);
       b.structNew(11);
@@ -524,30 +524,30 @@ function emitAsPrim(wk: Walk, p: CPrim & {t: "as"}): number {
     b.localGet(v);
     b.callFn(em.ix.fTruthy);
     if (targetW === "i32") {
-      const t = f.i32();
+      const t = i32(f);
       b.localSet(t);
       b.localGet(t);
       b.structNew(7);
     } else if (targetW === "u32") {
-      const t = f.i32();
+      const t = i32(f);
       b.localSet(t);
       b.localGet(t);
       b.structNew(8);
     } else if (targetW === "i64") {
       b.num(w.I64_EXTEND_I32_S);
-      const t = f.i64();
+      const t = i64(f);
       b.localSet(t);
       b.localGet(t);
       b.structNew(9);
     } else if (targetW === "u64") {
       b.num(w.I64_EXTEND_I32_U);
-      const t = f.i64();
+      const t = i64(f);
       b.localSet(t);
       b.localGet(t);
       b.structNew(10);
     } else if (targetW === "f32") {
       b.num(w.CONV_F32_I32);
-      const t = f.f32();
+      const t = f32(f);
       b.localSet(t);
       b.localGet(t);
       b.structNew(11);
@@ -564,7 +564,7 @@ function emitAsPrim(wk: Walk, p: CPrim & {t: "as"}): number {
       b.callFn(em.ix.fBox);
     } else b.structNew(boxShapeOf(targetW));
   }
-  const res = f.anyref();
+  const res = anyref(f);
   b.localSet(res);
   return res;
 }
@@ -589,7 +589,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
       // site flexed to another): adaptive unbox to f64, then convert to
       // the op's raw plane.
       if (a.adaptFrom !== undefined) {
-        f.pushRef(atomRef(wk, a));
+        pushRef(f, atomRef(wk, a));
         b.callFn(em.ix.fNum64);
         adaptRaw(f, wkName);
         return;
@@ -624,10 +624,10 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
     if (a.stamp === wkName) {
       // Same-width box: cast to its shape and read the raw payload (the
       // payload type follows the shape — $I64 carries i64, $F64 f64, ...).
-      f.pushRef(atomRef(wk, a));
+      pushRef(f, atomRef(wk, a));
       b.readBoxPayload(boxShapeOf(wkName));
     } else {
-      f.pushRef(atomRef(wk, a));
+      pushRef(f, atomRef(wk, a));
       b.callFn(wkName === "f64" ? em.ix.fNum64 : widthHelper(em, wkName));
     }
   };
@@ -641,7 +641,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
   switch (name) {
     case OP_ADD: {
       if (wkName === "f64") {
-        const a = f.anyref(), bv = f.anyref();
+        const a = anyref(f), bv = anyref(f);
         pushAtom(wk, p.args[0]);
         b.localSet(a);
         pushAtom(wk, p.args[1]);
@@ -660,7 +660,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
           b.localGet(bv); b.refTest(2, false);
           b.num(w.AND);
           b.if(w.ANYREF);
-          f.emitStrCat(a, bv);
+          emitStrCat(f, a, bv);
           b.els(); b.refNull(w.ANYREF);
           b.end();
         } else {
@@ -700,7 +700,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
         b.localGet(y);
         b.num(isWide ? w.I64_EQZ : w.EQZ);
         b.if(0x40);
-        emitFail(em, f, 3, null, f.constF64(0), f.constF64(0), f.constF64(0));
+        emitFail(em, f, 3, null, constF64(f, 0), constF64(f, 0), constF64(f, 0));
         b.end();
         if (name === OP_DIV && (isI32 || isI64)) {
           b.localGet(y);
@@ -711,7 +711,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
           b.num(isWide ? w.I64_EQ : w.EQ);
           b.num(w.AND);
           b.if(0x40);
-          emitFail(em, f, 4, null, f.constF64(0), f.constF64(0), f.constF64(0));
+          emitFail(em, f, 4, null, constF64(f, 0), constF64(f, 0), constF64(f, 0));
           b.end();
         }
         b.localGet(x);
@@ -729,12 +729,12 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
           // The whole computation runs in the f64 plane (like the
           // interpreter's raw f64 `%`), so the f32 operands must live in
           // f64 locals before FMUL/FSUB consume them.
-          const x64 = f.f64(), y64 = f.f64();
+          const x64 = f64(f), y64 = f64(f);
           b.localGet(x); b.num(w.F64_PROMOTE); b.localSet(x64);
           b.localGet(y); b.num(w.F64_PROMOTE); b.localSet(y64);
           xs = x64; ys = y64;
         }
-        const t = f.f64();
+        const t = f64(f);
         b.localGet(xs); b.localGet(ys); b.num(w.FDIV); b.num(w.FTRUNC); b.localSet(t);
         b.localGet(xs); b.localGet(ys); b.localGet(t); b.num(w.FMUL); b.num(w.FSUB);
         if (isF32) b.num(w.F32_DEMOTE);
@@ -813,7 +813,7 @@ function emitOpPrim(wk: Walk, p: CPrim & {t: "op"}, rawW?: string): void {
   // fires for identity norms (the caller gates rawW), so a norm pass
   // would consume an unboxed value — skip it.
   if (rawW === undefined && p.norm !== undefined && p.norm !== wkName) {
-    const r = f.anyref();
+    const r = anyref(f);
     b.localSet(r);
     b.localGet(r);
     if (p.norm !== "f64") b.callFn(widthHelper(em, p.norm));
@@ -841,7 +841,7 @@ function resolveK(wk: Walk, a: CAtom): KRef {
   const r = resolveT(wk.ts, name);
   if (r === null) throw new WasmError(`internal: unbound continuation ${name}`);
   if (r.local !== null) return {kind: "cell", local: r.local};
-  const cell = f.anyref();
+  const cell = anyref(f);
   b.localGet(0);
   for (let k = 0; k < frameHops(wk.ts, r.d); k++) b.structGet(4, 0);
   b.structGet(4, 1);
@@ -874,13 +874,13 @@ function emitTerm(wk: Walk, t: CTerm): void {
         // thunk, F_n, next = ambient kL}; current frame := F_n.
         const fpN = extendFrame(wk, p.fnLvl!.size);
         if (t.freeze !== undefined) {
-          const slots = f.typed(_T.RF[1]);
+          const slots = typed(f, _T.RF[1]);
           b.localGet(fpN);
           b.structGet(4, 1);
           b.localSet(slots);
           for (const fr of t.freeze) {
             const si = p.freezeSlots!.get(fr.name)!;
-            const v = f.anyref();
+            const v = anyref(f);
             pushAtom(wk, fr.val);
             b.localSet(v);
             b.localGet(slots);
@@ -889,7 +889,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
             b.arraySet();
           }
         }
-        const cell = f.anyref();
+        const cell = anyref(f);
         b.i31Const(w.K_RET);
         b.i32Const(thunk.idx);
         b.refI31();
@@ -926,7 +926,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
       // The site frame is saved and restored before the body runs: scopes
       // inside the body/rest rebind local 0, and a re-entry (br) must find
       // the frame chain the body's slot depths assume.
-      const siteF = f.typed(_T.RF[4]);
+      const siteF = typed(f, _T.RF[4]);
       b.localGet(0);
       b.localSet(siteF);
       wk.labels.push({name: t.name, openDepth: wk.depth, isLoop: p.isLoop === true, param: t.param});
@@ -974,7 +974,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
       break;
     }
     case "bind": {
-      const v = f.anyref();
+      const v = anyref(f);
       pushAtom(wk, t.val);
       b.localSet(v);
       storeAt(wk, 0, wk.ts[0].slots.get(t.name)!, v);
@@ -984,7 +984,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
     case "mkfn": {
       const baseScope = wk.em.plan.cfnBase.get(t.fun);
       if (baseScope === undefined) throw new WasmError(`internal: no base scope for fun ${t.fun}`);
-      const clo = f.anyref();
+      const clo = anyref(f);
       b.i32Const(wk.em.ix.cfnFns[t.fun].idx);
       b.refI31();
       b.localGet(0); // the captured frame
@@ -1009,7 +1009,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
     case "call": {
       const direct = directBuiltin(wk, t.fn);
       const cp = callP(t);
-      const fc = f.anyref();
+      const fc = anyref(f);
       if (direct === undefined && cp?.devirt?.noEnv !== true) {
         // Closure call: load the callee value (a user $CLO, a builtin $CLO
         // from the value-builtins pool, or a case-body resume binder). A
@@ -1020,7 +1020,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
       const kref = resolveK(wk, t.k);
       if (kref.kind === "label") throw new WasmError("internal: call k must be materialized");
       const argEmit = (k: number, ffp: number): void => {
-        const r = f.anyref();
+        const r = anyref(f);
         pushAtom(wk, t.args[k]);
         b.localSet(r);
         b.localGet(ffp);
@@ -1063,7 +1063,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
       // here; a CPS entry takes the generic tail call. With all-numeric
       // stamps the direct arm's shape-tagged numeric entry takes the call
       // with raw operands (tag mismatch → boxed direct entry).
-      const flag = f.i32();
+      const flag = i32(f);
       b.localGet(fc);
       b.refCast(6, true);
       b.structGet(6, 3);
@@ -1083,7 +1083,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
         // result into v; one dispatch delivers it through the site's
         // continuation (the null-k yield returns the site's value).
         const {numfn} = pushNumericMatch(f, fc, exp.sig);
-        const v = f.anyref();
+        const v = anyref(f);
         b.if();
         rawIndirectCall(wk, fc, t.args, numfn, exp.sig);
         const rv = reboxCallResult(em, f, exp.r);
@@ -1113,7 +1113,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
       emitHandleT(wk, t);
       break;
     case "if": {
-      const cond = f.anyref();
+      const cond = anyref(f);
       pushAtom(wk, t.c);
       b.localSet(cond);
       b.localGet(cond);
@@ -1144,7 +1144,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
       break;
     }
     case "dlet": {
-      const v = f.anyref();
+      const v = anyref(f);
       pushAtom(wk, t.val);
       b.localSet(v);
       emitDlet(wk, t, v);
@@ -1154,7 +1154,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
     case "assign": {
       const r = resolveT(wk.ts, t.name);
       if (r === null) throw new WasmError(`internal: assign of unbound ${t.name}`);
-      const v = f.anyref();
+      const v = anyref(f);
       pushAtom(wk, t.val);
       b.localSet(v);
       if (r.raw !== undefined) {
@@ -1171,7 +1171,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
     case "jump": {
       const name = t.k.t === "var" ? t.k.name : null;
       if (name === null) throw new WasmError("internal: jump k must be a var");
-      const v = f.anyref();
+      const v = anyref(f);
       pushAtom(wk, t.arg);
       b.localSet(v);
       const kref = resolveK(wk, t.k);
@@ -1193,8 +1193,8 @@ function emitTerm(wk: Walk, t: CTerm): void {
       // unit-literal result rides the canonical null box (the tagged-null
       // unit the interpreter echoes) — pushAtom's stamped path would
       // surface a $I64 0 that hostUnbox shows as "0".
-      const v = f.anyref();
-      if (t.v.t === "lit" && t.v.v === null) f.pushRef(em.lay.unitRef);
+      const v = anyref(f);
+      if (t.v.t === "lit" && t.v.v === null) pushRef(f, em.lay.unitRef);
       else pushAtom(wk, t.v);
       b.localSet(v);
       b.localGet(v);
@@ -1207,7 +1207,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
       // take its null-k branch — return straight away. Everywhere else
       // (thunks over CPS regions) the ambient chain head is real. A numeric
       // entry's raw signature returns the unboxed payload.
-      const v = f.anyref();
+      const v = anyref(f);
       pushAtom(wk, t.v);
       b.localSet(v);
       if (wk.rawRet !== undefined) {
@@ -1230,7 +1230,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
       const tailDret = (t.rest.t === "dret" || t.rest.t === "halt") &&
         t.rest.v.t === "var" && t.rest.v.name === t.name;
       const argEmit = (k: number, ffp: number): void => {
-        const r = f.anyref();
+        const r = anyref(f);
         pushAtom(wk, t.args[k]);
         b.localSet(r);
         b.localGet(ffp);
@@ -1244,7 +1244,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
       // The closure value is only needed for its env: builtin targets don't
       // use it, and a noEnv devirt target has no capts to read through it.
       const skipClo = direct !== undefined || p.devirt?.noEnv === true;
-      const fcb = skipClo ? -1 : f.anyref();
+      const fcb = skipClo ? -1 : anyref(f);
       if (!skipClo) {
         pushAtom(wk, t.fn);
         b.localSet(fcb);
@@ -1287,7 +1287,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
           const si = wk.ts[0].slots.get(t.name);
           if (si === undefined) throw new WasmError(`internal: no slot for ${t.name}`);
           if (t.norm !== undefined && !numOk) {
-            const nrm = f.anyref();
+            const nrm = anyref(f);
             b.localGet(r);
             if (t.norm !== "f64") b.callFn(widthHelper(em, t.norm));
             else b.callFn(em.ix.fNum64);
@@ -1308,9 +1308,9 @@ function emitTerm(wk: Walk, t: CTerm): void {
         const thunk = makeRestThunk(em, "dcall:" + t.name);
         p.thunk = thunk;
         emitDcallThunk(wk, thunk, t, p);
-        const cell = f.retCell(thunk.idx, () => cellNextE(wk, b), fpN2);
+        const cell = retCell(f, thunk.idx, () => cellNextE(wk, b), fpN2);
         if (t.norm !== undefined && !numOk) {
-          const nrm = f.anyref();
+          const nrm = anyref(f);
           b.localGet(r);
           if (t.norm !== "f64") b.callFn(widthHelper(em, t.norm));
           else b.callFn(em.ix.fNum64);
@@ -1333,17 +1333,17 @@ function emitTerm(wk: Walk, t: CTerm): void {
         const thunk = makeRestThunk(em, "dcall:" + t.name);
         p.thunk = thunk;
         emitDcallThunk(wk, thunk, t, p);
-        const cell = f.retCell(thunk.idx, () => cellNextE(wk, b), fpN2);
+        const cell = retCell(f, thunk.idx, () => cellNextE(wk, b), fpN2);
         emitCallClosure(f, fcb, t.args.length, argEmit, {tail: true, kL: cell, direct: callDirect});
         break;
       }
       // Unknown callee value: the $CLO flag picks the entry ABI. Static
       // knowledge is only a hint, never a bypass — a pure-typed slot can
       // hold a resume binder or an any-smuggled suspending closure.
-      const fc = f.anyref();
+      const fc = anyref(f);
       pushAtom(wk, t.fn);
       b.localSet(fc);
-      const flag = f.i32();
+      const flag = i32(f);
       b.localGet(fc);
       b.refCast(6, true);
       b.structGet(6, 3);
@@ -1370,7 +1370,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
         // numeric entry (shape-tagged) takes the call with raw operands;
         // any other closure fails the tag check and takes the boxed entry.
         const exp = siteNumericSig(t);
-        const r = f.anyref();
+        const r = anyref(f);
         if (exp !== null) {
           const {numfn} = pushNumericMatch(f, fc, exp.sig);
           b.if();
@@ -1392,9 +1392,9 @@ function emitTerm(wk: Walk, t: CTerm): void {
         const thunk = makeRestThunk(em, "dcall:" + t.name);
         p.thunk = thunk;
         emitDcallThunk(wk, thunk, t, p);
-        const cell = f.retCell(thunk.idx, () => cellNextE(wk, b), fpN2);
+        const cell = retCell(f, thunk.idx, () => cellNextE(wk, b), fpN2);
         if (t.norm !== undefined) {
-          const nrm = f.anyref();
+          const nrm = anyref(f);
           b.localGet(r);
           if (t.norm !== "f64") b.callFn(widthHelper(em, t.norm));
           else b.callFn(em.ix.fNum64);
@@ -1413,7 +1413,7 @@ function emitTerm(wk: Walk, t: CTerm): void {
       const thunk = makeRestThunk(em, "dcall:" + t.name);
       p.thunk = thunk;
       emitDcallThunk(wk, thunk, t, p);
-      const cell = f.retCell(thunk.idx, () => cellNextE(wk, b), fpN2);
+      const cell = retCell(f, thunk.idx, () => cellNextE(wk, b), fpN2);
       emitCallClosure(f, fc, t.args.length, argEmit, {tail: true, kL: cell});
       b.end();
       wk.depth--;
@@ -1455,15 +1455,15 @@ function emitDcallThunk(wk: Walk, thunk: Fn, t: CTerm & {t: "dcall"}, p: DcallP)
   // The result (local 1), normalized by the dcall's norm, into the result
   // slot — the same box-normalization the inline path applies.
   if (t.norm !== undefined) {
-    const nrm = thunk.anyref();
+    const nrm = anyref(thunk);
     thunk.body.localGet(1);
     if (t.norm !== "f64") thunk.body.callFn(widthHelper(em, t.norm));
     else thunk.body.callFn(em.ix.fNum64);
     rebox(em, thunk, t.norm);
     thunk.body.localSet(nrm);
-    thunk.storeSlot(si, () => thunk.body.localGet(nrm));
+    storeSlot(thunk, si, () => thunk.body.localGet(nrm));
   } else {
-    thunk.storeSlot(si, () => thunk.body.localGet(1));
+    storeSlot(thunk, si, () => thunk.body.localGet(1));
   }
   emitTerm(tw, t.rest);
 }
@@ -1494,15 +1494,15 @@ function emitLetkThunk(wk: Walk, thunk: Fn, t: CTerm & {t: "letk"}, p: LetkP): v
   // is always a box: narrow/wide ints unbox via their width helper, f64 via
   // the adaptive $num64 (the value may ride in any numeric box).
   if (t.norm !== undefined) {
-    const nrm = thunk.anyref();
+    const nrm = anyref(thunk);
     thunk.body.localGet(1);
     if (t.norm !== "f64") thunk.body.callFn(widthHelper(em, t.norm));
     else thunk.body.callFn(em.ix.fNum64);
     rebox(em, thunk, t.norm);
     thunk.body.localSet(nrm);
-    thunk.storeSlot(0, () => thunk.body.localGet(nrm));
+    storeSlot(thunk, 0, () => thunk.body.localGet(nrm));
   } else {
-    thunk.storeSlot(0, () => thunk.body.localGet(1));
+    storeSlot(thunk, 0, () => thunk.body.localGet(1));
   }
   emitTerm(tw, t.body);
 }
@@ -1592,7 +1592,7 @@ function pushRawAtom(wk: Walk, a: CAtom): void {
       return;
     }
   }
-  f.pushRef(atomRef(wk, a));
+  pushRef(f, atomRef(wk, a));
   b.readBoxPayload(boxShapeOf(a.stamp ?? "f64"));
 }
 
@@ -1616,7 +1616,7 @@ function rawIndirectCall(wk: Walk, fc: number, args: CAtom[], numfn: number, exp
 // condition on the operand stack; side-effects numfn/numsig locals.
 function pushNumericMatch(f: Fn, fc: number, expected: number): {numfn: number} {
   const b = f.body;
-  const numfn = f.i32(), numsig = f.i32();
+  const numfn = i32(f), numsig = i32(f);
   b.localGet(fc); b.refCast(6, true); b.structGet(6, 4); b.i31Get(); b.localSet(numfn);
   b.localGet(fc); b.refCast(6, true); b.structGet(6, 5); b.i31Get(); b.localSet(numsig);
   b.localGet(numfn); b.num(w.EQZ); b.num(w.EQZ); // numfn != 0
@@ -1678,8 +1678,8 @@ function mapTightDirect(em: Emit, fnAtom: CAtom, direct: {idx: number, fsize: nu
 function tightMapFn(em: Emit, name: string, cb: {idx: number, fsize: number}): number {
   const found = em.tightMaps.find(tm => tm.name === name && tm.cb.idx === cb.idx && tm.cb.fsize === cb.fsize);
   if (found !== undefined) return found.f.idx;
-  const f = new Fn(2, em);
-  em.reg.register(`thunk${em.thunks.length}`, f, w.T_KABI);
+  const f = newFn(2, em);
+  register(em.reg, `thunk${em.thunks.length}`, f, w.T_KABI);
   em.thunks.push(f);
   em.tightMaps.push({f, name, cb});
   return f.idx;
@@ -1693,7 +1693,7 @@ function emitDlet(wk: Walk, t: CTerm & {t: "dlet"}, v: number): void {
   b.refTest(12, false); // $TUP
   b.if();
   {
-    const blk = f.anyref();
+    const blk = anyref(f);
     b.localGet(v);
     b.refCast(12, true);
     b.structGet(12, 0);
@@ -1703,16 +1703,16 @@ function emitDlet(wk: Walk, t: CTerm & {t: "dlet"}, v: number): void {
       b.refCast(1, true);
       b.i32Const(i);
       b.arrayGet(1);
-      const tmp = f.anyref();
+      const tmp = anyref(f);
       b.localSet(tmp);
       storeAt(wk, 0, wk.ts[0].slots.get(t.fields[i])!, tmp);
     }
   }
   b.els();
   {
-    const d = f.anyref(), off = f.i32(), len = f.i32();
+    const d = anyref(f), off = i32(f), len = i32(f);
     b.localGet(v);
-    f.unboxSlice(d, off, len);
+    unboxSlice(f, d, off, len);
     for (let i = 0; i < t.fields.length; i++) {
       b.localGet(d);
       b.refCast(1, true);
@@ -1720,7 +1720,7 @@ function emitDlet(wk: Walk, t: CTerm & {t: "dlet"}, v: number): void {
       b.i32Const(i);
       b.num(w.ADD);
       b.arrayGet(1);
-      const tmp = f.anyref();
+      const tmp = anyref(f);
       b.localSet(tmp);
       storeAt(wk, 0, wk.ts[0].slots.get(t.fields[i])!, tmp);
     }
@@ -1738,12 +1738,12 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   // which perform phase traps — the walk/rec/case-dispatch machinery is
   // deep.
   const tr = (s: string): void => tracePoint(em, f, `f${f.fid} ${s}`);
-  const blk = f.anyref(), cell = f.anyref();
+  const blk = anyref(f), cell = anyref(f);
   b.i32Const(t.args.length);
   b.arrayNew(1);
   b.localSet(blk);
   for (let k = 0; k < t.args.length; k++) {
-    const r = f.anyref();
+    const r = anyref(f);
     pushAtom(wk, t.args[k]);
     b.localSet(r);
     b.localGet(blk);
@@ -1773,7 +1773,7 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   // first): a resumed segment stays lexically inside them, so the resume
   // re-chains them above the fresh entry — the paper's Mforward consing.
   const rec = extendFrame(wk, 5);
-  const recSlots = f.typed(_T.RF[1]);
+  const recSlots = typed(f, _T.RF[1]);
   b.localGet(rec);
   b.structGet(4, 1);
   b.localSet(recSlots);
@@ -1788,7 +1788,7 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   b.i32Const(0);
   b.refI31();
   b.structNew(6); // the resume binder: $CLO over $resumeFn
-  const rclo = f.anyref();
+  const rclo = anyref(f);
   b.localSet(rclo);
   b.localGet(recSlots);
   b.i32Const(0);
@@ -1801,14 +1801,14 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   // never through the K-cell chain, so recursion depth is invisible here.
   // Each forwarded boundary is consed (reversed) into the skip chain for
   // the resume record.
-  const cur = f.anyref(), entry = f.anyref(), tbl = f.anyref();
-  const skip = f.anyref();
+  const cur = anyref(f), entry = anyref(f), tbl = anyref(f);
+  const skip = anyref(f);
   b.globalGet(em.lay.ctxG);
   b.localSet(cur);
   b.refNull(21);
   b.localSet(skip);
   let found = 0, fnIdx = 0, fsz = 0, nparams = 0;
-  f.walkLoop(
+  walkLoop(f, 
     () => {
       b.localIsNull(cur);
     },
@@ -1856,14 +1856,14 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   // read the local (a JS i32Const here would emit the local's INDEX as a
   // constant); the op arity is static (the performed op's arg count, and
   // the arg slots are a prefix of the npMax-wide param block).
-  const hfc = f.typed(_T.RF[4]), slots = f.typed(_T.RF[1]);
+  const hfc = typed(f, _T.RF[4]), slots = typed(f, _T.RF[1]);
   // The hfc's parent = the matched boundary's hframe parent: the case body's
   // slot depths resolve against the HANDLE site's frame chain (where the
   // case is defined), not the perform site's (which may be inside a letk
   // thunk with extra activation frames). On a fresh (resumed) entry the
   // hframe is the record's hfc — its parent chains back to the handle site
   // through the copy that created it.
-  const ehf = f.typed(_T.RF[4]);
+  const ehf = typed(f, _T.RF[4]);
   hdlGet(b, entry, 2); // the boundary's hframe
   b.refCast(4, true);
   b.localSet(ehf);
@@ -1926,7 +1926,7 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   // stack tail below the matched pair): pop the boundary before dispatch.
   // Its completion ($xit) = the boundary's kret — the handle's own
   // continuation on the first run, the resumer's k2 on a fresh entry.
-  const ckn = f.typed(_T.RF[5]);
+  const ckn = typed(f, _T.RF[5]);
   hdlGet(b, entry, 4);
   b.localSet(ckn);
   hdlGet(b, entry, 3); // outer
@@ -1936,7 +1936,7 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   b.localGet(fnIdx);
   tracePoint(em, f, `f${f.fid} perform:dispatch`, () => {
     // val = ref.is_null(ckn) — the case completion target's nullness
-    const t1 = f.i32();
+    const t1 = i32(f);
     b.localGet(ckn);
     b.isNull(); // ref.is_null
     b.localSet(t1);
@@ -1947,7 +1947,7 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
   tr("perform:noHandler");
   // No handler: the host interprets the op and the value flows to the
   // reified continuation (the k cell).
-  const v = f.anyref();
+  const v = anyref(f);
   b.i32Const(opid);
   b.localGet(cell);
   b.callFn(em.o.impIdx.get("ef_perform")!);
@@ -1964,7 +1964,7 @@ function emitPerformT(wk: Walk, t: CTerm & {t: "perform"}): void {
 function emitHandleT(wk: Walk, t: CTerm & {t: "handle"}): void {
   const em = wk.em, f = wk.f, b = f.body;
   const hp = hdlP(t)!;
-  const hf = f.typed(_T.RF[4]), kn = f.typed(_T.RF[5]);
+  const hf = typed(f, _T.RF[4]), kn = typed(f, _T.RF[5]);
   b.localGet(0); // parent = the frame at the handle site
   b.i32Const(hp.hframeSize);
   b.arrayNew(1);
@@ -1991,7 +1991,7 @@ function emitHandleT(wk: Walk, t: CTerm & {t: "handle"}): void {
   // K_BND sentinel resolves Return deliveries through it. outer = the
   // pre-entry hctx; the entry is discarded (popped at the sentinel) when
   // the body completes, and never sits in any K-cell chain.
-  const entry = f.anyref();
+  const entry = anyref(f);
   b.i31Const(w.K_HDL);
   b.globalGet(em.lay.hdlTableOff.get(hp.hdlIdx)!);
   b.localGet(hf);
@@ -2007,7 +2007,7 @@ function emitHandleT(wk: Walk, t: CTerm & {t: "handle"}): void {
   // sentinel resolves through hctx at dispatch, so a resumed sub-run's
   // completion reaches the fresh entry's kret (the resumer's k2) with no
   // per-resume retargeting.
-  const bnd = f.anyref();
+  const bnd = anyref(f);
   b.globalGet(em.lay.bndG);
   b.localSet(bnd);
   storeAt(wk, 0, hp.retSlot, bnd);
@@ -2043,7 +2043,7 @@ function emitCaseBody(em: Emit, f: Fn, body: CTerm, base: TScope, esc: Set<strin
     // plan's counter indexes into the ret-resume block, not the raw table).
     // The trailing slot keeps the Return completion from clobbering the op
     // resume binder at npMax (see planHandle's hframe layout).
-    const clo = f.anyref();
+    const clo = anyref(f);
     const bb = f.body;
     bb.i32Const(em.ix.retResFns[retResumeIdx].idx);
     bb.refI31();
@@ -2058,7 +2058,7 @@ function emitCaseBody(em: Emit, f: Fn, body: CTerm, base: TScope, esc: Set<strin
     bb.refI31();
     bb.structNew(6);
     bb.localSet(clo);
-    f.storeSlot(base[0].size - 1, () => bb.localGet(clo));
+    storeSlot(f, base[0].size - 1, () => bb.localGet(clo));
   }
   addLocal(base[0], exitName, 1);
   emitTerm(wk, body);
@@ -2077,7 +2077,7 @@ export function emitTerminalRet(em: Emit, f: Fn): void {
 
 function emitIdRetFn(em: Emit, f: Fn, slot: number): void {
   const b = f.body;
-  const v = f.anyref();
+  const v = anyref(f);
   b.localGet(0);
   b.structGet(4, 1);
   b.i32Const(slot);
@@ -2092,7 +2092,7 @@ function emitIdRetFn(em: Emit, f: Fn, slot: number): void {
 // `native((_a, k2) => k2(out.value))`.
 function emitRetResumeFn(em: Emit, f: Fn, slot: number): void {
   const b = f.body;
-  const v = f.anyref();
+  const v = anyref(f);
   b.localGet(0); // the $CLO env (the invocation's hframe)
   b.structGet(4, 1);
   b.i32Const(slot);
@@ -2108,7 +2108,7 @@ export function emitResumeFn(em: Emit, rf: Fn): void {
   tracePoint(em, rf, "resumeFn enter");
   {
     const b = rf.body;
-    const v = rf.anyref(), rec = rf.anyref(), head = rf.typed(_T.RF[5]);
+    const v = anyref(rf), rec = anyref(rf), head = typed(rf, _T.RF[5]);
     const recSlot = (n: number): void => {
       b.localGet(rec);
       b.refCast(4, true);
@@ -2116,7 +2116,7 @@ export function emitResumeFn(em: Emit, rf: Fn): void {
       b.i32Const(n);
       b.arrayGet(1);
     };
-    rf.slot(0);
+    slot(rf, 0);
     b.localSet(v); // the resumed value: the closure call frame's slot 0
     b.localGet(0);
     b.structGet(4, 0); // the capture record (env frame)
@@ -2132,7 +2132,7 @@ export function emitResumeFn(em: Emit, rf: Fn): void {
     // entry: the sub-run stays lexically inside them, so its ops match them
     // first and its completions re-enter their Return paths before reaching
     // the fresh boundary (the paper's Mforward consing).
-    const fresh = rf.anyref(), prev = rf.anyref(), sn = rf.anyref();
+    const fresh = anyref(rf), prev = anyref(rf), sn = anyref(rf);
     b.i31Const(w.K_HDL);
     recSlot(1); // the matched boundary's case table
     recSlot(2); // the invocation's hfc
@@ -2145,7 +2145,7 @@ export function emitResumeFn(em: Emit, rf: Fn): void {
     b.localSet(prev);
     recSlot(4);
     b.localSet(sn);
-    rf.walkLoop(
+    walkLoop(rf, 
       () => { b.localIsNull(sn); },
       () => {
         b.i31Const(w.K_HDL);
@@ -2195,7 +2195,7 @@ export function emitCfns(em: Emit, ir: CIr): void {
       // local is never set (null): generic land-cell paths inside (a dcall's
       // CPS-entry branch) build cells whose next is null, so their completions
       // return instead of walking a chain. dret returns the boxed value.
-      const knull = f.typed(_T.RF[5]);
+      const knull = typed(f, _T.RF[5]);
       const wk: Walk = {
         em, f, ts: [paramsL, ...base], kL: knull,
         esc: analyzeEscapes(fn.body), labels: [], depth: 0, directFn: true, kTerminal: true, tloc: new Map(),
@@ -2237,7 +2237,7 @@ export function emitCfns(em: Emit, ir: CIr): void {
         paramsL.raw.set(fn.params[k], num.ws[k]);
       }
     }
-    const knull = f.typed(_T.RF[5]);
+    const knull = typed(f, _T.RF[5]);
     const wk: Walk = {
       em, f, ts: [paramsL, ...base], kL: knull,
       esc, labels: [], depth: 0, directFn: true, kTerminal: true, rawRet: num.r, tloc: new Map(),
@@ -2252,7 +2252,7 @@ export function emitCfns(em: Emit, ir: CIr): void {
     for (let k = 0; k < fn.params.length; k++) {
       if (!escaped.has(fn.params[k])) continue;
       const pv = 1 + k;
-      f.storeSlot(k, () => {
+      storeSlot(f, k, () => {
         bb.localGet(pv);
         rebox(em, f, num.ws[k]);
       });
@@ -2269,15 +2269,15 @@ export function emitCfns(em: Emit, ir: CIr): void {
 // fills the bodies in the same order.
 export function registerCfns(reg: IndexRegistrar, ix: Indices, ir: CIr, plan: Plan): void {
   ix.cfnFns = ir.funcs.map((fn, i) => {
-    const f = new Fn(fn.direct === true ? 1 : 2);
-    reg.register(`cfn${i}`, f, fn.direct === true ? w.T_DABI : w.T_KABI);
+    const f = newFn(fn.direct === true ? 1 : 2);
+    register(reg, `cfn${i}`, f, fn.direct === true ? w.T_DABI : w.T_KABI);
     return f;
   });
   for (let i = 0; i < ir.funcs.length; i++) {
     const num = plan.numEntry[i];
     if (num === null) continue;
-    const f = new Fn(1 + num.ws.length);
-    reg.register(`dnum${i}`, f, num.sig);
+    const f = newFn(1 + num.ws.length);
+    register(reg, `dnum${i}`, f, num.sig);
     ix.numFn.set(i, f.idx);
     ix.dnumFns.push(f);
   }
@@ -2292,21 +2292,21 @@ export function registerCaseFns(reg: IndexRegistrar, ix: Indices, plan: Plan): v
     const hp = hdlP(hdl)!;
     for (const c of hdl.cases) {
       if (c.op === "Return") continue;
-      const f = new Fn(2);
-      reg.register(`case${hp.hdlIdx}:${c.op}`, f, w.T_KABI);
+      const f = newFn(2);
+      register(reg, `case${hp.hdlIdx}:${c.op}`, f, w.T_KABI);
       ix.caseFns.push(f);
     }
     if (hdl.cases.some(c => c.op === "Return")) {
-      const f = new Fn(2);
-      reg.register(`retcase${hp.hdlIdx}`, f, w.T_KABI);
+      const f = newFn(2);
+      register(reg, `retcase${hp.hdlIdx}`, f, w.T_KABI);
       ix.caseFns.push(f);
     }
   }
   for (const hdl of plan.hdlOrder) {
     const hp = hdlP(hdl)!;
     if (hp.idRetIdx === undefined) continue;
-    const f = new Fn(2);
-    reg.register(`idret${hp.hdlIdx}`, f, w.T_KABI);
+    const f = newFn(2);
+    register(reg, `idret${hp.hdlIdx}`, f, w.T_KABI);
     ix.idRetFns.push(f);
   }
 }
@@ -2318,8 +2318,8 @@ export function registerRetResumes(reg: IndexRegistrar, ix: Indices, plan: Plan)
   for (const hdl of plan.hdlOrder) {
     const hp = hdlP(hdl)!;
     if (hp.retResumeIdx === undefined) continue;
-    const f = new Fn(2);
-    reg.register(`retres${hp.hdlIdx}`, f, w.T_KABI);
+    const f = newFn(2);
+    register(reg, `retres${hp.hdlIdx}`, f, w.T_KABI);
     ix.retResFns.push(f);
   }
 }
@@ -2392,7 +2392,7 @@ export function emitRetResumes(em: Emit): void {
 // (run() is the only non-tail caller in the chain). Returns the main fn for
 // the caller (wasm.ts) to push last and hand to emitInits.
 export function emitMain(em: Emit, ir: CIr): Fn {
-  const f = new Fn(2, em);
+  const f = newFn(2, em);
   f.em = em;
   const wk: Walk = {
     em, f, ts: [em.plan.globalLvl], kL: 1,

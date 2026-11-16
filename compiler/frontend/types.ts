@@ -5,7 +5,13 @@ import {TANY, TBOOL, TFLOAT, TINT, TUNIT, TSTR, rowOf, tArr, tFun, tTup} from ".
 import {showT, TypeError_} from "./type_display.ts";
 import {
   FLOAT_NAMES, INT_NAMES, NUMERIC_NAMES, widthOf,
-  Env, Unifier,
+  type Env, type Unifier,
+  newEnv, newUnifier,
+  envExtend, envLookup,
+  uniCheckpoint, uniDeepRes, uniEffFind, uniFlexNum,
+  uniFresh, uniFreshEff, uniGeneralize, uniLinkNums, uniNewNum, uniRes,
+  uniResRow, uniResolveNums, uniRestore, uniTypeMismatch, uniUnify,
+  uniCopyScheme,
   type Effs, type FunT, type NumName, type Prim, type Type, type TupT,
 } from "./unify.ts";
 import {
@@ -91,40 +97,34 @@ type TokKinds = BinderCoverage | "sym";
 // `effs`: REPL lines share the unifier and the effect map but not the node
 // slice, so per-line types must not leak across lines' ExprID spaces, and a
 // returned Checked keeps its own recordings alive via its own reference.
-class TokenRecorder {
-  readonly nodeTypes: (Type | undefined)[] = [];
+type TokenRecorder = {
+  nodeTypes: (Type | undefined)[],
   // Per-node backend stamps (stamps.ts NodeStamps — numKind/div/sus/typ):
   // written during inference and by the checkProgram post-passes, consumed
   // by the CPS converter via the returned Checked.
-  readonly stamps: (NodeStamps | undefined)[] = [];
-  readonly semToks: TypeTok[] = [];
-  constructor(
-    readonly nodes: Expr[],        // the checked slice (pin's self-box lookups)
-    readonly locs: (LocRange | undefined)[], // the same slice's node extents (Program.locs)
-    private readonly uni: Unifier, // token classification resolves first
-    private readonly effects: Map<string, EffectSig>,
-  ) {}
+  stamps: (NodeStamps | undefined)[],
+  semToks: TypeTok[],
+  nodes: Expr[],        // the checked slice (pin's self-box lookups)
+  locs: (LocRange | undefined)[], // the same slice's node extents (Program.locs)
+  uni: Unifier,         // token classification resolves first
+  effects: Map<string, EffectSig>,
+};
 
-  // Every checked node's inferred type lands here exactly once (infer's
-  // single site); the lambda-retTyp retry path re-infers the same node and
-  // may overwrite — the slot holds each node's final stamp.
-  recordType(id: ExprID, t: Type): void { this.nodeTypes[id] = t; }
-  typeOf(id: ExprID): Type | undefined { return this.nodeTypes[id]; }
+function recordType(rec: TokenRecorder, id: ExprID, t: Type): void { rec.nodeTypes[id] = t; }
 
-  // One emission point for value-identifier tokens: a resolved fn type
-  // highlights `function`, anything else `variable`. Positionless binders
-  // (parse recovery) record nothing. `kind` carries the emitting node kind
-  // for the coverage guard above; it drives nothing at runtime.
-  recordTok(_kind: TokKinds, pos: Loc | undefined, name: string, t: Type): void {
-    if (pos === undefined) return;
-    const rt = this.uni.res(t);
-    this.semToks.push({pos, len: name.length, name, kind: rt.tag === "fun" ? "function" : "variable"});
-  }
-
-  // Effect signature registration (checker-fresh param types + the parser's
-  // display names) through the same emission point as the token streams.
-  recordEffect(name: string, sig: EffectSig): void { this.effects.set(name, sig); }
+// One emission point for value-identifier tokens: a resolved fn type
+// highlights `function`, anything else `variable`. Positionless binders
+// (parse recovery) record nothing. `kind` carries the emitting node kind
+// for the coverage guard above; it drives nothing at runtime.
+function recordTok(rec: TokenRecorder, _kind: TokKinds, pos: Loc | undefined, name: string, t: Type): void {
+  if (pos === undefined) return;
+  const rt = uniRes(rec.uni, t);
+  rec.semToks.push({pos, len: name.length, name, kind: rt.tag === "fun" ? "function" : "variable"});
 }
+
+// Effect signature registration (checker-fresh param types + the parser's
+// display names) through the same emission point as the token streams.
+function recordEffect(rec: TokenRecorder, name: string, sig: EffectSig): void { rec.effects.set(name, sig); }
 
 // Forward a flattened row's members into an ambient accumulator row — ops
 // and still-unbound variables both (a polymorphic callee's row variable must
@@ -158,25 +158,25 @@ function inferArr(
       const el = e.elems[i];
       // Propagate the tuple expectation into a nested `[...]` literal so that
       // `m: [[f,f,f],...] = [[1,2,3],...]` builds inner tuples, not arrays.
-      const et = (nodes[el].t === "arr" && env.uni.res(ft).tag === "tup")
-        ? inferArr(el, nodes, env.uni.res(ft) as TupT, env, effs, effects, rec)
+      const et = (nodes[el].t === "arr" && uniRes(env.uni, ft).tag === "tup")
+        ? inferArr(el, nodes, uniRes(env.uni, ft) as TupT, env, effs, effects, rec)
         : infer(el, nodes, env, effs, effects, rec);
-      env.uni.unify(et, ft);
+      uniUnify(env.uni, et, ft);
     }
     return expected;
   }
   const elemTs = e.elems.map(a => infer(a, nodes, env, effs, effects, rec));
-  const snap = env.uni.checkpoint();
+  const snap = uniCheckpoint(env.uni);
   try {
-    const elem = env.uni.fresh();
+    const elem = uniFresh(env.uni);
     for (const et of elemTs)
-      env.uni.unify(elem, et);
+      uniUnify(env.uni, elem, et);
     stampArrKind(id, "arr", rec.stamps);
-    return tArr(env.uni.res(elem));
+    return tArr(uniRes(env.uni, elem));
   } catch (_) {
-    env.uni.restore(snap);
+    uniRestore(env.uni, snap);
     stampArrKind(id, "tup", rec.stamps);
-    return tTup(elemTs.map(t => ({name: null, type: env.uni.res(t)})));
+    return tTup(elemTs.map(t => ({name: null, type: uniRes(env.uni, t)})));
   }
 }
 
@@ -190,7 +190,7 @@ function inferWith(id: ExprID, nodes: Expr[], expected: TupT, env: Env, effs: Ef
   if (e.t === "arr")
     return inferArr(id, nodes, expected, env, effs, effects, rec);
   if (e.t === "block") {
-    const n = env.extend();
+    const n = envExtend(env);
     let last: Type = TUNIT;
     // A `;`-terminated tail discards the last statement's value: the block
     // is unit, so no tup expectation flows into it.
@@ -235,28 +235,28 @@ const ANY_ARITH = "any is not a numeric width — concrete widths required for a
 // (annotation, outer op) mutates the result and resolveNums propagates the
 // width into the literals, so operands and op share one final width.
 function numericResult(u: Unifier, ra: Type, rb: Type, op: string): Type {
-  if (isNum(ra) && rb.tag === "var") { u.unify(rb, ra); return ra; }
-  if (isNum(rb) && ra.tag === "var") { u.unify(ra, rb); return rb; }
-  if (ra.tag === "var" && rb.tag === "var") { u.unify(ra, rb); return u.res(ra); }
-  if (ra.tag === "var") { u.unify(ra, TINT); return TINT; }
-  if (rb.tag === "var") { u.unify(rb, TINT); return TINT; }
+  if (isNum(ra) && rb.tag === "var") { uniUnify(u, rb, ra); return ra; }
+  if (isNum(rb) && ra.tag === "var") { uniUnify(u, ra, rb); return rb; }
+  if (ra.tag === "var" && rb.tag === "var") { uniUnify(u, ra, rb); return uniRes(u, ra); }
+  if (ra.tag === "var") { uniUnify(u, ra, TINT); return TINT; }
+  if (rb.tag === "var") { uniUnify(u, rb, TINT); return TINT; }
   if (ra.tag === "prim" && rb.tag === "prim") {
     const na = ra.name as NumName, nb = rb.name as NumName;
     if (na === "int" || na === "float") {
       if (nb === "int" || nb === "float") {
         if (na !== nb) {
           // Mixed num types: the int side flexes to float (both default f64).
-          u.flexNum(na === "int" ? ra : rb, "float");
+          uniFlexNum(u, na === "int" ? ra : rb, "float");
           return TFLOAT;
         }
-        const r = u.newNum(na);
-        u.linkNums(r, ra);
-        u.linkNums(r, rb);
+        const r = uniNewNum(u, na);
+        uniLinkNums(u, r, ra);
+        uniLinkNums(u, r, rb);
         return r;
       }
-      u.flexNum(ra, nb); return rb;              // concrete width wins
+      uniFlexNum(u, ra, nb); return rb;              // concrete width wins
     }
-    if (nb === "int" || nb === "float") { u.flexNum(rb, na); return ra; }
+    if (nb === "int" || nb === "float") { uniFlexNum(u, rb, na); return ra; }
     if (na === nb) return ra;                     // strict same-width
     throw new TypeError_(`${op}: ${showT(ra)} and ${showT(rb)} are different numeric widths (use @as to convert)`);
   }
@@ -268,7 +268,7 @@ function numericResult(u: Unifier, ra: Type, rb: Type, op: string): Type {
 function numeric(u: Unifier, a: Type, b: Type, op: string): Type {
   touchNumericVar(u, a);
   touchNumericVar(u, b);
-  const ra = u.res(a), rb = u.res(b);
+  const ra = uniRes(u, a), rb = uniRes(u, b);
   if (ra.tag === "any" || rb.tag === "any") throw new TypeError_(ANY_ARITH);
   return numericResult(u, ra, rb, op);
 }
@@ -279,18 +279,18 @@ function numeric(u: Unifier, a: Type, b: Type, op: string): Type {
 function plusType(u: Unifier, a: Type, b: Type): Type {
   touchNumericVar(u, a);
   touchNumericVar(u, b);
-  const ra = u.res(a), rb = u.res(b);
+  const ra = uniRes(u, a), rb = uniRes(u, b);
   if (ra.tag === "any" || rb.tag === "any") throw new TypeError_(ANY_ARITH);
   const sa = isNum(ra), sb = isNum(rb);
   if (sa && sb) return numericResult(u, ra, rb, OP_ADD);
   const stra = ra.tag === "prim" && ra.name === "string";
   const strb = rb.tag === "prim" && rb.name === "string";
   if (stra && strb) return TSTR;
-  if (sa && rb.tag === "var") { u.unify(rb, ra); return ra; }
-  if (sb && ra.tag === "var") { u.unify(ra, rb); return rb; }
-  if (stra && rb.tag === "var") { u.unify(rb, ra); return ra; }
-  if (strb && ra.tag === "var") { u.unify(ra, rb); return rb; }
-  if (ra.tag === "var" && rb.tag === "var") { u.unify(ra, rb); return u.res(ra); }
+  if (sa && rb.tag === "var") { uniUnify(u, rb, ra); return ra; }
+  if (sb && ra.tag === "var") { uniUnify(u, ra, rb); return rb; }
+  if (stra && rb.tag === "var") { uniUnify(u, rb, ra); return ra; }
+  if (strb && ra.tag === "var") { uniUnify(u, ra, rb); return rb; }
+  if (ra.tag === "var" && rb.tag === "var") { uniUnify(u, ra, rb); return uniRes(u, ra); }
   throw new TypeError_(`+: ${showT(ra)} and ${showT(rb)} are not both numeric or both string`);
 }
 
@@ -347,7 +347,7 @@ function infer(
   rec: TokenRecorder,
 ): Type {
   const t = inferNode(id, nodes, env, effs, effects, rec);
-  rec.recordType(id, t);
+  recordType(rec, id, t);
   return t;
 }
 
@@ -362,12 +362,12 @@ function inferNode(
   const e = nodes[id];
   try {
   switch (e.t) {
-    case "num": return env.uni.newNum(e.isFloat ? "float" : "int");
+    case "num": return uniNewNum(env.uni, e.isFloat ? "float" : "int");
     case "str": return TSTR;
     case "bool": return TBOOL;
     case "unit": return TUNIT;
     case "sym": {
-      const s = env.lookup(e.v);
+      const s = envLookup(env, e.v);
       if (s === undefined)
         throw new TypeError_("Unbound: " + e.v);
       const t = typeof s === "function" ? s() : s;
@@ -376,9 +376,9 @@ function inferNode(
       // use flexes its own width in unification without leaking the
       // mutation into the binding's type or sibling reads. Concrete prims
       // are immutable and shared as-is.
-      const rt = env.uni.res(t);
+      const rt = uniRes(env.uni, t);
       const t2 = rt.tag === "prim" && (rt.name === "int" || rt.name === "float")
-        ? env.uni.newNum(rt.name)
+        ? uniNewNum(env.uni, rt.name)
         : t;
       // Copied reads remember the binding's own type: after resolution the
       // checker marks reads whose site width diverged from the binding's
@@ -386,17 +386,17 @@ function inferNode(
       if (t2 !== t) (e as Expr & {bindTyp?: Type}).bindTyp = t;
       // Value-identifier highlighting: operator desugar syms never reach here
       // (the app case handles them without inferring the callee node).
-      rec.recordTok("sym", rec.locs[id]?.start, e.v, t2);
+      recordTok(rec, "sym", rec.locs[id]?.start, e.v, t2);
       return t2;
     }
     case "lambda": {
-      const n = env.extend();
+      const n = envExtend(env);
       const ps: Type[] = [];
       const unann: {name: string, id: number}[] = [];
       for (const p of e.params) {
         checkBind(n, p.name);
         if (p.typ === null) {
-          const pt = env.uni.fresh();
+          const pt = uniFresh(env.uni);
           unann.push({name: p.name, id: pt.id});
           n.vars.set(p.name, pt);
           ps.push(pt);
@@ -415,7 +415,7 @@ function inferNode(
       const ctx = beginLamWidths(unann);
       let ret: Type;
       try {
-        const rt = e.retTyp !== null ? env.uni.res(e.retTyp) : null;
+        const rt = e.retTyp !== null ? uniRes(env.uni, e.retTyp) : null;
         ret = rt !== null && rt.tag === "tup"
           ? inferWith(e.body, nodes, rt, n, innerEffs, effects, rec)
           : infer(e.body, nodes, n, innerEffs, effects, rec);
@@ -423,7 +423,7 @@ function inferNode(
         endLamWidths(ctx, id);
       }
       if (e.retTyp !== null) {
-        env.uni.unify(e.retTyp, ret);
+        uniUnify(env.uni, e.retTyp, ret);
       }
       // Effect annotation is optional: if `! { ... }` is omitted, the
       // function's effect set is derived from the body's performed effects.
@@ -436,8 +436,8 @@ function inferNode(
       // performs is rejected — annotate the parameter's type instead.
       if (e.retEffs !== null) {
         const decl = e.retEffs.size > 0 ? [...e.retEffs].join(", ") : "∅";
-        for (const v of env.uni.resRow(innerEffs).vars) {
-          const owner = env.uni.forcedRows.get(env.uni.effFind(v.id));
+        for (const v of uniResRow(env.uni, innerEffs).vars) {
+          const owner = env.uni.forcedRows.get(uniEffFind(env.uni, v.id));
           // Skip variables not borne by this lambda's parameters: a recursive
           // self-call's row variable is constrained by the binding's own
           // unification right after this check.
@@ -445,9 +445,9 @@ function inferNode(
           if (e.retEffs.size === 0)
             throw new TypeError_(
               `effect annotation ! { ∅ } can't cover an unannotated parameter's effects — annotate the parameter's type with its effect row`);
-          env.uni.effBinds.set(env.uni.effFind(v.id), rowOf(e.retEffs));
+          env.uni.effBinds.set(uniEffFind(env.uni, v.id), rowOf(e.retEffs));
         }
-        for (const op of env.uni.resRow(innerEffs).ops) {
+        for (const op of uniResRow(env.uni, innerEffs).ops) {
           if (!e.retEffs.has(op))
             throw new TypeError_(`effect ${op} not declared in signature (declared: ${decl})`);
         }
@@ -460,7 +460,7 @@ function inferNode(
       // unannotated param used as a callee resolves to a FunT by now.
       for (let i = 0; i < e.params.length; i++) {
         const p = e.params[i];
-        rec.recordTok("lambda", p.pos, p.name, ps[i]);
+        recordTok(rec, "lambda", p.pos, p.name, ps[i]);
       }
       return ft;
     }
@@ -468,7 +468,7 @@ function inferNode(
       checkBind(env, e.name);
       // Recursive binding: the name is in scope in its own value, so
       // `f :: fn(...){...}` can call itself.
-      const declared = e.typ ?? env.uni.fresh();
+      const declared = e.typ ?? uniFresh(env.uni);
       env.vars.set(e.name, declared);
       // Mutability is a property of the binding in this frame: redeclaring a
       // name as const (or as mutable) in the same frame flips the flag, so
@@ -477,19 +477,19 @@ function inferNode(
       else env.muts.delete(e.name);
       // A tuple annotation on an `[...]` literal makes it a tuple even when its
       // elements would otherwise unify homogeneously (e.g. `p: [float, float] = [1.0, 2.0]`).
-      const vt = (e.typ !== null && env.uni.res(e.typ).tag === "tup" && nodes[e.val].t === "arr")
-        ? inferArr(e.val, nodes, env.uni.res(e.typ) as TupT, env, effs, effects, rec)
+      const vt = (e.typ !== null && uniRes(env.uni, e.typ).tag === "tup" && nodes[e.val].t === "arr")
+        ? inferArr(e.val, nodes, uniRes(env.uni, e.typ) as TupT, env, effs, effects, rec)
         : infer(e.val, nodes, env, effs, effects, rec);
-      env.uni.unify(declared, vt);
-      const rt = env.uni.res(declared);
-      rec.recordTok("let", rec.locs[id]?.start, e.name, declared);
+      uniUnify(env.uni, declared, vt);
+      const rt = uniRes(env.uni, declared);
+      recordTok(rec, "let", rec.locs[id]?.start, e.name, declared);
       // The lambda's stamped type is final: its parameter variables have been
       // bound (or not), so deep-resolve it — display never needs the unifier.
       const lam = nodes[e.val];
       if (lam.t === "lambda") {
         const st = rec.stamps[e.val];
         if (st?.typ !== undefined)
-          st.typ = env.uni.deepRes(st.typ) as FunT;
+          st.typ = uniDeepRes(env.uni, st.typ) as FunT;
         checkLamWidths(env.uni, e.val);
       }
       // Exclude the self-binding from the free-var context before
@@ -503,7 +503,7 @@ function inferNode(
       // fresh vars per use, so `x = fn(y: i64) { y + 1 }` could never inform
       // later uses, which would keep checking against the stale scheme while
       // the runtime runs the new closure (type confusion).
-      env.vars.set(e.name, e.typ !== null ? rt : (nodes[e.val].t === "lambda" && !e.mut ? env.uni.generalize(env, rt) : rt));
+      env.vars.set(e.name, e.typ !== null ? rt : (nodes[e.val].t === "lambda" && !e.mut ? uniGeneralize(env.uni, env, rt) : rt));
       return TUNIT;
     }
     case "arr":
@@ -513,7 +513,7 @@ function inferNode(
     // everything else is value-preserving (an f32 target rounds via the
     // node's generic f32 stamp; i32 -> i64 and f32 -> f64 are no-ops).
     case "as": {
-      const at = env.uni.res(infer(e.e, nodes, env, effs, effects, rec));
+      const at = uniRes(env.uni, infer(e.e, nodes, env, effs, effects, rec));
       const target = e.typ;
       if (target.tag !== "prim" || target.name === "int" || target.name === "float" || !NUMERIC_NAMES.has(target.name as NumName))
         throw new TypeError_(`@as: target must be a numeric width (i32 i64 u32 u64 f32 f64), got ${showT(target)}`);
@@ -530,7 +530,7 @@ function inferNode(
     // `obj.x` / `obj.0`: resolve the field index from the (tuple or array)
     // element type and stamp it on the node for the evaluator.
     case "field": {
-      const ot = env.uni.res(infer(e.obj, nodes, env, effs, effects, rec));
+      const ot = uniRes(env.uni, infer(e.obj, nodes, env, effs, effects, rec));
       if (ot.tag === "arr") {
         const idx = fieldIndex(e.name);
         if (idx === null)
@@ -556,21 +556,21 @@ function inferNode(
     }
     // `[a, b] := val;` — destructure a tuple (or array) into bindings.
     case "dlet": {
-      const vt = env.uni.res(infer(e.val, nodes, env, effs, effects, rec));
+      const vt = uniRes(env.uni, infer(e.val, nodes, env, effs, effects, rec));
       if (vt.tag === "tup") {
         if (vt.fields.length !== e.fields.length)
           throw new TypeError_(`destructure arity ${e.fields.length} ≠ tuple ${vt.fields.length}`);
         for (let i = 0; i < e.fields.length; i++) {
           const ft = e.fields[i].typ;
           if (ft !== null)
-            env.uni.unify(ft, vt.fields[i].type);
+            uniUnify(env.uni, ft, vt.fields[i].type);
           checkBind(env, e.fields[i].name);
           env.vars.set(e.fields[i].name, ft ?? vt.fields[i].type);
         }
       } else if (vt.tag === "arr") {
         for (const f of e.fields) {
           if (f.typ !== null)
-            env.uni.unify(f.typ, vt.elem);
+            uniUnify(env.uni, f.typ, vt.elem);
           checkBind(env, f.name);
           env.vars.set(f.name, f.typ ?? vt.elem);
         }
@@ -585,15 +585,15 @@ function inferNode(
     }
     case "if": {
       const c = infer(e.c, nodes, env, effs, effects, rec);
-      env.uni.unify(c, TBOOL);
+      uniUnify(env.uni, c, TBOOL);
       const a = infer(e.a, nodes, env, effs, effects, rec);
       const b = infer(e.b, nodes, env, effs, effects, rec);
-      env.uni.unify(a, b);
-      return env.uni.res(a);
+      uniUnify(env.uni, a, b);
+      return uniRes(env.uni, a);
     }
     case "while": {
       const c = infer(e.c, nodes, env, effs, effects, rec);
-      env.uni.unify(c, TBOOL);
+      uniUnify(env.uni, c, TBOOL);
       infer(e.body, nodes, env, effs, effects, rec);
       return TUNIT;
     }
@@ -609,11 +609,11 @@ function inferNode(
       const cur = fr.vars.get(e.name)!;
       const vt = infer(e.val, nodes, env, effs, effects, rec);
       // Unify against the declared type so `guess: float` keeps its type.
-      env.uni.unify(typeof cur === "function" ? cur() : cur, vt);
+      uniUnify(env.uni, typeof cur === "function" ? cur() : cur, vt);
       return TUNIT;
     }
     case "block": {
-      const n = env.extend();
+      const n = envExtend(env);
       let last: Type = TUNIT;
       for (const s of e.stmts) last = infer(s, nodes, n, effs, effects, rec);
       // The last expression is the block's value only when no `;` follows it.
@@ -626,7 +626,7 @@ function inferNode(
       if (e.args.length !== sig.params.length)
         throw new TypeError_(`effect ${e.op}: ${sig.params.length} args, got ${e.args.length}`);
       const argTs = e.args.map(a => infer(a, nodes, env, effs, effects, rec));
-      for (let i = 0; i < sig.params.length; i++) env.uni.unify(sig.params[i] ?? TANY, argTs[i]);
+      for (let i = 0; i < sig.params.length; i++) uniUnify(env.uni, sig.params[i] ?? TANY, argTs[i]);
       effs.ops.add(e.op);
       return sig.ret;
     }
@@ -642,28 +642,28 @@ function inferNode(
       const bodyCompletes = !e.cases.some(c => c.op === "Return") && !hasPerformOutsideLambdas(nodes, e.body);
       let resultT: Type | null = null;
       for (const c of e.cases) {
-        const n = env.extend();
+        const n = envExtend(env);
         const sig = effects.get(c.op);
         if (sig === undefined && c.op !== "Return")
           throw new TypeError_(`Handler for unknown effect: ${c.op}`);
         if (c.op === "Return") {
           checkBind(n, c.params[0].name);
-          const bt = env.uni.res(bodyT);
+          const bt = uniRes(env.uni, bodyT);
           n.vars.set(c.params[0].name, bt);
-          rec.recordTok("handle", c.params[0].pos, c.params[0].name, bt);
+          recordTok(rec, "handle", c.params[0].pos, c.params[0].name, bt);
         } else {
           for (let i = 0; i < c.params.length; i++) {
             const cp = c.params[i];
             checkBind(n, cp.name);
             const pt = sig!.params[i] ?? TANY;
             n.vars.set(cp.name, pt);
-            rec.recordTok("handle", cp.pos, cp.name, pt);
+            recordTok(rec, "handle", cp.pos, cp.name, pt);
           }
         }
         // resume: (sig.ret) -> resultT ; Return's resume is identity over bodyT
         const resumeT = c.op === "Return"
-          ? tFun([env.uni.res(bodyT)], env.uni.fresh(), rowOf(), {contCall: true})
-          : tFun([sig!.ret], env.uni.fresh(), rowOf(), {contCall: true});
+          ? tFun([uniRes(env.uni, bodyT)], uniFresh(env.uni), rowOf(), {contCall: true})
+          : tFun([sig!.ret], uniFresh(env.uni), rowOf(), {contCall: true});
         checkBind(n, c.resume);
         n.vars.set(c.resume, resumeT);
         // Case bodies run outside this handler (its perform's continuation
@@ -674,10 +674,10 @@ function inferNode(
         if (resultT === null)
           resultT = ct;
         else
-          env.uni.unify(resultT, ct);
-        env.uni.unify(resumeT.ret, ct);
+          uniUnify(env.uni, resultT, ct);
+        uniUnify(env.uni, resumeT.ret, ct);
         if (bodyCompletes && caseReferencesK(nodes, c.resume, c.body))
-          env.uni.unify(resumeT.ret, env.uni.res(bodyT));
+          uniUnify(env.uni, resumeT.ret, uniRes(env.uni, bodyT));
       }
       for (const c of e.cases) bodyEffs.ops.delete(c.op);
       absorbEffs(effs, bodyEffs);
@@ -721,7 +721,7 @@ function inferNode(
       }
       if (fn.t === "sym" && fn.v === OP_NOT) {
         const at = infer(e.args[0], nodes, env, effs, effects, rec);
-        env.uni.unify(at, TBOOL);
+        uniUnify(env.uni, at, TBOOL);
         return TBOOL;
       }
       // Equality: both operands must share a type (untyped literals flex,
@@ -730,26 +730,26 @@ function inferNode(
       if (fn.t === "sym" && EQ_OPS.has(fn.v)) {
         const at = infer(e.args[0], nodes, env, effs, effects, rec);
         const bt = infer(e.args[1], nodes, env, effs, effects, rec);
-        env.uni.unify(at, bt);
+        uniUnify(env.uni, at, bt);
         stampEqWidth(env.uni, id, at, bt, rec.stamps);
         return TBOOL;
       }
       const ft = infer(e.fn, nodes, env, effs, effects, rec);
-      const fr = env.uni.res(ft);
+      const fr = uniRes(env.uni, ft);
       // When the callee is a known function, an `[...]` literal argument
       // passed against a tuple parameter type is inferred as that tuple
       // (mirroring the `name: [..] = [...]` special case).
       const argTs = e.args.map((a, i) => {
-        if (nodes[a].t === "arr" && fr.tag === "fun" && i < fr.params.length && env.uni.res(fr.params[i]).tag === "tup")
-          return inferArr(a, nodes, env.uni.res(fr.params[i]) as TupT, env, effs, effects, rec);
+        if (nodes[a].t === "arr" && fr.tag === "fun" && i < fr.params.length && uniRes(env.uni, fr.params[i]).tag === "tup")
+          return inferArr(a, nodes, uniRes(env.uni, fr.params[i]) as TupT, env, effs, effects, rec);
         return infer(a, nodes, env, effs, effects, rec);
       });
-      const ret = env.uni.fresh();
+      const ret = uniFresh(env.uni);
       if (fr.tag === "fun") {
         if (fr.params.length !== argTs.length)
           throw new TypeError_(`arity ${fr.params.length} ≠ ${argTs.length}`);
-        for (let i = 0; i < argTs.length; i++) env.uni.unify(fr.params[i], argTs[i]);
-        env.uni.unify(fr.ret, ret);
+        for (let i = 0; i < argTs.length; i++) uniUnify(env.uni, fr.params[i], argTs[i]);
+        uniUnify(env.uni, fr.ret, ret);
         // The callee's effect row is unified with each callback argument's
         // effect row via the param unification above (polymorphic builtins
         // share one effect variable between the callback and the result).
@@ -758,8 +758,8 @@ function inferNode(
         // variable rides along as a member, so a polymorphic caller (an
         // unannotated HOF parameter) stays effect-tracked — when its parameter
         // later unifies with an effectful callee, the row resolves there.
-        absorbEffs(effs, env.uni.resRow(fr.effs));
-        return env.uni.res(ret);
+        absorbEffs(effs, uniResRow(env.uni, fr.effs));
+        return uniRes(env.uni, ret);
       }
       if (fr.tag === "any") return TANY;
       // Forcing an unknown callee into a function shape gives it a fresh row
@@ -767,7 +767,7 @@ function inferNode(
       // performed effects vanish from every ambient row (the escaped-closure
       // unhandled-effect hole). The variable unifies with the eventual
       // callee's row at this call's arg unification and propagates above.
-      const expected = tFun(argTs, ret, rowOf([], [env.uni.freshEff()]));
+      const expected = tFun(argTs, ret, rowOf([], [uniFreshEff(env.uni)]));
       // Remember which callee type variable this row variable was forced
       // for: the effect-annotation pinning must only cover variables belonging
       // to this lambda's parameters — a recursive self-call's variable is
@@ -776,16 +776,16 @@ function inferNode(
       const rowVar = expected.effs;
       if (ft.tag === "var" && rowVar.ops.size === 0 && rowVar.vars.size === 1)
         env.uni.forcedRows.set([...rowVar.vars][0].id, ft.id);
-      try { env.uni.unify(ft, expected); }
+      try { uniUnify(env.uni, ft, expected); }
       catch (err) {
         if (err instanceof TypeError_ && fn.t === "sym")
-          throw env.uni.typeMismatch(ft, expected, fn.v);
+          throw uniTypeMismatch(env.uni, ft, expected, fn.v);
         throw err;
       }
       // The unknown callee's row is a fresh variable — propagate it, so the
       // enclosing function's row carries "whatever this parameter performs".
-      absorbEffs(effs, env.uni.resRow(expected.effs));
-      return env.uni.res(ret);
+      absorbEffs(effs, uniResRow(env.uni, expected.effs));
+      return uniRes(env.uni, ret);
     }
     default:
       return assertNever(e);
@@ -838,7 +838,7 @@ export function checkProgram(
   prog: Program,
   acc?: Checked,
 ): Checked {
-  const uni = acc?.uni ?? new Unifier();
+  const uni = acc?.uni ?? newUnifier();
   resetLamWidths();
   let env: Env;
   let effects: Map<string, EffectSig>;
@@ -847,7 +847,7 @@ export function checkProgram(
     effects = acc.effects;
   } else {
     effects = new Map<string, EffectSig>(BUILTIN_TABLE.filter(b => b.kind === "effect").map(b => [b.name, b.sig]));
-    env = new Env(null, uni);
+    env = newEnv(null, uni);
     for (const b of BUILTIN_TABLE) {
       if (b.kind !== "effect") {
         const bt = b.t;
@@ -856,15 +856,14 @@ export function checkProgram(
         // call site, so a call flexes its own copy without leaking the
         // width into the signature or other sites.
         env.vars.set(b.name, () =>
-          uni.copyScheme(typeof bt === "function" ? bt(uni) : bt, new Map(), new Map()));
+          uniCopyScheme(uni, typeof bt === "function" ? bt(uni) : bt, new Map(), new Map()));
       }
     }
   }
 
-  // The per-call recorder over this call's node slice (see TokenRecorder).
-  const rec = new TokenRecorder(prog.nodes, prog.locs, uni, effects);
+  const rec: TokenRecorder = {nodes: prog.nodes, locs: prog.locs, uni, effects, nodeTypes: [], stamps: [], semToks: []};
   for (const it of prog.items.filter(it => "effect" in it))
-    rec.recordEffect(it.effect, {params: it.sig.params.map(t => t ?? uni.fresh()), ret: it.sig.ret, names: it.sig.names});
+    recordEffect(rec, it.effect, {params: it.sig.params.map(t => t ?? uniFresh(uni)), ret: it.sig.ret, names: it.sig.names});
 
   let lastType: Type = TUNIT;
   // One shared sink for all items: infer only ever ADDS residuals to the
@@ -878,7 +877,7 @@ export function checkProgram(
   for (const it of prog.items.filter(it => "e" in it))
     lastType = infer(it.e, prog.nodes, env, row, effects, rec);
   const unhandled = new Set<string>();
-  for (const op of uni.resRow(row).ops)
+  for (const op of uniResRow(uni, row).ops)
     unhandled.add(op);
 
   // Num-type resolution: propagate op-linked widths to a fixpoint. Untyped
@@ -890,11 +889,11 @@ export function checkProgram(
   // The REPL alone keeps the pre-lowering view (lastNum): a bare
   // constant's result type is an untyped num type (int/float), and a
   // builtin const like PI displays as its untyped float.
-  const lastRes = uni.res(lastType);
+  const lastRes = uniRes(uni, lastType);
   const lastNum = lastRes.tag === "prim" && (lastRes.name === "int" || lastRes.name === "float")
     ? lastRes.name
     : undefined;
-  uni.resolveNums();
+  uniResolveNums(uni);
   stampNumKinds(uni, rec.nodeTypes, rec.stamps);
   // Divergent reads: a per-read num-type copy may have flexed to a width
   // different from the binding's own box width (one untyped binding read
@@ -907,8 +906,8 @@ export function checkProgram(
     if (n.t !== "sym") continue;
     const src = n as Expr & {bindTyp?: Type, adaptFrom?: string};
     if (src.bindTyp === undefined) continue;
-    const sw = widthOf(uni.res(t));
-    const bt = uni.res(src.bindTyp);
+    const sw = widthOf(uniRes(uni, t));
+    const bt = uniRes(uni, src.bindTyp);
     const bw = bt.tag === "prim" ? widthOf(bt) : null;
     // Both widths come back lowered (widthOf maps num types to i64/f64), so
     // the comparison holds for unlowered binding types too — the box rides
@@ -918,5 +917,5 @@ export function checkProgram(
   }
   stampSuspension(prog.nodes, uni, rec.nodeTypes, rec.stamps);
 
-  return {env, effects, uni, lastType: uni.deepRes(lastType), lastNum, unhandled, semToks: rec.semToks, nodeTypes: rec.nodeTypes, stamps: rec.stamps};
+  return {env, effects, uni, lastType: uniDeepRes(uni, lastType), lastNum, unhandled, semToks: rec.semToks, nodeTypes: rec.nodeTypes, stamps: rec.stamps};
 }

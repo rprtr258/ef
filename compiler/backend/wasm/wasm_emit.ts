@@ -7,8 +7,8 @@
 import {_T} from "./wasm_types.ts";
 import {DBGEMIT, MOD} from "./wasm_tables.ts";
 import {DBGTRACE, TRACE_SITES} from "./wasm_trace.ts";
-import {Buf, Fn} from "./wasm_body.ts";
-import {type Discovery, type Indices, type IndexRegistrar, type Layout, type Opt} from "./wasm_pipeline.ts";
+import {Buf, Fn, anyref, f32, f64, fnLoop, i32, i64, newFn, pushRef, retCell, typed} from "./wasm_body.ts";
+import {type Discovery, type Indices, type IndexRegistrar, type Layout, type Opt, register} from "./wasm_pipeline.ts";
 import type {Plan} from "./wasm_plan.ts";
 import * as w from "./wasm_consts.ts";
 
@@ -66,10 +66,10 @@ export function rebox(em: Emit, f: Fn, wkn: string): void {
 
 // A raw value of the width's machine type, fresh scratch local.
 export function planeLocal(f: Fn, wkn: string): number {
-  return wkn === "f32" ? f.f32()
-    : wkn === "i64" || wkn === "u64" ? f.i64()
-    : wkn === "f64" ? f.f64() // the f64 plane's scratch holds raw f64 payloads
-    : f.i32(); // i32/u32-plane scratch
+  return wkn === "f32" ? f32(f)
+    : wkn === "i64" || wkn === "u64" ? i64(f)
+    : wkn === "f64" ? f64(f) // the f64 plane's scratch holds raw f64 payloads
+    : i32(f); // i32/u32-plane scratch
 }
 
 // A raw call result (numeric entry's return valtype) parked in a fresh
@@ -83,7 +83,7 @@ export function reboxCallResult(em: Emit, f: Fn, rW: string, raw = false): numbe
   if (raw) return pl;
   b.localGet(pl);
   rebox(em, f, rW);
-  const v = f.anyref();
+  const v = anyref(f);
   b.localSet(v);
   return v;
 }
@@ -132,14 +132,14 @@ const cellFrame = (b: Buf, cell: number): void => {
 // the scan. The caller branches on `found` afterwards.
 export function emitCaseScan(f: Fn, tbl: number, want: () => void): {found: number, fnIdx: number, fsz: number, nparams: number} {
   const b = f.body;
-  const found = f.i32(), fnIdx = f.i32(), fsz = f.i32(),
-    nparams = f.i32(), ent = f.i32();
-  const nL = f.i32();
+  const found = i32(f), fnIdx = i32(f), fsz = i32(f),
+    nparams = i32(f), ent = i32(f);
+  const nL = i32(f);
   b.localGet(tbl); b.refCast(1, true); b.arrayLen(); b.i32Const(4); b.num(w.DIVU);
   b.localSet(nL);
   b.i32Const(0);
   b.localSet(found);
-  f.loop(() => {
+  fnLoop(f, () => {
     b.localGet(nL);
   }, i => {
     b.localGet(i); b.i32Const(4); b.num(w.MUL);
@@ -192,15 +192,15 @@ export function ladderBody(b: Buf, spec: LadderSpec): void {
 // funcref indices and sigs exist before any call site resolves them; bodies
 // are filled by emitHelpers in the same order.
 export function registerHelpers(reg: IndexRegistrar, ix: Indices): void {
-  const truthy = new Fn(1); ix.fTruthy = reg.register("fTruthy", truthy, w.T_TRUTHY);
-  const eq = new Fn(2); ix.fEq = reg.register("fEq", eq, w.T_EQ);
-  const box = new Fn(1); ix.fBox = reg.register("fBox", box, w.T_BOX);
-  const num64 = new Fn(1); ix.fNum64 = reg.register("fNum64", num64, w.T_NUM64);
-  const f32of = new Fn(1); ix.fF32of = reg.register("fF32of", f32of, w.T_F32);
-  const i32of = new Fn(1); ix.fI32of = reg.register("fI32of", i32of, w.T_GETI32);
-  const u32of = new Fn(1); ix.fU32of = reg.register("fU32of", u32of, w.T_GETI32);
-  const i64of = new Fn(1); ix.fI64of = reg.register("fI64of", i64of, w.T_GETI64);
-  const u64of = new Fn(1); ix.fU64of = reg.register("fU64of", u64of, w.T_GETI64);
+  const truthy = newFn(1); ix.fTruthy = register(reg, "fTruthy", truthy, w.T_TRUTHY);
+  const eq = newFn(2); ix.fEq = register(reg, "fEq", eq, w.T_EQ);
+  const box = newFn(1); ix.fBox = register(reg, "fBox", box, w.T_BOX);
+  const num64 = newFn(1); ix.fNum64 = register(reg, "fNum64", num64, w.T_NUM64);
+  const f32of = newFn(1); ix.fF32of = register(reg, "fF32of", f32of, w.T_F32);
+  const i32of = newFn(1); ix.fI32of = register(reg, "fI32of", i32of, w.T_GETI32);
+  const u32of = newFn(1); ix.fU32of = register(reg, "fU32of", u32of, w.T_GETI32);
+  const i64of = newFn(1); ix.fI64of = register(reg, "fI64of", i64of, w.T_GETI64);
+  const u64of = newFn(1); ix.fU64of = register(reg, "fU64of", u64of, w.T_GETI64);
   ix.helpers = [truthy, eq, box, num64, f32of, i32of, u32of, i64of, u64of];
 }
 
@@ -239,11 +239,11 @@ export function emitHelpers(em: Emit): Fn[] {
   // identity is its immutable wrapper), unit (null) equal only to unit.
   {
     const b = eq.body;
-    const res = eq.i32();
+    const res = i32(eq);
     // decided: a typed path (or the null mismatch) already answered.
-    const decided = eq.i32();
+    const decided = i32(eq);
     // both: both operands are bool i31s (shared by the IF and decided).
-    const both = eq.i32();
+    const both = i32(eq);
     b.i32Const(0);
     b.localSet(decided);
     // null ladder: equal nulls → true, one null → false.
@@ -306,7 +306,7 @@ export function emitHelpers(em: Emit): Fn[] {
         if (extra !== undefined) { b.localGet(extra); b.num(w.OR); }
         b.localSet(bit);
       };
-      const aW = eq.i32(), bW = eq.i32(), aN = eq.i32(), bN = eq.i32();
+      const aW = i32(eq), bW = i32(eq), aN = i32(eq), bN = i32(eq);
       shapeBit(0, [9, 10], aW);
       shapeBit(1, [9, 10], bW);
       shapeBit(0, [0, 7, 8, 11], aN, aW);
@@ -333,7 +333,7 @@ export function emitHelpers(em: Emit): Fn[] {
         b.readBoxPayload(10);
         b.end();
       };
-      const pa = eq.i64(), pb = eq.i64(), bitsEq = eq.i32();
+      const pa = i64(eq), pb = i64(eq), bitsEq = i32(eq);
       readWide(0);
       b.localSet(pa);
       readWide(1);
@@ -394,7 +394,7 @@ export function emitHelpers(em: Emit): Fn[] {
     b.refTest(2, true);
     b.num(w.AND);
     b.if();
-    const la = eq.i32(), lb = eq.i32();
+    const la = i32(eq), lb = i32(eq);
     b.localGet(0);
     b.refCast(2, true);
     b.arrayLen();
@@ -407,7 +407,7 @@ export function emitHelpers(em: Emit): Fn[] {
     b.localGet(lb);
     b.num(w.EQ);
     b.localSet(res);
-    eq.loop(() => {
+    fnLoop(eq, () => {
       b.localGet(la);
     }, i => {
       b.localGet(res);
@@ -501,8 +501,8 @@ type CallOpts = {
 export function emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: number, ffp: number) => void, opts: CallOpts = {}): number | undefined {
   const {tail = false, land = false, kL = 1, landA, landFrameE, direct} = opts;
   const b = f.body;
-  const clob = f.anyref(), idx = f.i32(), cf = f.anyref(), fs = f.i32(),
-    maxL = f.i32(), slots = f.anyref(), ffp = f.anyref();
+  const clob = anyref(f), idx = i32(f), cf = anyref(f), fs = i32(f),
+    maxL = i32(f), slots = anyref(f), ffp = anyref(f);
   if (direct === undefined) {
     b.localGet(fc);
     b.localSet(clob);
@@ -563,7 +563,7 @@ export function emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: nu
       b.callFn(direct.idx, tail);
     }
     if (tail) return undefined;
-    const r = f.anyref();
+    const r = anyref(f);
     b.localSet(r);
     return r;
   }
@@ -580,7 +580,7 @@ export function emitCallClosure(f: Fn, fc: number, argc: number, argEmit: (k: nu
     // callback's completion always tails into landA (never returns here),
     // and a terminal k=0 return must unwind past the whole loop to the
     // caller's own call site.
-    b.localGet(f.retCell(landA!, () => b.localGet(kL), 0, landFrameE)); // next = ambient k
+    b.localGet(retCell(f, landA!, () => b.localGet(kL), 0, landFrameE)); // next = ambient k
     b.refCast(5, true);
   } else b.refNull(5); // k=0 (ref.null $K): the callee's dispatch returns its value inline
   if (direct === undefined) {
@@ -606,8 +606,8 @@ export function emitDirectEntryCall(
   st?: {idx: number, fsize: number, noEnv?: true},
 ): number {
   const b = f.body;
-  const idx = f.i32(), cf = f.anyref(), fs = f.i32(),
-    maxL = f.i32(), slots = f.anyref(), ffp = f.anyref();
+  const idx = i32(f), cf = anyref(f), fs = i32(f),
+    maxL = i32(f), slots = anyref(f), ffp = anyref(f);
   // The callee's frame parent = the closure's captured env: a direct body's
   // scopes chain from its own (caller-allocated) frame up through the
   // frames live at its mkfn site — exactly the $CLO's env. The caller's
@@ -663,14 +663,14 @@ export function emitDirectEntryCall(
   } else {
     b.callFn(st.idx);
   }
-  const v = f.anyref();
+  const v = anyref(f);
   b.localSet(v);
   if (deliver.kind === "k") {
     emitDispatch(em, f, v, deliver.kL);
   } else if (deliver.kind === "raw") {
     return v; // the caller owns the result local
   } else {
-    const cell = f.retCell(deliver.landA, () => b.localGet(deliver.kL), 0, deliver.landFrameE);
+    const cell = retCell(f, deliver.landA, () => b.localGet(deliver.kL), 0, deliver.landFrameE);
     emitDispatch(em, f, v, cell);
   }
   return v;
@@ -689,7 +689,7 @@ export function emitNumericEntryCall(
   rawRet?: string,
 ): number {
   const b = f.body;
-  const cf = f.anyref();
+  const cf = anyref(f);
   if (num.noEnv === true) {
     b.refNull(4);
     b.localSet(cf);
@@ -713,8 +713,8 @@ export function emitNumericEntryCall(
 // continuation thunks; the map-like builtins as loop-entry/iteration land
 // cells.
 export function makeRestThunk(em: Emit, role?: string): Fn {
-  const f = new Fn(3, em);
-  em.reg.register(`thunk${em.thunks.length}`, f, w.T_III_I);
+  const f = newFn(3, em);
+  register(em.reg, `thunk${em.thunks.length}`, f, w.T_III_I);
   if (DBGEMIT && role !== undefined) console.error("THUNK", f.idx, role);
   em.thunks.push(f);
   return f;
@@ -768,7 +768,7 @@ export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
     kind(); b.i32Const(w.K_BND); b.num(w.EQ);
     b.if();
     tracePoint(em, f, `d f${f.fid}(idx${f.idx}) K_BND`);
-    const entry = f.anyref(), tbl = f.anyref();
+    const entry = anyref(f), tbl = anyref(f);
     b.globalGet(em.lay.ctxG);
     b.localSet(entry);
     hdlGet(b, entry, 1);
@@ -781,7 +781,7 @@ export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
     // (hframe, kret) — the paper's ret clause discarding the effect
     // continuation. kret is the entry's delivery target: the handle's own
     // continuation on the first run, the resumer's k2 on a fresh entry.
-    const hf = f.typed(_T.RF[4]);
+    const hf = typed(f, _T.RF[4]);
     hdlGet(b, entry, 2);
     b.refCast(4, true);
     b.localSet(hf);
@@ -790,12 +790,12 @@ export function emitDispatch(em: Emit, f: Fn, v: number, k = 1): void {
     b.localGet(nparams); b.i32Const(1); b.num(w.ADD);
     b.localGet(v);
     b.arraySet();
-    const outer = f.anyref();
+    const outer = anyref(f);
     hdlGet(b, entry, 3);
     b.localSet(outer);
     b.localGet(outer);
     b.globalSet(em.lay.ctxG);
-    const kn = f.typed(_T.RF[5]);
+    const kn = typed(f, _T.RF[5]);
     hdlGet(b, entry, 4);
     b.localSet(kn);
     b.localGet(hf);
@@ -838,11 +838,11 @@ export function emitFail(em: Emit, f: Fn, code: number, nameG: number | null, pu
 // already on the stack.
 export function selectBool(em: Emit, f: Fn, emitCond?: () => void): void {
   const b = f.body;
-  const t = f.i32();
+  const t = i32(f);
   emitCond?.();
   b.localSet(t);
-  f.pushRef(em.lay.trueRef);
-  f.pushRef(em.lay.falseRef);
+  pushRef(f, em.lay.trueRef);
+  pushRef(f, em.lay.falseRef);
   b.localGet(t);
   const cond = b.pop(), v2 = b.pop(), v1 = b.pop();
   b.push(MOD.if(cond, v1, v2)); // ref select: binaryen's select() is numeric-only

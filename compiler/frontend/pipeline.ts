@@ -7,7 +7,7 @@
 // into the one REPL line protocol. Consumers add their own passes on top of
 // the returned pair: eval seeds referenced builtins and drives the CPS term;
 // wasm tree-shakes and emits code.
-import {Parser, type Program} from "./parser.ts";
+import {parseProgram, type Program} from "./parser.ts";
 import {checkProgram, type Checked} from "./types.ts";
 import {globalEnv, type Cont, type Env, type Outcome, type Value} from "../env.ts";
 import {EFFECT_OPS} from "../builtin_table.ts";
@@ -58,7 +58,7 @@ type Staged =
 export function prepareStaged(src: string, acc?: Checked): Staged {
   let prog: Program;
   try {
-    prog = new Parser(src).parseProgram();
+    prog = parseProgram(src);
   } catch (error) {
     return {ok: false, stage: "parse", error};
   }

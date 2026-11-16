@@ -8,6 +8,7 @@ import {prepare, type EffectInterp} from "../../frontend/pipeline.ts";
 import {lint} from "../../frontend/lint.ts";
 import {show, sliceElems, mkSlice, mkTup, type Slice, type Value} from "../../env.ts";
 import {showErr, showT, TypeError_} from "../../frontend/type_display.ts";
+import {envLookupResolved} from "../../frontend/unify.ts";
 
 // The suite's value harness: runLine through a fresh ctx, unwrapped to the
 // value. run() itself is the unit-gated file-entrypoint seam (pipeline.ts's
@@ -15,7 +16,7 @@ import {showErr, showT, TypeError_} from "../../frontend/type_display.ts";
 // ungated REPL line protocol.
 const run = (src: string, interp?: EffectInterp, args?: string[]): Value =>
   runLine(newCtx(interp, args), src).value;
-import {Parser} from "../../frontend/parser.ts";
+import {parseProgram} from "../../frontend/parser.ts";
 import {toCps} from "../../frontend/cps.ts";
 import type {CIr, CAtom, CTerm} from "../../frontend/cps_ir.ts";
 
@@ -1011,10 +1012,10 @@ k(s, 1)`)).toThrow();
 
     test("lookupResolved deep-resolves and instantiates schemes", () => {
       const c = prepare("m :: 5; m");
-      expect(showT(c.checked.env.lookupResolved("m"))).toBe("i64");
+      expect(showT(envLookupResolved(c.checked.env, "m"))).toBe("i64");
       // The builtin's scheme instantiates fresh type and effect variables.
       const m = prepare("map");
-      expect(showT(m.checked.env.lookupResolved("map")))
+      expect(showT(envLookupResolved(m.checked.env, "map")))
       .toBe("((a) -> b ! { e1 }, [a]) -> [b] ! { e1 }");
     });
 
@@ -1228,7 +1229,7 @@ describe("Semantic tokens (typeToks feed the LSP's type/effect highlighting)", (
   // checker traversal order, only the sorted result is contract (FR-008).
   const toks = (src: string): {kind: string, text: string}[] => {
     const lines = src.split("\n");
-    const prog = new Parser(src).parseProgram();
+    const prog = parseProgram(src);
     return [...prog.typeToks]
       .sort((a, b) => a.pos.line !== b.pos.line ? a.pos.line - b.pos.line : a.pos.col - b.pos.col)
       .map(t => ({
@@ -1249,7 +1250,7 @@ describe("Semantic tokens (typeToks feed the LSP's type/effect highlighting)", (
   };
 
   test("builtin prims record as `type` at their 1-based position", () => {
-    const p = new Parser("x :: i32;").parseProgram();
+    const p = parseProgram("x :: i32;");
     // `x :: i32;` declares an alias, so the decl name records too (FR-002).
     expect(p.typeToks).toEqual([
       {pos: {line: 1, col: 1}, len: 1, kind: "type", name: "x"},

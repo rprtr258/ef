@@ -20,7 +20,7 @@ import {styleText} from "util";
 import {run} from "./backend/interpreter/eval.ts";
 import {prepare, requireUnitEntry} from "./frontend/pipeline.ts";
 import {showErr, showT} from "./frontend/type_display.ts";
-import {type Type} from "./frontend/unify.ts";
+import {type Type, envLookupResolved} from "./frontend/unify.ts";
 import {lint} from "./frontend/lint.ts";
 import {repl} from "./repl.ts";
 import {startLsp} from "./lsp.ts";
@@ -38,7 +38,7 @@ function types(src: string): {syms: {name: string, type: Type}[], result: Type, 
       names.push(e.name);
   }
   return {
-    syms: names.map(n => ({name: n, type: checked.env.lookupResolved(n)})),
+    syms: names.map(n => ({name: n, type: envLookupResolved(checked.env, n)})),
     result: checked.lastType,
     effs: checked.unhandled,
   };

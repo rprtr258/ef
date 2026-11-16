@@ -29,7 +29,8 @@ import {assertNever} from "./assert.ts";
 import {STAMPED_OPS} from "./ops.ts";
 import {TypeError_} from "./frontend/type_display.ts";
 import {
-  FLOAT_NAMES, INT_NAMES, Unifier, widthOf,
+  FLOAT_NAMES, INT_NAMES, type Unifier, widthOf,
+  uniFind, uniRes, uniResRow,
   type FunT, type NumName, type Type,
 } from "./frontend/unify.ts";
 import type {Expr, ExprID} from "./frontend/parser.ts";
@@ -105,9 +106,9 @@ export function endLamWidths(ctx: LamCtx | null, lamId: ExprID): void {
 // Numeric ops mark the unannotated param vars they see.
 export function touchNumericVar(u: Unifier, t: Type): void {
   if (lamStack.length === 0) return;
-  const r = u.res(t);
+  const r = uniRes(u, t);
   if (r.tag !== "var") return;
-  const root = u.find(r.id);
+  const root = uniFind(u, r.id);
   for (const c of lamStack) if (c.unannIds.has(root)) c.touched.add(root);
 }
 
@@ -126,12 +127,12 @@ export function checkLamWidths(u: Unifier, lamId: ExprID): void {
   if (rec === undefined) return;
   lamWidths.delete(lamId);
   const touched = new Set<number>();
-  for (const r of rec.touched) touched.add(u.find(r)); // unions after a touch may have re-rooted
+  for (const r of rec.touched) touched.add(uniFind(u, r)); // unions after a touch may have re-rooted
   for (const p of rec.unann) {
-    const rt = u.res({tag: "var", id: p.id});
+    const rt = uniRes(u, {tag: "var", id: p.id});
     if (rt.tag === "prim" && (rt.name === "int" || rt.name === "float"))
       throw new TypeError_(`ambiguous numeric width — annotate the parameter (e.g. ${p.name}: i64)`);
-    if (rt.tag === "var" && touched.has(u.find(rt.id)))
+    if (rt.tag === "var" && touched.has(uniFind(u, rt.id)))
       throw new TypeError_(`ambiguous numeric width — annotate the parameter (e.g. ${p.name}: i64)`);
   }
 }
@@ -141,7 +142,7 @@ export function checkLamWidths(u: Unifier, lamId: ExprID): void {
 // unification itself (flexNum/resolveNums), so nothing is pinned here.
 // No-op when the op's result carries no width (string `+`).
 export function stampComputeWidth(uni: Unifier, id: ExprID, widened: Type, stamps: (NodeStamps | undefined)[]): void {
-  const wo = widthOf(uni.res(widened));
+  const wo = widthOf(uniRes(uni, widened));
   if (wo !== null) slot(stamps, id).numKind = wo.w;
 }
 
@@ -152,7 +153,7 @@ export function stampComputeWidth(uni: Unifier, id: ExprID, widened: Type, stamp
 // eq site's own unify (flexNum/resolveNums); the fallback pick only
 // covers shared num-type singletons (e.g. `PI == 3` → f64).
 export function stampEqWidth(uni: Unifier, id: ExprID, at: Type, bt: Type, stamps: (NodeStamps | undefined)[]): void {
-  const ea = widthOf(uni.res(at)), eb = widthOf(uni.res(bt));
+  const ea = widthOf(uniRes(uni, at)), eb = widthOf(uniRes(uni, bt));
   if (ea !== null && eb !== null)
     slot(stamps, id).numKind = ea.concrete ? ea.w : eb.concrete ? eb.w : (ea.w === "f64" || eb.w === "f64") ? "f64" : "i64";
 }
@@ -160,7 +161,7 @@ export function stampEqWidth(uni: Unifier, id: ExprID, at: Type, bt: Type, stamp
 // The division's WIDTH goes on the node so the evaluator and the emitters
 // pick truncation and the signed/unsigned op variants.
 export function stampDivWidth(uni: Unifier, id: ExprID, widened: Type, stamps: (NodeStamps | undefined)[]): void {
-  const rw = widthOf(uni.res(widened));
+  const rw = widthOf(uniRes(uni, widened));
   slot(stamps, id).div = rw !== null ? rw.w : "f64";
 }
 
@@ -173,7 +174,7 @@ export function stampNumKinds(uni: Unifier, nodeTypes: (Type | undefined)[], sta
   for (let id = 0; id < nodeTypes.length; id++) {
     const t = nodeTypes[id];
     if (t === undefined) continue;
-    const rt = uni.res(t);
+    const rt = uniRes(uni, t);
     let w: NumName | null = null;
     if (rt.tag === "prim") {
       const n = rt.name as NumName;
@@ -222,14 +223,14 @@ export function stampSuspension(nodes: Expr[], uni: Unifier, nodeTypes: (Type | 
     let sus = true;
     const ct = nodeTypes[e.fn];
     if (ct !== undefined) {
-      const rt = uni.res(ct);
+      const rt = uniRes(uni, ct);
       if (rt.tag === "fun" && rt.contCall !== true && rt.anyTaint !== true &&
         !(fn.t === "sym" && NATIVE_BUILTINS.has(fn.v))) {
         // resRow flattens bound effect variables (propagated from
         // polymorphic callees, or self-referential bindings from direct
         // recursion) — a resolved empty row means the call cannot suspend;
         // an unbound variable or leftover op means it can.
-        const rr = uni.resRow(rt.effs);
+        const rr = uniResRow(uni, rt.effs);
         if (rr.ops.size === 0 && rr.vars.size === 0) sus = false;
       }
     }

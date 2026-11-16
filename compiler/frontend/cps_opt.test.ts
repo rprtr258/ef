@@ -1,5 +1,5 @@
 import {describe, expect, test} from "bun:test";
-import {Parser} from "./parser.ts";
+import {parseProgram} from "./parser.ts";
 import {toCps} from "./cps.ts";
 import {runLine, newCtx} from "../backend/interpreter/eval.ts";
 import {prepare} from "./pipeline.ts";
@@ -14,7 +14,7 @@ const run = (src: string): Value => runLine(newCtx(), src).value;
 
 // toCps applies the cps_opt passes as its final stage: every test here sees
 // the optimized term and would catch a pass regression as leftover redex.
-const conv = (src: string): CIr => toCps(new Parser(src).parseProgram());
+const conv = (src: string): CIr => toCps(parseProgram(src));
 
 function walk(t: CTerm, f: (t: CTerm) => void): void {
   f(t);

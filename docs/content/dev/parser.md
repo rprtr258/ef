@@ -1,6 +1,6 @@
 # Parser
 
-`new Parser(src).parseProgram(): Program` where
+`parseProgram(src): Program` where
 `Program = {nodes: Expr[], items: Item[], typeToks: TypeTok[]}` — `typeToks`
 records every type/effect name token consumed while parsing, the LSP
 semantic-tokens source ([VS Code extension](../spec/vscode.md)); both backends

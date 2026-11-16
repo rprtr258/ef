@@ -2,6 +2,7 @@ import * as readline from "node:readline";
 import {runLine, newCtx, type Ctx} from "./backend/interpreter/eval.ts";
 import {show} from "./env.ts";
 import {showErr, showT} from "./frontend/type_display.ts";
+import {envLookupResolved} from "./frontend/unify.ts";
 import {BUILTINS} from "./builtin_table.ts";
 
 // repl: an interactive read-eval-print loop. Pipeline state (Ctx: runtime env
@@ -19,7 +20,7 @@ function showEnv(ctx: Ctx): void {
   const builtins: string[] = [];
   let any = false;
   for (const name of ctx.checked.env.vars.keys()) {
-    const entry = name + " : " + showT(ctx.checked.env.lookupResolved(name));
+    const entry = name + " : " + showT(envLookupResolved(ctx.checked.env, name));
     if (BUILTINS.some(b => b.name === name)) builtins.push(entry);
     else { any = true; console.log(entry); }
   }
