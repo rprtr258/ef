@@ -1,2 +1,2 @@
 # i64 division truncates toward zero.
-7 / 2
+Println!(7 / 2)

@@ -18,13 +18,12 @@
 import {readFileSync, writeFileSync} from "fs";
 import {styleText} from "util";
 import {run} from "./backend/interpreter/eval.ts";
-import {prepare} from "./frontend/pipeline.ts";
+import {prepare, requireUnitEntry} from "./frontend/pipeline.ts";
 import {showErr, showT} from "./frontend/type_display.ts";
 import {type Type} from "./frontend/unify.ts";
 import {lint} from "./frontend/lint.ts";
 import {repl} from "./repl.ts";
 import {startLsp} from "./lsp.ts";
-import {show} from "./env.ts";
 import {type ExprID} from "./frontend/parser.ts";
 
 // types: typecheck a source file; return every top-level symbol (let) with
@@ -60,9 +59,9 @@ async function main(cmd: string, args: string[]) {
 
     const src = readFileSync(args[0]).toString();
     // Program args: everything after the source path — the `args` builtin's
-    // view of the command line.
-    const result = run(src, undefined, args.slice(1));
-    console.log(show(result));
+    // view of the command line. No result echo: run's entrypoint gate makes
+    // the program's value unit.
+    run(src, undefined, args.slice(1));
     return;
   }
   case "runwasm": {
@@ -82,16 +81,14 @@ async function main(cmd: string, args: string[]) {
       if (ops === null) {
         throw new Error(`${wasmPath}: no embedded ops table (ef_ops custom section) — rebuild with ef wasm`);
       }
-      const result = runModule(bytes, ops, undefined, args.slice(1));
-      console.log(show(result));
+      runModule(bytes, ops, undefined, args.slice(1));
       return;
     }
     const src = readFileSync(args[0]).toString();
     // Dynamic import: runwasm compiles, so it pays binaryen; the other
     // subcommands must never load it (wasm_host.ts → wasm.ts).
     const {runWasm} = await import("./backend/wasm/wasm_host.ts");
-    const result = runWasm(src, undefined, args.slice(1));
-    console.log(show(result));
+    runWasm(src, undefined, args.slice(1));
     return;
   }
   case "wasm": {
@@ -100,10 +97,15 @@ async function main(cmd: string, args: string[]) {
     }
     const src = readFileSync(args[0]).toString();
     const out = args[1] ?? ((args[0].endsWith(".ef") ? args[0].slice(0, -3) : args[0]) + ".wasm");
+    // The entrypoint gate (pipeline.ts's requireUnitEntry): the emitted
+    // module is a file entrypoint, so its last expression must be
+    // unit-typed — the run/runwasm twins enforce the same rule.
+    const pre = prepare(src);
+    requireUnitEntry(pre.prog, pre.checked);
     // Dynamic import: wasm is the only compile-only subcommand; the
     // binaryen engine must not initialize for run/types/lint/repl/lsp.
     const {compile} = await import("./backend/wasm/wasm.ts");
-    const bytes = compile(src);
+    const bytes = compile(pre);
     writeFileSync(out, bytes);
     console.log(`wrote ${out} (${bytes.length} bytes)`);
     return;

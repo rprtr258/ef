@@ -3,4 +3,4 @@ effect Tick(n: i64): i64;
 mix :: fn(x: i64): i64 {
   handle { Tick!(x) + 1 } case Tick(n) => k { k(n * 10) }
 };
-mix(3) + mix(4)
+Println!(mix(3) + mix(4))

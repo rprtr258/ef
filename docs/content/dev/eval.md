@@ -134,8 +134,13 @@ checks once after parsing; a REPL line checks against
    `{value, lastType, lastIsExpr}` — `lastIsExpr` implements the REPL echo
    rule (declarations print nothing).
 
-`run(src, interp?)` = one-shot parse → `exec`. The REPL calls `newCtx` once
-and `exec` per line, so bindings accumulate.
+`run(src, interp?)` = one-shot parse → entrypoint gate → `exec`: run is the
+file-entrypoint seam, so `requireUnitEntry` (frontend/pipeline.ts, next to
+`rejectUnhandled`) throws before evaluation unless the program ends in a
+bare unit-typed expression — the CLI prints no result for the same reason.
+The REPL calls `newCtx` once and `exec` per line (through `runLine`, which
+skips the gate — echoing per-line values is the REPL's protocol), so
+bindings accumulate.
 
 The evaluator and the builtin table reference each other only at runtime
 (`apply` is called from builtin closures; unhandled effects read the table's

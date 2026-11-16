@@ -1,2 +1,2 @@
 # Runtime bounds check.
-get([1,2], 9)
+Println!(get([1,2], 9))

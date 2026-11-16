@@ -7,17 +7,21 @@ into WasmGC. There is no linear memory: every wasm operand value is an
 
 ## Pipeline
 
-`compileWithOps(src)` composes free functions over plain artifact records —
+`compileWithOps(pre)` composes free functions over plain artifact records —
 each phase returns a fresh record with its additions, and no phase mutates an
-artifact it did not create. Before the phases run, the pipeline applies the
-shared fail-fast gate (frontend/pipeline.ts's `rejectUnhandled`): residual ops
-neither the builtin table nor the runner's interpreter covers are rejected
-right after prepare — before any codegen, the same check the interpreter's
+artifact it did not create. The `pre` argument is pipeline.ts's `Prepared`
+record (prepare's `{prog, checked}`): compile consumes artifacts instead of
+source, so gate-holding callers — wasm_host.ts's `runWasm` (the entrypoint
+gate), the CLI's `ef wasm` (gate + compile), the playground's
+run/build — prepare once and hand the same record on. Inside the pipeline,
+the shared fail-fast gate (frontend/pipeline.ts's `rejectUnhandled`) rejects
+residual ops neither the builtin table nor the runner's interpreter covers
+right away — before any codegen, the same check the interpreter's
 `exec` applies (see [Interpreter](../eval.md)). The phases:
 
 | Phase | Reads | Produces | Job |
 |-------|-------|----------|-----|
-| [`discover`](discover.md) | `Program` (pre-checked by `compileWithOps`) | `Discovery` | intern effect ops into the op table (returned to the host so both agree on op numbering); handler-presence pre-scan; the scope/slot/literal/split-site walk over the whole program |
+| [`discover`](discover.md) | `Program` (pre-checked by the caller) | `Discovery` | intern effect ops into the op table (returned to the host so both agree on op numbering); handler-presence pre-scan; the scope/slot/literal/split-site walk over the whole program |
 | [`optimize`](optimize.md) | `Program` | `Opt` | `OPT_PASSES`: `treeShakeBuiltins` (emit only referenced builtins) and `dropDeadHostImports` (live host-import set — funcref index assignment derives from it) |
 | [`assignIndices`](indices.md) | `Discovery`, `Opt` | `Indices` | funcref table indices: helpers, lambdas, builtins, case fns, main; perform/handle spill slots |
 | [`layoutStatics`](layout.md) | `Discovery`, `Indices`, `Opt` | `Layout` | static literal globals — nums, strings, bools, `PI`, per-handle case tables — each initialized by a GC constant expression at instantiation |

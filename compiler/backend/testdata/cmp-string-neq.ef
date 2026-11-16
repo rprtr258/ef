@@ -1,2 +1,2 @@
 # String inequality.
-"a" != "b"
+Println!("a" != "b")

@@ -1,2 +1,2 @@
 # A user handler intercepting a builtin effect op.
-effect Read(): i64; handle { Read!() + 1 } case Read() => k { 41 }
+effect Read(): i64; Println!(handle { Read!() + 1 } case Read() => k { 41 })

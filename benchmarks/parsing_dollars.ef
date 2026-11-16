@@ -33,7 +33,7 @@ parse :: fn(a: i64): unit ! { Read, Emit, Stop } {
   }
 };
 
-handle {
+Println!(handle {
   handle {
     handle {
       parse(0)
@@ -60,4 +60,4 @@ handle {
   k(unit)
 } case Return(v) => k {
   v
-}
+})

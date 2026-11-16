@@ -1,4 +1,4 @@
 # A top-level captured assign is visible through the env path.
 acc := 0;
 bump :: fn(v: i64): i64 { acc = acc + v; acc };
-[bump(1), bump(2), acc]
+Println!([bump(1), bump(2), acc])

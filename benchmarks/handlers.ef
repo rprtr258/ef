@@ -23,4 +23,4 @@ run :: fn(n: i64): i64 {
   }
 };
 
-run(2000)
+Println!(run(2000))

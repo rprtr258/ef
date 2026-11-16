@@ -56,8 +56,9 @@ suspension/arrKind emission over an exhaustive `Expr` switch — widths come
   `frontend/cps_opt.test.ts` (shared stages) + `backend/interpreter/index.test.ts` (the
   language suite run through the interpreter) + `backend/wasm/wasm.test.ts` +
   `backend/parity.test.ts` (table-driven interpreter↔wasm parity over
-  `examples/*.ef` and the fine-grained fixtures in `compiler/backend/testdata/*.ef` —
-  two tables, one runner asserting backend agreement on stdout effects, exit
+  `examples/*.ef`, the `benchmarks/*.ef` at small parity inputs, and the
+  fine-grained fixtures in `compiler/backend/testdata/*.ef` —
+  three tables, one runner asserting backend agreement on stdout effects, exit
   codes and errors, plus exact expected output per row; `Exit!` sentinel +
   seeded `Random!` override; wasm.test.ts keeps only wasm-internal assertions —
   module structure, host imports, plan/slot annotations, ABI, host

@@ -1,2 +1,2 @@
 # Two performs inside dlet bindings, one resumed non-trivially (k(k(4))).
-effect Op(): i64; handle { [x, y, z] :: [1, Op!(), 3]; [w] :: [x + z + Op!()]; w + y } case Op() => k { k(k(4)) }
+effect Op(): i64; Println!(handle { [x, y, z] :: [1, Op!(), 3]; [w] :: [x + z + Op!()]; w + y } case Op() => k { k(k(4)) })

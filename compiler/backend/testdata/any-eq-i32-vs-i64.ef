@@ -1,2 +1,2 @@
 # Number vs BigInt across widths.
-eq :: fn(a: any, b: any) { a == b }; eq(@as(5, i32), @as(5, i64))
+eq :: fn(a: any, b: any) { a == b }; Println!(eq(@as(5, i32), @as(5, i64)))

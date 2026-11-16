@@ -1,2 +1,2 @@
 # A pure direct callback specializes: map emits a per-site tight loop fn.
-inc :: fn(x: i64): i64 { x + 1 }; map(inc, [1, 2, 3])
+inc :: fn(x: i64): i64 { x + 1 }; Println!(map(inc, [1, 2, 3]))

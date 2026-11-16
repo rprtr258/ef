@@ -12,6 +12,7 @@ import {checkProgram, type Checked} from "./types.ts";
 import {globalEnv, type Cont, type Env, type Outcome, type Value} from "../env.ts";
 import {EFFECT_OPS} from "../builtin_table.ts";
 import {errUnhandled} from "../ops.ts";
+import {showT} from "./type_display.ts";
 
 // An effect interpreter: ops it knows map to host actions; unknown ops fall
 // through to the builtin table's default interpretation. The one interface
@@ -73,7 +74,12 @@ export function prepareStaged(src: string, acc?: Checked): Staged {
 // checking (REPL lines re-check against ctx.checked); a type error throws
 // here and leaves acc untouched. checked.unhandled carries the residual
 // top-level effect rows (the ops that reach the runner).
-export function prepare(src: string, acc?: Checked): {prog: Program, checked: Checked} {
+// The artifacts are pipeline.ts's Prepared record: consumers that hold
+// gates or diagnostics over them (the entrypoint gate, the wasm compile
+// seam) pass the same record on instead of re-preparing.
+export type Prepared = {prog: Program, checked: Checked};
+
+export function prepare(src: string, acc?: Checked): Prepared {
   const staged = prepareStaged(src, acc);
   if (!staged.ok) throw staged.error;
   return {prog: staged.prog, checked: staged.checked};
@@ -97,4 +103,20 @@ export function rejectUnhandled(checked: Checked, interp?: EffectInterp): void {
   for (const op of checked.unhandled)
     if (!BUILTIN_EFFECTS.has(op) && interp?.[op] === undefined)
       throw new Error(errUnhandled(op));
+}
+
+// requireUnitEntry: the entrypoint gate — a program run as an entrypoint
+// (the interpreter's one-shot run, and the wasm backend's compile) must end
+// in a bare expression whose type is unit; the playground applies the same
+// rule via bridge.ts's isEntryFile before enabling its run/build actions.
+// runLine (REPL) and exec stay ungated: echoing per-line values is the
+// REPL's protocol, not an entrypoint's.
+export function requireUnitEntry(prog: Program, checked: Checked): void {
+  const last = prog.items[prog.items.length - 1];
+  if (prog.items.length > 0 && "e" in last && prog.nodes[last.e].t !== "let") {
+    const t = checked.lastType;
+    if (t.tag === "prim" && t.name === "unit") return;
+    throw new Error(`entrypoint must return unit — last expression has type ${showT(t)}`);
+  }
+  throw new Error("entrypoint must return unit — program must end in an expression");
 }

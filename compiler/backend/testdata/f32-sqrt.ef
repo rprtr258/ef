@@ -1,2 +1,2 @@
 # sqrt stamps f32.
-sqrt(@as(4.0, f32))
+Println!(sqrt(@as(4.0, f32)))

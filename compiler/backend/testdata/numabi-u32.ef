@@ -1,2 +1,2 @@
 # Specialized numeric entry at u32.
-inc :: fn(n: u32): u32 { n + 1 }; inc(41)
+inc :: fn(n: u32): u32 { n + 1 }; Println!(inc(41))

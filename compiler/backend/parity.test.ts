@@ -1,13 +1,15 @@
 // Every program in this suite is a fixture on disk: examples/*.ef (the
-// user-facing examples) and compiler/backend/testdata/*.ef (fine-grained
-// language-feature, regression, and wasm-internal parity fixtures). Two
-// tables — EXAMPLES and FIXTURES — list one row per scenario, and a single
-// runner generates every test body from those rows:
+// user-facing examples), benchmarks/*.ef (the performance harness's
+// programs, at small parity inputs), and compiler/backend/testdata/*.ef
+// (fine-grained language-feature, regression, and wasm-internal parity
+// fixtures). Three tables — EXAMPLES, BENCHMARKS, and FIXTURES — list one
+// row per scenario, and a single runner generates every test body from
+// those rows:
 //
 // 1. Each test runs the program through both backends in-process and
 //    asserts they agree on everything observable: the full stdout (every
-//    Println!/Out! effect, interleaved with the top-level result's show()
-//    line), the exit code, and error lines ("ERR: <message>").
+//    Println!/Out! effect), the exit code, and error lines
+//    ("ERR: <message>").
 // 2. The interpreter's result must match the row's expected stdout (want,
 //    or wantFile for a huge golden output) and exit code (code, default 0).
 //
@@ -29,10 +31,11 @@ import {readdirSync, readFileSync} from "node:fs";
 import {join} from "node:path";
 import {run} from "./interpreter/eval.ts";
 import {runWasm} from "./wasm/wasm_host.ts";
-import {num, show, type Value} from "../env.ts";
+import {num} from "../env.ts";
 
 const compilerDir = join(import.meta.dir, ".."); // compiler/ — cli.ts and examples/ are relative to it
 const examplesDir = join(compilerDir, "..", "examples");
+const benchmarksDir = join(compilerDir, "..", "benchmarks");
 const testdataDir = join(import.meta.dir, "testdata");
 
 type RunResult = {stdout: string, code: number};
@@ -59,10 +62,12 @@ function mulberry42(): () => number {
 }
 
 // One backend run of src, capturing the stdout the CLI would print:
-// Println!'s console.log lines, Out!'s raw process.stdout.write chunks,
-// then the top-level result's show() line. A thrown error (a failed check,
-// a runtime trap) becomes an "ERR: <message>" line with exit code 1, so
-// error output is asserted with the same machinery as values and effects.
+// Println!'s console.log lines and Out!'s raw process.stdout.write chunks.
+// There is no top-level result line — run's entrypoint gate makes every
+// row's program unit-typed, so stdout is exactly the effects' output. A
+// thrown error (a failed check, a runtime trap) becomes an
+// "ERR: <message>" line with exit code 1, so error output is asserted with
+// the same machinery as values and effects.
 function runOnce(mode: "run" | "runwasm", src: string, file: string, args: string[]): RunResult {
   const rand = mulberry42();
   const chunks: string[] = [];
@@ -73,16 +78,16 @@ function runOnce(mode: "run" | "runwasm", src: string, file: string, args: strin
   process.stdout.write = (s: string) => { chunks.push(s); return true; };
   process.argv = [process.argv[0], join(compilerDir, "cli.ts"), mode, file, ...args];
   try {
-    let value: Value;
     try {
-      value = mode === "run"
-        ? run(src, {Exit: a => { throw new ExitSignal(num(a[0])); }, Random: (_a, k) => k(rand())}, args)
-        : runWasm(src, {Exit: a => { throw new ExitSignal(num(a[0])); }, Random: (_a, k) => k(rand())}, args);
+      if (mode === "run")
+        run(src, {Exit: a => { throw new ExitSignal(num(a[0])); }, Random: (_a, k) => k(rand())}, args);
+      else
+        runWasm(src, {Exit: a => { throw new ExitSignal(num(a[0])); }, Random: (_a, k) => k(rand())}, args);
     } catch (e) {
       if (e instanceof ExitSignal) return {stdout: chunks.join(""), code: e.code};
       return {stdout: chunks.join("") + "ERR: " + (e as Error).message + "\n", code: 1};
     }
-    return {stdout: chunks.join("") + show(value) + "\n", code: 0};
+    return {stdout: chunks.join(""), code: 0};
   } finally {
     console.log = realLog;
     process.stdout.write = realWrite;
@@ -308,17 +313,17 @@ const FIXTURES: Row[] = [
   {file: "reg-each-multishot-index-land.ef", want: "[7, 8, 9]\n"},
   {file: "reg-flatmap-multishot-land.ef", want: "[11, 0, 12, 1]\n"},
   {file: "reg-each-multishot-unit-shape.ef", want: "35\n"},
-  {file: "split-if-both-arms-print.ef", want: "\"else-arm\"\n\"after-else\"\n\"after\"\nunit\n"},
-  {file: "split-if-one-arm-tail-print.ef", want: "\"then\"\n\"tail\"\nunit\n"},
-  {file: "split-nested-operand-land.ef", want: "-18.740000000000002\nunit\n"},
+  {file: "split-if-both-arms-print.ef", want: "\"else-arm\"\n\"after-else\"\n\"after\"\n"},
+  {file: "split-if-one-arm-tail-print.ef", want: "\"then\"\n\"tail\"\n"},
+  {file: "split-nested-operand-land.ef", want: "-18.740000000000002\n"},
   {file: "devirt-mutual-nested-closures.ef", want: "[4, 0, 9]\n"},
   {file: "devirt-inline-rest-while.ef", want: "15\n"},
   {file: "devirt-dcall-on-resumed-path.ef", want: "4\n"},
   {file: "devirt-captured-assign-after-dcall.ef", want: "[43, 42]\n"},
   {file: "devirt-map-pure-direct.ef", want: "[2, 3, 4]\n"},
-  {file: "devirt-each-pure-direct.ef", want: "unit\n"},
+  {file: "devirt-each-pure-direct.ef", want: ""},
   {file: "devirt-flatmap-pure-direct.ef", want: "[1, 1, 2, 2]\n"},
-  {file: "devirt-each-performing-generic.ef", want: "unit\n"},
+  {file: "devirt-each-performing-generic.ef", want: ""},
   {file: "devirt-each-multishot-land-reenter.ef", want: "0\n"},
   {file: "devirt-map-single-resume.ef", want: "[10, 10]\n"},
   {file: "numabi-i32.ef", want: "42\n"},
@@ -346,7 +351,7 @@ const FIXTURES: Row[] = [
   {file: "wasm-shadow-served-char-err.ef", want: "ERR: cannot shadow builtin 'char'\n", code: 1},
   {file: "wasm-every-served-builtin.ef", want: "13\n13\n"},
   {file: "wasm-binaryen-shrink-preserves-semantics.ef", want: "\"hi\"\n21\n42\n"},
-  {file: "wasm-split-nested-if-else-land.ef", want: "1\nunit\n"},
+  {file: "wasm-split-nested-if-else-land.ef", want: "1\n"},
   {file: "wasm-devirt-mixed-dcall.ef", want: "[102, 103]\n"},
   {file: "wasm-numeric-entry-shape-tag.ef", want: "45\n"},
   {file: "wasm-typed-slots-i64-assign-exact.ef", want: "1\n2\n9007199254740995\n"},
@@ -364,9 +369,9 @@ const FIXTURES: Row[] = [
 // fully pinned too: the seeded Random! makes each run identical).
 const EXAMPLES: Row[] = [
   {file: "amb.ef", label: "nondeterministic search finds Pythagorean triples",
-    want: "[3, 4, 5]\n[5, 12, 13]\n[6, 8, 10]\nunit\n"},
+    want: "[3, 4, 5]\n[5, 12, 13]\n[6, 8, 10]\n"},
   {file: "apply.ef", label: "polymorphic apply calls functions stored in values",
-    want: "42\n\"n=7\"\n99\nunit\n"},
+    want: "42\n\"n=7\"\n99\n"},
   {file: "bitwise.ef", label: "logical bool ops; widths with @as; shifts as arithmetic",
     want: "25\n"},
   {file: "bool_equality.ef", label: "bool equality converted to int via @as",
@@ -378,13 +383,13 @@ const EXAMPLES: Row[] = [
   {file: "cast_roundtrip.ef", label: "i64 -> f64 -> +1 -> i64 via @as",
     want: "42\n"},
   {file: "widths.ef", label: "f32 precision, @as conversions, division and wraparound parity",
-    want: "0.30000001192092896\n0.30000000000000004\n0.3333333432674408\n0.3333333333333333\n10\n0.03333333507180214\n0.06666667014360428\ntrue\n9007\n-3\n-1\n1\n3\n-3\n3.5\n1\n-2147483648\n2147483647\n-2\n0\n4294967295\n410065408\ntrue\ntrue\n-2147483648\n9007199254740993\nfalse\n-9223372036854775808\n0\ntrue\ntrue\n0\nunit\n"},
+    want: "0.30000001192092896\n0.30000000000000004\n0.3333333432674408\n0.3333333333333333\n10\n0.03333333507180214\n0.06666667014360428\ntrue\n9007\n-3\n-1\n1\n3\n-3\n3.5\n1\n-2147483648\n2147483647\n-2\n0\n4294967295\n410065408\ntrue\ntrue\n-2147483648\n9007199254740993\nfalse\n-9223372036854775808\n0\ntrue\ntrue\n0\n"},
   {file: "approx_pi.ef", label: "Monte Carlo pi estimate (Random!) needs an n argument",
     want: "Usage: ef run examples/approx_pi.ef <n>\n", code: 1},
   {file: "approx_pi.ef", label: "converges toward pi for large n", args: ["10000"],
-    want: "3.1576\nunit\n"},
+    want: "3.1576\n"},
   {file: "block.ef", label: "a block runs statements in order and yields the last value",
-    want: "42\n99\n123\nunit\n"},
+    want: "42\n99\n123\n"},
   {file: "closure_capture.ef", label: "closure reads enclosing binding",
     want: "10\n"},
   {file: "closure_make_adder.ef", label: "returned closure adds 3",
@@ -419,7 +424,7 @@ const EXAMPLES: Row[] = [
       4, 2,
     ].join("\n")}\n44\n`},
   {file: "closure.ef", label: "a returned closure keeps reading its captured environment",
-    want: "7\nunit\n"},
+    want: "7\n"},
   {file: "example.ef", label: "handler loops over a whole search space",
     want: "[[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]\n"},
   {file: "equality_all_types.ef", label: "int equality",
@@ -441,13 +446,13 @@ const EXAMPLES: Row[] = [
   {file: "functional.ef", label: "let-generalized polymorphic id",
     want: "1\n0\n"},
   {file: "fib.ef", label: "exponential recursion through the CPS evaluator",
-    want: "196418\nunit\n"},
+    want: "196418\n"},
   {file: "gc.ef", label: "aliases, slices, element reads",
     want: "115\n"},
   {file: "gc_alias.ef", label: "aliasing plus identity tuple equality",
     want: "79\n"},
   {file: "incA.ef", label: "mutable state via a state effect",
-    want: "9\nunit\n"},
+    want: "9\n"},
   {file: "ignore_value.ef", label: "discarded expression statements",
     want: "42\n0\n"},
   {file: "ignore_value_basic.ef", label: "one discarded expression",
@@ -455,7 +460,7 @@ const EXAMPLES: Row[] = [
   {file: "just_main.ef", label: "minimal program value",
     want: "0\n"},
   {file: "local_decl.ef", label: "a := binding inside a block is local to that block",
-    want: "5\nunit\n"},
+    want: "5\n"},
   {file: "literals.ef", label: "decimal rewrites of binary/hex/scientific forms across the six widths",
     want: "1571\n"},
   {file: "named_struct.ef", label: "named-tuple field access",
@@ -465,7 +470,7 @@ const EXAMPLES: Row[] = [
   {file: "man_or_boy.ef", label: "Knuth's man-or-boy test: mutable capture across recursive closures",
     want: "-67\n"},
   {file: "newton.ef", label: "iterative numeric effect loop",
-    want: "1.4142156862745097\nunit\n"},
+    want: "1.4142156862745097\n"},
   {file: "point.ef", label: "alias, identity equality, one-element array",
     want: "42\n"},
   {file: "parametric_alias.ef", label: "parametric aliases substitute into annotations and signatures",
@@ -473,7 +478,7 @@ const EXAMPLES: Row[] = [
   {file: "pointer_operations.ef", label: "dereferences as binding aliases",
     want: "52\n"},
   {file: "poly_id_breaks.ef", label: "deliberately ill-typed, but runs under `any`",
-    want: "5\nunit\n"},
+    want: "5\n"},
   {file: "reference_null.ef", label: "no null in ef: direct field read",
     want: "10\n"},
   {file: "return_literals.ef", label: "literal-returning functions",
@@ -484,9 +489,9 @@ const EXAMPLES: Row[] = [
     want: `${[
       2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47,
       53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
-    ].join("\n")}\nunit\n`},
+    ].join("\n")}\n`},
   {file: "simple_add.ef", label: "Apply effect via the default host interpretation",
-    want: "2\nunit\n"},
+    want: "2\n"},
   {file: "slice_usage.ef", label: "len/get/sub on a three-element array",
     want: "5\n"},
   {file: "squares_sum.ef", label: "final expression evaluates to 30",
@@ -498,18 +503,62 @@ const EXAMPLES: Row[] = [
   {file: "sum_to_n.ef", label: "recursive sum via if expression",
     want: "55\n"},
   {file: "tco.ef", label: "deep tail recursion does not overflow",
-    want: "0\nunit\n"},
+    want: "0\n"},
   {file: "tuples.ef", label: "positional literals, named access, vec3_add",
     want: "41\n"},
   {file: "two_prints.ef", label: "top-level statements run in order",
-    want: "6\n7\nunit\n"},
+    want: "6\n7\n"},
   {file: "unary.ef", label: "! and unary minus, @as as bool-to-int cast",
     want: "-5\n"},
   {file: "unify.ef", label: "type unifier picks the right branch",
-    want: "2\nunit\n"},
+    want: "2\n"},
 ];
 
-// One driver generates the whole suite from the two tables, so the row
+// benchmarks/*.ef: the performance harness's programs, parity-checked like
+// everything else. They read their input from args() with the suite's
+// large input as the no-arg default — compare.ts's job, far too slow for
+// a test suite — so the rows pass small parity inputs (loop.ef's default
+// keeps its bench-sized iteration count; only this row shrinks it).
+const BENCHMARKS: Row[] = [
+  {file: "boy.ef", label: "Knuth's man-or-boy through closures with mutable capture",
+    want: "-138\n"},
+  {file: "countdown.ef", label: "Get!/Set! round-trips decrement a module-level cell",
+    args: ["1000"], want: "0\n"},
+  {file: "fib.ef", label: "naive doubly-recursive Fibonacci through the boxed call ABI",
+    want: "317811\n"},
+  {file: "fib_recursive.ef", label: "deeper pure recursion, no effects",
+    args: ["15"], want: "610\n"},
+  {file: "forward.ef", label: "an op forwarded through two enclosing handlers",
+    want: "100000\n"},
+  {file: "generator.ef", label: "depth-first tree walk yielding once per node",
+    args: ["10"], want: "2036\n"},
+  {file: "handler_sieve.ef", label: "prime sieve via nested rejecting handlers",
+    args: ["500"], want: "21536\n"},
+  {file: "handlers.ef", label: "shallow perform/resume round-trips",
+    want: "2000\n"},
+  {file: "iterator.ef", label: "one perform/resume per element against a module-level cell",
+    args: ["1000"], want: "500500\n"},
+  {file: "loop.ef", label: "pure boxed while-loop arithmetic (small parity input)",
+    args: ["100000"], want: "4999950000\n"},
+  {file: "nqueens.ef", label: "n-queens backtracking with per-candidate resumption",
+    args: ["6"], want: "4\n"},
+  {file: "parsing_dollars.ef", label: "stacked Read! feed + parse handlers over simulated input",
+    args: ["100"], want: "5050\n"},
+  {file: "product_early.ef", label: "non-tail recursion aborted deep by a sentinel op",
+    args: ["100"], want: "0\n"},
+  {file: "ray.ef", label: "raytracer-derived f64 checksum (pure compute)",
+    want: "30629.161597878126\n"},
+  {file: "resume_nontail.ef", label: "resumption in non-tail position grows the stack per round",
+    args: ["50"], want: "62\n"},
+  {file: "sieve.ef", label: "Sieve of Eratosthenes over map/each and slices",
+    want: "9592\n"},
+  {file: "tree_explore.ef", label: "tree traversal with per-node resumption",
+    args: ["8"], want: "1006\n"},
+  {file: "triples.ef", label: "Pythagorean triple enumeration",
+    args: ["50", "50"], want: "164182976\n"},
+];
+
+// One driver generates the whole suite from the tables, so the row
 // assertion and the completeness check are written exactly once: every row
 // becomes a test, and each table also gets a completeness guard asserting
 // its files are exactly the .ef files in its directory. A file without a
@@ -519,6 +568,7 @@ const EXAMPLES: Row[] = [
 const TABLES = [
   {name: "fixtures (testdata/*.ef)", dir: testdataDir, rows: FIXTURES},
   {name: "examples (examples/*.ef)", dir: examplesDir, rows: EXAMPLES},
+  {name: "benchmarks (benchmarks/*.ef)", dir: benchmarksDir, rows: BENCHMARKS},
 ];
 
 for (const {name, dir, rows} of TABLES) {

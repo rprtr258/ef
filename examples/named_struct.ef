@@ -3,4 +3,4 @@
 
 p: [x: i64, y: i64] : [3, 4];
 
-p.x * p.x + p.y * p.y
+Println!(p.x * p.x + p.y * p.y)

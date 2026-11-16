@@ -1,2 +1,2 @@
 # Returned closure captures its builder's parameter.
-addn :: fn(n: i64) { fn(x) { x + n } }; addn(10)(5)
+addn :: fn(n: i64) { fn(x) { x + n } }; Println!(addn(10)(5))

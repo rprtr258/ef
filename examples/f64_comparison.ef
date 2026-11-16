@@ -5,4 +5,4 @@ cmp :: fn(): i32 {
   @as(3.14 > 2.71, i32)
 };
 
-cmp()
+Println!(cmp())

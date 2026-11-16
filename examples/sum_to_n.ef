@@ -9,4 +9,4 @@ sum_to_n :: fn(n: i64): i64 {
   }
 };
 
-sum_to_n(10)
+Println!(sum_to_n(10))

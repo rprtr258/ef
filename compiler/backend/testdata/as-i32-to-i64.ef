@@ -1,2 +1,2 @@
 # Widening roundtrip.
-@as(@as(5, i32), i64)
+Println!(@as(@as(5, i32), i64))

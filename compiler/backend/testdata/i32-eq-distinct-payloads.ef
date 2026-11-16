@@ -1,2 +1,2 @@
 # Distinct payloads compare unequal.
-@as(-1, i32) == @as(1, i32)
+Println!(@as(-1, i32) == @as(1, i32))

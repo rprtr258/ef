@@ -53,4 +53,4 @@ run :: fn(n: i64): i64 {
   }
 };
 
-run(6)
+Println!(run(6))

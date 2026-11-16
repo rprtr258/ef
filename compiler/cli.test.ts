@@ -42,13 +42,35 @@ function cliIn(extraEnv: Record<string, string>, ...args: string[]): CliResult {
 }
 
 describe("cli", () => {
-  test("run: executes an example and prints the result", () => {
+  test("run: executes an example; no result echo (entries are unit)", () => {
     expect(cli("run", join(compilerDir, "..", "examples", "simple_add.ef"))).toEqual({
       code: 0,
-      stdout: "2\nunit\n",
+      stdout: "2\n",
       stderr: "",
     });
   });
+
+  test("run: a non-unit entrypoint exits 1 with the gate message", () => {
+    // pipeline.ts's requireUnitEntry — run/runWasm are file entrypoints, so
+    // the last expression must be unit-typed (playground/src/bridge.ts's
+    // isEntryFile applies the same rule to the studio's run/build actions).
+    const file = join(tmpdir(), `ef-cli-test-${process.pid}-entry.ef`);
+    writeFileSync(file, "1 + 1\n");
+    try {
+      expect(cli("run", file)).toEqual({
+        code: 1,
+        stdout: "",
+        stderr: containing("entrypoint must return unit"),
+      });
+      expect(cli("runwasm", file)).toEqual({
+        code: 1,
+        stdout: "",
+        stderr: containing("entrypoint must return unit"),
+      });
+    } finally {
+      rmSync(file, {force: true});
+    }
+  }, 15000); // two spawns + wasm compile; the 5s default flakes under parallel load
 
   test("runwasm: same full result as the interpreter for the same example", () => {
     const file = join(compilerDir, "..", "examples", "two_prints.ef");
@@ -65,7 +87,7 @@ f :: fn(): i64 {
   while (i < 5000) { s = s + g(i); i = i + 1 };
   s
 };
-f()
+Println!(f())
 `);
     try {
       // The trace-dump body and the program's result value are dynamic;
@@ -95,7 +117,7 @@ f()
     try {
       expect(cli("run", file, "1", "2")).toEqual({
         code: 0,
-        stdout: "2\n\"1\"\nunit\n",
+        stdout: "2\n\"1\"\n",
         stderr: "",
       });
     } finally {
@@ -133,7 +155,7 @@ f()
     // the same ops `ef run` rejects.
     const file = join(tmpdir(), `ef-cli-test-${process.pid}-unhandled.ef`);
     const out = join(tmpdir(), `ef-cli-test-${process.pid}-unhandled.wasm`);
-    writeFileSync(file, "effect T(x: i64): i64;\nT!(1)\n");
+    writeFileSync(file, "effect T(x: i64): unit;\nT!(1)\n");
     try {
       expect(cli("runwasm", file)).toEqual({
         code: 1,
@@ -158,7 +180,7 @@ f()
     // nothing else on disk.
     const file = join(tmpdir(), `ef-cli-test-${process.pid}-pre.ef`);
     const out = join(tmpdir(), `ef-cli-test-${process.pid}-pre.wasm`);
-    writeFileSync(file, "f :: fn(n: i64): i64 { n * 2 };\nf(21)\n");
+    writeFileSync(file, "f :: fn(n: i64): i64 { n * 2 };\nPrintln!(f(21))\n");
     try {
       expect(cli("wasm", file, out)).toEqual({
         code: 0,

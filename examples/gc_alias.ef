@@ -5,7 +5,7 @@ p: [x: i64, y: i64] : [10, 20];
 p2: [x: i64, y: i64] : p;  # alias: same object as p
 same :: p == p2;            # same object -> true
 
-if (!same) {
+Println!(if (!same) {
   -1
 } else {
   slice: [i64] = [];
@@ -13,4 +13,4 @@ if (!same) {
   slice = concat(slice, [7]);   # append 7
   i :: 1;
   get(slice, 0) + get(slice, i) + p.x + p2.y
-}
+})

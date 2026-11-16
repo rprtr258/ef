@@ -32,10 +32,10 @@ sieve :: fn(i: i64, n: i64, a: i64): i64 ! { Prime } {
   }
 };
 
-handle {
+Println!(handle {
   sieve(2, vi, 0)
 } case Prime(e) => k {
   k(true)
 } case Return(v) => k {
   v
-}
+})

@@ -12,4 +12,4 @@ classify :: fn(a: i64, b: i64): i64 {
   }
 };
 
-classify(1, 1) + classify(1, 0) + classify(0, 0)
+Println!(classify(1, 1) + classify(1, 0) + classify(0, 0))

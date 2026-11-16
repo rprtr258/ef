@@ -2,7 +2,7 @@
 
 First phase of the [backend pipeline](index.md#pipeline). One walk over the
 checked program that produces the discovery record every later phase builds
-on. The caller (`compileWithOps`) runs `checkProgram` before the pipeline —
+on. The caller prepares first — `checkProgram` before the pipeline —
 rejecting ill-typed programs and stamping the runtime markers discovery
 reads — so discovery consumes the stamps as-is.
 

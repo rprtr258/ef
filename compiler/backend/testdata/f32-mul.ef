@@ -1,2 +1,2 @@
 # f32 multiply precision.
-@as(3.34, f32) * @as(2.71, f32)
+Println!(@as(3.34, f32) * @as(2.71, f32))

@@ -49,6 +49,12 @@ stmt     ::= decl | assign | expr (";" | blocky)
 The value of a program is the value of its last expression statement. Type
 aliases and effect declarations are not expressions and produce no value.
 
+**Entrypoints.** A file run as an entrypoint — `ef run`, `ef runwasm`, or
+`ef wasm` — must end in a bare expression whose type is `unit`; a value
+result has nowhere to go in a file run, so a program that produces one is
+rejected before evaluation (`Println!` is the way to emit it). The REPL's
+lines keep their values: echoing them is the REPL's protocol.
+
 ### 2.2 Declarations
 
 ```

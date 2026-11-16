@@ -1,2 +1,2 @@
 # The same bits compare large as u32.
-@as(4294967295, u32) > @as(1, u32)
+Println!(@as(4294967295, u32) > @as(1, u32))

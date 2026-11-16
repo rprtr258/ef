@@ -15,4 +15,4 @@ outer :: fn(n: i64): [[i64]] {
     concat([t], k(unit))
   } case Return(v) => k { [] }
 };
-outer(2)
+Println!(outer(2))

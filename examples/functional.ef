@@ -7,4 +7,4 @@ id :: fn(x) {
 
 Println!(id(1));
 id(false);  # bool application, value discarded
-0
+Println!(0)

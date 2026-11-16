@@ -1,2 +1,2 @@
 # Equality on narrow widths compares the payload bits.
-@as(-1, i32) == @as(4294967295, i32)
+Println!(@as(-1, i32) == @as(4294967295, i32))

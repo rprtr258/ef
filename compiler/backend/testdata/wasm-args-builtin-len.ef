@@ -1,2 +1,2 @@
 # The args builtin reports the program args passed to the runner, in both backends.
-len(args())
+Println!(len(args()))

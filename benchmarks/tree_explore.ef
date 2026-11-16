@@ -54,4 +54,4 @@ while (i < 10) {
   state = paths(vi);
   i = i + 1
 };
-state
+Println!(state)

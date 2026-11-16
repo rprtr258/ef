@@ -58,5 +58,5 @@ check_break_continue :: fn(): i64 {
   x
 };
 
-check_if() + check_var_inside_if() + check_while() +
-check_nested_while() + check_break_continue()
+Println!(check_if() + check_var_inside_if() + check_while() +
+check_nested_while() + check_break_continue())

@@ -3,4 +3,4 @@
 
 Println!(42);
 1 + 2;
-0
+Println!(0)

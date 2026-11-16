@@ -1,2 +1,2 @@
 # Elements emitted before a perform inside the same array literal.
-effect Op(): i64; handle { [Op!(), Op!()] } case Op() => k { k(7) }
+effect Op(): i64; Println!(handle { [Op!(), Op!()] } case Op() => k { k(7) })

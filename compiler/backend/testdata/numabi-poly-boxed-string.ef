@@ -1,2 +1,2 @@
 # Boxed id at string.
-id :: fn(x) { x }; id("s")
+id :: fn(x) { x }; Println!(id("s"))

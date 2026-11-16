@@ -51,17 +51,17 @@ type Row = {
 const rows: Row[] = [];
 for (const file of files) {
   const src = readFileSync(join(DIR, file), "utf8");
-  const {bytes, ops} = compileWithOps(src);
+  const pre = prepare(src);
+  const {bytes, ops} = compileWithOps(pre);
   const value = show(runModule(bytes, ops));
-  const {prog, checked} = prepare(src);
-  toCps(prog, checked.stamps);
-  const interpValue = show(exec(prog, newCtx(), checked).value);
+  toCps(pre.prog, pre.checked.stamps);
+  const interpValue = show(exec(pre.prog, newCtx(), pre.checked).value);
   if (interpValue !== value)
     throw new Error(`${file}: backend value mismatch: wasm ${value}, interp ${interpValue}`);
   for (let i = 0; i < WARMUP; i++) {
     runModule(bytes, ops);
-    exec(prog, newCtx(), checked);
-    toCps(prog, checked.stamps);
+    exec(pre.prog, newCtx(), pre.checked);
+    toCps(pre.prog, pre.checked.stamps);
   }
   const wasmSamples: number[] = [];
   const execSamples: number[] = [];
@@ -70,9 +70,9 @@ for (const file of files) {
     Bun.gc(true);
     wasmSamples.push(time(() => runModule(bytes, ops)));
     Bun.gc(true);
-    execSamples.push(time(() => exec(prog, newCtx(), checked)));
+    execSamples.push(time(() => exec(pre.prog, newCtx(), pre.checked)));
     Bun.gc(true);
-    cpsSamples.push(time(() => toCps(prog, checked.stamps)));
+    cpsSamples.push(time(() => toCps(pre.prog, pre.checked.stamps)));
   }
   const wasm = stats(wasmSamples);
   const execStats = stats(execSamples);

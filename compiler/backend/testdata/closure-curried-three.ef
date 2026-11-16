@@ -1,2 +1,2 @@
 # Three-deep currying.
-f :: fn(a: i64) { fn(b: i64) { fn(c: i64) { a + b + c } } }; f(1)(2)(3)
+f :: fn(a: i64) { fn(b: i64) { fn(c: i64) { a + b + c } } }; Println!(f(1)(2)(3))

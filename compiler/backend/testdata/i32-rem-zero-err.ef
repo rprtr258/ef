@@ -1,2 +1,2 @@
 # Same guard for rem.
-x: i32 : 1; x % 0
+x: i32 : 1; Println!(x % 0)

@@ -1,3 +1,3 @@
 # Parenthesized sub-expressions group before the surrounding operators.
 
-(2 + 2) * 2
+Println!((2 + 2) * 2)

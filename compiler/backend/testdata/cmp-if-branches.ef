@@ -1,2 +1,2 @@
 # A comparison drives if-branch selection.
-if (3 < 5) { 10 } else { 20 }
+Println!(if (3 < 5) { 10 } else { 20 })

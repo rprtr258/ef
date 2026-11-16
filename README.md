@@ -51,8 +51,10 @@ bun compiler/cli.ts runwasm examples/factorial.ef   # 120 — same, compiled to 
 bun compiler/cli.ts repl                            # interactive REPL; bindings persist across lines
 ```
 
-`ef run` typechecks first, then evaluates; the last expression's value is
-printed. Full command table (`wasm`, `types`, `lint`), the wasm target,
+`ef run` typechecks first, then evaluates; a file is an entrypoint, so it
+must end in a unit-typed expression (see the entrypoint rule in
+[§2.1](spec/index.md#21-grammar-overview)) — print a result with `Println!`.
+Full command table (`wasm`, `types`, `lint`), the wasm target,
 and REPL details: [CLI & REPL](docs/content/spec/cli.md). To open ef in the
 browser: `cd playground && bun run dev`.
 

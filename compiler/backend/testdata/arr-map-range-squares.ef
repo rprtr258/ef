@@ -1,2 +1,2 @@
 # map over range.
-map(fn(x) { x * x }, range(0, 4, 1))
+Println!(map(fn(x) { x * x }, range(0, 4, 1)))

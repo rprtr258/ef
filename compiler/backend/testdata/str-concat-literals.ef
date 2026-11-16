@@ -1,2 +1,2 @@
 # String concat shows quoted.
-"ab" + "cd"
+Println!("ab" + "cd")

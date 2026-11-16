@@ -1,2 +1,2 @@
 # flat must pass scalars through instead of treating them as single-element arrays.
-effect T(): i64; handle { T!() } case T() => k { flat(map(k, [7, 8])) }
+effect T(): i64; Println!(handle { T!() } case T() => k { flat(map(k, [7, 8])) })

@@ -1,2 +1,2 @@
 # BigInt is never === a Number.
-eq :: fn(a: any, b: any) { a == b }; eq(@as(5, i64), 5.0)
+eq :: fn(a: any, b: any) { a == b }; Println!(eq(@as(5, i64), 5.0))

@@ -7,4 +7,4 @@ y :: x;
 p: [x: i64, y: i64] : [10, 20];
 p3: [x: i64, y: i64] : p;  # alias: same object as p
 
-y + p3.x
+Println!(y + p3.x)

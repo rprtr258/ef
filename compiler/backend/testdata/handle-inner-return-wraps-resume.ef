@@ -1,2 +1,2 @@
 # An inner Return case stays live around the resumed segment.
-effect A(): i64; handle { handle { A!() + 1 } case Return(v) => k { [v] } } case A() => k { k(3) }
+effect A(): i64; Println!(handle { handle { A!() + 1 } case Return(v) => k { [v] } } case A() => k { k(3) })

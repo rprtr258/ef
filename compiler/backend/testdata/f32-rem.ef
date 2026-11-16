@@ -1,2 +1,2 @@
 # f32 rem runs in the f64 plane and frounds at the site; the module must validate.
-@as(7.5, f32) % @as(2.0, f32)
+Println!(@as(7.5, f32) % @as(2.0, f32))

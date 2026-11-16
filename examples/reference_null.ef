@@ -3,4 +3,4 @@
 # read the field.
 
 val: [x: i64, y: i64] : [10, 20];
-val.x
+Println!(val.x)

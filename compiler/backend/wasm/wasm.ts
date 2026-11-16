@@ -104,7 +104,7 @@
 // called from builtin closures, eval reads the effect interps lazily — so
 // module init order is free; no entry-order breaker import needed.)
 import binaryen from "binaryen";
-import {prepare, rejectUnhandled, type EffectInterp} from "../../frontend/pipeline.ts";
+import {rejectUnhandled, type EffectInterp, type Prepared} from "../../frontend/pipeline.ts";
 import {toCps} from "../../frontend/cps.ts";
 import {bindMOD} from "./wasm_tables.ts";
 import {buildModule, discover, layoutStatics, optimize, assignIndices, type Discovery, type Indices, type Layout, type Opt} from "./wasm_pipeline.ts";
@@ -146,11 +146,11 @@ import {OP_SECTION} from "./wasm_run.ts";
 
 // --- compiler ---------------------------------------------------------------
 
-export function compile(src: string): Uint8Array<ArrayBuffer> {
+export function compile(pre: Prepared): Uint8Array<ArrayBuffer> {
   // No interp: the shipped module's only runner is the default host table,
   // so the static gate rejects ops nothing interprets — buildwasm fails
   // with the same message `ef run` fails with, before a module is emitted.
-  return compileWithOps(src).bytes;
+  return compileWithOps(pre).bytes;
 }
 
 // compile + the effect op table (opid → name) the host needs to interpret
@@ -162,15 +162,19 @@ export function compile(src: string): Uint8Array<ArrayBuffer> {
 // Parse → check → CPS → binaryen function bodies: everything both emissions
 // share, so the WAT text the playground shows is built by the same pipeline
 // as the shipped bytes.
-function pipeline(src: string, interp?: EffectInterp): {mod: binaryen.Module, ops: string[], o: Opt, lay: Layout, funcs: Fn[]} {
-  // prepare: parse + check before the backend runs — rejects ill-typed
-  // programs and fills the Checked.stamps side-table the phases read
-  // (`numKind` on literals, `div` on applications of `/`; `idx` is a
-  // parser field on the node). The
-  // Checked result rides into the wasm pipeline as the numeric-entry
+// Compile consumes pipeline.ts's Prepared artifacts (prepare's {prog,
+// checked}) instead of source: callers holding a gate or diagnostics over
+// them (runWasm's entrypoint gate, the CLI's `ef wasm`, the playground's
+// run/build) prepare once and hand the record on; the compile seam itself
+// re-parses nothing.
+function pipeline(pre: Prepared, interp?: EffectInterp): {mod: binaryen.Module, ops: string[], o: Opt, lay: Layout, funcs: Fn[]} {
+  // `pre.checked` fills the stamps side-table the phases read (`numKind` on
+  // literals, `div` on applications of `/`; `idx` is a parser field on the
+  // node) and rides into the wasm pipeline as the numeric-entry
   // eligibility's type resolver (uni.deepRes resolves bound vars;
-  // quantified vars stay unbound).
-  const {prog, checked} = prepare(src);
+  // quantified vars stay unbound). The caller prepared it from source —
+  // the entrypoint seams gate on the same record before compiling.
+  const {prog, checked} = pre;
   // The static unhandled-op gate (pipeline.ts's rejectUnhandled — the same
   // one exec applies right after prepare): residual ops that neither the
   // builtin table nor the runner's interp covers are rejected here, before
@@ -196,8 +200,8 @@ function pipeline(src: string, interp?: EffectInterp): {mod: binaryen.Module, op
   return {mod, ops: [...d.effOpIds.keys()], o, lay, funcs};
 }
 
-export function compileWithOps(src: string, interp?: EffectInterp): {bytes: Uint8Array<ArrayBuffer>, ops: string[]} {
-  const {mod, ops, o, lay, funcs} = pipeline(src, interp);
+export function compileWithOps(pre: Prepared, interp?: EffectInterp): {bytes: Uint8Array<ArrayBuffer>, ops: string[]} {
+  const {mod, ops, o, lay, funcs} = pipeline(pre, interp);
   // The ops table rides in the module itself (ef_ops custom section — see
   // wasm_run.ts), so the emitted binary is self-contained: no sidecar, and
   // `ef runwasm <out>.wasm` runs without recompiling.
@@ -207,8 +211,8 @@ export function compileWithOps(src: string, interp?: EffectInterp): {bytes: Uint
 
 // The shipped module (post binaryen shrink, validated) as WAT text — the
 // playground's wasm view prints what build emits, not a parallel build.
-export function compileWat(src: string): string {
-  const {mod, o, lay, funcs} = pipeline(src);
+export function compileWat(pre: Prepared): string {
+  const {mod, o, lay, funcs} = pipeline(pre);
   return buildModule(mod, o, lay, funcs, true);
 }
 

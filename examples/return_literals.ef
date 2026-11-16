@@ -8,6 +8,6 @@ return_u64 :: fn(): u64 { 42 };
 return_f32 :: fn(): f32 { 3.14 };
 return_f64 :: fn(): f64 { 2.71 };
 
-@as(return_i32(), i64) + return_i64() + @as(return_u32(), i64) +
+Println!(@as(return_i32(), i64) + return_i64() + @as(return_u32(), i64) +
 @as(return_u64(), i64) + @as(round(@as(return_f32(), f64)), i64) +
-@as(round(return_f64()), i64)
+@as(round(return_f64()), i64))

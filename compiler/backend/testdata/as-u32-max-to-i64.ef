@@ -1,2 +1,2 @@
 # u32 max widens unsigned.
-@as(@as(4294967295, u32), i64)
+Println!(@as(@as(4294967295, u32), i64))

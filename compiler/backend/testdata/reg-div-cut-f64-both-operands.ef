@@ -1,2 +1,2 @@
 # The divisor's cut mode must match the dividend's; f64 plane.
-effect P(): f64; effect Q(): f64; handle { (7.0 / P!()) / Q!() } case P() => k { k(2.0) } case Q() => k { k(7.0) }
+effect P(): f64; effect Q(): f64; Println!(handle { (7.0 / P!()) / Q!() } case P() => k { k(2.0) } case Q() => k { k(7.0) })

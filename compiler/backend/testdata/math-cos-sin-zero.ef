@@ -1,2 +1,2 @@
 # cos/sin at 0.
-round(cos(0) * 10) + round(sin(0) * 10)
+Println!(round(cos(0) * 10) + round(sin(0) * 10))

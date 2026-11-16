@@ -1,2 +1,2 @@
 # String equality compares contents.
-"ab" == "ab"
+Println!("ab" == "ab")

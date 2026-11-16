@@ -5,4 +5,4 @@ p: [x: i64, y: i64] : [10, 20];
 p2: [x: i64, y: i64] : [10, 20];
 same :: p == p2;  # false: different objects
 
-if (same) { -1 } else { 0 }
+Println!(if (same) { -1 } else { 0 })

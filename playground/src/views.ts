@@ -7,6 +7,7 @@ import * as monaco from "monaco-editor/esm/vs/editor/editor.main.js";
 import {showAst} from "./ast_view.ts";
 import {showCps} from "./cps_view.ts";
 import {compileWat} from "../../compiler/backend/wasm/wasm.ts";
+import {prepare} from "../../compiler/frontend/pipeline.ts";
 import {docFor, EF_IR_RULES, WAT_RULES} from "./view_lang.ts";
 import {activeFile, els, state, type View} from "./state.ts";
 
@@ -97,7 +98,7 @@ export function renderWat(): void {
   const src = activeFile().code;
   if (watSrc === src) return;
   try {
-    modelOf("wat").setValue(compileWat(src));
+    modelOf("wat").setValue(compileWat(prepare(src)));
     watSrc = src;
   } catch (e) {
     modelOf("wat").setValue(errText(e));

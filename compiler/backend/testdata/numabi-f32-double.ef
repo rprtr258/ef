@@ -1,2 +1,2 @@
 # f32 exercises the fround-at-producing-nodes discipline.
-dbl :: fn(n: f32): f32 { n * 2.0 }; dbl(1.5)
+dbl :: fn(n: f32): f32 { n * 2.0 }; Println!(dbl(1.5))

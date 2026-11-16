@@ -11,4 +11,4 @@ fib :: fn(n: i64): i64 {
   }
 };
 
-fib(10)
+Println!(fib(10))

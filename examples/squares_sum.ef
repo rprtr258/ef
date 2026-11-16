@@ -16,4 +16,4 @@ foldl :: fn(f, z, xs) {
 sqr :: fn(x: i64): i64 { x * x };
 sqrs :: map(sqr, range(1, 5, 1));
 
-foldl(fn(x, acc) { x + acc }, 0, sqrs)
+Println!(foldl(fn(x, acc) { x + acc }, 0, sqrs))

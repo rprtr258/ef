@@ -26,4 +26,4 @@ collatz :: fn(n: i64): unit {
 
 collatz(7);
 Println!(fib(10));
-1
+Println!(1)

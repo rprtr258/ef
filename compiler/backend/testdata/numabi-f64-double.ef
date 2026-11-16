@@ -1,2 +1,2 @@
 # f64 raw entry.
-dbl :: fn(n: f64): f64 { n * 2.0 }; dbl(1.5)
+dbl :: fn(n: f64): f64 { n * 2.0 }; Println!(dbl(1.5))

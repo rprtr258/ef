@@ -25,4 +25,4 @@ test_basic :: fn(): i64 {
   x_val + y_val + slice_len + new_len + elem
 };
 
-test_parser() + test_basic()
+Println!(test_parser() + test_basic())

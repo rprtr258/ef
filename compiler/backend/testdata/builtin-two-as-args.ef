@@ -2,4 +2,4 @@
 f :: fn(g, x) { g(x) };
 a :: f(round, 2.6);
 b :: f(len, [1, 2, 3]);
-a + b
+Println!(a + b)

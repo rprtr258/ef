@@ -1,4 +1,4 @@
 # Immutable `::` lambda bindings still generalize (the value restriction's
 # other half): one binding, two incompatible instantiations.
 id :: fn(a) { a };
-[id("s"), id(1)]
+Println!([id("s"), id(1)])

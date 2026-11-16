@@ -1,10 +1,12 @@
 # Bench: pure boxed while-loop arithmetic. No calls — isolates the frame
 # and boxing path: every iteration allocates a fresh frame and boxes/
 # unboxes the loop variables around each numeric op.
+av := args();
+n := if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 20000000 };
 i := 0;
 acc := 0;
-while (i < 20000000) {
+while (i < n) {
   acc = acc + i;
   i = i + 1;
 };
-acc
+Println!(acc)

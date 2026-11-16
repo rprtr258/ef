@@ -1,2 +1,2 @@
 # i32 sites compute with i32.add; the wrap IS the semantics.
-x: i32 : 2147483647; x + 1
+x: i32 : 2147483647; Println!(x + 1)

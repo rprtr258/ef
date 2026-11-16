@@ -1,4 +1,4 @@
 # Same shape with a different tail operator.
 f :: fn(x: i64): i64 { x + 1 };
 y :: f(10);
-y * 2
+Println!(y * 2)

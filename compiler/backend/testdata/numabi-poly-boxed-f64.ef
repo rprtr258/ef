@@ -1,2 +1,2 @@
 # Boxed id at f64.
-id :: fn(x) { x }; id(2.5)
+id :: fn(x) { x }; Println!(id(2.5))

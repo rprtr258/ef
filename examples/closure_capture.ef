@@ -7,4 +7,4 @@ f :: fn(): i64 {
   a
 };
 
-f()
+Println!(f())

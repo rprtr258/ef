@@ -1,4 +1,4 @@
 # Two performs in one call's arguments get independent frames.
 effect Op(): i64;
-handle { f :: fn(a: i64, b: i64): i64 { a + b }; f(Op!(), Op!()) }
-case Op() => k { k(3) }
+Println!(handle { f :: fn(a: i64, b: i64): i64 { a + b }; f(Op!(), Op!()) }
+case Op() => k { k(3) })

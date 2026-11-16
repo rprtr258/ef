@@ -1,2 +1,2 @@
 # Unsigned multiply wraps mod 2^32.
-x: u32 : 3000000000; x * 3
+x: u32 : 3000000000; Println!(x * 3)

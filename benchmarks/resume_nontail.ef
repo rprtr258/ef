@@ -45,4 +45,4 @@ while (i < 1000) {
   s = run(vi, s);
   i = i + 1
 };
-s
+Println!(s)

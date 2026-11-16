@@ -1,2 +1,2 @@
 # String `+` is unstamped: the operator trampoline routes through ef_binop, so the interpreter's own operator closure computes it.
-"a" + "b"
+Println!("a" + "b")

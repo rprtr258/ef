@@ -13,7 +13,7 @@ import type {Type} from "../../frontend/unify.ts";
 import {Env, show, asSlice, mkSlice, mkTup, sliceElems, type Cont, type Native, type Outcome, type Value, num, seedBuiltins, type Closure} from "../../env.ts";
 import {builtinRefs} from "../../frontend/analysis.ts";
 import type {Program} from "../../frontend/parser.ts";
-import {prepare, newCtx, rejectUnhandled, type Ctx, type EffectInterp} from "../../frontend/pipeline.ts";
+import {prepare, newCtx, rejectUnhandled, requireUnitEntry, type Ctx, type EffectInterp} from "../../frontend/pipeline.ts";
 import {toCps, RET} from "../../frontend/cps.ts";
 import type {CAtom, CIr, CPrim, CTerm} from "../../frontend/cps_ir.ts";
 import {assertNever} from "../../assert.ts";
@@ -386,10 +386,14 @@ export function exec(prog: Program, ctx: Ctx, checked: Checked): {value: Value, 
 
 // run: one-shot pipeline — prepare (parse + typecheck, before the
 // interpreter runs), then evaluate a source string with fresh state. Throws
-// on type error. `interp` optionally overrides the builtin interpretation of
-// unhandled effects; `args` is the program args the `args` builtin reports.
+// on type error and on pipeline.ts's requireUnitEntry gate: run is the
+// file-entrypoint seam, so the program must end in a unit-typed expression
+// (tests that assert values go through runLine + exec instead). `interp`
+// optionally overrides the builtin interpretation of unhandled effects;
+// `args` is the program args the `args` builtin reports.
 export function run(src: string, interp?: EffectInterp, args?: string[]): Value {
   const {prog, checked} = prepare(src);
+  requireUnitEntry(prog, checked);
   return exec(prog, newCtx(interp, args), checked).value;
 }
 

@@ -24,4 +24,4 @@ check_i64 :: fn(): i64 {
 };
 
 # the widths must agree: the i64 checks convert with @as before summing
-(if (check_bool()) { 1 } else { 0 }) + check_i32() + @as(check_i64(), i32)
+Println!((if (check_bool()) { 1 } else { 0 }) + check_i32() + @as(check_i64(), i32))

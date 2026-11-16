@@ -1,2 +1,2 @@
 # A float literal widens the division to f64.
-7.0 / 2
+Println!(7.0 / 2)

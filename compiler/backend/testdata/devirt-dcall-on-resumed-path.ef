@@ -1,4 +1,4 @@
 # The dcall sits inside the continuation the handler resumes into; its rest runs inline on that path.
 effect Op(): i64;
 id :: fn(x: i64): i64 { x + 1 };
-handle { s := Op!(); id(s) * 2 } case Op() => k { k(1) }
+Println!(handle { s := Op!(); id(s) * 2 } case Op() => k { k(1) })

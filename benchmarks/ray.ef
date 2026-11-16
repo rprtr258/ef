@@ -15,14 +15,14 @@ size :: 160;
 step :: 4.0 / (size - 1);
 substep :: step / 4.0;
 
-camDir: V3 :: [0.1, 0.0, -2.5];
+camDir: V3 : [0.1, 0.0, -2.5];
 ambient :: 0.15;
 lightIntensity :: 0.85;
-light: V3 :: [2.4, 1.0, -3.0];
+light: V3 : [2.4, 1.0, -3.0];
 
 Sphere :: [V3, f64, V3];
-s1: Sphere :: [[0.0, 0.0, -5.0], 1.5, [1.0, 0.4, 0.3]];
-s2: Sphere :: [[2.0, 0.5, -4.5], 1.0, [0.3, 0.5, 1.0]];
+s1: Sphere : [[0.0, 0.0, -5.0], 1.5, [1.0, 0.4, 0.3]];
+s2: Sphere : [[2.0, 0.5, -4.5], 1.0, [0.3, 0.5, 1.0]];
 
 planeZ :: -7.0;
 checkSize :: 2.0;
@@ -64,7 +64,7 @@ checkerVal :: fn(x: f64, y: f64, cell: f64): f64 {
 };
 
 sample :: fn(dx: f64, dy: f64): V3 {
-  d: V3 :: [camDir.0 + dx, camDir.1 + dy, camDir.2];
+  d: V3 : [camDir.0 + dx, camDir.1 + dy, camDir.2];
   t1 :: sphereT(d, s1.0, s1.1);
   if (t1 > 0.0) {
     sphereShade(s1, d, t1)
@@ -102,4 +102,4 @@ while (py < size) {
   };
   py = py + 1;
 };
-acc
+Println!(acc)

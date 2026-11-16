@@ -1,2 +1,2 @@
 # Mixed i64/u64 compares BigInt values, not bits.
-eq :: fn(a: any, b: any) { a == b }; eq(@as(5, i64), @as(5, u64))
+eq :: fn(a: any, b: any) { a == b }; Println!(eq(@as(5, i64), @as(5, u64)))

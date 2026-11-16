@@ -4,4 +4,4 @@
 a :: 42;
 b :: 42;
 
-@as(a == b, i32)
+Println!(@as(a == b, i32))

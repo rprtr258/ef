@@ -126,7 +126,9 @@ both backends consume it without pulling in the evaluator.
 fast on statically-unhandled non-builtin ops (frontend/pipeline.ts's `rejectUnhandled`
 — the same gate the wasm pipeline applies before codegen), seeds the
 referenced builtins into the runtime env, then evaluates under the CPS
-evaluator (`evalE`/`apply`). Multi-shot `resume` is a plain JS closure. Effects with no
+evaluator (`evalE`/`apply`). The one-shot `run` adds the file-entrypoint
+gate (pipeline.ts's `requireUnitEntry` — last expression must be unit); the
+REPL's `runLine` skips it. Multi-shot `resume` is a plain JS closure. Effects with no
 matching handler reach `runTop`, which interprets them through the builtin
 table (or an injected override — tests inject fake fs/time/randomness there).
 
@@ -134,7 +136,8 @@ table (or an injected override — tests inject fake fs/time/randomness there).
 
 [Wasm backend →](wasm/index.md)
 
-`compileWithOps` runs the same frontend, then a five-phase pipeline
+`prepare` runs the frontend (parse → check); `compileWithOps` consumes the
+prepared artifacts and runs a five-phase pipeline
 (discover → optimize → assignIndices → layoutStatics → emit) over plain
 artifact records, assembles the module (`buildModule`, including an in-process
 binaryen shrink pass), and hands the bytes to the host runtime, which

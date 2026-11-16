@@ -1,2 +1,2 @@
 # Multi-arg entry; truncation stays interpreter-exact.
-f :: fn(a: i64, b: i64): i64 { a / b }; f(7, 2)
+f :: fn(a: i64, b: i64): i64 { a / b }; Println!(f(7, 2))

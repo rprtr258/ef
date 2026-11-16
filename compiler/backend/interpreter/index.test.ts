@@ -3,12 +3,18 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {readFileSync, unlinkSync, existsSync, writeFileSync} from "node:fs";
 import {execSync} from "node:child_process";
-import {run, newCtx} from "./eval.ts";
-import {prepare} from "../../frontend/pipeline.ts";
+import {runLine, newCtx} from "./eval.ts";
+import {prepare, type EffectInterp} from "../../frontend/pipeline.ts";
 import {lint} from "../../frontend/lint.ts";
-import {runLine} from "./eval.ts";
-import {showErr, showT, TypeError_} from "../../frontend/type_display.ts";
 import {show, sliceElems, mkSlice, mkTup, type Slice, type Value} from "../../env.ts";
+import {showErr, showT, TypeError_} from "../../frontend/type_display.ts";
+
+// The suite's value harness: runLine through a fresh ctx, unwrapped to the
+// value. run() itself is the unit-gated file-entrypoint seam (pipeline.ts's
+// requireUnitEntry); these tests assert values, so they go through the
+// ungated REPL line protocol.
+const run = (src: string, interp?: EffectInterp, args?: string[]): Value =>
+  runLine(newCtx(interp, args), src).value;
 import {Parser} from "../../frontend/parser.ts";
 import {toCps} from "../../frontend/cps.ts";
 import type {CIr, CAtom, CTerm} from "../../frontend/cps_ir.ts";

@@ -1,4 +1,4 @@
 # A non-resuming case aborts the rest of the body.
 effect Div(a: i64, b: i64): i64;
-handle { r :: Div!(10, 0); [r] }
-case Div(a, b) => k { if (b == 0) { ["div by zero"] } else { k(a / b) } }
+Println!(handle { r :: Div!(10, 0); [r] }
+case Div(a, b) => k { if (b == 0) { ["div by zero"] } else { k(a / b) } })

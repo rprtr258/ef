@@ -6,7 +6,7 @@
 // stubs) and preempted by the browser effect interpreters.
 
 import "./shim.ts";
-import {Parser, type Program, type Expr, type Alias} from "../../compiler/frontend/parser.ts";
+import {type Program, type Expr, type Alias} from "../../compiler/frontend/parser.ts";
 import {showEffRow, showT} from "../../compiler/frontend/type_display.ts";
 import {type Effs, type Type} from "../../compiler/frontend/unify.ts";
 import {rowOf} from "../../compiler/prims.ts";
@@ -59,13 +59,6 @@ export function browserInterp(out: (s: string) => void): EffectInterp {
 }
 
 // --- compile pipeline -----------------------------------------------------
-// parse() is buildWasm's local composition: it parses once for ops
-// collection, separately from compileWithOps's own parse+check (see the
-// wasm pipeline's OPT_PASSES seam).
-
-function parse(src: string): Program {
-  return new Parser(src).parseProgram();
-}
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -114,8 +107,9 @@ export function interpret(src: string, out: (s: string) => void): RunResult {
 // ops are the performed/handled set — the same typecheck byproduct `run`
 // shows — not the wasm op table (which pre-seeds every builtin op).
 export async function buildWasm(src: string): Promise<{bytes: Uint8Array, ops: string[]}> {
-  const {bytes} = compileWithOps(src);
-  return {bytes, ops: collectEffectOps(parse(src))};
+  const pre = prepare(src); // rejects parse/type errors before compile runs
+  const {bytes} = compileWithOps(pre);
+  return {bytes, ops: collectEffectOps(pre.prog)};
 }
 
 // Run the program on the wasm backend: compile (parse → check → CPS codegen →
@@ -124,14 +118,14 @@ export async function buildWasm(src: string): Promise<{bytes: Uint8Array, ops: s
 // the V8 stack on deep continuation chains (e.g. naive fib) — wasm tail
 // calls are O(1) stack in every WasmGC engine. Throws on parse/type errors;
 // ExitSignal unwinds `Exit!`; wasm traps (index OOB) surface as plain
-// Errors. prepare's checked is the ops/type byproduct source;
-// compileWithOps parses and checks its own fresh copy.
+// Errors. One prepare serves the diagnostics (type, ops) and the compile:
+// compileWithOps consumes the Prepared artifacts instead of re-parsing.
 export function runWasmProgram(src: string, out: (s: string) => void): RunResult {
-  const {prog, checked} = prepare(src);
-  const type = checked.lastType;
-  const {bytes, ops} = compileWithOps(src);
+  const pre = prepare(src);
+  const type = pre.checked.lastType;
+  const {bytes, ops} = compileWithOps(pre);
   const value = runModule(bytes, ops, browserInterp(out));
-  return {value, type, ops: collectEffectOps(prog)};
+  return {value, type, ops: collectEffectOps(pre.prog)};
 }
 
 // --- structure ------------------------------------------------------------

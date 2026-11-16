@@ -1,4 +1,4 @@
 # Bool equality: == works on bools; @as converts the bool result to an int
 # (false -> 0, true -> 1) for the program value.
 
-@as(true == true, i32)
+Println!(@as(true == true, i32))

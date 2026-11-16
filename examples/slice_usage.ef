@@ -11,4 +11,4 @@ slice = concat(slice, [3]);  # append 3
 len_ :: len(slice);
 elem :: get(slice, 0);
 s :: sub(slice, 1, 2);       # view of [1, 2): shares the backing, no copy
-elem + len_ + len(s)
+Println!(elem + len_ + len(s))

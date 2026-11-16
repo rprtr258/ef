@@ -9,4 +9,4 @@ i := 0;
 set(slice, i, get(slice, 0) + 1);  # store through the variable index
 
 sub(slice, 1, 1);                  # empty view past the last element
-get(slice, 0)
+Println!(get(slice, 0))

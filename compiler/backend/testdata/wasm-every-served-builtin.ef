@@ -1,2 +1,2 @@
 # A program using every served builtin computes identically.
-x :: round(cos(0) * 10) + round(sin(0) * 10) + strlen(char(97)) + number("2") + len(args()); Println!(x); x
+x :: round(cos(0) * 10) + round(sin(0) * 10) + strlen(char(97)) + number("2") + len(args()); Println!(x); Println!(x)

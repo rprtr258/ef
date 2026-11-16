@@ -1,2 +1,2 @@
 # f32 boxes promote to f64 for ===; equal precision compares equal.
-eq :: fn(a: any, b: any) { a == b }; eq(@as(1.5, f32), @as(1.5, f32))
+eq :: fn(a: any, b: any) { a == b }; Println!(eq(@as(1.5, f32), @as(1.5, f32)))

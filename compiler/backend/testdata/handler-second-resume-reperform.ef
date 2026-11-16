@@ -26,7 +26,7 @@ two :: fn(): i64 ! { Flip, Fail } {
   }
 };
 
-handle {
+Println!(handle {
   two()
 } case Flip() => k {
   l := k(true);
@@ -36,4 +36,4 @@ handle {
   0
 } case Return(v) => k {
   v
-}
+})

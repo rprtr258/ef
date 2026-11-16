@@ -24,4 +24,4 @@ handle {
   s = s + v;
   k(unit)
 };
-s
+Println!(s)

@@ -1,9 +1,16 @@
 import {describe, expect, test} from "bun:test";
 import {Parser} from "./parser.ts";
 import {toCps} from "./cps.ts";
-import {run} from "../backend/interpreter/eval.ts";
+import {runLine, newCtx} from "../backend/interpreter/eval.ts";
 import {prepare} from "./pipeline.ts";
+import {type Value} from "../env.ts";
 import type {CAtom, CIr, CTerm} from "./cps_ir.ts";
+
+// The suite's value harness: runLine through a fresh ctx, unwrapped to the
+// value. run() itself is the unit-gated file-entrypoint seam (pipeline.ts's
+// requireUnitEntry); these tests assert values, so they go through the
+// ungated REPL line protocol.
+const run = (src: string): Value => runLine(newCtx(), src).value;
 
 // toCps applies the cps_opt passes as its final stage: every test here sees
 // the optimized term and would catch a pass regression as leftover redex.

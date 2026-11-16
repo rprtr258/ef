@@ -1,2 +1,2 @@
 # Two cond performs across two passes, both resumed.
-effect Op(): i64; handle { s := 0; i := 0; while (i < 2) { s = s + Op!(); i = i + 1 }; s } case Op() => k { k(2) }
+effect Op(): i64; Println!(handle { s := 0; i := 0; while (i < 2) { s = s + Op!(); i = i + 1 }; s } case Op() => k { k(2) })

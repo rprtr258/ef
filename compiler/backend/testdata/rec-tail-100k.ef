@@ -1,2 +1,2 @@
 # Tail recursion runs in O(1) stack (return_call_indirect in wasm).
-lp :: fn(n: i64, acc: i64) { if (n == 0) { acc } else { lp(n - 1, acc + n) } }; lp(100000, 0)
+lp :: fn(n: i64, acc: i64) { if (n == 0) { acc } else { lp(n - 1, acc + n) } }; Println!(lp(100000, 0))

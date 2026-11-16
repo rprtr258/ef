@@ -11,9 +11,9 @@ bun compiler/cli.ts run examples/star.ef
 
 | Command | Behaviour |
 |---------|-----------|
-| `ef run <file> [args...]` | Typecheck, then evaluate on the interpreter. Extra args reach the program via `args()`. The last expression's value is printed unless the program calls `Exit!` itself. |
-| `ef wasm <file> [out]` | Compile to a binary `.wasm` module (default out: `<file>.ef` → `<file>.wasm`). Self-contained: the module's effect-op table rides inside it (below). |
-| `ef runwasm <file>` | Compile and run on the embedded wasm host — same observable output as `ef run`. A path ending in `.wasm` executes a prebuilt module instead: no compile, the module's embedded `ef_ops` section supplies the op table. |
+| `ef run <file> [args...]` | Typecheck, then evaluate on the interpreter. Extra args reach the program via `args()`. The file is an entrypoint: its last expression must be `unit`-typed (§2.1), and the output is exactly the program's effects' output. |
+| `ef wasm <file> [out]` | Compile to a binary `.wasm` module (default out: `<file>.ef` → `<file>.wasm`). Self-contained: the module's effect-op table rides inside it (below). The entrypoint gate applies: the last expression must be `unit`. |
+| `ef runwasm <file>` | Compile and run on the embedded wasm host — same observable output as `ef run` (same entrypoint gate on the compile path). A path ending in `.wasm` executes a prebuilt module instead: no compile, the module's embedded `ef_ops` section supplies the op table. |
 | `ef types <file>` | Print every top-level symbol with its inferred type, then the program's result type with its **residual effect row** (below). |
 | `ef lint <file>` | Run the [linter](lint.md); exit 1 on findings. |
 | `ef lsp` | Start the [language server](vscode.md) over stdio for LSP-speaking editors (VS Code and others). |
@@ -27,6 +27,14 @@ interpreted by the builtin table (or an injected override); a statically
 unhandled op with nothing to interpret it is rejected before evaluation
 compilation starts — the same shared gate `ef runwasm` and `ef wasm` apply before
 compilation.
+
+**Entrypoints.** Running a file is running an entrypoint: its last top-level
+item must be a bare expression whose type is `unit` — the playground's
+run/build actions apply the same rule to decide whether a file is runnable.
+A non-unit last expression exits nonzero with
+`entrypoint must return unit — last expression has type <T>` before anything
+evaluates. The REPL is not an entrypoint: its lines keep their values and
+obey the echo rule below.
 
 ## WebAssembly target
 

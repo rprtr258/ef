@@ -14,10 +14,10 @@ down :: fn(): i64 ! { Get } {
   }
 };
 
-handle {
+Println!(handle {
   down()
 } case Get() => k {
   k(s)
 } case Return(v) => k {
   v
-}
+})

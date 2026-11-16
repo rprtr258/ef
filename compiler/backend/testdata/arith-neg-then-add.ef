@@ -1,2 +1,2 @@
 # Unary negation in an arithmetic expression.
--5 + 3
+Println!(-5 + 3)

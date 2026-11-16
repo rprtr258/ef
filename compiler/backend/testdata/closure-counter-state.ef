@@ -1,2 +1,2 @@
 # A closure mutates captured mutable state across calls.
-mk :: fn() { c := 0; fn() { c = c + 1; c } }; f :: mk(); f(); f(); f()
+mk :: fn() { c := 0; fn() { c = c + 1; c } }; f :: mk(); f(); f(); Println!(f())

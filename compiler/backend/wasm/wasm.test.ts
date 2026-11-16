@@ -3,14 +3,34 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {readFileSync, readdirSync, writeFileSync} from "node:fs";
 import binaryen from "binaryen";
-import {run} from "../interpreter/eval.ts";
-import {BIN_FEATURES, compile} from "./wasm.ts";
+import {runLine, newCtx} from "../interpreter/eval.ts";
+import {BIN_FEATURES, compile as compilePrepared, compileWithOps as compileWithOpsPrepared} from "./wasm.ts";
 import {prepare, type EffectInterp} from "../../frontend/pipeline.ts";
 import {discover, optimize, assignIndices, layoutStatics} from "./wasm_pipeline.ts";
 import {toCps} from "../../frontend/cps.ts";
 import {planIr, classifySlots, type TLevel, letkP, scopeP, dcallP} from "./wasm_plan.ts";
-import {runWasm} from "./wasm_host.ts";
+import {runModule} from "./wasm_run.ts";
 import {mkSlice, mkTup, show, type Value} from "../../env.ts";
+
+// The suite's value harness: runLine through a fresh ctx, unwrapped to the
+// value. run() itself is the unit-gated file-entrypoint seam (pipeline.ts's
+// requireUnitEntry); these tests assert values, so they go through the
+// ungated REPL line protocol.
+const run = (src: string, interp?: EffectInterp): Value => runLine(newCtx(interp), src).value;
+
+// The suite's runners: prepare + the artifact-in compile seams — compile /
+// compileWithOps consume pipeline.ts's Prepared {prog, checked} so
+// gate-holding callers (runWasm, `ef wasm`) prepare once; these tests have
+// no gate, so the wrappers exist to keep call sites src-shaped.
+const compile = (src: string) => compilePrepared(prepare(src));
+
+// runWasm mirrors wasm_host.ts's runWasm minus the unit gate: these tests
+// exercise host behavior (boxing, effect delivery, the static gate) over
+// value-returning programs.
+const runWasm = (src: string, interp?: EffectInterp, args?: string[]): Value => {
+  const {bytes, ops} = compileWithOpsPrepared(prepare(src), interp);
+  return runModule(bytes, ops, interp, args);
+};
 
 // binaryen's typings lag its runtime (see wasm.ts RawBinaryen): readBinary's features argument is untyped in the .d.ts.
 const bin = binaryen as typeof binaryen & {

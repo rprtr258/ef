@@ -1,2 +1,2 @@
 # Bool equality.
-eq :: fn(a: any, b: any) { a == b }; eq(true, true)
+eq :: fn(a: any, b: any) { a == b }; Println!(eq(true, true))

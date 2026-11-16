@@ -1,2 +1,2 @@
 # round/cos through host imports.
-round(cos(0) * 100)
+Println!(round(cos(0) * 100))

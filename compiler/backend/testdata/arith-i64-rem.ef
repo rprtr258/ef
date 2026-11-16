@@ -1,2 +1,2 @@
 # Integer remainder.
-17 % 5
+Println!(17 % 5)

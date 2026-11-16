@@ -1,2 +1,2 @@
 # Same-representation i32/u32 convert to Numbers and compare by value.
-eq :: fn(a: any, b: any) { a == b }; eq(@as(5, i32), @as(5, u32))
+eq :: fn(a: any, b: any) { a == b }; Println!(eq(@as(5, i32), @as(5, u32)))

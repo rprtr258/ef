@@ -1,2 +1,2 @@
 # PI is an f64 value in both runtimes.
-round(PI * 100)
+Println!(round(PI * 100))

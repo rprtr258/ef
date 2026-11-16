@@ -9,4 +9,4 @@ slice: [i64] = [];
 slice = concat(slice, [42]);  # append 42
 len_ :: len(slice);
 i :: 0;
-get(slice, i)
+Println!(get(slice, i))

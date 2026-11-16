@@ -31,4 +31,4 @@ v2: [f64, f64, f64] : [4.0, 5.0, 6.0];
 v3: [f64, f64, f64] : vec3_add(v1, v2);
 x :: named();
 y :: named_reorder();
-round(v3.0 + v3.1 + v3.2) + x + y
+Println!(round(v3.0 + v3.1 + v3.2) + x + y)

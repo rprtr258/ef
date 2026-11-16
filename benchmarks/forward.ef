@@ -36,4 +36,4 @@ run :: fn(n: i64): i64 {
   }
 };
 
-run(50000)
+Println!(run(50000))

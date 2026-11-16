@@ -1,2 +1,2 @@
 # f32 division is f32-precision, no int truncation.
-@as(1.0, f32) / @as(3.0, f32)
+Println!(@as(1.0, f32) / @as(3.0, f32))

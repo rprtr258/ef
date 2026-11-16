@@ -7,4 +7,4 @@ slice = concat(slice, [20]);  # append 20
 slice = concat(slice, [30]);  # append 30
 
 idx :: 1;
-get(slice, idx)
+Println!(get(slice, idx))

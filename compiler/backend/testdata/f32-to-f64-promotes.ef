@@ -1,2 +1,2 @@
 # f32 -> f64 promotes exactly (0.1f32 is not 0.1f64).
-@as(@as(0.1, f32), f64)
+Println!(@as(@as(0.1, f32), f64))

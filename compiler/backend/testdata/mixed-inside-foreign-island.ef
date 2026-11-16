@@ -4,4 +4,4 @@ effect Tock(n: i64): i64;
 mix :: fn(x: i64): i64 {
   handle { Tick!(x) } case Tick(n) => k { n + 100 }
 };
-handle { mix(1) + Tock!(7) } case Tock(n) => k { k(n) }
+Println!(handle { mix(1) + Tock!(7) } case Tock(n) => k { k(n) })

@@ -1,2 +1,2 @@
 # A polymorphic fn keeps quantified type vars: no numeric entry, both instantiations stay boxed.
-id :: fn(x) { x }; id(7)
+id :: fn(x) { x }; Println!(id(7))

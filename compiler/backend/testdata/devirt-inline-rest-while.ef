@@ -3,4 +3,4 @@ id :: fn(x: i64): i64 { x + 1 };
 s := 0;
 i := 0;
 while (i < 5) { s = s + id(i); i = i + 1 };
-s
+Println!(s)

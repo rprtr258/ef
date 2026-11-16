@@ -1,2 +1,2 @@
 # Array concat.
-concat([1], [2,3])
+Println!(concat([1], [2,3]))

@@ -12,4 +12,4 @@ inc :: fn(x: i64): i64 {
 };
 
 g :: apply_twice(inc);
-g(5)
+Println!(g(5))

@@ -7,4 +7,4 @@ slice = concat(slice, [2]);  # append 2
 slice = concat(slice, [3]);  # append 3
 
 index :: 1;
-get(slice, index * 2)
+Println!(get(slice, index * 2))

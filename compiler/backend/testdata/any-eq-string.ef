@@ -1,2 +1,2 @@
 # String equality through any.
-eq :: fn(a: any, b: any) { a == b }; eq("x", "x")
+eq :: fn(a: any, b: any) { a == b }; Println!(eq("x", "x"))

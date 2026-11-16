@@ -1,2 +1,2 @@
 # Comparison dispatches on the f32 stamp.
-@as(0.5, f32) < @as(0.7, f32)
+Println!(@as(0.5, f32) < @as(0.7, f32))

@@ -103,15 +103,15 @@ describe("bridge", () => {
     expect(buf).toBe("x");
   });
 
-  test("wasm run streams Println!/Out! and returns the program value", () => {
+  test("wasm run streams Println!/Out!; entries are unit (requireUnitEntry)", () => {
     let buf = "";
-    const r = runWasmProgram("Out!(\"raw\");\nPrintln!(1 + 2);\n7", (s) => {
+    const r = runWasmProgram("Out!(\"raw\");\nPrintln!(1 + 2);", (s) => {
       buf += s;
     });
     expect(buf).toBe("raw3\n");
-    // i64 values cross the wasm boundary as BigInt.
-    expect(r.value).toBe(7n);
-    expect(showT(r.type)).toBe("i64");
+    // A unit-typed entry's program value crosses the wasm boundary as null.
+    expect(r.value).toBe(null);
+    expect(showT(r.type)).toBe("unit");
     expect(r.ops).toEqual(["Out", "Println"]);
   });
 
@@ -121,9 +121,8 @@ describe("bridge", () => {
       "  if (n < 2) { n } else { fib(n - 1) + fib(n - 2) }",
       "};",
       "Println!(fib(27));",
-      "0",
     ].join("\n"), () => {});
-    expect(r.value).toBe(0n);
+    expect(r.value).toBe(null);
   });
 
   test("wasm run: Exit! unwinds with an ExitSignal", () => {
@@ -138,7 +137,9 @@ describe("bridge", () => {
     const real = Math.random;
     Math.random = () => 0.42;
     try {
-      expect(runWasmProgram("Wait!(1); Random!()", () => {}).value).toBe(0.42);
+      let buf = "";
+      runWasmProgram("Wait!(1); Println!(Random!())", (s) => { buf += s; });
+      expect(buf).toBe("0.42\n");
     } finally {
       Math.random = real;
     }

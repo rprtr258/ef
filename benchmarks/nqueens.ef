@@ -58,4 +58,4 @@ run :: fn(n: i64): i64 {
 av := args();
 vi :: if (len(av) > 0) { @as(number(get(av, 0)), i64) } else { 12 };
 
-run(vi)
+Println!(run(vi))

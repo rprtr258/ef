@@ -1,2 +1,2 @@
 # A string param makes the signature non-numeric: boxed T_DABI call, values and effects identical.
-f :: fn(n: i64, s: string): i64 { n + strlen(s) }; f(40, "ab")
+f :: fn(n: i64, s: string): i64 { n + strlen(s) }; Println!(f(40, "ab"))

@@ -2,4 +2,4 @@
 effect Op(): i64;
 h :: fn(x: i64): i64 { handle { Op!() + x } case Op() => k { k(2) } };
 g :: fn(n: i64): i64 { n * 3 };
-h(g(5))
+Println!(h(g(5)))

@@ -2,4 +2,4 @@
 effect Op(): unit; a := [0, 0, 0];
 cb :: fn(x: i64, i: i64): unit { Op!(); set(a, i, x); unit };
 handle { each(cb, [7, 8, 9]) } case Op() => k { q := k(unit); k(unit); q };
-a
+Println!(a)

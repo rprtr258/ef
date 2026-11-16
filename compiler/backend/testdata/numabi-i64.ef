@@ -1,2 +1,2 @@
 # Specialized numeric entry at i64.
-inc :: fn(n: i64): i64 { n + 1 }; inc(41)
+inc :: fn(n: i64): i64 { n + 1 }; Println!(inc(41))

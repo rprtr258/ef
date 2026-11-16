@@ -1,2 +1,2 @@
 # A builtin passed as an argument still gets its closure cell.
-apply1 :: fn(f, x) { f(x) }; apply1(round, 2.6)
+apply1 :: fn(f, x) { f(x) }; Println!(apply1(round, 2.6))

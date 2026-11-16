@@ -9,4 +9,4 @@ factorial :: fn(n: i64): i64 {
   }
 };
 
-factorial(5)
+Println!(factorial(5))

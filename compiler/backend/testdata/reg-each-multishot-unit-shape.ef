@@ -2,4 +2,4 @@
 effect Op(): i64; acc := 0;
 cb :: fn(x: i64, i: i64): unit { acc = acc + x * 10 + i + Op!(); unit };
 handle { each(cb, [1, 2]) } case Op() => k { q := k(1); k(2); q };
-acc
+Println!(acc)
