@@ -13,6 +13,13 @@ const compilerDir = import.meta.dir;
 
 type CliResult = {code: number, stdout: string, stderr: string};
 
+// Bun types the asymmetric matchers as `any`, which trips eslint's
+// no-unsafe-assignment rule inside toEqual object literals; these aliases
+// pin them to string so the literals typecheck cleanly.
+const anyStr = expect.any(String) as string;
+const containing = (s: string): string => expect.stringContaining(s) as string;
+const matching = (re: RegExp): string => expect.stringMatching(re) as string;
+
 // spawnSync (not execFileSync): the error paths ARE the tested behavior, so
 // non-zero exits must come back as data instead of exceptions.
 function cli(...args: string[]): CliResult {
@@ -36,14 +43,16 @@ function cliIn(extraEnv: Record<string, string>, ...args: string[]): CliResult {
 
 describe("cli", () => {
   test("run: executes an example and prints the result", () => {
-    const r = cli("run", join(compilerDir, "..", "examples", "simple_add.ef"));
-    expect(r.code).toBe(0);
-    expect(r.stdout).toBe("2\nunit\n");
+    expect(cli("run", join(compilerDir, "..", "examples", "simple_add.ef"))).toEqual({
+      code: 0,
+      stdout: "2\nunit\n",
+      stderr: "",
+    });
   });
 
-  test("runwasm: same stdout as the interpreter for the same example", () => {
+  test("runwasm: same full result as the interpreter for the same example", () => {
     const file = join(compilerDir, "..", "examples", "two_prints.ef");
-    expect(cli("runwasm", file).stdout).toBe(cli("run", file).stdout);
+    expect(cli("runwasm", file)).toEqual(cli("run", file));
   }, 15000); // two spawns + wasm compile; the 5s default flakes under parallel load
 
   test("runwasm: EFTRACE=1 dumps the traced-site ring to stderr", () => {
@@ -59,12 +68,18 @@ f :: fn(): i64 {
 f()
 `);
     try {
-      const all = cliIn({EFTRACE: "1", EFTRACE_ALL: "1"}, "runwasm", file);
-      expect(all.code).toBe(0);
-      expect(all.stderr).toContain("[EFTRACE] all sites:");
-      const last = cliIn({EFTRACE: "1"}, "runwasm", file);
-      expect(last.code).toBe(0);
-      expect(last.stderr).toContain("[EFTRACE] last sites:");
+      // The trace-dump body and the program's result value are dynamic;
+      // code and the trace header are pinned.
+      expect(cliIn({EFTRACE: "1", EFTRACE_ALL: "1"}, "runwasm", file)).toEqual({
+        code: 0,
+        stdout: anyStr,
+        stderr: containing("[EFTRACE] all sites:"),
+      });
+      expect(cliIn({EFTRACE: "1"}, "runwasm", file)).toEqual({
+        code: 0,
+        stdout: anyStr,
+        stderr: containing("[EFTRACE] last sites:"),
+      });
     } finally {
       rmSync(file, {force: true});
     }
@@ -78,9 +93,11 @@ f()
     const file = join(tmpdir(), `ef-cli-test-${process.pid}-args.ef`);
     writeFileSync(file, "argv :: args();\nPrintln!(len(argv));\nPrintln!(get(argv, 0));\n");
     try {
-      const r = cli("run", file, "1", "2");
-      expect(r.code).toBe(0);
-      expect(r.stdout).toBe("2\n\"1\"\nunit\n");
+      expect(cli("run", file, "1", "2")).toEqual({
+        code: 0,
+        stdout: "2\n\"1\"\nunit\n",
+        stderr: "",
+      });
     } finally {
       rmSync(file, {force: true});
     }
@@ -89,17 +106,21 @@ f()
   test("run: the example's own usage check exits 1 with its message", () => {
     // approx_pi exits 1 via Exit! when argv lacks <n>; the message reaches
     // stdout through Out!, the code through the process exit status.
-    const r = cli("run", join(compilerDir, "..", "examples", "approx_pi.ef"));
-    expect(r.code).toBe(1);
-    expect(r.stdout).toBe("Usage: ef run examples/approx_pi.ef <n>\n");
+    expect(cli("run", join(compilerDir, "..", "examples", "approx_pi.ef"))).toEqual({
+      code: 1,
+      stdout: "Usage: ef run examples/approx_pi.ef <n>\n",
+      stderr: "",
+    });
   });
 
   test("wasm: writes a valid .wasm module to the requested path", () => {
     const out = join(tmpdir(), `ef-cli-test-${process.pid}.wasm`);
     try {
-      const r = cli("wasm", join(compilerDir, "..", "examples", "squares_sum.ef"), out);
-      expect(r.code).toBe(0);
-      expect(r.stdout).toMatch(/^wrote .* \(\d+ bytes\)\n$/);
+      expect(cli("wasm", join(compilerDir, "..", "examples", "squares_sum.ef"), out)).toEqual({
+        code: 0,
+        stdout: matching(/^wrote .* \(\d+ bytes\)\n$/),
+        stderr: "",
+      });
       expect(WebAssembly.validate(readFileSync(out))).toBe(true);
     } finally {
       rmSync(out, {force: true});
@@ -114,12 +135,16 @@ f()
     const out = join(tmpdir(), `ef-cli-test-${process.pid}-unhandled.wasm`);
     writeFileSync(file, "effect T(x: i64): i64;\nT!(1)\n");
     try {
-      const run = cli("runwasm", file);
-      expect(run.code).toBe(1);
-      expect(run.stderr).toContain("Unhandled effect: T");
-      const build = cli("wasm", file, out);
-      expect(build.code).toBe(1);
-      expect(build.stderr).toContain("Unhandled effect: T");
+      expect(cli("runwasm", file)).toEqual({
+        code: 1,
+        stdout: "",
+        stderr: containing("Unhandled effect: T"),
+      });
+      expect(cli("wasm", file, out)).toEqual({
+        code: 1,
+        stdout: "",
+        stderr: containing("Unhandled effect: T"),
+      });
       expect(existsSync(out)).toBe(false); // nothing emitted
     } finally {
       rmSync(file, {force: true});
@@ -135,11 +160,13 @@ f()
     const out = join(tmpdir(), `ef-cli-test-${process.pid}-pre.wasm`);
     writeFileSync(file, "f :: fn(n: i64): i64 { n * 2 };\nf(21)\n");
     try {
-      expect(cli("wasm", file, out).code).toBe(0);
+      expect(cli("wasm", file, out)).toEqual({
+        code: 0,
+        stdout: matching(/^wrote .* \(\d+ bytes\)\n$/),
+        stderr: "",
+      });
       expect(existsSync(out.replace(/\.wasm$/, "") + ".ops.json")).toBe(false); // self-contained: no sidecar
-      const prebuilt = cli("runwasm", out);
-      expect(prebuilt.code).toBe(0);
-      expect(prebuilt.stdout).toBe(cli("runwasm", file).stdout);
+      expect(cli("runwasm", out)).toEqual(cli("runwasm", file));
     } finally {
       rmSync(file, {force: true});
       rmSync(out, {force: true});
@@ -153,40 +180,47 @@ f()
     const out = join(tmpdir(), `ef-cli-test-${process.pid}-noops.wasm`);
     writeFileSync(out, Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0, 0, 0]));
     try {
-      const r = cli("runwasm", out);
-      expect(r.code).toBe(1);
-      expect(r.stderr).toContain("no embedded ops table");
-      expect(r.stderr).toContain("ef wasm");
+      expect(cli("runwasm", out)).toEqual({
+        code: 1,
+        stdout: "",
+        // The full rebuild-hint message (cli.ts throws it verbatim, with
+        // the path prefix) — subsumes both former toContain probes.
+        stderr: containing("no embedded ops table (ef_ops custom section) — rebuild with ef wasm"),
+      });
     } finally {
       rmSync(out, {force: true});
     }
   });
 
   test("types: prints top-level bindings and the program type", () => {
-    const r = cli("types", join(compilerDir, "..", "examples", "simple_add.ef"));
-    expect(r.code).toBe(0);
-    expect(r.stdout).toBe(
-      "id : (a) -> a\n" +
-      "x : (i64, i64) -> i64\n" +
-      "q : ((a) -> b ! { e1 }, (c) -> a ! { e2 }) -> (c) -> b ! { e1, e2 }\n" +
-      "_ : unit ! { Println }\n",
-    );
+    expect(cli("types", join(compilerDir, "..", "examples", "simple_add.ef"))).toEqual({
+      code: 0,
+      stdout:
+        "id : (a) -> a\n" +
+        "x : (i64, i64) -> i64\n" +
+        "q : ((a) -> b ! { e1 }, (c) -> a ! { e2 }) -> (c) -> b ! { e1, e2 }\n" +
+        "_ : unit ! { Println }\n",
+      stderr: "",
+    });
   });
 
   test("lint: reports no issues on a clean example", () => {
-    const r = cli("lint", join(compilerDir, "..", "examples", "simple_add.ef"));
-    expect(r.code).toBe(0);
-    expect(r.stdout).toBe("no issues\n");
+    expect(cli("lint", join(compilerDir, "..", "examples", "simple_add.ef"))).toEqual({
+      code: 0,
+      stdout: "no issues\n",
+      stderr: "",
+    });
   });
 
   test("lint: unused argument exits 1 and names the offender", () => {
     const file = join(tmpdir(), `ef-cli-test-${process.pid}-unused.ef`);
     writeFileSync(file, "f :: fn(x: i64): i64 { 1 };\nf(2)\n");
     try {
-      const r = cli("lint", file);
-      expect(r.code).toBe(1);
-      expect(r.stdout).toContain("unused-arg");
-      expect(r.stdout).toContain("has unused argument x");
+      expect(cli("lint", file)).toEqual({
+        code: 1,
+        stdout: matching(/unused-arg: function `f` has unused argument x/),
+        stderr: "",
+      });
     } finally {
       rmSync(file, {force: true});
     }
@@ -196,34 +230,37 @@ f()
     const file = join(tmpdir(), `ef-cli-test-${process.pid}-any.ef`);
     writeFileSync(file, "pull :: fn(x: any): any { x };\ny := pull(1);\n");
     try {
-      const r = cli("lint", file);
-      expect(r.code).toBe(1);
-      expect(r.stdout).toContain("derived-any");
-      expect(r.stdout).toContain("`y` is inferred as any");
+      expect(cli("lint", file)).toEqual({
+        code: 1,
+        stdout: matching(/derived-any: `y` is inferred as any/),
+        stderr: "",
+      });
     } finally {
       rmSync(file, {force: true});
     }
   });
 
   test("run: a missing file exits 1 with diagnostics on stderr", () => {
-    const r = cli("run", "/nonexistent/ef-cli-test-missing.ef");
-    expect(r.code).toBe(1);
-    expect(r.stderr.length).toBeGreaterThan(0);
+    // Regression snapshot of the whole result: code, stdout and the full
+    // diagnostic text (path interpolation included) are pinned; edits must
+    // update the snapshot intentionally (bun test -u).
+    expect(cli("run", "/nonexistent/ef-cli-test-missing.ef")).toMatchSnapshot();
   });
 
   test("run: a type error exits 1 without stdout, located on stderr", () => {
     const file = join(tmpdir(), `ef-cli-test-${process.pid}-typeerr.ef`);
     writeFileSync(file, "1 + true\n");
     try {
-      const r = cli("run", file);
-      expect(r.code).toBe(1);
-      expect(r.stdout).toBe("");
       // The `+` app starts at its left operand — line 1, col 1; the line
       // is quoted with a caret under the column, then the located message.
-      expect(r.stderr).toBe(
-        "1 | 1 + true\n" +
-        "  | ^\n" +
-        "at line 1, col 1: +: i64 and bool are not both numeric or both string\n");
+      expect(cli("run", file)).toEqual({
+        code: 1,
+        stdout: "",
+        stderr:
+          "1 | 1 + true\n" +
+          "  | ^\n" +
+          "at line 1, col 1: +: i64 and bool are not both numeric or both string\n",
+      });
     } finally {
       rmSync(file, {force: true});
     }
@@ -233,23 +270,26 @@ f()
     const file = join(tmpdir(), `ef-cli-test-${process.pid}-parseerr.ef`);
     writeFileSync(file, "x :: 1\ny :: 2;\n");
     try {
-      const r = cli("run", file);
-      expect(r.code).toBe(1);
-      expect(r.stdout).toBe("");
       // The missing `;` is discovered at `y` — line 2, col 1.
-      expect(r.stderr).toBe(
-        `2 | y :: 2;\n` +
-        `  | ^\n` +
-        `at line 2, col 1: Expected ";", got "y"\n`);
+      expect(cli("run", file)).toEqual({
+        code: 1,
+        stdout: "",
+        stderr:
+          `2 | y :: 2;\n` +
+          `  | ^\n` +
+          `at line 2, col 1: Expected ";", got "y"\n`,
+      });
     } finally {
       rmSync(file, {force: true});
     }
   });
 
   test("no/unknown subcommand: usage on stderr, exit 2", () => {
-    expect(cli().code).toBe(2);
-    expect(cli().stderr).toContain("Usage: ef run <file>");
-    expect(cli("bogus").code).toBe(2);
-    expect(cli("bogus").stderr).toContain("Usage: ef run <file>");
-  }, 15000); // two spawns
+    // Regression snapshot of the whole result (help text included): edits
+    // to the command table must update the snapshot intentionally
+    // (bun test -u), so an accidental reflow or dropped row fails CI. The
+    // unknown-subcommand path must return the exact same result.
+    expect(cli()).toMatchSnapshot();
+    expect(cli("bogus")).toEqual(cli());
+  }, 15000); // three spawns
 });

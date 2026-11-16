@@ -1,0 +1,32 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`cli run: a missing file exits 1 with diagnostics on stderr 1`] = `
+{
+  "code": 1,
+  "stderr": 
+"ENOENT: no such file or directory, open '/nonexistent/ef-cli-test-missing.ef'
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli no/unknown subcommand: usage on stderr, exit 2 1`] = `
+{
+  "code": 2,
+  "stderr": 
+"Usage: ef <command> [args]
+
+Commands:
+  run <file> [args...]     typecheck and evaluate a source file
+  wasm <file> [out]        compile to a .wasm module (default out: <file>.wasm)
+  runwasm <file.ef|.wasm>  compile and run, or execute a prebuilt module
+  types <file>             print top-level symbols, result type, residual effects
+  lint <file>              run the lint passes over a source file
+  repl                     interactive REPL with persistent bindings
+  lsp                      start the language server (stdio)
+"
+,
+  "stdout": "",
+}
+`;

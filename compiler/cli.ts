@@ -144,7 +144,16 @@ async function main(cmd: string, args: string[]) {
     process.exit(1);
   }
   }
-  console.error("Usage: ef run <file> [args...] | ef wasm <file> [out] | ef runwasm <file.ef|.wasm> | ef types <file> | ef lint <file> | ef repl | ef lsp");
+  console.error(`Usage: ef <command> [args]
+
+Commands:
+  run <file> [args...]     typecheck and evaluate a source file
+  wasm <file> [out]        compile to a .wasm module (default out: <file>.wasm)
+  runwasm <file.ef|.wasm>  compile and run, or execute a prebuilt module
+  types <file>             print top-level symbols, result type, residual effects
+  lint <file>              run the lint passes over a source file
+  repl                     interactive REPL with persistent bindings
+  lsp                      start the language server (stdio)`);
   process.exit(2);
 }
 
