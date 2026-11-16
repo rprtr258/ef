@@ -213,30 +213,42 @@ describe("cps_opt via toCps: dcall/dret through the rewrites", () => {
 
   // A pure callee: the dcall's operand read-temps substitute away like call
   // args, and the direct boundary is a dret tail (never a jump to $ret).
+  // `sum` is deliberately outside every inlining rule (multi-use, loop body
+  // over SMALL_BODY) so its dcall sites survive the pipeline.
   test("read-temp substitution reaches dcall operands; dret replaces the $ret jump", () => {
-    const src = "add1 :: fn(x: i64): i64 { x + 1 };\ndbl :: fn(n: i64): i64 { add1(n) * 2 };\ndbl(20)";
+    const src = `sum :: fn(n: i64): i64 {
+  acc := 0; i := 0;
+  while (i < n) { acc = acc + i; i = i + 1 };
+  acc
+};
+(fn(n: i64): i64 { sum(n) * 2 })(20) + sum(3)`;
     const ir = convC(src);
-    expect(run(src)).toBe(42n);
+    expect(run(src)).toBe(383n); // 190*2 + 6
     // The dcall's fn/args read the source names directly — no read temps.
-    expect(countNode(ir, (n) => n.t === "dcall")).toBe(2); // add1(n) + top-level dbl(20)
+    expect(countNode(ir, (n) => n.t === "dcall")).toBe(2); // the two sum sites
     const dcalls: (CTerm & {t: "dcall"})[] = [];
     for (const t of terms(ir))
       walk(t, (n) => { if (n.t === "dcall") dcalls.push(n); });
     for (const d of dcalls) {
       expect(d.fn.t === "var" && !d.fn.name.startsWith("$")).toBe(true);
-      for (const a of d.args) if (a.t === "var") expect(!a.name.startsWith("$")).toBe(true);
+      // Splice rebinds ($il, from cps_inline.ts) legitimately read as args;
+      // converter read temps ($t) must all have substituted away.
+      for (const a of d.args) if (a.t === "var") expect(!a.name.startsWith("$t")).toBe(true);
     }
     // Direct boundaries deliver with dret; $ret is never jumped in a direct
     // body (the converter never emits it there).
-    expect(countNode(ir, (n) => n.t === "dret")).toBe(2); // add1 + dbl boundaries
+    expect(countNode(ir, (n) => n.t === "dret")).toBe(1); // sum's boundary
     expect(countNode(ir, (n) => n.t === "jump" && n.k.t === "var" && n.k.name === "$ret")).toBe(0);
   });
 
   test("a dead dcall binding survives (the callee may trap)", () => {
-    const src = "add1 :: fn(x: i64): i64 { x + 1 };\nf :: fn(n: i64): i64 { add1(5); n };\nf(1)";
+    // `get` is a builtin — no provenance, so its dcall site stays; the
+    // discarded result binding survives (dcall results are not bind nodes).
+    // An IIFE callee leaves no closure object behind once inlined.
+    const src = "(fn(n: i64): i64 { get([1, 2], n); n })(1)";
     const ir = convC(src);
     expect(run(src)).toBe(1n);
-    expect(countNode(ir, (n) => n.t === "dcall")).toBe(2); // add1(5) kept + f(1)
+    expect(countNode(ir, (n) => n.t === "dcall")).toBe(1); // the get site (f(1) inlined)
   });
 
   test("dcall result frozen across a later suspension in the same body", () => {
@@ -249,5 +261,125 @@ h`;
     // add1(1)'s result temp crosses the perform: frozen at the letk.
     expect(freezeNames(ir).size).toBeGreaterThan(0);
     expect(run(src)).toBe(13n); // add1(1)=2 + add1(resume 10)=11
+  });
+});
+
+describe("cps_opt via toCps: cross-function inlining", () => {
+  // Suspension stamps are checker-stamped: conversion sees them only after
+  // the check (prepare).
+  const convC = (src: string): CIr => {
+    const {prog, checked} = prepare(src);
+    return toCps(prog, checked.stamps);
+  };
+  const totalNodes = (ir: CIr): number =>
+    terms(ir).reduce((n, t) => n + termSize(t), 0);
+  const termSize = (t: CTerm): number => {
+    let n = 1;
+    walk(t, () => { n++; });
+    return n;
+  };
+
+  test("single-use closure inlines, closure object stays bound", () => {
+    const src = "add1 :: fn(x: i64): i64 { x + 1 };\nadd1(41)";
+    const ir = convC(src);
+    expect(run(src)).toBe(42n);
+    // The call site spliced away (no dcall left); the closure object stays
+    // referenced by its source bind — top-level binds never drop (the REPL
+    // frame keeps them), so the dead-mkfn drop only fires for closure
+    // temps read nowhere else (e.g. IIFEs — see the next test).
+    expect(countNode(ir, (n) => n.t === "dcall")).toBe(0);
+    expect(countNode(ir, (n) => n.t === "mkfn")).toBe(1);
+  });
+
+  test("IIFE inlines and the closure object disappears", () => {
+    const src = "(fn(x: i64): i64 { x + 1 })(41)";
+    const ir = convC(src);
+    expect(run(src)).toBe(42n);
+    expect(countNode(ir, (n) => n.t === "mkfn")).toBe(0);
+    expect(ir.funcs.length).toBe(0);
+  });
+
+  test("multi-use small body inlines at every site, closure stays", () => {
+    const src = "add1 :: fn(x: i64): i64 { x + 1 };\nadd1(1) + add1(2)";
+    const ir = convC(src);
+    expect(run(src)).toBe(5n);
+    // Both call sites spliced (no call to the closure left); the closure
+    // value itself stays referenced by its source bind.
+    expect(countNode(ir, (n) => n.t === "mkfn")).toBe(1);
+    expect(countNode(ir, (n) => n.t === "call" || n.t === "dcall")).toBe(0);
+  });
+
+  test("big multi-use body stays a call", () => {
+    const src = `sum :: fn(n: i64): i64 {
+  acc := 0; i := 0;
+  while (i < n) { acc = acc + i; i = i + 1 };
+  acc
+};
+sum(3) + sum(4)`;
+    const ir = convC(src);
+    expect(run(src)).toBe(9n); // 3 + 6
+    expect(countNode(ir, (n) => n.t === "dcall")).toBe(2); // both sites kept
+  });
+
+  test("recursive small body unrolls bounded, stays correct", () => {
+    const src = `fib :: fn(n: i64): i64 { if (n < 2) { n } else { fib(n - 1) + fib(n - 2) } };
+fib(15)`;
+    const ir = convC(src);
+    expect(run(src)).toBe(610n);
+    // MAX_DEPTH bounds the unrolling: the term stays small even though the
+    // body is small enough to inline.
+    expect(totalNodes(ir)).toBeLessThan(500);
+  });
+
+  test("splice into a closure body recomputes capts", () => {
+    // adder's body splices into outer's loop body; the spliced read of g
+    // (a top-level var) must land in outer's capts for both backends.
+    // outer is multi-use and bigger than SMALL_BODY so it stays a closure.
+    const src = `g := 5;
+adder :: fn(x: i64): i64 { g + x };
+outer :: fn(n: i64): i64 {
+  acc := 0; i := 0;
+  while (i < n) { acc = acc + adder(i); i = i + 1 };
+  acc
+};
+outer(3) + outer(2) + adder(9)`;
+    expect(run(src)).toBe(43n); // (5+6+7) + (5+6) + 14
+  });
+
+  test("spliced capt survives closure escape", () => {
+    // adder splices into thunk's body; thunk escapes outer, so the
+    // captured g slot must be captured by thunk's closure.
+    const src = `g := 5;
+adder :: fn(x: i64): i64 { g + x };
+outer :: fn(): () -> i64 {
+  acc := 0;
+  while (acc < 3) { acc = acc + 1 };
+  thunk :: fn(): i64 { adder(acc) };
+  thunk
+};
+outer()()`;
+    expect(run(src)).toBe(8n); // g + 3
+  });
+
+  test("callee with a nested closure clones the inner CFn", () => {
+    // wrap's body creates a closure over its param; inlining wrap at its
+    // single site must clone that closure (fresh fun), not share it.
+    const src = `apply :: fn(f: () -> i64): i64 { f() };
+wrap :: fn(n: i64): () -> i64 { fn() { n } };
+apply(wrap(40)) + 2`;
+    expect(run(src)).toBe(42n);
+  });
+
+  test("callee assigning its own param stays correct", () => {
+    const src = "bump :: fn(x: i64): i64 { x = x + 1; x };\nbump(41) + bump(0)";
+    expect(run(src)).toBe(43n);
+  });
+
+  test("non-direct callee performing through the splice keeps effect order", () => {
+    const src = `F :: effect(n: i64): i64;
+twice :: fn(n: i64): i64 { F!(n) + F!(n) };
+h :: handle { twice(1) } case F(n) => k { k(n * 10) } case Return(v) => k { v };
+h`;
+    expect(run(src)).toBe(20n); // resume 10 twice, summed
   });
 });

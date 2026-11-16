@@ -49,10 +49,17 @@
 // TRAPPING_OPS — the only operators that can trap) with zero uses in its
 // region is dropped. Statement-position discarded values leave exactly these
 // shapes; dead trapping prims (field reads, TRAPPING_OPS ops) keep their
-// binding so the throw survives.
+// binding so the throw survives. Zero-use mkfns drop the same way (closure
+// creation has no effects); the capts/freeze guards keep a captured or
+// frozen closure value alive.
+//
+// Cross-function inlining (cps_inline.ts) runs ahead of these passes each
+// iteration and may orphan the callee's CFn once its mkfn drops; pruneFns
+// then drops unreferenced CFns and reindexes the survivors.
 
 import {assertNever} from "../assert.ts";
 import {TRAPPING_OPS} from "../ops.ts";
+import {inlineCallees, pruneFns} from "./cps_inline.ts";
 import type {CAtom, CIr, CPrim, CTerm} from "./cps_ir.ts";
 
 const isTemp = (name: string): boolean => name.startsWith("$");
@@ -230,8 +237,12 @@ function substReadTemps(root: CTerm, assigned: Set<string>, capts: Set<string>):
     // Substituting the val first makes the mapping transitive: a temp read
     // by another temp's bind resolves to the original var, since the first
     // temp's bind is gone by the time the second one's uses are read.
+    // The temp itself must never be an assign target: converter temps are
+    // bind-once, but cps_inline.ts renames the callee's source binds to
+    // fresh temp names, and an assigned one is a mutable slot, not a read
+    // temp — dropping its bind would strand its assign targets.
     if (t.t === "bind" && isTemp(t.name) && t.val.t === "var"
-        && !assigned.has(t.val.name) && !capts.has(t.name)) {
+        && !assigned.has(t.val.name) && !assigned.has(t.name) && !capts.has(t.name)) {
       // The substitute carries the bind's source stamp: reads normalized at
       // the temp (BigInt vs number) must stay stamped when the temp goes
       // away, or stamped ops see mixed representations.
@@ -358,7 +369,7 @@ function dropDeadBinds(root: CTerm, capts: Set<string>): [term: CTerm, changed: 
   const dead = (name: string): boolean =>
     isTemp(name) && (uses.get(name) ?? 0) === 0 && !frozen.has(name) && !capts.has(name);
   const rw = (t: CTerm): CTerm => {
-    if (t.t === "bind" && dead(t.name)) {
+    if ((t.t === "bind" || t.t === "mkfn") && dead(t.name)) {
       changed.v = true;
       return rw(t.rest);
     }
@@ -373,17 +384,31 @@ function dropDeadBinds(root: CTerm, capts: Set<string>): [term: CTerm, changed: 
 }
 
 // Runs every pass over the spine and each closure body until none fires.
-// Assigned names and capts are pass-invariant, so they are collected once.
+// Assigned names and capts are pass-invariant across the four local passes,
+// so they are collected once; the inlining round changes both (spliced
+// bodies carry new free vars and assign targets), so they are re-collected
+// when it fires. The ancestry map keys each call/dcall node's splice depth
+// per callee — node objects persist across iterations, so the caps hold for
+// the whole optimizeCps run.
 export function optimizeCps(ir: CIr): CIr {
-  const assigned = collectAssigned(ir);
-  const capts = collectCapts(ir);
+  let assigned = collectAssigned(ir);
+  let capts = collectCapts(ir);
+  const depths = new WeakMap<CTerm, Map<number, number>>();
+  let inlineN = 0;
   for (let i = 0; i < 100; i++) {
+    // Fresh spliced-binder names must stay unique across iterations (two
+    // rounds can splice into the same region), so the counter lives here.
+    let changed = inlineCallees(ir, depths, assigned, () => `$il${inlineN++}`);
+    if (changed) {
+      capts = collectCapts(ir);
+      assigned = collectAssigned(ir);
+    }
     const [a, achanged] = substReadTemps(ir.term, assigned, capts);
     const [b, bchanged] = fuseLetBinds(a);
     const [c, cchanged] = betaExitLetks(b, capts);
     const [d, dchanged] = dropDeadBinds(c, capts);
     ir.term = d;
-    let changed = achanged || bchanged || cchanged || dchanged;
+    changed = changed || achanged || bchanged || cchanged || dchanged;
     for (const fn of ir.funcs) {
       const [f1, f1changed] = substReadTemps(fn.body, assigned, capts);
       const [f2, f2changed] = fuseLetBinds(f1);
@@ -391,6 +416,10 @@ export function optimizeCps(ir: CIr): CIr {
       const [f4, f4changed] = dropDeadBinds(f3, capts);
       fn.body = f4;
       changed = changed || f1changed || f2changed || f3changed || f4changed;
+    }
+    if (changed && pruneFns(ir)) {
+      capts = collectCapts(ir);
+      assigned = collectAssigned(ir);
     }
     if (!changed)
       break;

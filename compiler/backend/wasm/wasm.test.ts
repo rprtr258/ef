@@ -367,7 +367,9 @@ caller :: fn(x: i64): i64 { mixed(x) + 1 };
     // generic call whose callee performs at runtime). The fixpoint keeps h
     // and every gate off this chain; the wasm op-discovery miss behind the
     // any-call is a pre-existing known limitation (see plan Non-goals) —
-    // pinned here as an interp/wasm divergence smoke test.
+    // Inlining now routes the any-callee chain's handler reach correctly:
+    // both backends agree on 43 (the op reaches the handler through the
+    // inlined g body).
     const src = `Op :: effect(): i64;
 g :: fn(a: any): i64 { a(0) };
 h :: fn(f: any): i64 { g(f) };
@@ -389,7 +391,7 @@ handle { h(performer) } case Op() => k { 43 }`;
         return "ERR: " + (e as Error).message;
       }
     })();
-    expect(wasm).not.toBe("43"); // the known divergence: the op never reaches the handler
+    expect(wasm).toBe("43"); // wasm agrees with the interpreter
   });
 });
 describe("wasm numeric entry ABI (wasm_devirt.ts numericEntries: unboxed direct calls, shape-tag dispatch)", () => {
@@ -401,8 +403,8 @@ describe("wasm numeric entry ABI (wasm_devirt.ts numericEntries: unboxed direct 
     // mismatching closure would fail the tag and take the boxed path (same
     // values either way).
     const src = `apply :: fn(f: (i64) -> i64, x: i64): i64 { f(x) };
-inc :: fn(n: i64): i64 { n + 1 };
-dec :: fn(n: i64): i64 { n - 1 };
+inc :: fn(n: i64): i64 { acc := 0; i := 0; while (i < n) { acc = acc + 1; i = i + 1 }; acc };
+dec :: fn(n: i64): i64 { acc := 0; i := 0; while (i < n) { acc = acc - 1; i = i + 1 }; acc };
 a :: inc(41);
 apply(inc, 1) + apply(dec, 2) + a`;
     // Structural lock-in: the numeric entry (frame, i64) -> i64 exists and
