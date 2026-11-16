@@ -121,6 +121,15 @@ both backends consume it without pulling in the evaluator.
 
 [Interpreter (CPS) →](eval.md)
 
+Before either backend consumes the CPS IR, `toCps`'s final stage —
+`optimizeCps` (`cps_opt.ts`, with cross-function inlining in
+`cps_inline.ts`) — runs the optimizer: single-use closures and small
+non-recursive bodies are inlined at their call sites, then four local
+rewrites (read-temp substitution, prim-let fusion, exit-continuation beta,
+dead binding drop) iterate to a fixpoint. Every rewrite preserves the
+CPS shape and the run-trace contract, so both backends stay oblivious to
+the optimizer.
+
 `newCtx(interp?)` seeds state; the caller checks the program
 (`checkProgram(prog, ctx.checked)`), then `exec(prog, ctx, checked)` fails
 fast on statically-unhandled non-builtin ops (frontend/pipeline.ts's `rejectUnhandled`

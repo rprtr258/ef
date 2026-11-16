@@ -1419,15 +1419,18 @@ describe("selective CPS: dcall/dret classification", () => {
   });
 
   test("effectful function calling pure helpers: dcalls inside a CPS body", () => {
+    // helper is deliberately loop-bodied (over SMALL_BODY): multi-use small
+    // helpers would be inlined by cps_inline.ts, and this test pins the
+    // dcall/call classification of the surviving call sites.
     const src = `
       Log :: effect(n: i64): i64;
-      helper :: fn(x: i64): i64 { x + 1 };
+      helper :: fn(x: i64): i64 { acc := 0; i := 0; while (i < x) { acc = acc + i; i = i + 1 }; acc };
       main :: fn(): i64 { Log!(helper(10)) };
       handle {
         main() + helper(100)
       } case Log(n) => k { k(n * 2) } case Return(v) => k { v }
     `;
-    expect(show(run(src))).toBe("123"); // helper(10)=11 → Log resumes 22; 22 + helper(100)=101 → 123
+    expect(show(run(src))).toBe("5040"); // helper(10)=45 → Log resumes 90; 90 + helper(100)=4950 → 5040
     const c = ir(src);
     // helper calls classify direct (pure row); main() performs Log — its row
     // is {Log} — so it stays a generic call; the case body's resume call too.
@@ -1443,10 +1446,11 @@ describe("selective CPS: dcall/dret classification", () => {
     // var — wasm's pushStampedVar would unbox it and numeric-entry would
     // misclassify the call. Also pins the known latent gap: computed numeric
     // args (e.g. add(1 + 2) inside a fn) stay unstamped, so wasm numeric
-    // entry never fires for them.
+    // entry never fires for them. f is loop-bodied (over SMALL_BODY) so the
+    // call site survives cps_inline.ts.
     const c = ir(`
-      f :: fn(b: bool): bool { b };
-      f(1 == 1)
+      f :: fn(b: bool): bool { a := 1; c := 2; d := 3; e := 4; g := 5; h := 6; j := 7; k := 8; m := 9; n := 10; o := 11; p := 12; q := 13; r := 14; s := 15; b };
+      f(1 == 1); f(2 == 2)
     `);
     const args: CAtom[] = [];
     const walk = (t: CTerm): void => {
@@ -1463,9 +1467,11 @@ describe("selective CPS: dcall/dret classification", () => {
     };
     walk(c.term);
     for (const fn of c.funcs) walk(fn.body);
-    expect(args.length).toBe(1); // the pure call converted as a dcall
-    expect(args[0].t).toBe("var"); // computed arg temp, not a literal
-    expect(args[0].t === "var" && args[0].stamp).toBeUndefined();
+    expect(args.length).toBe(2); // the pure calls converted as dcalls
+    for (const a of args) {
+      expect(a.t).toBe("var"); // computed arg temps, not literals
+      expect(a.t === "var" && a.stamp).toBeUndefined();
+    }
   });
 
   test("multi-shot resume crossing dcall-produced bindings", () => {

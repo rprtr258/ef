@@ -30,6 +30,8 @@ Hindley-Milner-flavoured type system with effect tracking.
   unhandled-op gate; consumed by both backends and the frontends), `frontend/cps.ts` (CPS
   converter: checked AST → the shared CPS IR)), `frontend/cps_ir.ts` (the CPS IR node
   set + the multi-shot ANF/freeze discipline comments; leaf module),
+  `frontend/cps_inline.ts` (cross-function inlining over the CPS IR —
+  provenance, the splice rewrite, and CFn pruning; run by cps_opt.ts),
   `frontend/cps_opt.ts` (optimization passes applied as the final stage of CPS
   conversion),
   `backend/interpreter/eval.ts` (CPS IR interpreter + pipeline),
@@ -173,16 +175,27 @@ suspension/arrKind emission over an exhaustive `Expr` switch — widths come
    site.
 9. **`frontend/cps_opt.ts`** — optimization passes over the CPS IR (`optimizeCps`,
    applied by `toCps` as its final stage — consumers of `toCps` only ever
-   see optimized IR). Four
+   see optimized IR). Cross-function inlining (`frontend/cps_inline.ts`:
+   single-use closures always; small non-recursive bodies with a per-callee
+   splice-ancestry cap — recursive and mutually recursive callees never
+   unroll, preserving wasm's tail-call loop lowering; spine splices keep
+   the REPL accumulator's frame contract by stripping the callee's leading
+   scopes and requiring the single-dret delivery; nested closures are
+   cloned to fresh CFns so wasm's per-fun frame pinning stays sound;
+   capts lists are recomputed from the bodies and orphaned CFns pruned)
+   runs first, then four
    sound-by-construction rewrites, iterated to a fixpoint (every firing
    strictly shrinks the term): read-temp substitution (drops `bind $t = x`
-   read temps unless the temp is frozen or the source var is assigned;
+   read temps unless the temp is frozen or the source var is assigned —
+   nor if the temp itself is an assign target, which spliced renamed binds
+   can be;
    frozen temps of never-assigned vars are rewritten to snapshot the var),
    prim-let fusion (`let $t = prim; bind x = $t` → `let x = prim`),
    exit-continuation beta (a letk referenced exactly once via a `jump` node
    — the while loop's exit — is spliced into that jump; call/perform k
    operands are runtime reifications and never fire), and dead binding drop
-   (zero-use temps; dead trapping prims — field, div/rem — keep their
+   (zero-use temps and zero-use mkfns; dead trapping prims — field,
+   div/rem — keep their
    binding so the throw survives). Source-named binds are never dropped:
    top-level bindings must land in the caller's frame for the REPL
    accumulator. Soundness conditions are checked against the whole IR
