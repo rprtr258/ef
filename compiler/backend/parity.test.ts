@@ -143,6 +143,7 @@ const FIXTURES: Row[] = [
   {file: "handler-arity-mix-resume.ef", want: "3\n"},
   {file: "handler-second-resume-reperform.ef", want: "1\n"},
   {file: "handler-tail-resume-loop.ef", want: "0\n"},
+  {file: "nqueens-pick-fail-6.ef", want: "4\n"},
   {file: "arith-i64-rem.ef", want: "2\n"},
   {file: "arith-i64-div-by-zero-traps.ef", want: "ERR: integer divide by zero\n", code: 1},
   {file: "arith-i64-div-neg-truncs.ef", want: "-3\n"},

@@ -1,0 +1,56 @@
+# N-queens counting via backtracking at a modest input (n=6 -> 4): each
+# candidate row resumes Pick! once and explores that subtree to completion
+# before the next resume (the handler's loop is multi-shot), and Fail!
+# abandons a dead placement un-resumed — recursion through dcall sites with
+# rests re-entering after resumption, over raw i64 slots.
+effect Pick(size: i64): i64;
+effect Fail(): [i64];
+
+safe :: fn(q: i64, d: i64, xs: [i64]): bool {
+  ok := true;
+  i := 0;
+  dd := d;
+  while (i < len(xs)) {
+    x := get(xs, i);
+    if (q == x || q == x + dd || q == x - dd) {
+      ok = false
+    };
+    i = i + 1;
+    dd = dd + 1
+  };
+  ok
+};
+
+place :: fn(n: i64, c: i64): [i64] ! { Pick, Fail } {
+  if (c == 0) {
+    []
+  } else {
+    rest := place(n, c - 1);
+    q := Pick!(n);
+    if (safe(q, 1, rest)) {
+      concat([q], rest)
+    } else {
+      Fail!()
+    }
+  }
+};
+
+run :: fn(n: i64): i64 {
+  handle {
+    place(n, n)
+  } case Fail() => k {
+    0
+  } case Pick(size) => k {
+    a := 0;
+    i := 1;
+    while (i <= size) {
+      a = a + k(i);
+      i = i + 1
+    };
+    a
+  } case Return(v) => k {
+    1
+  }
+};
+
+run(6)

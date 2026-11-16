@@ -99,8 +99,7 @@ async function main(cmd: string, args: string[]) {
       break;
     }
     const src = readFileSync(args[0]).toString();
-    const out = args[1] ??
-      (args[0].endsWith(".ef") ? args[0].slice(0, -3) + ".wasm" : args[0] + ".wasm");
+    const out = args[1] ?? ((args[0].endsWith(".ef") ? args[0].slice(0, -3) : args[0]) + ".wasm");
     // Dynamic import: wasm is the only compile-only subcommand; the
     // binaryen engine must not initialize for run/types/lint/repl/lsp.
     const {compile} = await import("./backend/wasm/wasm.ts");
