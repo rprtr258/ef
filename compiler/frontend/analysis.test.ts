@@ -4,18 +4,18 @@
 // runtime impls in builtins.ts; the behavior tests pin the binding order
 // the wasm tree-shake relies on.
 import {describe, expect, test} from "bun:test";
-import {Parser} from "./parser.ts";
+import {parseProgram} from "./parser.ts";
 import {globalEnv} from "../env.ts";
 import {IMPL_KEYS, builtinParamNames} from "../builtins.ts";
 import {BUILTIN_TABLE} from "../builtin_table.ts";
-import {Unifier} from "./unify.ts";
+import {newUnifier} from "./unify.ts";
 import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, performsAnyOp} from "./analysis.ts";
 import {OP_NEG} from "../ops.ts";
 
-const refs = (src: string) => builtinRefs(new Parser(src).parseProgram());
-const vals = (src: string) => builtinValueUses(new Parser(src).parseProgram());
-const ops = (src: string) => collectEffectOps(new Parser(src).parseProgram());
-const anyOp = (src: string) => performsAnyOp(new Parser(src).parseProgram());
+const refs = (src: string) => builtinRefs(parseProgram(src));
+const vals = (src: string) => builtinValueUses(parseProgram(src));
+const ops = (src: string) => collectEffectOps(parseProgram(src));
+const anyOp = (src: string) => performsAnyOp(parseProgram(src));
 
 describe("builtin_table (static checks)", () => {
   test("EFFECT_OPS is pinned in op-table order (opids 0..n-1 before program ops)", () => {
@@ -47,7 +47,7 @@ describe("builtin_table (static checks)", () => {
   });
 
   test("every fn/native row's params matches its checker sig arity", () => {
-    const uni = new Unifier();
+    const uni = newUnifier();
     for (const d of BUILTIN_TABLE) {
       if (d.kind !== "fn" && d.kind !== "native") continue;
       const t = typeof d.t === "function" ? d.t(uni) : d.t;

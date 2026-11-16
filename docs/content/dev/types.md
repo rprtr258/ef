@@ -38,8 +38,9 @@ performed without a matching handler surface in the program's residual row.
 
 One instance per checking session; **all** mutable unification state lives in
 it, carried inside `Checked` across REPL lines. `Type` values themselves are
-plain data; every resolver is a method, so independent `checkProgram` calls
-(in tests!) never share state.
+plain data — and so is the unifier: free functions over it (`uniRes`,
+`uniUnify`, …) thread the state explicitly, so independent `checkProgram`
+calls (in tests!) never share state.
 
 <svg class="dgm" viewBox="0 0 720 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="unifier state">
   <defs>

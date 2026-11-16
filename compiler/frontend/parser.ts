@@ -46,7 +46,7 @@ function subst(t: Type, tm: Map<number, Type>): Type {
   return t;
 }
 
-export type Param = { name: string, typ: Type | null, pos?: Loc };
+type Param = { name: string, typ: Type | null, pos?: Loc };
 
 type HandlerCase = {
   op: string,
@@ -56,7 +56,7 @@ type HandlerCase = {
   body: ExprID,
 };
 
-export type Item =
+type Item =
   | { e: ExprID }
   | { effect: string, sig: EffectSig, pos?: Loc } // pos: the effect name token — go-to-definition's target for effect-name occurrences
   | { alias: Alias, pos?: Loc }; // pos: the alias name token — go-to-definition's target for alias-name occurrences
@@ -121,582 +121,590 @@ function parseStr(t: string): string {
 const PREC: Record<string, number> = {"||": 1, "&&": 2, "==": 3, "!=": 3, "<": 4, ">": 4, "<=": 4, ">=": 4, "+": 5, "-": 5, "*": 6, "/": 6, "%": 6};
 const binOps = new Set(Object.keys(PREC));
 
-// Parser (recursive descent + Pratt for infix)
-export class Parser {
-  toks: Tok[];
-  i = 0;
+// Parser state (recursive descent + Pratt for infix): plain data threaded
+// through the free functions below.
+type Parser = {
+  toks: Tok[],
+  i: number,
   // Parametric type aliases, registered top-down as `type` items are parsed.
   // `typeParamStack` lets an alias body reference its own type params as type
   // variables (e.g. `type Pair(a, b) = [a, b]`).
-  aliases = new Map<string, Alias>();
-  typeParamStack: Map<string, Var>[] = [];
+  aliases: Map<string, Alias>,
+  typeParamStack: Map<string, Var>[],
   // Type/effect name occurrences, pushed in source order while parsing.
-  typeToks: TypeTok[] = [];
+  typeToks: TypeTok[],
   // Whether the most recent parseStmt expression statement consumed a
   // trailing `;` — parseBlock reads it to decide if the block's last
   // expression is its value (no `;`) or discarded (unit).
-  stmtSemi = false;
-  constructor(src: string) {
-    this.toks = lex(src);
-  }
-  // Record the token just consumed (name = its text: the extent and the
-  // effect-sig hover lookup).
-  recordTypeTok(kind: TypeTok["kind"], name: string): void {
-    this.typeToks.push({pos: this.toks[this.i - 1].pos, len: name.length, kind, name});
-  }
-  peek(o = 0): string | undefined {
-    return this.toks[this.i + o]?.v;
-  }
-  next(): string {
-    return this.toks[this.i++].v;
-  }
-  // Position of the token at offset `o` from the cursor (undefined past EOF).
-  pos(o = 0): Loc | undefined {
-    return this.toks[this.i + o]?.pos;
-  }
-  eat(s: string): void {
-    if (this.peek() !== s) this.fail(`Expected "${s}", got "${this.peek()}"`);
-    this.i++;
-  }
-  // Every comma-separated list (args, params, fn types, effect rows, bracket
-  // literals/patterns) shares one rule: the comma is required between
-  // elements, and a `,` directly before the close delimiter is the optional
-  // trailing comma. At the close delimiter itself this is a no-op, leaving
-  // the caller's `while (!this.is(close))` loop to exit.
-  listSep(close: string): void {
-    if (this.is(",")) this.i++;
-    else if (!this.is(close)) this.fail(`Expected "," or "${close}", got "${this.peek()}"`);
-  }
-  // Throw a ParseError anchored at the token `o` offsets from the cursor
-  // (negative = an already-consumed token). Past EOF the error is zero-width
-  // at the last token's end — where input ran out.
-  fail(msg: string, o = 0): never {
-    const t = this.toks.at(this.i + o);
-    if (t !== undefined) throw new ParseError(msg, t.pos, t.end);
-    const end = this.toks.at(-1)?.end ?? {line: 1, col: 1};
-    throw new ParseError(msg, end, end);
-  }
-  is(s: string): boolean {
-    return this.peek() === s;
-  }
-  isKw(kw: string): boolean {
-    return this.peek() === kw && KEYWORDS.has(kw);
-  }
-  atEnd(): boolean {
-    return this.i >= this.toks.length;
-  }
-
+  stmtSemi: boolean,
   // Flat node arena: every parsed expression is pushed here once and referred
   // to by `ExprID` (its index) from parents, items, and closures.
-  nodes: Expr[] = [];
+  nodes: Expr[],
   // Node source extents, parallel to `nodes`: each expression's start and
   // exclusive end token — undefined only on synthesized nodes (the operator
   // `sym`s and bools desugared from `&&`/`||`/`!`). Backends ignore it.
-  locs: (LocRange | undefined)[] = [];
-  add(e: Expr, pos?: Loc): ExprID {
-    this.nodes.push(e);
-    // Every add site consumes the node's final token before adding (parents
-    // are added after their children; statement binders add before eating
-    // the trailing `;`), so the last consumed token's end is the node's end.
-    this.locs.push(pos === undefined ? undefined : {start: pos, end: this.toks[this.i - 1].end});
-    return this.nodes.length - 1;
-  }
+  locs: (LocRange | undefined)[],
+};
 
-  parseProgram(): Program {
-    const items: Item[] = [];
-    while (!this.atEnd()) {
-      if (this.isKw("effect")) items.push(this.parseEffect());
-      else {
-        const al = this.tryParseAliasItem();
-        items.push(al ?? {e: this.parseStmt()});
+function newParser(src: string): Parser {
+  return {toks: lex(src), i: 0, aliases: new Map(), typeParamStack: [], typeToks: [], stmtSemi: false, nodes: [], locs: []};
+}
+
+export function parseProgram(src: string): Program {
+  return program(newParser(src));
+}
+  // Record the token just consumed (name = its text: the extent and the
+  // effect-sig hover lookup).
+function recordTypeTok(st: Parser, kind: TypeTok["kind"], name: string): void {
+  st.typeToks.push({pos: st.toks[st.i - 1].pos, len: name.length, kind, name});
+}
+function peek(st: Parser, o = 0): string | undefined {
+  return st.toks[st.i + o]?.v;
+}
+function next(st: Parser): string {
+  return st.toks[st.i++].v;
+}
+// Position of the token at offset `o` from the cursor (undefined past EOF).
+function pos(st: Parser, o = 0): Loc | undefined {
+  return st.toks[st.i + o]?.pos;
+}
+function eat(st: Parser, s: string): void {
+  if (peek(st) !== s) fail(st, `Expected "${s}", got "${peek(st)}"`);
+  st.i++;
+}
+// Every comma-separated list (args, params, fn types, effect rows, bracket
+// literals/patterns) shares one rule: the comma is required between
+// elements, and a `,` directly before the close delimiter is the optional
+// trailing comma. At the close delimiter itself this is a no-op, leaving
+// the caller's `while (!is(st, close))` loop to exit.
+function listSep(st: Parser, close: string): void {
+  if (is(st, ",")) st.i++;
+  else if (!is(st, close)) fail(st, `Expected "," or "${close}", got "${peek(st)}"`);
+}
+// Throw a ParseError anchored at the token `o` offsets from the cursor
+// (negative = an already-consumed token). Past EOF the error is zero-width
+// at the last token's end — where input ran out.
+function fail(st: Parser, msg: string, o = 0): never {
+  const t = st.toks.at(st.i + o);
+  if (t !== undefined) throw new ParseError(msg, t.pos, t.end);
+  const end = st.toks.at(-1)?.end ?? {line: 1, col: 1};
+  throw new ParseError(msg, end, end);
+}
+function is(st: Parser, s: string): boolean {
+  return peek(st) === s;
+}
+function isKw(st: Parser, kw: string): boolean {
+  return peek(st) === kw && KEYWORDS.has(kw);
+}
+function atEnd(st: Parser): boolean {
+  return st.i >= st.toks.length;
+}
+
+// Flat node arena: every parsed expression is pushed here once and referred
+// to by `ExprID` (its index) from parents, items, and closures.
+function add(st: Parser, e: Expr, pos?: Loc): ExprID {
+  st.nodes.push(e);
+  // Every add site consumes the node's final token before adding (parents
+  // are added after their children; statement binders add before eating
+  // the trailing `;`), so the last consumed token's end is the node's end.
+  st.locs.push(pos === undefined ? undefined : {start: pos, end: st.toks[st.i - 1].end});
+  return st.nodes.length - 1;
+}
+
+function program(st: Parser): Program {
+  const items: Item[] = [];
+  while (!atEnd(st)) {
+    if (isKw(st, "effect")) items.push(parseEffect(st));
+    else {
+      const al = tryParseAliasItem(st);
+      items.push(al ?? {e: parseStmt(st)});
+    }
+  }
+  return {nodes: st.nodes, locs: st.locs, items, typeToks: st.typeToks};
+}
+function parseEffect(st: Parser): Item {
+  next(st); // effect
+  const p = pos(st);
+  const name = next(st);
+  recordTypeTok(st, "macro", name);
+  const params = parseParams(st);
+  eat(st, ":");
+  const ret = parseType(st);
+  eat(st, ";");
+  return {effect: name, sig: {params: params.map(p => p.typ), ret, names: params.map(p => p.name)}, pos: p};
+}
+
+// Top-level type aliases, keyword-free (`type` is now the type-of-types
+// primitive used in their parameter annotations):
+//   `Name :: <type>;`                               — nullary alias
+//   `Name :: fn(p: type, ...): type { <type> };`    — parametric alias
+// Disambiguation from `name :: expr;` is type-first: the RHS must parse as
+// a type landing on `;` (unknown names throw out of parseType, so
+// `pair :: [a, b];` over value variables and bare `y :: x;` rewind and keep
+// the binding reading). parseType allocates no Expr nodes, so the rewind
+// leaves no orphans. The fn form claims the whole shape — every param and
+// the return `: type` — which no useful term lambda can match, since
+// nothing inhabits `type` at term level.
+function tryParseAliasItem(st: Parser): Item | null {
+  const name = peek(st);
+  if (name === undefined || KEYWORDS.has(name)) return null;
+  const save = st.i;
+  const toksLen = st.typeToks.length;
+  const p = pos(st);
+  next(st); // name
+  recordTypeTok(st, "type", name);
+  if (!is(st, "::")) {
+    st.i = save;
+    st.typeToks.length = toksLen;
+    return null;
+  }
+  next(st); // ::
+  let pushed = false;
+  try {
+    if (isKw(st, "fn")) {
+      next(st); // fn
+      eat(st, "(");
+      const tparams = new Map<string, Var>();
+      while (!is(st, ")")) {
+        const p = next(st);
+        if (KEYWORDS.has(p)) throw Error("not a type fn");
+        recordTypeTok(st, "typeParameter", p);
+        eat(st, ":");
+        if (!isKw(st, "type")) throw Error("not a type fn");
+        next(st); // type
+        tparams.set(p, parserVar());
+        listSep(st, ")");
       }
-    }
-    return {nodes: this.nodes, locs: this.locs, items, typeToks: this.typeToks};
-  }
-  parseEffect(): Item {
-    this.next(); // effect
-    const p = this.pos();
-    const name = this.next();
-    this.recordTypeTok("macro", name);
-    const params = this.parseParams();
-    this.eat(":");
-    const ret = this.parseType();
-    this.eat(";");
-    return {effect: name, sig: {params: params.map(p => p.typ), ret, names: params.map(p => p.name)}, pos: p};
-  }
-
-  // Top-level type aliases, keyword-free (`type` is now the type-of-types
-  // primitive used in their parameter annotations):
-  //   `Name :: <type>;`                               — nullary alias
-  //   `Name :: fn(p: type, ...): type { <type> };`    — parametric alias
-  // Disambiguation from `name :: expr;` is type-first: the RHS must parse as
-  // a type landing on `;` (unknown names throw out of parseType, so
-  // `pair :: [a, b];` over value variables and bare `y :: x;` rewind and keep
-  // the binding reading). parseType allocates no Expr nodes, so the rewind
-  // leaves no orphans. The fn form claims the whole shape — every param and
-  // the return `: type` — which no useful term lambda can match, since
-  // nothing inhabits `type` at term level.
-  tryParseAliasItem(): Item | null {
-    const name = this.peek();
-    if (name === undefined || KEYWORDS.has(name)) return null;
-    const save = this.i;
-    const toksLen = this.typeToks.length;
-    const p = this.pos();
-    this.next(); // name
-    this.recordTypeTok("type", name);
-    if (!this.is("::")) {
-      this.i = save;
-      this.typeToks.length = toksLen;
-      return null;
-    }
-    this.next(); // ::
-    let pushed = false;
-    try {
-      if (this.isKw("fn")) {
-        this.next(); // fn
-        this.eat("(");
-        const tparams = new Map<string, Var>();
-        while (!this.is(")")) {
-          const p = this.next();
-          if (KEYWORDS.has(p)) throw Error("not a type fn");
-          this.recordTypeTok("typeParameter", p);
-          this.eat(":");
-          if (!this.isKw("type")) throw Error("not a type fn");
-          this.next(); // type
-          tparams.set(p, parserVar());
-          this.listSep(")");
-        }
-        this.eat(")");
-        this.eat(":");
-        if (!this.isKw("type")) throw Error("not a type fn");
-        this.next(); // type
-        this.eat("{");
-        this.typeParamStack.push(tparams);
+      eat(st, ")");
+      eat(st, ":");
+      if (!isKw(st, "type")) throw Error("not a type fn");
+      next(st); // type
+      eat(st, "{");
+        st.typeParamStack.push(tparams);
         pushed = true;
-        const body = this.parseType();
-        this.typeParamStack.pop();
+        const body = parseType(st);
+        st.typeParamStack.pop();
         pushed = false;
-        this.eat("}");
-        this.eat(";");
-        const alias = {name, tparams, body};
-        this.aliases.set(name, alias);
-        return {alias, pos: p};
-      }
-      // Nullary: the RHS is any type shape — bracket/paren/fn-type forms,
-      // plus bare names (`s32 :: i32`) and alias applications (`t :: V2[i64]`)
-      // — resolved by the same parseType fallback that throws on unknown
-      // names.
-      const body = this.parseType();
-      this.eat(";");
-      const alias = {name, tparams: new Map<string, Var>(), body};
-      this.aliases.set(name, alias);
+        eat(st, "}");
+      eat(st, ";");
+      const alias = {name, tparams, body};
+      st.aliases.set(name, alias);
       return {alias, pos: p};
+    }
+    // Nullary: the RHS is any type shape — bracket/paren/fn-type forms,
+    // plus bare names (`s32 :: i32`) and alias applications (`t :: V2[i64]`)
+    // — resolved by the same parseType fallback that throws on unknown
+    // names.
+    const body = parseType(st);
+    eat(st, ";");
+    const alias = {name, tparams: new Map<string, Var>(), body};
+    st.aliases.set(name, alias);
+    return {alias, pos: p};
     } catch {
-      if (pushed) this.typeParamStack.pop();
-      this.i = save;
-      this.typeToks.length = toksLen;
-      return null;
-    }
+    if (pushed) st.typeParamStack.pop();
+    st.i = save;
+    st.typeToks.length = toksLen;
+    return null;
   }
+}
 
-  parseStmt(): ExprID {
-    const p = this.pos();
-    this.stmtSemi = false;
-    let e: ExprID;
-    const nonKw = this.peek() !== undefined && !KEYWORDS.has(this.peek()!);
-    if (nonKw && this.peek(1) === ":=") {
-      // `name := val;` — mutable, inferred type.
-      const name = this.next();
-      this.next(); // :=
-      const val = this.parseExpr();
-      e = this.add({t: "let", name, typ: null, val, mut: true}, p);
-      this.eat(";");
-    } else if (nonKw && this.peek(1) === "::") {
-      // `name :: val;` — const, inferred type.
-      const name = this.next();
-      this.next(); // ::
-      const val = this.parseExpr();
-      e = this.add({t: "let", name, typ: null, val, mut: false}, p);
-      this.eat(";");
-    } else if (nonKw && this.peek(1) === ":") {
-      // `name: T = val;` — mutable, annotated; `name: T : val;` — const, annotated.
-      const name = this.next();
-      this.next(); // :
-      const typ = this.parseType();
-      const isConst = this.is(":");
-      if (isConst) this.next();
-      else this.eat("=");
-      const val = this.parseExpr();
-      e = this.add({t: "let", name, typ, val, mut: !isConst}, p);
-      this.eat(";");
-    } else if (this.is("[")) {
-      // Destructuring bind (`[a: T, b] := val;` / `[a: T, b] : val;`) or an
-      // array literal as an expression statement (`[x, y]` as a block tail).
-      // The bracketed prefix is ambiguous, so try destructuring and backtrack
-      // to an expression unless a bind operator follows `]`.
-      const save = this.i;
-      try {
-        this.next();
-        const fields: { name: string, typ: Type | null, pos?: Loc }[] = [];
-        while (!this.is("]")) {
-          const pos = this.pos();
-          const name = this.next();
-          const typ = this.is(":") ? (this.next(), this.parseType()) : null;
-          fields.push({name, typ, pos});
-          this.listSep("]");
-        }
-        this.eat("]");
-        // Typed fields bind the value with `:` (const) or `:=` (mut);
-        // untyped fields keep the `::` / `:=` pair.
-        const isConst = fields.some((f) => f.typ !== null) ? this.is(":") : this.is("::");
-        if (isConst) this.next();
-        else this.eat(":=");
-        const val = this.parseExpr();
-        e = this.add({t: "dlet", fields, val, mut: !isConst}, p);
-        this.eat(";");
+function parseStmt(st: Parser): ExprID {
+  const p = pos(st);
+  st.stmtSemi = false;
+  let e: ExprID;
+  const nonKw = peek(st) !== undefined && !KEYWORDS.has(peek(st)!);
+  if (nonKw && peek(st, 1) === ":=") {
+    // `name := val;` — mutable, inferred type.
+    const name = next(st);
+    next(st); // :=
+    const val = parseExpr(st);
+    e = add(st, {t: "let", name, typ: null, val, mut: true}, p);
+    eat(st, ";");
+    } else if (nonKw && peek(st, 1) === "::") {
+    // `name :: val;` — const, inferred type.
+    const name = next(st);
+    next(st); // ::
+    const val = parseExpr(st);
+    e = add(st, {t: "let", name, typ: null, val, mut: false}, p);
+    eat(st, ";");
+    } else if (nonKw && peek(st, 1) === ":") {
+    // `name: T = val;` — mutable, annotated; `name: T : val;` — const, annotated.
+    const name = next(st);
+    next(st); // :
+    const typ = parseType(st);
+    const isConst = is(st, ":");
+    if (isConst) next(st);
+    else eat(st, "=");
+    const val = parseExpr(st);
+    e = add(st, {t: "let", name, typ, val, mut: !isConst}, p);
+    eat(st, ";");
+    } else if (is(st, "[")) {
+    // Destructuring bind (`[a: T, b] := val;` / `[a: T, b] : val;`) or an
+    // array literal as an expression statement (`[x, y]` as a block tail).
+    // The bracketed prefix is ambiguous, so try destructuring and backtrack
+    // to an expression unless a bind operator follows `]`.
+    const save = st.i;
+    try {
+      next(st);
+      const fields: { name: string, typ: Type | null, pos?: Loc }[] = [];
+      while (!is(st, "]")) {
+        const at = pos(st);
+        const name = next(st);
+        const typ = is(st, ":") ? (next(st), parseType(st)) : null;
+        fields.push({name, typ, pos: at});
+        listSep(st, "]");
+      }
+      eat(st, "]");
+      // Typed fields bind the value with `:` (const) or `:=` (mut);
+      // untyped fields keep the `::` / `:=` pair.
+      const isConst = fields.some((f) => f.typ !== null) ? is(st, ":") : is(st, "::");
+      if (isConst) next(st);
+      else eat(st, ":=");
+      const val = parseExpr(st);
+      e = add(st, {t: "dlet", fields, val, mut: !isConst}, p);
+      eat(st, ";");
       } catch {
-        this.i = save;
-        e = this.parseExpr();
-        this.stmtSemi = this.is(";");
-        if (this.stmtSemi)
-          this.i++;
-        else if (!isBlocky(this.nodes[e]) && !this.is("}") && !this.atEnd())
-          this.eat(";");
-      }
-    } else if (nonKw && this.peek(1) === "=") {
-      const name = this.next();
-      this.next(); // =
-      const val = this.parseExpr();
-      e = this.add({t: "assign", name, val}, p);
-      if (this.is(";"))
-        this.i++;
-    } else {
-      e = this.parseExpr();
-      this.stmtSemi = this.is(";");
-      if (this.stmtSemi)
-        this.i++;
-      else if (!isBlocky(this.nodes[e]) && !this.is("}") && !this.atEnd())
-        this.eat(";");
-    }
-    return e;
+      st.i = save;
+      e = parseExpr(st);
+      st.stmtSemi = is(st, ";");
+      if (st.stmtSemi)
+      st.i++;
+      else if (!isBlocky(st.nodes[e]) && !is(st, "}") && !atEnd(st))
+    eat(st, ";");
   }
+  } else if (nonKw && peek(st, 1) === "=") {
+  const name = next(st);
+  next(st); // =
+  const val = parseExpr(st);
+  e = add(st, {t: "assign", name, val}, p);
+  if (is(st, ";"))
+  st.i++;
+  } else {
+  e = parseExpr(st);
+  st.stmtSemi = is(st, ";");
+  if (st.stmtSemi)
+  st.i++;
+  else if (!isBlocky(st.nodes[e]) && !is(st, "}") && !atEnd(st))
+eat(st, ";");
+}
+return e;
+}
 
-  parseParams(): Param[] {
-    this.eat("(");
-    const params: Param[] = [];
-    while (!this.is(")")) {
-      const pos = this.pos();
-      const name = this.next();
-      const typ = this.is(":") ? (this.next(), this.parseType()) : null;
-      params.push({name, typ, pos});
-      this.listSep(")");
-    }
-    this.eat(")");
-    return params;
-  }
+function parseParams(st: Parser): Param[] {
+eat(st, "(");
+const params: Param[] = [];
+while (!is(st, ")")) {
+const at = pos(st);
+const name = next(st);
+const typ = is(st, ":") ? (next(st), parseType(st)) : null;
+params.push({name, typ, pos: at});
+listSep(st, ")");
+}
+eat(st, ")");
+return params;
+}
 
-  parseArgs(): ExprID[] {
-    this.eat("(");
-    const args: ExprID[] = [];
-    while (!this.is(")")) {
-      args.push(this.parseExpr());
-      this.listSep(")");
-    }
-    this.eat(")");
-    return args;
-  }
+function parseArgs(st: Parser): ExprID[] {
+eat(st, "(");
+const args: ExprID[] = [];
+while (!is(st, ")")) {
+args.push(parseExpr(st));
+listSep(st, ")");
+}
+eat(st, ")");
+return args;
+}
 
-  parseBlock(): ExprID {
-    const p = this.pos();
-    this.eat("{");
-    const stmts: ExprID[] = [];
-    let semi = false;
-    while (!this.is("}")) {
-      stmts.push(this.parseStmt());
-      semi = this.stmtSemi;
-    }
-    this.eat("}");
-    return this.add({t: "block", stmts, semi}, p);
-  }
+function parseBlock(st: Parser): ExprID {
+const p = pos(st);
+eat(st, "{");
+const stmts: ExprID[] = [];
+let semi = false;
+while (!is(st, "}")) {
+stmts.push(parseStmt(st));
+semi = st.stmtSemi;
+}
+eat(st, "}");
+return add(st, {t: "block", stmts, semi}, p);
+}
 
-  // optional `! { op, op, ... }` effect annotation on a fn return type
-  parseEffAnnot(): Set<string> | null {
-    if (!this.is("!")) return null;
-    this.next();
-    this.eat("{");
-    const effs = new Set<string>();
-    while (!this.is("}")) {
-      const eff = this.next();
-      this.recordTypeTok("macro", eff);
-      effs.add(eff);
-      this.listSep("}");
-    }
-    this.eat("}");
-    return effs;
-  }
+// optional `! { op, op, ... }` effect annotation on a fn return type
+function parseEffAnnot(st: Parser): Set<string> | null {
+if (!is(st, "!")) return null;
+next(st);
+eat(st, "{");
+const effs = new Set<string>();
+while (!is(st, "}")) {
+const eff = next(st);
+recordTypeTok(st, "macro", eff);
+effs.add(eff);
+listSep(st, "}");
+}
+eat(st, "}");
+return effs;
+}
 
-  // types
-  // Parse a single tuple field: `name: T` (named) or `T` (unnamed).
-  parseTupField(): TupField {
-    if (this.peek() !== undefined && /[A-Za-z_]/.test(this.peek()![0]) && this.peek(1) === ":") {
-      const name = this.next();
-      this.next(); // :
-      return {name, type: this.parseType()};
-    }
-    return {name: null, type: this.parseType()};
-  }
+// types
+// Parse a single tuple field: `name: T` (named) or `T` (unnamed).
+function parseTupField(st: Parser): TupField {
+if (peek(st) !== undefined && /[A-Za-z_]/.test(peek(st)![0]) && peek(st, 1) === ":") {
+const name = next(st);
+next(st); // :
+return {name, type: parseType(st)};
+}
+return {name: null, type: parseType(st)};
+}
 
-  parseType(): Type {
-    if (this.is("[")) {
-      this.next();
-      const first = this.parseTupField();
-      if (this.is(",")) {
-        // tuple: `[T1, T2, ...]` (named or unnamed)
-        const fields = [first];
-        while (this.is(",")) {
-          this.i++;
-          if (this.is("]")) break; // trailing comma tolerance
-          fields.push(this.parseTupField());
-        }
-        this.eat("]");
-        return tTup(fields);
-      }
-      this.eat("]");
-      if (first.name !== null)
-        this.fail("array type cannot have a named element", -1); // the `]`
-      return tArr(first.type);
-    }
-    if (this.is("(")) {
-      this.next();
-      const ps: Type[] = [];
-      while (!this.is(")")) {
-        ps.push(this.parseType());
-        this.listSep(")");
-      }
-      this.eat(")");
-      this.eat("-");
-      this.eat(">");
-      const ret = this.parseType();
-      return tFun(ps, ret, rowOf(this.parseEffAnnot() ?? undefined));
-    }
-    const name = this.next();
-    // type parameter of an enclosing alias body → a type variable.
-    for (const m of this.typeParamStack)
-      if (m.has(name)) {
-        this.recordTypeTok("typeParameter", name);
-        return m.get(name)!;
-      }
-    // Every other name consumed in type position — prims (incl. `unit`,
-    // `any`, the `type`-of-types keyword), alias uses, and names that turn
-    // out unknown (thrown below; the LSP discards tokens when a program
-    // fails to check).
-    this.recordTypeTok("type", name);
-    // alias instantiation: `Name(T1, T2)` (or nullary `Name`). In a type
-    // position `Name(...)` has no other reading, so the call-like form is
-    // unambiguous.
-    const al = this.aliases.get(name);
-    if (al !== undefined) {
-      const args: Type[] = [];
-      if (this.is("(")) {
-        this.next();
-        while (!this.is(")")) {
-          args.push(this.parseType());
-          this.listSep(")");
-        }
-        this.eat(")");
-      }
-      return instantiateAlias(al, args);
-    }
-    switch (name) {
-      case "i32": return TI32;
-      case "i64": return TI64;
-      case "u32": return TU32;
-      case "u64": return TU64;
-      case "f32": return TF32;
-      case "f64": return TF64;
-      case "string": return TSTR;
-      case "bool": return TBOOL;
-      case "unit": return TUNIT;
-      case "any": return TANY;
-      case "type": return TTYPE;
-      default: this.fail("Unknown type: " + name, -1); // the name token
-    }
-  }
+function parseType(st: Parser): Type {
+if (is(st, "[")) {
+next(st);
+const first = parseTupField(st);
+if (is(st, ",")) {
+// tuple: `[T1, T2, ...]` (named or unnamed)
+const fields = [first];
+while (is(st, ",")) {
+st.i++;
+if (is(st, "]")) break; // trailing comma tolerance
+fields.push(parseTupField(st));
+}
+eat(st, "]");
+return tTup(fields);
+}
+eat(st, "]");
+if (first.name !== null)
+fail(st, "array type cannot have a named element", -1); // the `]`
+return tArr(first.type);
+}
+if (is(st, "(")) {
+next(st);
+const ps: Type[] = [];
+while (!is(st, ")")) {
+ps.push(parseType(st));
+listSep(st, ")");
+}
+eat(st, ")");
+eat(st, "-");
+eat(st, ">");
+const ret = parseType(st);
+return tFun(ps, ret, rowOf(parseEffAnnot(st) ?? undefined));
+}
+const name = next(st);
+// type parameter of an enclosing alias body → a type variable.
+for (const m of st.typeParamStack)
+if (m.has(name)) {
+recordTypeTok(st, "typeParameter", name);
+return m.get(name)!;
+}
+// Every other name consumed in type position — prims (incl. `unit`,
+// `any`, the `type`-of-types keyword), alias uses, and names that turn
+// out unknown (thrown below; the LSP discards tokens when a program
+// fails to check).
+recordTypeTok(st, "type", name);
+// alias instantiation: `Name(T1, T2)` (or nullary `Name`). In a type
+// position `Name(...)` has no other reading, so the call-like form is
+// unambiguous.
+const al = st.aliases.get(name);
+if (al !== undefined) {
+const args: Type[] = [];
+if (is(st, "(")) {
+next(st);
+while (!is(st, ")")) {
+args.push(parseType(st));
+listSep(st, ")");
+}
+eat(st, ")");
+}
+return instantiateAlias(al, args);
+}
+switch (name) {
+case "i32": return TI32;
+case "i64": return TI64;
+case "u32": return TU32;
+case "u64": return TU64;
+case "f32": return TF32;
+case "f64": return TF64;
+case "string": return TSTR;
+case "bool": return TBOOL;
+case "unit": return TUNIT;
+case "any": return TANY;
+case "type": return TTYPE;
+default: fail(st, "Unknown type: " + name, -1); // the name token
+}
+}
 
-  // --- Pratt ---
-  parseExpr(): ExprID {
-    return this.parseBinary(0);
-  }
+// --- Pratt ---
+function parseExpr(st: Parser): ExprID {
+return parseBinary(st, 0);
+}
 
-  parseBinary(min: number): ExprID {
-    let left = this.parseUnary();
-    while (true) {
-      const op = this.peek();
-      if (op === undefined || !binOps.has(op))
-        break;
-      const prec = PREC[op];
-      if (prec < min)
-        break;
-      this.next();
-      const right = this.parseBinary(prec + 1);
-      if (op === "&&")
-        left = this.add({t: "if", c: left, a: right, b: this.add({t: "bool", v: false})}, this.locs[left]?.start);
-      else if (op === "||")
-        left = this.add({t: "if", c: left, a: this.add({t: "bool", v: true}), b: right}, this.locs[left]?.start);
-      else
-        left = this.add({t: "app", fn: this.add({t: "sym", v: op}), args: [left, right]}, this.locs[left]?.start);
-    }
-    return left;
-  }
+function parseBinary(st: Parser, min: number): ExprID {
+let left = parseUnary(st);
+while (true) {
+const op = peek(st);
+if (op === undefined || !binOps.has(op))
+break;
+const prec = PREC[op];
+if (prec < min)
+break;
+next(st);
+const right = parseBinary(st, prec + 1);
+if (op === "&&")
+left = add(st, {t: "if", c: left, a: right, b: add(st, {t: "bool", v: false})}, st.locs[left]?.start);
+else if (op === "||")
+left = add(st, {t: "if", c: left, a: add(st, {t: "bool", v: true}), b: right}, st.locs[left]?.start);
+else
+left = add(st, {t: "app", fn: add(st, {t: "sym", v: op}), args: [left, right]}, st.locs[left]?.start);
+}
+return left;
+}
 
-  parseUnary(): ExprID {
-    const p = this.pos();
-    if (this.is("-")) {
-      this.next();
-      return this.add({t: "app", fn: this.add({t: "sym", v: OP_NEG}), args: [this.parseUnary()]}, p);
-    }
-    if (this.is("!")) {
-      this.next();
-      return this.add({t: "app", fn: this.add({t: "sym", v: OP_NOT}), args: [this.parseUnary()]}, p);
-    }
-    return this.parsePostfix();
-  }
+function parseUnary(st: Parser): ExprID {
+const p = pos(st);
+if (is(st, "-")) {
+next(st);
+return add(st, {t: "app", fn: add(st, {t: "sym", v: OP_NEG}), args: [parseUnary(st)]}, p);
+}
+if (is(st, "!")) {
+next(st);
+return add(st, {t: "app", fn: add(st, {t: "sym", v: OP_NOT}), args: [parseUnary(st)]}, p);
+}
+return parsePostfix(st);
+}
 
-  parsePostfix(): ExprID {
-    let e = this.parsePrimary();
-    // perform: `Op!(args)` (postfix `!` after an effect name).
-    const prim = this.nodes[e];
-    if (prim.t === "sym" && this.is("!") && this.peek(1) === "(") {
-      const op = prim.v;
-      this.recordTypeTok("macro", op);
-      this.next(); // !
-      const args = this.parseArgs();
-      e = this.add({t: "perform", op, args}, this.locs[e]?.start);
-    }
-    while (this.is("(")) {
-      const args = this.parseArgs();
-      e = this.add({t: "app", fn: e, args}, this.locs[e]?.start);
-    }
-    // field access: `obj.x` (named) or `obj.0` (positional). The lexer
-    // reads `0.0` as a single float token, so a chained `m.0.0` arrives as
-    // one field name; split it into successive accesses.
-    while (this.is(".")) {
-      this.next();
-      const name = this.next();
-      for (const part of name.split(".")) e = this.add({t: "field", obj: e, name: part}, this.locs[e]?.start);
-    }
-    return e;
-  }
+function parsePostfix(st: Parser): ExprID {
+let e = parsePrimary(st);
+// perform: `Op!(args)` (postfix `!` after an effect name).
+const prim = st.nodes[e];
+if (prim.t === "sym" && is(st, "!") && peek(st, 1) === "(") {
+const op = prim.v;
+recordTypeTok(st, "macro", op);
+next(st); // !
+const args = parseArgs(st);
+e = add(st, {t: "perform", op, args}, st.locs[e]?.start);
+}
+while (is(st, "(")) {
+const args = parseArgs(st);
+e = add(st, {t: "app", fn: e, args}, st.locs[e]?.start);
+}
+// field access: `obj.x` (named) or `obj.0` (positional). The lexer
+// reads `0.0` as a single float token, so a chained `m.0.0` arrives as
+// one field name; split it into successive accesses.
+while (is(st, ".")) {
+next(st);
+const name = next(st);
+for (const part of name.split(".")) e = add(st, {t: "field", obj: e, name: part}, st.locs[e]?.start);
+}
+return e;
+}
 
-  parsePrimary(): ExprID {
-    const t = this.peek();
-    if (t === undefined) this.fail("Unexpected EOF");
-    const p = this.pos();
-    if (t === "@") {
-      // `@as(expr, T)` — the one explicit numeric cast.
-      this.next();
-      const name = this.next();
-      if (name !== "as") this.fail(`Unknown @-form: @${name}`, -1); // the form name
-      this.eat("(");
-      const e = this.parseExpr();
-      this.eat(",");
-      const typ = this.parseType();
-      this.eat(")");
-      return this.add({t: "as", e, typ}, p);
-    }
-    if (/^-?\d/.test(t)) {
-      this.next();
-      return this.add({t: "num", v: Number(t), isFloat: t.includes("."), raw: t.includes(".") ? undefined : t}, p);
-    }
-    if (t.startsWith("\"")) {
-      this.next();
-      return this.add({t: "str", v: parseStr(t)}, p);
-    }
-    if (t === "true") {
-      this.next();
-      return this.add({t: "bool", v: true}, p);
-    }
-    if (t === "false") {
-      this.next();
-      return this.add({t: "bool", v: false}, p);
-    }
-    if (t === "unit") {
-      this.next();
-      return this.add({t: "unit"}, p);
-    }
-    if (t === "(") {
-      this.next();
-      const e = this.parseExpr();
-      this.eat(")");
-      return e;
-    }
-    if (t === "[") {
-      this.next();
-      const els: ExprID[] = [];
-      while (!this.is("]")) {
-        els.push(this.parseExpr());
-        this.listSep("]");
-      }
-      this.eat("]");
-      return this.add({t: "arr", elems: els}, p);
-    }
-    if (this.isKw("fn")) {
-      this.next();
-      const params = this.parseParams();
-      const retTyp = this.is(":") ? (this.next(), this.parseType()) : null;
-      const retEffs = this.parseEffAnnot();
-      const body = this.parseBlock();
-      return this.add({t: "lambda", params, retTyp, retEffs, body}, p);
-    }
-    if (this.isKw("if")) {
-      this.next();
-      this.eat("(");
-      const c = this.parseExpr();
-      this.eat(")");
-      const a = this.parseBlock();
-      let b: ExprID = this.add({t: "unit"}, p);
-      if (this.isKw("else")) {
-        this.next();
-        b = this.isKw("if") ? this.parsePrimary() : this.parseBlock();
-      } else if (this.is(";")) {
-        this.i++;
-      }
-      return this.add({t: "if", c, a, b}, p);
-    }
-    if (this.isKw("while")) {
-      this.next();
-      this.eat("(");
-      const c = this.parseExpr();
-      this.eat(")");
-      const body = this.parseBlock();
-      return this.add({t: "while", c, body}, p);
-    }
-    if (this.isKw("handle")) {
-      this.next();
-      const body = this.parseBlock();
-      const cases: HandlerCase[] = [];
-      while (this.isKw("case")) {
-        this.next();
-        const op = this.next();
-        this.recordTypeTok("macro", op);
-        const params = this.parseParams();
-        this.eat("=>");
-        const resume = this.next();
-        const resumePos = this.toks[this.i - 1].pos;
-        const cbody = this.parseBlock();
-        cases.push({op, params, resume, resumePos, body: cbody});
-      }
-      return this.add({t: "handle", body, cases}, p);
-    }
-    // Fallthrough is ident-shaped tokens only (mirrors the lexer's ident
-    // rule): every other token kind has a branch above. A stray punctuation
-    // token must fail here as a parse error — as a `sym` node it surfaced
-    // later as a baffling type error ("literal arity 6 ≠ tuple 2" for
-    // `[x: 1, y: 2]`).
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(t)) this.fail(`Unexpected token "${t}"`);
-    this.next();
-    return this.add({t: "sym", v: t}, p);
-  }
+function parsePrimary(st: Parser): ExprID {
+const t = peek(st);
+if (t === undefined) fail(st, "Unexpected EOF");
+const p = pos(st);
+if (t === "@") {
+// `@as(expr, T)` — the one explicit numeric cast.
+next(st);
+const name = next(st);
+if (name !== "as") fail(st, `Unknown @-form: @${name}`, -1); // the form name
+eat(st, "(");
+const e = parseExpr(st);
+eat(st, ",");
+const typ = parseType(st);
+eat(st, ")");
+return add(st, {t: "as", e, typ}, p);
+}
+if (/^-?\d/.test(t)) {
+next(st);
+return add(st, {t: "num", v: Number(t), isFloat: t.includes("."), raw: t.includes(".") ? undefined : t}, p);
+}
+if (t.startsWith("\"")) {
+next(st);
+return add(st, {t: "str", v: parseStr(t)}, p);
+}
+if (t === "true") {
+next(st);
+return add(st, {t: "bool", v: true}, p);
+}
+if (t === "false") {
+next(st);
+return add(st, {t: "bool", v: false}, p);
+}
+if (t === "unit") {
+next(st);
+return add(st, {t: "unit"}, p);
+}
+if (t === "(") {
+next(st);
+const e = parseExpr(st);
+eat(st, ")");
+return e;
+}
+if (t === "[") {
+next(st);
+const els: ExprID[] = [];
+while (!is(st, "]")) {
+els.push(parseExpr(st));
+listSep(st, "]");
+}
+eat(st, "]");
+return add(st, {t: "arr", elems: els}, p);
+}
+if (isKw(st, "fn")) {
+next(st);
+const params = parseParams(st);
+const retTyp = is(st, ":") ? (next(st), parseType(st)) : null;
+const retEffs = parseEffAnnot(st);
+const body = parseBlock(st);
+return add(st, {t: "lambda", params, retTyp, retEffs, body}, p);
+}
+if (isKw(st, "if")) {
+next(st);
+eat(st, "(");
+const c = parseExpr(st);
+eat(st, ")");
+const a = parseBlock(st);
+let b: ExprID = add(st, {t: "unit"}, p);
+if (isKw(st, "else")) {
+next(st);
+b = isKw(st, "if") ? parsePrimary(st) : parseBlock(st);
+} else if (is(st, ";")) {
+st.i++;
+}
+return add(st, {t: "if", c, a, b}, p);
+}
+if (isKw(st, "while")) {
+next(st);
+eat(st, "(");
+const c = parseExpr(st);
+eat(st, ")");
+const body = parseBlock(st);
+return add(st, {t: "while", c, body}, p);
+}
+if (isKw(st, "handle")) {
+next(st);
+const body = parseBlock(st);
+const cases: HandlerCase[] = [];
+while (isKw(st, "case")) {
+next(st);
+const op = next(st);
+recordTypeTok(st, "macro", op);
+const params = parseParams(st);
+eat(st, "=>");
+const resume = next(st);
+const resumePos = st.toks[st.i - 1].pos;
+const cbody = parseBlock(st);
+cases.push({op, params, resume, resumePos, body: cbody});
+}
+return add(st, {t: "handle", body, cases}, p);
+}
+// Fallthrough is ident-shaped tokens only (mirrors the lexer's ident
+// rule): every other token kind has a branch above. A stray punctuation
+// token must fail here as a parse error — as a `sym` node it surfaced
+// later as a baffling type error ("literal arity 6 ≠ tuple 2" for
+// `[x: 1, y: 2]`).
+if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(t)) fail(st, `Unexpected token "${t}"`);
+next(st);
+return add(st, {t: "sym", v: t}, p);
 }
 
 function isBlocky(e: Expr): boolean {

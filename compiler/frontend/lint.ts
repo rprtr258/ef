@@ -1,10 +1,11 @@
 // lint: run a sequence of lint passes over a parsed program and report issues.
 
 import type {Loc} from "./lexer.ts";
-import {Parser, type Expr, type ExprID, type Program} from "./parser.ts";
+import {parseProgram, type Expr, type ExprID, type Program} from "./parser.ts";
 import {checkProgram, type Checked} from "./types.ts";
 import {showT} from "./type_display.ts";
 import type {Type} from "./unify.ts";
+import {uniContainsAny, uniDeepResAny} from "./unify.ts";
 import {exprChildren, forEachBinder} from "./walk.ts";
 import {assertNever} from "../assert.ts";
 
@@ -21,7 +22,7 @@ const LINT_PASSES: ((prog: Program, checked: Checked | undefined) => LintIssue[]
   [lintUnusedArgs, lintDerivedAny];
 
 export function lint(src: string): LintIssue[] {
-  const prog = new Parser(src).parseProgram();
+  const prog = parseProgram(src);
   let checked: Checked | undefined;
   try {
     checked = checkProgram(prog);
@@ -149,7 +150,7 @@ function lintDerivedAny(prog: Program, checked: Checked | undefined): LintIssue[
   // any-typed function leaves its result var unbound; see Unifier.anyVars).
   const anyTypeOf = (id: ExprID): Type | null => {
     const t = checked.nodeTypes[id];
-    return t !== undefined && checked.uni.containsAny(t) ? checked.uni.deepResAny(t) : null;
+    return t !== undefined && uniContainsAny(checked.uni, t) ? uniDeepResAny(checked.uni, t) : null;
   };
   for (let id = 0; id < prog.nodes.length; id++) {
     const e = prog.nodes[id];
@@ -170,9 +171,9 @@ function lintDerivedAny(prog: Program, checked: Checked | undefined): LintIssue[
         const ft = (vt.tag === "tup" ? vt.fields[i]?.type
           : vt.tag === "arr" ? vt.elem
           : null) ?? null;
-        if (ft !== null && checked.uni.containsAny(ft))
+        if (ft !== null && uniContainsAny(checked.uni, ft))
           issues.push({
-            rule: "derived-any", who: `field \`${f.name}\``, ty: showT(checked.uni.deepResAny(ft)),
+            rule: "derived-any", who: `field \`${f.name}\``, ty: showT(uniDeepResAny(checked.uni, ft)),
             pos: f.pos,
           });
       }

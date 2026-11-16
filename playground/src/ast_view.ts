@@ -2,7 +2,7 @@
 // slice (`Program.nodes` + `ExprID` references). Parse-only — no checker
 // stamps — so ill-typed files still print. Type annotations and alias/effect
 // signatures render through the checker's showT.
-import {Parser, type ExprID, type Program} from "../../compiler/frontend/parser.ts";
+import {parseProgram, type ExprID, type Program} from "../../compiler/frontend/parser.ts";
 import {showT} from "../../compiler/frontend/type_display.ts";
 import {type Type} from "../../compiler/frontend/unify.ts";
 import {assertNever} from "../../compiler/assert.ts";
@@ -10,7 +10,7 @@ import {assertNever} from "../../compiler/assert.ts";
 const IND = "  ";
 
 export function showAst(src: string): string {
-  const prog = new Parser(src).parseProgram();
+  const prog = parseProgram(src);
   const lines: string[] = [];
   for (const it of prog.items) {
     if ("e" in it) lines.push(expr(prog, it.e, 0));

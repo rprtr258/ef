@@ -8,7 +8,7 @@
 import "./shim.ts";
 import {type Program, type Expr, type Alias} from "../../compiler/frontend/parser.ts";
 import {showEffRow, showT} from "../../compiler/frontend/type_display.ts";
-import {type Effs, type Type} from "../../compiler/frontend/unify.ts";
+import {envLookupResolved, type Effs, type Type} from "../../compiler/frontend/unify.ts";
 import {rowOf} from "../../compiler/prims.ts";
 import type {Checked, EffectSig} from "../../compiler/frontend/types.ts";
 import {lint} from "../../compiler/frontend/lint.ts";
@@ -242,7 +242,7 @@ function outlineItems(src: string, prog: Program, checked: Checked | null): Outl
           effs: val.t === "lambda" ?
             (val.retEffs !== null ? effRow(rowOf(val.retEffs)) :
               checked?.stamps[e.val]?.typ !== undefined ? effRow(checked.stamps[e.val]!.typ!.effs) : null) : null,
-          typ: checked !== null ? showT(checked.env.lookupResolved(e.name)) : null,
+          typ: checked !== null ? showT(envLookupResolved(checked.env, e.name)) : null,
         });
       }
     } else if ("effect" in it) {

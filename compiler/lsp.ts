@@ -30,9 +30,9 @@ import {
   type SemanticTokens,
   type SemanticTokensParams,
 } from "vscode-languageserver/node";
-import {Parser, type Alias, type ExprID, type Program, type TypeTok} from "./frontend/parser.ts";
+import {parseProgram, type Alias, type ExprID, type Program, type TypeTok} from "./frontend/parser.ts";
 import {showT, TypeError_} from "./frontend/type_display.ts";
-import {type Unifier} from "./frontend/unify.ts";
+import {type Unifier, uniDeepRes, envLookup, envLookupResolved} from "./frontend/unify.ts";
 import {tFun, TANY, rowOf} from "./prims.ts";
 import type {Checked, EffectSig} from "./frontend/types.ts";
 import {prepare} from "./frontend/pipeline.ts";
@@ -105,7 +105,7 @@ function posLT(a: Loc, b: Loc): boolean {
 // The sig's params/ret are deep-resolved so a use site's unifications (args
 // unified against the sig during checking) show concretely.
 function effSigText(uni: Unifier, sig: EffectSig): string {
-  return showT(uni.deepRes(tFun(sig.params.map(p => p ?? TANY), sig.ret, rowOf())), sig.names);
+  return showT(uniDeepRes(uni, tFun(sig.params.map(p => p ?? TANY), sig.ret, rowOf())), sig.names);
 }
 
 // Alias definition: `Pair(a, b) = [fst: a, snd: b]` — tuple fields render
@@ -147,11 +147,11 @@ function hoverText(prog: Program, checked: Checked, id: ExprID, c: Loc): string 
   if (e.t === "sym") {
     const names = fnPNames(prog, e.v);
     const nt = checked.nodeTypes[id];
-    if (nt !== undefined) return `${e.v} : ${showT(uni.deepRes(nt), names)}`;
+    if (nt !== undefined) return `${e.v} : ${showT(uniDeepRes(uni, nt), names)}`;
     // Callee syms the checker never infers (structural operators like `+`):
     // env lookup.
-    return checked.env.lookup(e.v) === undefined
-      ? null : `${e.v} : ${showT(checked.env.lookupResolved(e.v), names)}`;
+    return envLookup(checked.env, e.v) === undefined
+      ? null : `${e.v} : ${showT(envLookupResolved(checked.env, e.v), names)}`;
   }
   const nt = checked.nodeTypes[id];
   if (nt === undefined) return null;
@@ -171,17 +171,17 @@ function hoverText(prog: Program, checked: Checked, id: ExprID, c: Loc): string 
       const bt = checked.nodeTypes[cse.body];
       const argT = cse.op === "Return" ? checked.nodeTypes[e.body] : checked.effects.get(cse.op)?.ret;
       if (bt === undefined || argT === undefined) return null;
-      return `${cse.resume} : (${showT(uni.deepRes(argT))}) -> ${showT(uni.deepRes(bt))}`;
+      return `${cse.resume} : (${showT(uniDeepRes(uni, argT))}) -> ${showT(uniDeepRes(uni, bt))}`;
     }
   }
   if (e.t === "let" || e.t === "assign" || e.t === "dlet") {
     const vt = checked.nodeTypes[e.val];
     if (vt === undefined) return null;
     const lam = prog.nodes[e.val];
-    const s = showT(uni.deepRes(vt), lam.t === "lambda" ? lam.params.map(p => p.name) : undefined);
+    const s = showT(uniDeepRes(uni, vt), lam.t === "lambda" ? lam.params.map(p => p.name) : undefined);
     return e.t === "dlet" ? s : `${e.name} : ${s}`;
   }
-  return showT(uni.deepRes(nt), e.t === "lambda" ? e.params.map(p => p.name) : undefined);
+  return showT(uniDeepRes(uni, nt), e.t === "lambda" ? e.params.map(p => p.name) : undefined);
 }
 
 // Hover: the innermost checked subexpression whose source extent covers the
@@ -268,7 +268,7 @@ function nameLoc(uri: string, pos: Loc, len: number): Location {
 function definitionAt(uri: string, src: string, line: number, col: number): Location | null {
   let prog: Program;
   try {
-    prog = new Parser(src).parseProgram();
+    prog = parseProgram(src);
   } catch {
     return null;
   }

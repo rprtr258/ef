@@ -81,300 +81,304 @@ function tailSusCall(prog: Program, stamps: readonly (NodeStamps | undefined)[],
   }
 }
 
-class Converter {
-  funcs: CFn[] = [];
-  private n = 0;
-  private prog: Program;
+// Conversion state: plain data threaded through the free functions below —
+// emitted fns, the temp counter and bind-once temp set, the program slice,
+// and the checker's per-node stamps.
+type Converter = {
+  funcs: CFn[],
+  n: number,
+  prog: Program,
   // Value temps ($t prim results, $f closures): bind-once per activation, so
   // a continuation reading one across a suspension must freeze it (see
   // cps_ir.ts's letk.freeze).
-  private temps = new Set<string>();
+  temps: Set<string>,
+  stamps: readonly (NodeStamps | undefined)[],
+};
 
-  constructor(prog: Program, private readonly stamps: readonly (NodeStamps | undefined)[] = []) {
-    this.prog = prog;
-  }
+function newConverter(prog: Program, stamps: readonly (NodeStamps | undefined)[] = []): Converter {
+  return {funcs: [], n: 0, prog, temps: new Set<string>(), stamps};
+}
 
-  private fresh(prefix: string): string {
-    return `${prefix}${this.n++}`;
-  }
+function fresh(c: Converter, prefix: string): string {
+  return `${prefix}${c.n++}`;
+}
 
-  // Cross-suspension temps of a letk body: the body's free vars that are
-  // converter-generated value temps, captured at letk execution.
-  private freezeFor(body: CTerm): {name: string, val: CAtom}[] | undefined {
-    const crossing = freeVars(body, new Set()).filter(nm => this.temps.has(nm));
-    if (crossing.length === 0)
-      return undefined;
-    return crossing.map(nm => ({name: nm, val: {t: "var", name: nm}}));
-  }
+// Cross-suspension temps of a letk body: the body's free vars that are
+// converter-generated value temps, captured at letk execution.
+function freezeFor(c: Converter, body: CTerm): {name: string, val: CAtom}[] | undefined {
+  const crossing = freeVars(body, new Set()).filter(nm => c.temps.has(nm));
+  if (crossing.length === 0)
+  return undefined;
+  return crossing.map(nm => ({name: nm, val: {t: "var", name: nm}}));
+}
 
-  // Left-to-right argument evaluation, each bound to a temp before the next
-  // (a suspension mid-list captures the rest of the list, exactly like
-  // eval.ts's evalArgs acc).
-  private convArgs(args: ExprID[], kk: (vas: CAtom[]) => CTerm): CTerm {
-    const go = (i: number, acc: CAtom[]): CTerm =>
-      i === args.length
-        ? kk(acc)
-        : this.convert(args[i], {t: "fn", f: (v) => go(i + 1, acc.concat([v]))});
-    return go(0, []);
-  }
+// Left-to-right argument evaluation, each bound to a temp before the next
+// (a suspension mid-list captures the rest of the list, exactly like
+// eval.ts's evalArgs acc).
+function convArgs(c: Converter, args: ExprID[], kk: (vas: CAtom[]) => CTerm): CTerm {
+  const go = (i: number, acc: CAtom[]): CTerm =>
+  i === args.length
+  ? kk(acc)
+  : convert(c, args[i], {t: "fn", f: (v) => go(i + 1, acc.concat([v]))});
+  return go(0, []);
+}
 
-  // Bind a primitive result, then continue with its var. Prims never
-  // suspend; they may throw (÷0, index out of bounds).
-  private primLet(rhs: CPrim, k: K): CTerm {
-    const name = this.fresh("$t");
-    this.temps.add(name);
-    return {t: "let", name, rhs, rest: kap(k, {t: "var", name})};
-  }
+// Bind a primitive result, then continue with its var. Prims never
+// suspend; they may throw (÷0, index out of bounds).
+function primLet(c: Converter, rhs: CPrim, k: K): CTerm {
+  const name = fresh(c, "$t");
+  c.temps.add(name);
+  return {t: "let", name, rhs, rest: kap(k, {t: "var", name})};
+}
 
-  // The value-delivering tail of a call/perform site. Tail positions jump
-  // the named continuation directly unless the site's numKind needs a norm
-  // wrap (a shared tail continuation can't absorb a per-site width).
-  private callTail(k: K, norm: string | undefined, mk: (kk: CAtom) => CTerm): CTerm {
-    if (k.t === "tail" && norm === undefined)
-      return mk({t: "var", name: k.name});
-    const kc = this.fresh("$k");
-    const rv = this.fresh("$v");
-    const body = kap(k, {t: "var", name: rv});
-    return {
-      t: "letk", name: kc, param: rv, norm, freeze: this.freezeFor(body),
-      body,
-      rest: mk({t: "var", name: kc}),
+// The value-delivering tail of a call/perform site. Tail positions jump
+// the named continuation directly unless the site's numKind needs a norm
+// wrap (a shared tail continuation can't absorb a per-site width).
+function callTail(c: Converter, k: K, norm: string | undefined, mk: (kk: CAtom) => CTerm): CTerm {
+  if (k.t === "tail" && norm === undefined)
+  return mk({t: "var", name: k.name});
+  const kc = fresh(c, "$k");
+  const rv = fresh(c, "$v");
+  const body = kap(k, {t: "var", name: rv});
+  return {
+    t: "letk", name: kc, param: rv, norm, freeze: freezeFor(c, body),
+    body,
+    rest: mk({t: "var", name: kc}),
     };
-  }
+}
 
-  // All expr items chained: each item's value (discarded, except the last)
-  // flows into the next; the last delivers to the program boundary. Items
-  // bind into the caller's env (no scopes between items — top-level REPL
-  // bindings land in ctx.env exactly like eval.ts's per-item eval did).
-  program(): CTerm {
-    const exprs: ExprID[] = [];
-    for (const it of this.prog.items)
-      if ("e" in it) exprs.push(it.e);
-    if (exprs.length === 0) return {t: "halt", v: UNIT};
-    let term = this.convert(exprs[exprs.length - 1], {t: "fn", f: (v) => ({t: "halt", v})});
-    for (let i = exprs.length - 2; i >= 0; i--)
-      term = this.convert(exprs[i], {t: "fn", f: () => term});
-    return term;
-  }
+// All expr items chained: each item's value (discarded, except the last)
+// flows into the next; the last delivers to the program boundary. Items
+// bind into the caller's env (no scopes between items — top-level REPL
+// bindings land in ctx.env exactly like eval.ts's per-item eval did).
+function program(c: Converter): CTerm {
+  const exprs: ExprID[] = [];
+  for (const it of c.prog.items)
+  if ("e" in it) exprs.push(it.e);
+  if (exprs.length === 0) return {t: "halt", v: UNIT};
+  let term = convert(c, exprs[exprs.length - 1], {t: "fn", f: (v) => ({t: "halt", v})});
+  for (let i = exprs.length - 2; i >= 0; i--)
+  term = convert(c, exprs[i], {t: "fn", f: () => term});
+  return term;
+}
 
-  private convert(id: ExprID, k: K): CTerm {
-    const e: Expr = this.prog.nodes[id];
-    switch (e.t) {
-      case "num":
-        // i64/u64 literals materialize from the raw lexeme at runtime (a JS
-        // number loses bits beyond 2^53); the stamp normalizes.
-        return kap(k, {t: "lit", v: e.v, raw: e.raw, stamp: this.stamps[id]?.numKind});
-      case "str":
-      case "bool":
-        return kap(k, {t: "lit", v: e.v});
-      case "unit":
-        return kap(k, UNIT);
-      case "sym": {
-        // Force the read into a bind-once temp at walk position: every value
-        // read before a possible suspension becomes a temp, and freezeFor
-        // then freezes exactly the ones crossing it (an operand read
-        // pre-perform is frozen; a post-resume read in a case body binds
-        // its temp at execution time and stays live).
-        const name = this.fresh("$t");
-        this.temps.add(name);
-        return {
-          t: "bind", name,
-          val: {t: "var", name: e.v, stamp: this.stamps[id]?.numKind,
-            adaptFrom: (e as Expr & {adaptFrom?: string}).adaptFrom},
-          rest: kap(k, {t: "var", name}),
+function convert(c: Converter, id: ExprID, k: K): CTerm {
+  const e: Expr = c.prog.nodes[id];
+  switch (e.t) {
+    case "num":
+    // i64/u64 literals materialize from the raw lexeme at runtime (a JS
+    // number loses bits beyond 2^53); the stamp normalizes.
+    return kap(k, {t: "lit", v: e.v, raw: e.raw, stamp: c.stamps[id]?.numKind});
+    case "str":
+    case "bool":
+    return kap(k, {t: "lit", v: e.v});
+    case "unit":
+    return kap(k, UNIT);
+    case "sym": {
+      // Force the read into a bind-once temp at walk position: every value
+      // read before a possible suspension becomes a temp, and freezeFor
+      // then freezes exactly the ones crossing it (an operand read
+      // pre-perform is frozen; a post-resume read in a case body binds
+      // its temp at execution time and stays live).
+      const name = fresh(c, "$t");
+      c.temps.add(name);
+      return {
+        t: "bind", name,
+        val: {t: "var", name: e.v, stamp: c.stamps[id]?.numKind,
+          adaptFrom: (e as Expr & {adaptFrom?: string}).adaptFrom},
+        rest: kap(k, {t: "var", name}),
         };
-      }
-      case "lambda": {
-        const params = e.params.map(p => p.name);
-        const direct = isDirectFn(this.prog, this.stamps, id);
-        const body = this.convert(e.body, direct ? {t: "tail", name: RET, dret: true} : {t: "tail", name: RET});
-        const fun = this.funcs.length;
-        this.funcs.push({
-          params,
-          capts: freeVars(body, new Set([RET, ...params])),
-          body,
-          typ: this.stamps[id]?.typ,
-          direct: direct || undefined,
+    }
+    case "lambda": {
+      const params = e.params.map(p => p.name);
+      const direct = isDirectFn(c.prog, c.stamps, id);
+      const body = convert(c, e.body, direct ? {t: "tail", name: RET, dret: true} : {t: "tail", name: RET});
+      const fun = c.funcs.length;
+      c.funcs.push({
+        params,
+        capts: freeVars(body, new Set([RET, ...params])),
+        body,
+        typ: c.stamps[id]?.typ,
+        direct: direct || undefined,
         });
-        const name = this.fresh("$f");
-        this.temps.add(name);
-        return {
-          t: "mkfn", name, params, capts: this.funcs[fun].capts, fun,
-          rest: kap(k, {t: "var", name}),
+      const name = fresh(c, "$f");
+      c.temps.add(name);
+      return {
+        t: "mkfn", name, params, capts: c.funcs[fun].capts, fun,
+        rest: kap(k, {t: "var", name}),
         };
-      }
-      case "let":
-        return this.convert(e.val, {t: "fn", f: (v) => ({
-          t: "bind", name: e.name, val: v, rest: kap(k, UNIT),
+    }
+    case "let":
+    return convert(c, e.val, {t: "fn", f: (v) => ({
+        t: "bind", name: e.name, val: v, rest: kap(k, UNIT),
         })});
-      case "dlet":
-        return this.convert(e.val, {t: "fn", f: (v) => ({
-          t: "dlet", val: v, fields: e.fields.map(fd => fd.name), rest: kap(k, UNIT),
+    case "dlet":
+    return convert(c, e.val, {t: "fn", f: (v) => ({
+        t: "dlet", val: v, fields: e.fields.map(fd => fd.name), rest: kap(k, UNIT),
         })});
-      case "assign":
-        return this.convert(e.val, {t: "fn", f: (v) => ({
-          t: "assign", name: e.name, val: v, rest: kap(k, UNIT),
+    case "assign":
+    return convert(c, e.val, {t: "fn", f: (v) => ({
+        t: "assign", name: e.name, val: v, rest: kap(k, UNIT),
         })});
-      case "if": {
-        // Tail positions: both arms jump the same named continuation — no
-        // join needed. Otherwise bind a join letk so the (duplicated) rest
-        // term isn't copied into both arms.
-        if (k.t === "tail")
-          return this.convert(e.c, {t: "fn", f: (cc) => ({
-            t: "if", c: cc, a: this.convert(e.a, k), b: this.convert(e.b, k),
+    case "if": {
+      // Tail positions: both arms jump the same named continuation — no
+      // join needed. Otherwise bind a join letk so the (duplicated) rest
+      // term isn't copied into both arms.
+      if (k.t === "tail")
+      return convert(c, e.c, {t: "fn", f: (cc) => ({
+          t: "if", c: cc, a: convert(c, e.a, k), b: convert(c, e.b, k),
           })});
-        const join = this.fresh("$k");
-        const jv = this.fresh("$v");
-        const jbody = k.f({t: "var", name: jv});
-        return {
-          t: "letk", name: join, param: jv, freeze: this.freezeFor(jbody), body: jbody, rest:
-          this.convert(e.c, {t: "fn", f: (cc) => ({
+      const join = fresh(c, "$k");
+      const jv = fresh(c, "$v");
+      const jbody = k.f({t: "var", name: jv});
+      return {
+        t: "letk", name: join, param: jv, freeze: freezeFor(c, jbody), body: jbody, rest:
+        convert(c, e.c, {t: "fn", f: (cc) => ({
             t: "if", c: cc,
-            a: this.convert(e.a, {t: "tail", name: join}),
-            b: this.convert(e.b, {t: "tail", name: join}),
-          })}),
+            a: convert(c, e.a, {t: "tail", name: join}),
+            b: convert(c, e.b, {t: "tail", name: join}),
+            })}),
         };
-        // Arms need no width wrap at the join: their producing nodes carry
-        // the if node's own stamp (same type), so values arrive normalized.
-      }
-      case "while": {
-        // Recursive continuation: $ka re-checks the condition; the body
-        // jumps back to it; a false condition exits through $kx with unit.
-        const kx = this.fresh("$k");
-        const ka = this.fresh("$k");
-        const vu = this.fresh("$v");
-        const again: CTerm = {t: "jump", k: {t: "var", name: ka}, arg: UNIT};
-        const condTerm = this.convert(e.c, {t: "fn", f: (cc) => ({
+      // Arms need no width wrap at the join: their producing nodes carry
+      // the if node's own stamp (same type), so values arrive normalized.
+    }
+    case "while": {
+      // Recursive continuation: $ka re-checks the condition; the body
+      // jumps back to it; a false condition exits through $kx with unit.
+      const kx = fresh(c, "$k");
+      const ka = fresh(c, "$k");
+      const vu = fresh(c, "$v");
+      const again: CTerm = {t: "jump", k: {t: "var", name: ka}, arg: UNIT};
+      const condTerm = convert(c, e.c, {t: "fn", f: (cc) => ({
           t: "if", c: cc,
-          a: this.convert(e.body, {t: "fn", f: () => again}),
+          a: convert(c, e.body, {t: "fn", f: () => again}),
           b: {t: "jump", k: {t: "var", name: kx}, arg: UNIT},
-        })});
-        const xbody = kap(k, {t: "var", name: vu});
-        return {
-          t: "letk", name: kx, param: vu, freeze: this.freezeFor(xbody), body: xbody, rest:
-          {t: "letk", name: ka, param: vu, freeze: this.freezeFor(condTerm), body: condTerm, rest: again},
+          })});
+      const xbody = kap(k, {t: "var", name: vu});
+      return {
+        t: "letk", name: kx, param: vu, freeze: freezeFor(c, xbody), body: xbody, rest:
+        {t: "letk", name: ka, param: vu, freeze: freezeFor(c, condTerm), body: condTerm, rest: again},
         };
-      }
-      case "block": {
-        if (e.stmts.length === 0) return kap(k, UNIT);
-        const go = (i: number): CTerm =>
-          i === e.stmts.length - 1
-            // A `;` after the tail expression discards its value: the block
-            // completes with unit after the statement finishes evaluating.
-            ? e.semi
-              ? this.convert(e.stmts[i], {t: "fn", f: () => kap(k, UNIT)})
-              : this.convert(e.stmts[i], k)
-            : this.convert(e.stmts[i], {t: "fn", f: () => go(i + 1)});
-        return {t: "scope", rest: go(0)};
-      }
-      case "perform":
-        // k names the reified continuation: what resume injects into. When
-        // the perform is itself the tail, that's the named tail directly.
-        return this.callTail(k, this.stamps[id]?.numKind, (kk) =>
-          this.convArgs(e.args, (vas) => ({t: "perform", op: e.op, args: vas, k: kk})));
-      case "handle": {
-        // $hret: the handled body's exit — the runtime binds it to the
-        // done-wrapper. $xit: each case's exit — the runtime rebinds it per
-        // run() to the current continuation (it differs on resume
-        // re-entries). Case bodies jump $xit; the handled body jumps $hret.
-        // Case resume binders keep the user's name (checker-guaranteed
-        // shadowing-free): the case body references it, and the runtime
-        // binds the resume native under exactly that name. The handle's own
-        // κ goes through callTail like any value-delivering site — its
-        // completion paths are runtime-driven, so the continuation must be
-        // a resolvable operand, not the ambient.
-        const ret = this.fresh("$hret");
-        const exit = this.fresh("$xit");
-        const cases: CCase[] = e.cases.map(c => ({
-          op: c.op,
-          params: c.params.map(p => p.name),
-          resume: c.resume,
-          body: this.convert(c.body, {t: "tail", name: exit}),
+    }
+    case "block": {
+      if (e.stmts.length === 0) return kap(k, UNIT);
+      const go = (i: number): CTerm =>
+      i === e.stmts.length - 1
+      // A `;` after the tail expression discards its value: the block
+      // completes with unit after the statement finishes evaluating.
+      ? e.semi
+      ? convert(c, e.stmts[i], {t: "fn", f: () => kap(k, UNIT)})
+      : convert(c, e.stmts[i], k)
+      : convert(c, e.stmts[i], {t: "fn", f: () => go(i + 1)});
+      return {t: "scope", rest: go(0)};
+    }
+    case "perform":
+    // k names the reified continuation: what resume injects into. When
+    // the perform is itself the tail, that's the named tail directly.
+    return callTail(c, k, c.stamps[id]?.numKind, (kk) =>
+    convArgs(c, e.args, (vas) => ({t: "perform", op: e.op, args: vas, k: kk})));
+    case "handle": {
+      // $hret: the handled body's exit — the runtime binds it to the
+      // done-wrapper. $xit: each case's exit — the runtime rebinds it per
+      // run() to the current continuation (it differs on resume
+      // re-entries). Case bodies jump $xit; the handled body jumps $hret.
+      // Case resume binders keep the user's name (checker-guaranteed
+      // shadowing-free): the case body references it, and the runtime
+      // binds the resume native under exactly that name. The handle's own
+      // κ goes through callTail like any value-delivering site — its
+      // completion paths are runtime-driven, so the continuation must be
+      // a resolvable operand, not the ambient.
+      const ret = fresh(c, "$hret");
+      const exit = fresh(c, "$xit");
+      const cases: CCase[] = e.cases.map(hc => ({
+        op: hc.op,
+        params: hc.params.map(p => p.name),
+        resume: hc.resume,
+        body: convert(c, hc.body, {t: "tail", name: exit}),
         }));
-        return this.callTail(k, undefined, (kk) => ({
-          t: "handle", ret, exit, k: kk, cases,
-          body: this.convert(e.body, {t: "tail", name: ret}),
+      return callTail(c, k, undefined, (kk) => ({
+        t: "handle", ret, exit, k: kk, cases,
+        body: convert(c, e.body, {t: "tail", name: ret}),
         }));
-      }
-      case "app": {
-        // Operator fast path: dispatch on the app node's width stamp. `/`/`%`
-        // add the division stamp (nk ?? div ?? "f64") — integer division
-        // truncates and traps on ÷0 and INT_MIN÷-1 like wasm's div/rem ops.
-        // The app node's own stamp (norm) re-normalizes the result.
-        const nk = this.stamps[id]?.numKind;
-        const fn = this.prog.nodes[e.fn];
-        if (fn.t === "sym") {
-          const op = fn.v;
-          if (op === OP_DIV || op === OP_REM) {
-            const stamp = nk ?? this.stamps[id]?.div ?? "f64";
-            return this.convArgs(e.args, (vas) =>
-              this.primLet({t: "op", op, args: vas, stamp, norm: nk}, k));
-          }
-          if (nk !== undefined && NUM_OPS.has(op))
-            return this.convArgs(e.args, (vas) =>
-              this.primLet({t: "op", op, args: vas, stamp: nk, norm: nk}, k));
+    }
+    case "app": {
+      // Operator fast path: dispatch on the app node's width stamp. `/`/`%`
+      // add the division stamp (nk ?? div ?? "f64") — integer division
+      // truncates and traps on ÷0 and INT_MIN÷-1 like wasm's div/rem ops.
+      // The app node's own stamp (norm) re-normalizes the result.
+      const nk = c.stamps[id]?.numKind;
+      const fn = c.prog.nodes[e.fn];
+      if (fn.t === "sym") {
+        const op = fn.v;
+        if (op === OP_DIV || op === OP_REM) {
+          const stamp = nk ?? c.stamps[id]?.div ?? "f64";
+          return convArgs(c, e.args, (vas) =>
+          primLet(c, {t: "op", op, args: vas, stamp, norm: nk}, k));
         }
-        // Classified-pure callee (checker stamp): a direct call — the result
-        // binds in-frame and the term continues, with no continuation
-        // machinery at the site. Builtin-sym callees stay unbound names (the
-        // emitter specializes them), like the generic paths below.
-        if (this.stamps[id]?.sus === false) {
-          const dcallK = (vf: CAtom) => (vas: CAtom[]): CTerm => {
-            const name = this.fresh("$c");
-            this.temps.add(name);
-            return {t: "dcall", fn: vf, args: vas, name, norm: nk, rest: kap(k, {t: "var", name})};
+        if (nk !== undefined && NUM_OPS.has(op))
+        return convArgs(c, e.args, (vas) =>
+        primLet(c, {t: "op", op, args: vas, stamp: nk, norm: nk}, k));
+      }
+      // Classified-pure callee (checker stamp): a direct call — the result
+      // binds in-frame and the term continues, with no continuation
+      // machinery at the site. Builtin-sym callees stay unbound names (the
+      // emitter specializes them), like the generic paths below.
+      if (c.stamps[id]?.sus === false) {
+        const dcallK = (vf: CAtom) => (vas: CAtom[]): CTerm => {
+          const name = fresh(c, "$c");
+          c.temps.add(name);
+          return {t: "dcall", fn: vf, args: vas, name, norm: nk, rest: kap(k, {t: "var", name})};
           };
-          if (fn.t === "sym" && isDirectBuiltinName(fn.v))
-            return this.convArgs(e.args, (vas) => dcallK({t: "var", name: fn.v})(vas));
-          return this.convert(e.fn, {t: "fn", f: (vf) => this.convArgs(e.args, (vas) => dcallK(vf)(vas))});
-        }
-        // General call: fn first, then args left-to-right, then the call.
-        // A sym naming a builtin in callee position stays an unbound name:
-        // the emitter specializes it to the builtin's trampoline
-        // (directBuiltin) — temp-binding it would strand the name in a
-        // slot no runtime value ever fills.
-        if (fn.t === "sym" && isDirectBuiltinName(fn.v)) {
-          return this.convArgs(e.args, (vas) =>
-            this.callTail(k, nk, (kk) =>
-              ({t: "call", fn: {t: "var", name: fn.v}, args: vas, k: kk, rstamp: nk})));
-        }
-        return this.convert(e.fn, {t: "fn", f: (vf) =>
-          this.convArgs(e.args, (vas) =>
-            this.callTail(k, nk, (kk) => ({t: "call", fn: vf, args: vas, k: kk, rstamp: nk})))});
+        if (fn.t === "sym" && isDirectBuiltinName(fn.v))
+        return convArgs(c, e.args, (vas) => dcallK({t: "var", name: fn.v})(vas));
+        return convert(c, e.fn, {t: "fn", f: (vf) => convArgs(c, e.args, (vas) => dcallK(vf)(vas))});
       }
-      case "as": {
-        const asKind = this.stamps[id]?.asKind;
-        const stamp = this.stamps[id]?.numKind;
-        return this.convert(e.e, {t: "fn", f: (v) => {
+      // General call: fn first, then args left-to-right, then the call.
+      // A sym naming a builtin in callee position stays an unbound name:
+      // the emitter specializes it to the builtin's trampoline
+      // (directBuiltin) — temp-binding it would strand the name in a
+      // slot no runtime value ever fills.
+      if (fn.t === "sym" && isDirectBuiltinName(fn.v)) {
+        return convArgs(c, e.args, (vas) =>
+        callTail(c, k, nk, (kk) =>
+        ({t: "call", fn: {t: "var", name: fn.v}, args: vas, k: kk, rstamp: nk})));
+      }
+      return convert(c, e.fn, {t: "fn", f: (vf) =>
+        convArgs(c, e.args, (vas) =>
+        callTail(c, k, nk, (kk) => ({t: "call", fn: vf, args: vas, k: kk, rstamp: nk})))});
+    }
+    case "as": {
+      const asKind = c.stamps[id]?.asKind;
+      const stamp = c.stamps[id]?.numKind;
+      return convert(c, e.e, {t: "fn", f: (v) => {
           // No asKind and no stamp: a pure pass-through conversion.
           if (asKind === undefined && stamp === undefined)
-            return kap(k, v);
-          return this.primLet({t: "as", arg: v, asKind, stamp}, k);
-        }});
-      }
-      case "arr":
-        return this.convArgs(e.elems, (vas) =>
-          this.primLet({t: "arr", args: vas, kind: this.stamps[id]?.arrKind === "tup" ? "tup" : "arr"}, k));
-      case "field": {
-        // Checked programs always stamp fieldIdx here; unchecked ones (the
-        // cps_opt tests' bare toCps) legitimately flow undefined, like e.idx
-        // did when it lived on the node.
-        const idx = this.stamps[id]?.fieldIdx as number;
-        return this.convert(e.obj, {t: "fn", f: (vo) =>
-          this.primLet({t: "field", obj: vo, idx, name: e.name}, k)});
-      }
-      default:
-        return assertNever(e);
+          return kap(k, v);
+          return primLet(c, {t: "as", arg: v, asKind, stamp}, k);
+          }});
     }
+    case "arr":
+    return convArgs(c, e.elems, (vas) =>
+    primLet(c, {t: "arr", args: vas, kind: c.stamps[id]?.arrKind === "tup" ? "tup" : "arr"}, k));
+    case "field": {
+      // Checked programs always stamp fieldIdx here; unchecked ones (the
+      // cps_opt tests' bare toCps) legitimately flow undefined, like e.idx
+      // did when it lived on the node.
+      const idx = c.stamps[id]?.fieldIdx as number;
+      return convert(c, e.obj, {t: "fn", f: (vo) =>
+        primLet(c, {t: "field", obj: vo, idx, name: e.name}, k)});
+    }
+    default:
+    return assertNever(e);
   }
 }
 
 export function toCps(prog: Program, stamps: readonly (NodeStamps | undefined)[] = []): CIr {
-  const c = new Converter(prog, stamps);
+  const c = newConverter(prog, stamps);
   // The optimization passes are the conversion's final stage: every consumer
   // of toCps (interpreter, wasm backend) sees the same optimized term, and
   // none of them knows the passes exist.
-  return optimizeCps({funcs: c.funcs, term: c.program()});
+  return optimizeCps({funcs: c.funcs, term: program(c)});
 }
 
 // Free value variables of a term (wasm's captured-frame-slot set; the

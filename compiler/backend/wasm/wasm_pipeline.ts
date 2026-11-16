@@ -10,7 +10,7 @@ import {BUILTINS, EFFECT_OPS, builtinRefs, builtinValueUses, collectEffectOps, p
 import {_T, StaticDesc, ValueRef, WasmError} from "./wasm_types.ts";
 import {BUILTIN_IMPORTS, DBGEMIT, HOST_IMPORTS, OPERATOR_OPS, SIGS, mapLikeFrameWords, vt} from "./wasm_tables.ts";
 import {DBGTRACE} from "./wasm_trace.ts";
-import {Fn} from "./wasm_body.ts";
+import {type Fn, newFn} from "./wasm_body.ts";
 import {registerHelpers} from "./wasm_emit.ts";
 import {registerCaseFns, registerCfns, registerRetResumes} from "./wasm_term.ts";
 import {hdlP, type Plan} from "./wasm_plan.ts";
@@ -130,22 +130,26 @@ export type Indices = {
 // eager call-site resolution (funcRefTypes). Every registration must land
 // at the fn's push position — the funcref table maps slot i to the i-th
 // function of the module.
-export class IndexRegistrar {
-  private next: number;
-  private slots = new Map<string, number>();
-  readonly funcRefTypes = new Map<number, number>();
-  constructor(impCount: number) { this.next = impCount; }
-  // Stamp fn with the next funcref index under `slot`; sig is the
-  // type-section signature the fn is compiled under (a SIGS key).
-  register(slot: string, fn: Fn, sig: number): number {
-    if (this.slots.has(slot)) throw new WasmError(`internal: duplicate funcref slot ${slot}`);
-    const idx = this.next++;
-    this.slots.set(slot, idx);
-    fn.idx = idx;
-    fn.typeIdx = sig;
-    this.funcRefTypes.set(idx, sig);
-    return idx;
-  }
+export type IndexRegistrar = {
+  next: number,
+  slots: Map<string, number>,
+  funcRefTypes: Map<number, number>,
+};
+
+function newIndexRegistrar(impCount: number): IndexRegistrar {
+  return {next: impCount, slots: new Map(), funcRefTypes: new Map()};
+}
+
+// Stamp fn with the next funcref index under `slot`; sig is the
+// type-section signature the fn is compiled under (a SIGS key).
+export function register(reg: IndexRegistrar, slot: string, fn: Fn, sig: number): number {
+  if (reg.slots.has(slot)) throw new WasmError(`internal: duplicate funcref slot ${slot}`);
+  const idx = reg.next++;
+  reg.slots.set(slot, idx);
+  fn.idx = idx;
+  fn.typeIdx = sig;
+  reg.funcRefTypes.set(idx, sig);
+  return idx;
 }
 
 // Phase 4 — static layout: immutable anyref globals with constant
@@ -296,18 +300,18 @@ export function optimize(prog: Program, numKinds?: readonly ({numKind?: string} 
 }
 
 export function assignIndices(ir: CIr, plan: Plan, o: Opt): Indices {
-  const reg = new IndexRegistrar(o.liveImports.length);
+  const reg = newIndexRegistrar(o.liveImports.length);
   // Shared fragments, created context-free before the ix literal (bodies are
   // attached at their emit sites); their registration positions pin them
   // relative to the registered blocks — identityRet precedes the case-fn
   // block (emitCaseFns' pass 0 pushes it there), resumeFn follows the
   // ret-resume block, terminalRet precedes the builtins.
-  const identityRet = new Fn(2);
-  const resumeFn = new Fn(2);
+  const identityRet = newFn(2);
+  const resumeFn = newFn(2);
   // The terminal-return fragment (direct-fn dcall fallbacks chain here):
   // a T_III_I thunk that just returns its param (local 1) — the completion's
   // value unwinds as each fragment's result.
-  const terminalRet = new Fn(3);
+  const terminalRet = newFn(3);
   const ix: Indices = {
     funcRefTypes: reg.funcRefTypes,
     reg,
@@ -335,11 +339,11 @@ export function assignIndices(ir: CIr, plan: Plan, o: Opt): Indices {
   };
   registerHelpers(reg, ix);
   registerCfns(reg, ix, ir, plan);
-  reg.register("identityRet", identityRet, w.T_KABI);
+  register(reg, "identityRet", identityRet, w.T_KABI);
   registerCaseFns(reg, ix, plan);
   registerRetResumes(reg, ix, plan);
-  reg.register("resumeFn", resumeFn, w.T_KABI);
-  reg.register("terminalRet", terminalRet, w.T_III_I);
+  register(reg, "resumeFn", resumeFn, w.T_KABI);
+  register(reg, "terminalRet", terminalRet, w.T_III_I);
   registerBuiltins(reg, ix, o);
   return ix;
 }
