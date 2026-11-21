@@ -5,7 +5,6 @@ import {readFileSync, unlinkSync, existsSync, writeFileSync} from "node:fs";
 import {execSync} from "node:child_process";
 import {runLine, newCtx} from "./eval.ts";
 import {prepare, type EffectInterp} from "../../frontend/pipeline.ts";
-import {lint} from "../../frontend/lint.ts";
 import {show, sliceElems, mkSlice, mkTup, type Slice, type Value} from "../../env.ts";
 import {showErr, showT, TypeError_} from "../../frontend/type_display.ts";
 import {envLookupResolved} from "../../frontend/unify.ts";
@@ -155,17 +154,6 @@ handle {
     // The default interpretation runs for real: sleepSync(0) returns
     // immediately, then resumes with unit.
     expect(run("Wait!(0)")).toBe(null);
-  });
-
-  test("inferred `any` is reported by the derived-any lint rule; annotations are silent", () => {
-    expect(lint("g :: fn(x: any): any { x };"))              // lambda-valued :: — the signature spells the type out
-      .toEqual([]);
-    expect(lint("g: (any) -> any : fn(x: any): any { x };")) // explicit annotation
-      .toEqual([]);
-    expect(lint("xs :: [1, 2, 3]; xs"))                      // array literal -> [i64]
-      .toEqual([]);
-    expect(lint("g :: fn(x: any): any { x };\ny := g(1);"))  // call result derived from any
-      .toEqual([{rule: "derived-any", who: "`y`", ty: "any", pos: {line: 2, col: 1}}]);
   });
 });
 

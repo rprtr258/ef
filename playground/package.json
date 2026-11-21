@@ -8,6 +8,7 @@
     "build": "bun run scripts/build.ts"
   },
   "dependencies": {
+    "compiler": "workspace:*",
     "monaco-editor": "^0.52.2"
   }
 }

@@ -2,10 +2,10 @@
 // slice (`Program.nodes` + `ExprID` references). Parse-only — no checker
 // stamps — so ill-typed files still print. Type annotations and alias/effect
 // signatures render through the checker's showT.
-import {parseProgram, type ExprID, type Program} from "../../compiler/frontend/parser.ts";
-import {showT} from "../../compiler/frontend/type_display.ts";
-import {type Type} from "../../compiler/frontend/unify.ts";
-import {assertNever} from "../../compiler/assert.ts";
+import {parseProgram, type ExprID, type Program} from "compiler/frontend/parser.ts";
+import {showT} from "compiler/frontend/type_display.ts";
+import {type Type} from "compiler/frontend/unify.ts";
+import {assertNever} from "compiler/assert.ts";
 
 const IND = "  ";
 

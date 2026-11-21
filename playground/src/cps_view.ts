@@ -3,11 +3,11 @@
 // defunctionalizes). One line per node; letk/handle/if nest their sub-terms
 // on the following lines, everything else flows into `rest` at the same
 // indentation. `fn $n` bodies are the lambdas' conversions (mkfn binds them).
-import {prepare} from "../../compiler/frontend/pipeline.ts";
-import {toCps} from "../../compiler/frontend/cps.ts";
-import type {CAtom, CPrim, CTerm, CIr} from "../../compiler/frontend/cps_ir.ts";
-import {show} from "../../compiler/env.ts";
-import {assertNever} from "../../compiler/assert.ts";
+import {prepare} from "compiler/frontend/pipeline.ts";
+import {toCps} from "compiler/frontend/cps.ts";
+import type {CAtom, CPrim, CTerm, CIr} from "compiler/frontend/cps_ir.ts";
+import {show} from "compiler/env.ts";
+import {assertNever} from "compiler/assert.ts";
 
 const IND = "  ";
 

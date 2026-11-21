@@ -35,6 +35,7 @@
     "playground": {
       "name": "playground",
       "dependencies": {
+        "compiler": "workspace:*",
         "monaco-editor": "^0.52.2",
       },
     },

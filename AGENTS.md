@@ -54,12 +54,14 @@ suspension/arrKind emission over an exhaustive `Expr` switch — widths come
   from the checker's resolved types, not decided here; width/suspension/
   lambda-type stamps land in `Checked.stamps` (keyed by ExprID), which
   `toCps(prog, checked.stamps)` consumes — the AST stays pure parse output),
-`frontend/lint.ts`, `prims.ts`, `assert.ts` (the
+`frontend/lint/` (`index.ts`, one module per pass:
+  `unused_args.ts`, `derived_any.ts`), `prims.ts`, `assert.ts` (the
   `assertNever` exhaustive-switch guard — every switch over `Expr` ends in
   it, so a new node variant fails typecheck in each walker that forgets it),
   frontends `cli.ts`/`repl.ts`.
 - Tests (under `compiler/`, backends' suites co-located with them under
-  `compiler/backend/`): `frontend/lint.test.ts` + `frontend/analysis.test.ts` + `ops.test.ts` +
+  `compiler/backend/`): the lint suites `frontend/lint/*.test.ts` +
+  `frontend/analysis.test.ts` + `ops.test.ts` +
   `frontend/cps_opt.test.ts` (shared stages) + `backend/interpreter/index.test.ts` (the
   language suite run through the interpreter) + `backend/wasm/wasm.test.ts` +
   `backend/parity.test.ts` (table-driven interpreter↔wasm parity over
@@ -251,8 +253,9 @@ suspension/arrKind emission over an exhaustive `Expr` switch — widths come
    builtins.ts's `builtinEffectHosts`); **`wasm_host.ts`** is the compile +
    run seam (`runWasm` = `compileWithOps` + `runModule`), so execute-only
    callers import `wasm_run.ts` and never load binaryen.
-12. **`frontend/lint.ts`** — lint passes over a parsed program (`LINT_PASSES`);
-   rules: `unused-arg`, and `derived-any` (typecheck-backed — `lint` runs
+12. **`frontend/lint/`** — lint passes over a parsed program: `index.ts` runs
+   the `LINT_PASSES` list — `unused_args.ts` (`unused-arg`) and
+   `derived_any.ts` (`derived-any`, typecheck-backed — `lint` runs
    `checkProgram` best-effort, type-aware passes skip unchecked programs).
 13. **Frontends** — `cli.ts` (`ef run|wasm|runwasm|types|lint <file>`,
     `ef repl`, `ef lsp`) and `repl.ts`
