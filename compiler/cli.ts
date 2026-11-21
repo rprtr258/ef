@@ -20,11 +20,11 @@ import {styleText} from "util";
 import {run} from "./backend/interpreter/eval.ts";
 import {prepare, requireUnitEntry} from "./frontend/pipeline.ts";
 import {showErr, showT} from "./frontend/type_display.ts";
-import {type Type, envLookupResolved} from "./frontend/unify.ts";
-import {lint} from "./frontend/lint.ts";
+import {Type, envLookupResolved} from "./frontend/unify.ts";
+import lint from "./frontend/lint/index.ts";
 import {repl} from "./repl.ts";
 import {startLsp} from "./lsp.ts";
-import {type ExprID} from "./frontend/parser.ts";
+import {ExprID} from "./frontend/parser.ts";
 
 // types: typecheck a source file; return every top-level symbol (let) with
 // its inferred type, plus the whole program's result type and its residual

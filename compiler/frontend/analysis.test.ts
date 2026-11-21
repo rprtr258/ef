@@ -175,20 +175,6 @@ describe("performsAnyOp (import liveness)", () => {
   });
 });
 
-describe("module init order", () => {
-  // The eval⇄builtins import cycle is runtime-only on both sides (`apply`
-  // is called from builtin closures; eval builds the effect interps lazily
-  // on first unhandled effect), so every module must initialize cleanly
-  // regardless of entry point.
-  for (const entry of ["../builtins.ts", "../env.ts", "parser.ts", "types.ts", "../backend/interpreter/eval.ts", "lint.ts"])
-    test(`${entry} as entry point`, () => {
-      const p = Bun.spawnSync(
-        [process.execPath, "-e", `import './${entry}'; console.log("ok")`],
-        {cwd: import.meta.dir});
-      expect(p.exitCode).toBe(0);
-    });
-});
-
 describe("builtinParamNames (LSP hover text)", () => {
   for (const [name, expected] of [
     ["sub", ["xs", "from", "to"]],

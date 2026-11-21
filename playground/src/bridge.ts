@@ -11,7 +11,7 @@ import {showEffRow, showT} from "../../compiler/frontend/type_display.ts";
 import {envLookupResolved, type Effs, type Type} from "../../compiler/frontend/unify.ts";
 import {rowOf} from "../../compiler/prims.ts";
 import type {Checked, EffectSig} from "../../compiler/frontend/types.ts";
-import {lint} from "../../compiler/frontend/lint.ts";
+import lint from "../../compiler/frontend/lint/index.ts";
 import {exec, newCtx} from "../../compiler/backend/interpreter/eval.ts";
 import {prepare, prepareStaged, type EffectInterp} from "../../compiler/frontend/pipeline.ts";
 import {num, show, type Cont, type Outcome, type Value} from "../../compiler/env.ts";
