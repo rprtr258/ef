@@ -6,8 +6,8 @@
 import * as monaco from "monaco-editor/esm/vs/editor/editor.main.js";
 import {showAst} from "./ast_view.ts";
 import {showCps} from "./cps_view.ts";
-import {compileWat} from "../../compiler/backend/wasm/wasm.ts";
-import {prepare} from "../../compiler/frontend/pipeline.ts";
+import {compileWat} from "compiler/backend/wasm/wasm.ts";
+import {prepare} from "compiler/frontend/pipeline.ts";
 import {docFor, EF_IR_RULES, WAT_RULES} from "./view_lang.ts";
 import {activeFile, els, state, type View} from "./state.ts";
 

@@ -3,8 +3,8 @@
 // the two entry actions — Run (compile to wasm and execute, streaming
 // output) and Build (emit main.wasm).
 import {buildWasm, ExitSignal, isEntryFile, runWasmProgram} from "./bridge.ts";
-import {show} from "../../compiler/env.ts";
-import {showT} from "../../compiler/frontend/type_display.ts";
+import {show} from "compiler/env.ts";
+import {showT} from "compiler/frontend/type_display.ts";
 import {editor, refreshTokens} from "./editor.ts";
 import {fmtBytes, fmtMs} from "./format.ts";
 import {outLine, clearOutput, setTab} from "./output.ts";

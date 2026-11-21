@@ -1,5 +1,5 @@
 import {describe, expect, test} from "bun:test";
-import {showT} from "../../compiler/frontend/type_display.ts";
+import {showT} from "compiler/frontend/type_display.ts";
 
 import {
   buildWasm, browserInterp, interpret, isEntryFile, outline, problems,
