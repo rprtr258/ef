@@ -96,11 +96,13 @@ suspension/arrKind emission over an exhaustive `Expr` switch — widths come
   scripts as workspace entry points.
 - `vscode/` workspace: VS Code extension for ef — TextMate grammar for `.ef`,
   and a language client that spawns the LSP server from `compiler/lsp.ts`
-  (diagnostics, hover types, go-to-definition, semantic tokens for type/effect
+  (diagnostics, lint warnings, hover types, go-to-definition, semantic tokens
+  for type/effect
   highlighting;
   bundled by `vscode/scripts/build.ts` into `vscode/dist/`; esbuild with a
   stub for builtins.ts's `sleepSync` since the server never evaluates). The
-  server speaks full-text sync diagnostics (fail-fast, one per change) and
+  server speaks full-text sync diagnostics (fail-fast errors, one per change,
+  plus lint warnings on clean checks) and
   hover types for every checked subexpression; also runnable standalone as
   `ef lsp`. `vscode/test/lsp.test.ts` spawns the built bundle and speaks raw
   LSP over stdio.

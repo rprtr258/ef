@@ -1,5 +1,5 @@
 // lint: run a sequence of lint passes over a parsed program and report issues.
-import {parseProgram} from "../parser.ts";
+import {parseProgram, type Program} from "../parser.ts";
 import {checkProgram, Checked} from "../types.ts";
 import lintUnusedArgs from "./unused_args.ts";
 import lintDerivedAny from "./derived_any.ts";
@@ -23,14 +23,20 @@ type LintIssue = {
     : never;
 }[keyof typeof LINT_PASSES];
 
+// The passes over an already-prepared program: consumers holding prog and
+// checked (the LSP's per-change diagnostics) lint without re-parsing.
+export function lintProgram(prog: Program, checked: Checked | undefined): LintIssue[] {
+  return Object.entries(LINT_PASSES).flatMap(([rule, pass]) =>
+    // Object.entries widens the key to string; the cast restores the rule
+    // literal — each entry's key and pass come from the same record.
+    [...pass(prog, checked)].map((issue) => ({rule, ...issue}) as LintIssue));
+}
+
 export default function(src: string): LintIssue[] {
   const prog = parseProgram(src);
   let checked: Checked | undefined;
   try {
     checked = checkProgram(prog);
   } catch { /* unchecked programs still get their AST passes */ }
-  return Object.entries(LINT_PASSES).flatMap(([rule, pass]) =>
-    // Object.entries widens the key to string; the cast restores the rule
-    // literal — each entry's key and pass come from the same record.
-    [...pass(prog, checked)].map((issue) => ({rule, ...issue}) as LintIssue));
+  return lintProgram(prog, checked);
 }

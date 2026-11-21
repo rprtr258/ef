@@ -10,7 +10,7 @@ import {buildServer} from "../scripts/build.ts";
 const URI = "file:///test.ef";
 
 type Msg = {id?: number, method?: string, params?: unknown, result?: unknown, error?: unknown};
-type Diag = {range: {start: {line: number, character: number}, end: {line: number, character: number}}, message: string, source?: string};
+type Diag = {range: {start: {line: number, character: number}, end: {line: number, character: number}}, message: string, severity?: number, source?: string};
 type DiagParams = {uri: string, diagnostics: Diag[]};
 
 class Server {
@@ -180,6 +180,39 @@ describe("ef language server", () => {
     // `fn` spans 1:1–1:3; input ran out after it — 0-based (0, 2).
     expect(d.range.start).toEqual({line: 0, character: 2});
     expect(d.message.length).toBeGreaterThan(0);
+  });
+
+  test("unused-arg warning underlines the parameter name", async () => {
+    const p = await s.change("f :: fn(x: i64, y: i64): i64 { x };\n");
+    expect(p.diagnostics).toEqual([{
+      severity: 2, // Warning
+      range: {start: {line: 0, character: 16}, end: {line: 0, character: 17}},
+      message: "function `f` has unused argument y",
+      source: "ef",
+    }]);
+  });
+
+  test("derived-any warning underlines the binding name", async () => {
+    const p = await s.change("pull :: fn(x: any): any { x };\ny := pull(1);\n");
+    expect(p.diagnostics).toEqual([{
+      severity: 2, // Warning
+      range: {start: {line: 1, character: 0}, end: {line: 1, character: 1}},
+      message: "`y` is inferred as any (contains `any`); add an explicit annotation to silence",
+      source: "ef",
+    }]);
+  });
+
+  test("fixing the finding clears the warnings", async () => {
+    const p = await s.change("f :: fn(x: i64, y: i64): i64 { x };\n");
+    expect(p.diagnostics).toHaveLength(1);
+    const q = await s.change("f :: fn(x: i64, y: i64): i64 { x + y };\n");
+    expect(q.diagnostics).toEqual([]);
+  });
+
+  test("a type error suppresses the lint warnings", async () => {
+    const p = await s.change("f :: fn(x: i64, y: i64): i64 { x };\nf(1) + \"a\";\n");
+    expect(p.diagnostics).toHaveLength(1);
+    expect(p.diagnostics[0].severity).toBe(1); // Error
   });
 
   test("hover on a top-level binding shows its type", async () => {

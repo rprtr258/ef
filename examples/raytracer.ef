@@ -125,7 +125,10 @@ chan :: fn(v: f64): i64 {
 # filled when row a is built. xor32 splices four byte lanes.
 xor8tab :: range(0, 65536, 1);
 xb := 0;
-while (xb < 256) { set(xor8tab, xb, xb); xb = xb + 1; };
+while (xb < 256) {
+  set(xor8tab, xb, xb);
+  xb = xb + 1;
+}
 xa := 1;
 while (xa < 256) {
   xj := 0;
@@ -134,9 +137,9 @@ while (xa < 256) {
     bit :: if (xa % 2 == xj % 2) { 0 } else { 1 };
     set(xor8tab, xa * 256 + xj, hi * 2 + bit);
     xj = xj + 1;
-  };
+  }
   xa = xa + 1;
-};
+}
 
 xor8 :: fn(a: i64, b: i64): i64 { get(xor8tab, (a % 256) * 256 + (b % 256)) };
 
@@ -156,10 +159,10 @@ while (ci < 256) {
   while (cj < 8) {
     c = if (c % 2 == 1) { xor32(c / 2, 3988292384) } else { c / 2 };   # 0xEDB88320
     cj = cj + 1;
-  };
+  }
   set(crcT, ci, c);
   ci = ci + 1;
-};
+}
 
 crc32 :: fn(data: [u8], from: i64, to: i64): i64 {
   c := 4294967295;              # 0xFFFFFFFF
@@ -168,7 +171,7 @@ crc32 :: fn(data: [u8], from: i64, to: i64): i64 {
     idx :: get(xor8tab, (c % 256) * 256 + @as(get(data, i), i64));   # (c xor byte) & 0xFF
     c = xor32(c / 256, get(crcT, idx));
     i = i + 1;
-  };
+  }
   xor32(c, 4294967295)
 };
 
@@ -181,7 +184,7 @@ adler32 :: fn(data: [i64], from: i64, to: i64): i64 {
     a = (a + get(data, i)) % 65521;
     b = (b + a) % 65521;
     i = i + 1;
-  };
+  }
   b * 65536 + a
 };
 
@@ -209,18 +212,21 @@ while (py < size) {
     set(raw, base + 1, chan(c.1));
     set(raw, base + 2, chan(c.2));
     px = px + 1;
-  };
+  }
   py = py + 1;
-};
+}
 
 # ---- Assemble the PNG ----
 # A zero-filled [u8] buffer via map over range (the closure pins the
 # element width) — the IHDR's compression/filter/interlace zeros and
 # every other untouched byte stay 0.
-out :: map(fn(i: i64): u8 { 0 }, range(0, total, 1));
+out :: map(fn(_: i64): u8 { 0 }, range(0, total, 1));
 sig :: [137, 80, 78, 71, 13, 10, 26, 10];
 si := 0;
-while (si < 8) { set(out, si, @as(get(sig, si), u8)); si = si + 1; };
+while (si < 8) {
+  set(out, si, @as(get(sig, si), u8));
+  si = si + 1;
+}
 
 # writeChunk: frame a chunk at `o` — big-endian length, the four type
 # bytes, then CRC-32 over type+data; the data must already sit at o+8.
@@ -269,11 +275,14 @@ while (remaining > 0) {
   set(out, pos + 3, @as((65535 - n) % 256, u8));   # NLEN: one's complement of LEN
   set(out, pos + 4, @as(((65535 - n) / 256) % 256, u8));
   bi := 0;
-  while (bi < n) { set(out, pos + 5 + bi, @as(get(raw, src + bi), u8)); bi = bi + 1; };
+  while (bi < n) {
+    set(out, pos + 5 + bi, @as(get(raw, src + bi), u8));
+    bi = bi + 1;
+  }
   pos = pos + 5 + n;
   src = src + n;
   remaining = remaining - n;
-};
+}
 # adler-32 over the pure data stream — raw itself, since block 2's
 # header would otherwise sit inside any contiguous span of out.
 adler :: adler32(raw, 0, rawSize);
