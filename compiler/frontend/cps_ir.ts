@@ -84,10 +84,18 @@ export type CTerm =
   // (multi-shot frozen accs; source named variables stay live by design).
   | {t: "letk", name: string, param: string, norm?: string, freeze?: {name: string, val: CAtom}[], body: CTerm, rest: CTerm}
   // Bind a primitive result (never suspends; may throw — a field read, or an
-  // op prim whose operator is in ops.ts's TRAPPING_OPS).
-  | {t: "let", name: string, rhs: CPrim, rest: CTerm}
+  // op prim whose operator is in ops.ts's TRAPPING_OPS). Converter-emitted
+  // prims bind $-temps; a source-named `let` arises only from cps_opt's
+  // prim-let fusion, which carries the fused bind's `top` over.
+  | {t: "let", name: string, rhs: CPrim, rest: CTerm, top?: true}
   // Bind an already-computed atom to a name (source `let`, block temps).
-  | {t: "bind", name: string, val: CAtom, rest: CTerm}
+  // `top` marks an item-chain bind (converted from a program item, not a
+  // block statement — cps.ts's Converter.items): the interpreter lands it
+  // in the accumulator frame (the env chain's root, ctx.env) because joins
+  // and scope continuations evaluate in private frames. The wasm backend
+  // ignores the flag — its per-function frame already gives top-level
+  // items main-frame slots.
+  | {t: "bind", name: string, val: CAtom, rest: CTerm, top?: true}
   // Create a closure over funcs[fun]; capts = free value vars (wasm's
   // captured-frame-slot set; the closure interpreter just uses env chains).
   | {t: "mkfn", name: string, params: string[], capts: string[], fun: number, rest: CTerm}
@@ -116,8 +124,9 @@ export type CTerm =
   | {t: "if", c: CAtom, a: CTerm, b: CTerm}
   // New frame (source block).
   | {t: "scope", rest: CTerm}
-  // Destructure a tuple/array-window value into the current frame.
-  | {t: "dlet", val: CAtom, fields: string[], rest: CTerm}
+  // Destructure a tuple/array-window value into the current frame. The
+  // item-chain form carries `top` under bind's contract.
+  | {t: "dlet", val: CAtom, fields: string[], rest: CTerm, top?: true}
   | {t: "assign", name: string, val: CAtom, rest: CTerm}
   // Deliver arg to the named continuation (tail jump; resolves at runtime,
   // which is what makes recursive letk loops and multi-shot resume work).

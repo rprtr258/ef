@@ -42,6 +42,17 @@ export function apply(f: Value, args: Value[], k: Cont): Outcome {
   throw new Error("Not callable: " + show(f));
 }
 
+// The env chain's root: the accumulator frame (ctx.env — a globalEnv,
+// parentless). Item-chain binds (the IR's `top` marker) land here: joins
+// and scope continuations evaluate in private frames, and the REPL acc
+// must receive the items' bindings.
+function rootOf(env: Env): Env {
+  let r = env;
+  while (r.parent !== null)
+    r = r.parent;
+  return r;
+}
+
 // Term interpreter. `k` is the ambient continuation, consumed only by halt
 // (the program boundary); every other value delivery resolves a named
 // continuation (jump/call/perform k operands), which the converter guarantees
@@ -66,10 +77,10 @@ function evalTerm(t: CTerm, ir: CIr, env: Env, k: Cont): Outcome {
       return evalTerm(t.rest, ir, n, k);
     }
     case "let":
-      env.vars.set(t.name, evalPrim(t.rhs, env));
+      (t.top ? rootOf(env) : env).vars.set(t.name, evalPrim(t.rhs, env));
       return evalTerm(t.rest, ir, env, k);
     case "bind":
-      env.vars.set(t.name, evalAtom(t.val, env));
+      (t.top ? rootOf(env) : env).vars.set(t.name, evalAtom(t.val, env));
       return evalTerm(t.rest, ir, env, k);
     case "mkfn":
       env.vars.set(t.name, {tag: "fn", params: t.params, fun: t.fun, ir, env, typ: ir.funcs[t.fun].typ, direct: ir.funcs[t.fun].direct === true || undefined});
@@ -121,7 +132,8 @@ function evalTerm(t: CTerm, ir: CIr, env: Env, k: Cont): Outcome {
       // Tuples carry their fields directly; arrays destructure through the
       // view's window (the checker statically picks which shape `v` has).
       const a = v !== null && typeof v === "object" && v.tag === "tup" ? v.elems : sliceElems(asSlice(v));
-      for (let i = 0; i < t.fields.length; i++) env.vars.set(t.fields[i], a[i]);
+      const fr = t.top ? rootOf(env) : env;
+      for (let i = 0; i < t.fields.length; i++) fr.vars.set(t.fields[i], a[i]);
       return evalTerm(t.rest, ir, env, k);
     }
     case "assign":
@@ -379,8 +391,9 @@ export function exec(prog: Program, ctx: Ctx, checked: Checked, trace?: RunTrace
   // never overwrites anything).
   seedBuiltins(ctx.env, builtinRefs(prog, ctx.checked.stamps));
   // One conversion, one term, one runTop drive: items chain inside the term,
-  // so an interp-resumed effect continues into the next item. Top-level
-  // binds land in ctx.env (the items bind in the caller's frame),
+  // so an interp-resumed effect continues into the next item. Item binds
+  // land in ctx.env (the bind nodes' `top` flag routes item-chain binds to
+  // the chain root even when a join or scope continuation hosts them),
   // preserving the REPL accumulator protocol.
   const ir = toCps(prog, ctx.checked.stamps);
   let lastIsExpr = false;

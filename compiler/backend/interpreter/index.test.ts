@@ -38,6 +38,38 @@ test("exec drives a REPL session: bindings persist, lastType resolved", () => {
   expect(showT(l2.lastType)).toBe("i64");
 });
 
+test("REPL accumulator: item binds survive joins and block scopes", () => {
+  // The item bind executes inside the join continuation (if arms) or the
+  // block's private frame (braced RHS); it must still land in the shared
+  // accumulator frame, or the name is poisoned: unbound at runtime while
+  // the checker's acc keeps it (rejecting redeclaration).
+  const ctx = newCtx();
+  runLine(ctx, "x := if (true) 1 else 2;");
+  expect(runLine(ctx, "x").value).toBe(1n);
+  expect(runLine(ctx, "x + 1").value).toBe(2n);
+  runLine(ctx, "y := { 40 + 2 };");
+  expect(runLine(ctx, "y").value).toBe(42n);
+  runLine(ctx, "[a, b] := if (true) [1, 2] else [3, 4];");
+  expect(runLine(ctx, "a").value).toBe(1n);
+});
+
+test("one-shot run: joins and block scopes bind in the run env", () => {
+  expect(run("x := if (true) 1 else 2; x")).toBe(1n);
+  expect(run("y := { 40 + 2 }; y")).toBe(42n);
+});
+
+test("block-local binds stay scoped: sibling blocks rebind in isolation", () => {
+  // Sibling blocks may each bind x; escaping closures keep their own block
+  // frame's value — the frame isolation the accumulator fix must preserve.
+  expect(show(run(`
+  r := fn(): i64 { 0 };
+  s := fn(): i64 { 0 };
+  { x := 1; r = fn(): i64 { x } };
+  { x := 2; s = fn(): i64 { x } };
+  [r(), s()]
+  `))).toBe("[1, 2]");
+});
+
 test("program args flow to the args builtin (no run/source-path pollution)", () => {
   // exec-level: the seeded args are exactly what the program sees — the CLI
   // passes everything after the source path, never the subcommand or file.
@@ -1082,11 +1114,11 @@ describe("Env seeding (exec binds referenced builtins per line)", () => {
   });
 });
 
-// Regression: the converter inserts wrapper continuations (if-join, while
-// exit, call/perform sites) as letks between top-level items, so bindings
-// made after them land in a letk child frame instead of ctx.env — while
-// prepare's acc still records the name. The next line therefore
-// typechecks and then dies at runtime with "Unbound symbol".
+// Wrapper continuations (if-join, while exit, call/perform sites) sit
+// between top-level items as letks. Item binds after them carry `top`
+// (cps_ir.ts's bind marker) and land in ctx.env — the REPL accumulator —
+// not in the wrapper's child frame, while prepare's acc records the name
+// either way; these tests pin that agreement per wrapper shape.
 describe("REPL acc regression: bindings after wrapper continuations", () => {
   const line = runLine;
 
@@ -1096,34 +1128,27 @@ describe("REPL acc regression: bindings after wrapper continuations", () => {
     expect(() => prepare("q;", ctx.checked)).not.toThrow();
   });
 
-  // bun:test has no test.fails: this stand-in passes while the body throws
-  // "Unbound symbol" (the open bug — a checker error would fail it) and
-  // fails once the bug is fixed. Flip each call to a plain test then.
-  const fails = (name: string, fn: () => void) =>
-    test(name, () => expect(fn).toThrow(/Unbound symbol/));
-  fails("after a top-level if", () => {
+  test("after a top-level if", () => {
     const ctx = newCtx();
     line(ctx, "c := true; if (c) { 1 } else { 2 }; q :: 5;");
     expect(line(ctx, "q;").value).toBe(5n);
   });
 
-  fails("after a top-level while", () => {
+  test("after a top-level while", () => {
     const ctx = newCtx();
     line(ctx, "i := 0; while (i < 1) { i = i + 1 }; q :: 5;");
     expect(line(ctx, "q;").value).toBe(5n);
   });
 
-  // Fixed on the interpreter: a classified-pure top-level call is a dcall —
-  // its result binds in-frame with no wrapper letk, so the following
-  // binding lands in the caller's frame (the REPL accumulator) as the other
-  // shapes still expect wrapper-letk work.
+  // A classified-pure top-level call is a dcall: its result binds in-frame
+  // with no wrapper letk between the items.
   test("after a top-level call", () => {
     const ctx = newCtx();
     line(ctx, "f :: fn(): i64 { 1 }; f(); q :: 5;");
     expect(line(ctx, "q;").value).toBe(5n);
   });
 
-  fails("after a top-level perform", () => {
+  test("after a top-level perform", () => {
     const ctx = newCtx();
     line(ctx, "Println!(1); q :: 5;");
     expect(line(ctx, "q;").value).toBe(5n);
