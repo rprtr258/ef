@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wasm backend · ef</title>
+<link rel="stylesheet" href="../../site.css">
+<script>(() => {
+  const KEY = "ef.playground.theme"; // shared with the playground
+  const mq = matchMedia("(prefers-color-scheme: dark)");
+  const pref = () => {
+    const t = localStorage.getItem(KEY);
+    return t === "light" || t === "dark" ? t : (mq.matches ? "dark" : "light");
+  };
+  document.documentElement.dataset.theme = pref();
+  document.addEventListener("click", (e) => {
+    if (e.target instanceof Element && e.target.closest("#theme-btn")) {
+      const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = t;
+      localStorage.setItem(KEY, t);
+    }
+  });
+})();</script>
+</head>
+<body>
+<header id="topbar">
+  <a id="brand" href="../../index.html"><b>ef</b></a>
+  <span class="spacer"></span>
+  <button id="theme-btn" class="tb-btn icon" title="toggle theme"><svg class="i-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg><svg class="i-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></g></svg></button>
+  <a id="src-link" href="https://github.com/rprtr258/ef" title="source repository" aria-label="source repository"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+</header>
+<div id="page">
+<nav id="sidebar">
+  <div class="nav-group">
+    <a href="../../index.html">Overview</a>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../../dev/index.html">Compiler pipeline</a>
+    <a href="../../dev/analysis.html">Analysis</a>
+    <a href="../../dev/builtins.html">Builtins</a>
+    <a href="../../dev/eval.html">Interpreter (CPS)</a>
+    <a href="../../dev/lexer.html">Lexer</a>
+    <a href="../../dev/lint.html">Linter internals</a>
+    <a href="../../dev/parser.html">Parser</a>
+    <a href="../../dev/types.html">Type checker</a>
+    <a class="active" href="../../dev/wasm/index.html">Wasm backend</a>
+    <div class="nav-children">
+    <a href="../../dev/wasm/discover.html">Discover</a>
+    <a href="../../dev/wasm/emit.html">Emit</a>
+    <a href="../../dev/wasm/indices.html">Index assignment</a>
+    <a href="../../dev/wasm/layout.html">Statics layout</a>
+    <a href="../../dev/wasm/module.html">Module & host</a>
+    <a href="../../dev/wasm/optimize.html">Optimize</a>
+    </div>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../../spec/index.html">Language spec</a>
+    <a href="../../spec/cli.html">CLI & REPL</a>
+    <a href="../../spec/lint.html">Linter</a>
+    <a href="../../spec/vscode.html">VS Code extension</a>
+  </div>
+</nav>
+<main id="content">
+<h1 id="wasm-backend">Wasm backend</h1>
+<p>Same frontend as the interpreter — parse → typecheck → <a href="../analysis.html">analysis</a>
+— different codegen: the program&#39;s CPS structure is compiled <strong>explicitly</strong>
+into WasmGC. There is no linear memory: every wasm operand value is an
+<code>anyref</code>.</p>
+<h2 id="pipeline">Pipeline</h2>
+<p><code>compileWithOps(pre)</code> composes free functions over plain artifact records —
+each phase returns a fresh record with its additions, and no phase mutates an
+artifact it did not create. The <code>pre</code> argument is pipeline.ts&#39;s <code>Prepared</code>
+record (prepare&#39;s <code>{prog, checked}</code>): compile consumes artifacts instead of
+source, so gate-holding callers — wasm_host.ts&#39;s <code>runWasm</code> (the entrypoint
+gate), the CLI&#39;s <code>ef wasm</code> (gate + compile), the playground&#39;s
+run/build — prepare once and hand the same record on. Inside the pipeline,
+the shared fail-fast gate (frontend/pipeline.ts&#39;s <code>rejectUnhandled</code>) rejects
+residual ops neither the builtin table nor the runner&#39;s interpreter covers
+right away — before any codegen, the same check the interpreter&#39;s
+<code>exec</code> applies (see <a href="../eval.html">Interpreter</a>). The phases:</p>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Reads</th>
+<th>Produces</th>
+<th>Job</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><a href="discover.html"><code>discover</code></a></td>
+<td><code>Program</code> (pre-checked by the caller)</td>
+<td><code>Discovery</code></td>
+<td>intern effect ops into the op table (returned to the host so both agree on op numbering); handler-presence pre-scan; the scope/slot/literal/split-site walk over the whole program</td>
+</tr>
+<tr>
+<td><a href="optimize.html"><code>optimize</code></a></td>
+<td><code>Program</code></td>
+<td><code>Opt</code></td>
+<td><code>OPT_PASSES</code>: <code>treeShakeBuiltins</code> (emit only referenced builtins) and <code>dropDeadHostImports</code> (live host-import set — funcref index assignment derives from it)</td>
+</tr>
+<tr>
+<td><a href="indices.html"><code>assignIndices</code></a></td>
+<td><code>Discovery</code>, <code>Opt</code></td>
+<td><code>Indices</code></td>
+<td>funcref table indices: helpers, lambdas, builtins, case fns, main; perform/handle spill slots</td>
+</tr>
+<tr>
+<td><a href="layout.html"><code>layoutStatics</code></a></td>
+<td><code>Discovery</code>, <code>Indices</code>, <code>Opt</code></td>
+<td><code>Layout</code></td>
+<td>static literal globals — nums, strings, bools, <code>PI</code>, per-handle case tables — each initialized by a GC constant expression at instantiation</td>
+</tr>
+<tr>
+<td><a href="emit.html"><code>emit</code></a></td>
+<td>all of the above</td>
+<td><code>Fn[]</code></td>
+<td>one local <code>Emit</code> context; <code>expr()</code> + the statement/effect emitters; order: helpers → lambdas → case fns → builtin trampolines → main (+ thunks)</td>
+</tr>
+<tr>
+<td><a href="module.html"><code>buildModule</code></a></td>
+<td>all of the above</td>
+<td>bytes</td>
+<td>assemble the module incl. <code>run</code> + accessor init fns; in-process binaryen shrink (level 2 — matches <code>-Oz</code> size at ~⅓ the cost)</td>
+</tr>
+</tbody></table>
+<p>Each phase has its own page under this one in the sidebar.</p>
+<h2 id="value-representation">Value representation</h2>
+<svg class="dgm" viewBox="0 0 720 96" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="WasmGC value plane">
+  <rect class="box" x="16"  y="20" width="104" height="56" rx="8"/>
+  <text x="68"  y="40" text-anchor="middle">unit</text>
+  <text x="68"  y="58" text-anchor="middle" class="faint">ref.null</text>
+  <rect class="box" x="136" y="20" width="104" height="56" rx="8"/>
+  <text x="188" y="40" text-anchor="middle">bool</text>
+  <text x="188" y="58" text-anchor="middle" class="faint">i31ref 0/1</text>
+  <rect class="box" x="256" y="20" width="128" height="56" rx="8"/>
+  <text x="320" y="40" text-anchor="middle">number</text>
+  <text x="320" y="58" text-anchor="middle" class="faint">$NUM{f64} ×6 widths</text>
+  <rect class="box" x="400" y="20" width="128" height="56" rx="8"/>
+  <text x="464" y="40" text-anchor="middle">string</text>
+  <text x="464" y="58" text-anchor="middle" class="faint">$STR mut i8[] UTF-8</text>
+  <rect class="box" x="544" y="20" width="164" height="56" rx="8"/>
+  <text x="626" y="40" text-anchor="middle">array / list · tuple</text>
+  <text x="626" y="58" text-anchor="middle" class="faint">$ARR slice {data, off, len} · $TUP</text>
+</svg><table>
+<thead>
+<tr>
+<th>ef value</th>
+<th>WasmGC representation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>unit</td>
+<td><code>ref.null any</code></td>
+</tr>
+<tr>
+<td>bool</td>
+<td>i31ref <code>0</code>/<code>1</code></td>
+</tr>
+<tr>
+<td>number</td>
+<td><code>$NUM {f64}</code> immutable struct — one box shape per width (<code>$F64 $F32 $I32 $U32 $I64 $U64</code>)</td>
+</tr>
+<tr>
+<td>string</td>
+<td><code>$STR</code> — mutable i8 array, UTF-8 bytes (a string value is a bare array, no slice wrapper; <code>strlen</code> = <code>array.len</code>)</td>
+</tr>
+<tr>
+<td>array / list</td>
+<td><code>$ARR</code> slice fat pointer <code>{(ref null $ELEMS) data, i32 off, i32 len}</code> — immutable; <strong>views (<code>sub</code>) share the backing with a shifted window</strong>, only backing elements mutate</td>
+</tr>
+<tr>
+<td>tuple</td>
+<td><code>$TUP {(ref null $ELEMS)}</code> — immutable, struct-like: no offset/length, distinct from slices</td>
+</tr>
+<tr>
+<td>closure</td>
+<td><code>$CLO {i31 fnIdx, (ref null $FRAME) env, i31 fsize, i31 direct flag}</code> — immutable</td>
+</tr>
+</tbody></table>
+<h2 id="frames-variables-calls">Frames, variables, calls</h2>
+<p>Every call frame is a <code>$FRAME {mut parent, mut slots}</code> with slot array length
+<code>max(fsize, argc)</code>. Closures capture their defining frame, so escaping and
+mutable capture work exactly like the interpreter&#39;s env chain; variables
+resolve statically to <code>(frame depth, slot)</code> — a read is <code>struct.get $FRAME 1</code></p>
+<ul>
+<li><code>array.get</code>.</li>
+</ul>
+<p>The call ABI is dual, over one funcref table. Classified-pure functions (empty
+effect row, no tail call to a suspending callee) compile to the direct
+signature <code>T_DABI = (($FRAME)) -&gt; anyref</code>: no continuation operand, tails
+deliver with <code>dret</code>, and <code>dcall</code> sites invoke them directly — the <code>$CLO</code>&#39;s
+direct flag picks the entry at runtime for unknown callees (a pure-typed slot
+can hold a resume binder or an <code>any</code>-smuggled closure, which take the <code>T_KABI</code>
+arm through a synthesized land cell). A <strong>mixed function</strong> — empty row with
+internal handlers — keeps the direct boundary: its islands run over the
+ambient chain like any CPS region, the tail handler&#39;s <code>K_HDL</code> chains to the
+terminal return-cell instead of the never-set <code>$ret</code>, and a case fn&#39;s
+completion dispatches through that cell, returning the island&#39;s value from
+the direct entry. Builtins are trampolines (<code>T_KABI</code>); <code>map</code>/<code>each</code>/<code>flatmap</code>
+are compiled CPS loops that call callbacks the same way. Tail positions keep
+<code>return_call</code>/<code>return_call_indirect</code> (O(1) wasm stack).</p>
+<h2 id="continuations-and-effects">Continuations and effects</h2>
+<p>Continuations are <code>$K</code> cells <code>{mut kind, mut a, mut b, mut next}</code>:</p>
+<svg class="dgm" viewBox="0 0 720 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="continuation cell chain">
+  <defs>
+    <marker id="arrw" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="arrowhead" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="box acc" x="16"  y="24" width="190" height="70" rx="8"/>
+  <text x="111" y="44" text-anchor="middle" class="acc">K_HDL</text>
+  <text x="111" y="62" text-anchor="middle" class="faint">a: case table (opids)</text>
+  <text x="111" y="78" text-anchor="middle" class="faint">b: hframe</text>
+  <rect class="box" x="266" y="24" width="170" height="70" rx="8"/>
+  <text x="351" y="44" text-anchor="middle">K_RET</text>
+  <text x="351" y="62" text-anchor="middle" class="faint">a: thunk funcref idx</text>
+  <text x="351" y="78" text-anchor="middle" class="faint">b: frame</text>
+  <rect class="box" x="496" y="24" width="120" height="70" rx="8"/>
+  <text x="556" y="44" text-anchor="middle">K_RET …</text>
+  <text x="556" y="66" text-anchor="middle" class="faint">→ next</text>
+  <text x="640" y="66" class="faint">ref.null = final return</text>
+  <path class="arrow" marker-end="url(#arrw)" d="M206 59 H262"/>
+  <path class="arrow" marker-end="url(#arrw)" d="M436 59 H492"/>
+</svg><table>
+<thead>
+<tr>
+<th>Kind</th>
+<th><code>a</code></th>
+<th><code>b</code></th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>K_RET</code></td>
+<td>i31 thunk funcref index</td>
+<td>frame</td>
+</tr>
+<tr>
+<td><code>K_HDL</code></td>
+<td><code>$ELEMS</code> case table of flat <code>[opid, fnIdx, fsize, nparams]</code> quadruples (<code>Return</code> = opid −1)</td>
+<td>hframe shared by the case fns</td>
+</tr>
+<tr>
+<td><code>K_SPILL</code></td>
+<td>frozen <code>$FRAME</code> snapshot</td>
+<td>unused</td>
+</tr>
+</tbody></table>
+<p>The mechanics of a perform:</p>
+<ol>
+<li>Box the args into an <code>$ELEMS</code> array, spill the args cell to a frame slot.</li>
+<li>Walk the continuation chain for a <code>K_HDL</code> whose case table contains the op.</li>
+<li>On a match, dispatch to the per-case <code>T_KABI</code> function over the handler&#39;s
+shared hframe. On no match, the effect reaches the <strong>host</strong> through
+<code>ef_perform</code> and is interpreted there (op table from <code>compileWithOps</code> →
+<code>builtinEffectHosts</code>), and the rest-of-site fragment continues with the
+resumed value.</li>
+<li><strong>Resume as a value:</strong> the <code>resume</code> binder is a <code>$CLO</code> closure over the
+shared resume fn plus a per-perform-site capture record. Every call copies
+the captured slice afresh, re-chains the copy&#39;s bottom to a <em>fresh</em> HDL
+whose <code>next</code> is the <code>k</code> the closure was invoked with, and dispatches the
+resumed value through that chain — that is multi-shot resume, GC-style.</li>
+</ol>
+<p>Every perform/handle site ends the inline body and reifies the code after it
+as a rest-of-site fragment — the compile-time <strong>split protocol</strong>.</p>
+<p><strong>Subset restriction:</strong> no perform/handle site inside an <code>if</code> branch or
+<code>while</code> body — suspension across those control-flow blocks is rejected at
+compile time.</p>
+<h2 id="deviations-vs-the-interpreter">Deviations vs the interpreter</h2>
+<p>Known and pinned by tests — degenerate programs only:</p>
+<table>
+<thead>
+<tr>
+<th>Deviation</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Arithmetic on non-numbers traps (<code>ref.cast</code> failure) instead of producing a garbage number</td>
+<td>the checker rejects non-numeric arithmetic statically, so well-typed programs never hit it</td>
+</tr>
+<tr>
+<td>Closures always display as <code>[fn]</code></td>
+<td>interpreter may show an inferred type</td>
+</tr>
+<tr>
+<td>Stack overflow is a wasm <code>RuntimeError</code>, not a JS <code>RangeError</code></td>
+<td></td>
+</tr>
+<tr>
+<td>Heap reclamation is the host GC&#39;s job</td>
+<td>recursion depth costs only GC-reclaimed frame blocks</td>
+</tr>
+</tbody></table>
+<p>Next: <a href="discover.html">Discover</a>.</p>
+
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,216 @@
+:root {
+  --bg: #f4f4f2;
+  --bg2: #ebebe8;
+  --pane: #fafaf9;
+  --ink: #14171c;
+  --faint: #6b7280;
+  --hair: #d9d9d4;
+  --accent: #1d4ed8;
+  --accent-ink: #ffffff;
+  --ok: #0f766e;
+  --warn: #b45309;
+  --err: #b91c1c;
+  --result: #0f766e;
+  --sel: #dbeafe;
+  --green: #16a34a;
+  --type: #6d28d9;
+}
+
+[data-theme="dark"] {
+  --bg: #101318;
+  --bg2: #0b0e12;
+  --pane: #14171c;
+  --ink: #e7eaf0;
+  --faint: #8b93a1;
+  --hair: #262b36;
+  --accent: #93c5fd;
+  --accent-ink: #101318;
+  --ok: #5eead4;
+  --warn: #fcd34d;
+  --err: #f87171;
+  --result: #5eead4;
+  --sel: #1e3a5f;
+  --green: #22c55e;
+  --type: #c4b5fd;
+}
+
+/* ef docs — layout and prose styles on top of the playground's design tokens,
+   which are prepended at build time from playground/studio.css (--bg, --ink,
+   --hair, --accent, ... for both themes). */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font: 14px/1.65 "Inter", "Helvetica Neue", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+/* --- topbar (same shell as the playground) -------------------------------- */
+
+#topbar {
+  display: flex; align-items: center; gap: 8px;
+  height: 44px; padding: 0 14px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--hair);
+  position: sticky; top: 0; z-index: 10;
+}
+
+#brand { font-size: 13px; letter-spacing: .02em; color: var(--ink); text-decoration: none; }
+#brand b { font-family: "JetBrains Mono", ui-monospace, monospace; }
+
+.spacer { flex: 1; }
+
+#src-link { color: var(--faint); }
+#src-link:hover { color: var(--ink); }
+#src-link svg { display: block; width: 16px; height: 16px; }
+
+.tb-btn {
+  font: inherit; font-size: 12px;
+  color: var(--ink); background: transparent;
+  border: 1px solid var(--hair); border-radius: 6px;
+  padding: 4px 10px; cursor: pointer;
+}
+.tb-btn:hover { background: var(--sel); }
+.tb-btn.icon { padding: 4px 8px; }
+
+/* theme-btn: moon in light mode, sun in dark mode (same as the playground) */
+#theme-btn svg { display: block; width: 14px; height: 14px; }
+#theme-btn .i-sun { display: none; }
+html[data-theme="dark"] #theme-btn .i-sun { display: block; }
+html[data-theme="dark"] #theme-btn .i-moon { display: none; }
+
+/* --- page grid ------------------------------------------------------------ */
+
+#page {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+}
+
+#sidebar {
+  position: sticky; top: 44px;
+  align-self: start;
+  height: calc(100vh - 44px);
+  overflow-y: auto;
+  padding: 20px 10px 40px 4px;
+  border-right: 1px solid var(--hair);
+  font-size: 13px;
+}
+
+.nav-group { margin-bottom: 18px; }
+.nav-title {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--faint);
+  padding: 4px 10px;
+}
+#sidebar a {
+  display: block; padding: 4px 10px;
+  color: var(--ink); text-decoration: none;
+  border-radius: 6px;
+  border-left: 2px solid transparent;
+}
+#sidebar a:hover { background: var(--sel); }
+#sidebar a.active { color: var(--accent); border-left-color: var(--accent); }
+
+/* Section titles are links to the section's index.md root page. */
+#sidebar a.nav-title { color: var(--faint); }
+#sidebar a.nav-title:hover { background: none; color: var(--ink); }
+#sidebar a.nav-title.active { color: var(--accent); border-left-color: var(--accent); }
+
+#sidebar .nav-children {
+  margin: 2px 0 4px 12px;
+  padding-left: 8px;
+  border-left: 1px solid var(--hair);
+}
+#sidebar .nav-children a { padding: 3px 10px; font-size: 12.5px; }
+
+#content { padding: 34px 44px 80px; min-width: 0; }
+
+/* --- prose ---------------------------------------------------------------- */
+
+#content h1 { font-size: 24px; line-height: 1.25; margin: 4px 0 18px; letter-spacing: -.01em; }
+#content h2 {
+  font-size: 17px; margin: 30px 0 10px;
+  padding-top: 16px; border-top: 1px solid var(--hair);
+}
+#content h3 { font-size: 14.5px; margin: 22px 0 8px; }
+#content h4 { font-size: 13px; margin: 18px 0 6px; }
+
+#content p { margin: 8px 0; }
+#content ul, #content ol { margin: 8px 0 8px 22px; }
+#content li { margin: 3px 0; }
+#content a { color: var(--accent); text-decoration: none; }
+#content a:hover { text-decoration: underline; }
+#content hr { border: 0; border-top: 1px solid var(--hair); margin: 22px 0; }
+#content blockquote {
+  margin: 12px 0; padding: 6px 14px;
+  border-left: 3px solid var(--accent);
+  background: var(--bg2);
+  border-radius: 0 6px 6px 0;
+}
+
+code {
+  font-family: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  font-size: 12.5px;
+  background: var(--bg2);
+  border: 1px solid var(--hair);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+pre {
+  background: var(--bg2);
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 12px 0;
+  line-height: 1.5;
+}
+pre code { background: none; border: none; padding: 0; font-size: 12.5px; }
+
+#content table {
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 13px;
+  width: 100%;
+}
+#content th, #content td {
+  border: 1px solid var(--hair);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+#content th { background: var(--bg2); font-weight: 600; }
+#content table code { white-space: nowrap; }
+
+/* --- inline SVG diagrams -------------------------------------------------- */
+
+.dgm { display: block; max-width: 100%; height: auto; margin: 18px auto; }
+.dgm .box { fill: var(--pane); stroke: var(--hair); }
+.dgm .box.acc { stroke: var(--accent); }
+.dgm .panel { fill: var(--bg2); }
+.dgm text {
+  font-family: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  font-size: 11.5px; fill: var(--ink);
+}
+.dgm text.faint { fill: var(--faint); }
+.dgm text.acc { fill: var(--accent); }
+.dgm .arrow { stroke: var(--faint); stroke-width: 1.2; fill: none; }
+.dgm .arrow.acc { stroke: var(--accent); }
+.dgm .arrowhead { fill: var(--faint); }
+.dgm .arrowhead.acc { fill: var(--accent); }
+
+/* --- small screens --------------------------------------------------------- */
+
+@media (max-width: 900px) {
+  #page { grid-template-columns: 1fr; }
+  #sidebar {
+    position: static; height: auto;
+    border-right: none; border-bottom: 1px solid var(--hair);
+  }
+  .nav-group { margin-bottom: 6px; }
+  #content { padding: 24px 18px 60px; }
+}

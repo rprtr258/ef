@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Builtins · ef</title>
+<link rel="stylesheet" href="../site.css">
+<script>(() => {
+  const KEY = "ef.playground.theme"; // shared with the playground
+  const mq = matchMedia("(prefers-color-scheme: dark)");
+  const pref = () => {
+    const t = localStorage.getItem(KEY);
+    return t === "light" || t === "dark" ? t : (mq.matches ? "dark" : "light");
+  };
+  document.documentElement.dataset.theme = pref();
+  document.addEventListener("click", (e) => {
+    if (e.target instanceof Element && e.target.closest("#theme-btn")) {
+      const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = t;
+      localStorage.setItem(KEY, t);
+    }
+  });
+})();</script>
+</head>
+<body>
+<header id="topbar">
+  <a id="brand" href="../index.html"><b>ef</b></a>
+  <span class="spacer"></span>
+  <button id="theme-btn" class="tb-btn icon" title="toggle theme"><svg class="i-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg><svg class="i-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></g></svg></button>
+  <a id="src-link" href="https://github.com/rprtr258/ef" title="source repository" aria-label="source repository"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+</header>
+<div id="page">
+<nav id="sidebar">
+  <div class="nav-group">
+    <a href="../index.html">Overview</a>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../dev/index.html">Compiler pipeline</a>
+    <a href="../dev/analysis.html">Analysis</a>
+    <a class="active" href="../dev/builtins.html">Builtins</a>
+    <a href="../dev/eval.html">Interpreter (CPS)</a>
+    <a href="../dev/lexer.html">Lexer</a>
+    <a href="../dev/lint.html">Linter internals</a>
+    <a href="../dev/parser.html">Parser</a>
+    <a href="../dev/types.html">Type checker</a>
+    <a href="../dev/wasm/index.html">Wasm backend</a>
+    <div class="nav-children">
+    <a href="../dev/wasm/discover.html">Discover</a>
+    <a href="../dev/wasm/emit.html">Emit</a>
+    <a href="../dev/wasm/indices.html">Index assignment</a>
+    <a href="../dev/wasm/layout.html">Statics layout</a>
+    <a href="../dev/wasm/module.html">Module & host</a>
+    <a href="../dev/wasm/optimize.html">Optimize</a>
+    </div>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../spec/index.html">Language spec</a>
+    <a href="../spec/cli.html">CLI & REPL</a>
+    <a href="../spec/lint.html">Linter</a>
+    <a href="../spec/vscode.html">VS Code extension</a>
+  </div>
+</nav>
+<main id="content">
+<h1 id="builtins">Builtins</h1>
+<p>The builtin table is <strong>the one source of truth</strong> describing every ef builtin.
+Adding a builtin means adding one entry — never seed anything ad hoc into the
+checker or the runtime env. The table drives the checker (signatures), the
+interpreter (runtime bindings), and the wasm host (effect interpretation).</p>
+<h2 id="four-kinds">Four kinds</h2>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Checking</th>
+<th>Runtime binding</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>fn</code></td>
+<td><code>t: Type | thunk</code> — a thunk gives fresh vars per use (polymorphic)</td>
+<td>lifted to a native: <code>k(fn(...args))</code></td>
+<td><code>len</code>, <code>sub</code>, <code>sqrt</code>, <code>range</code></td>
+</tr>
+<tr>
+<td><code>value</code></td>
+<td><code>t</code></td>
+<td>bound as the value itself (<code>fn()</code>), not a native fn</td>
+<td><code>PI</code></td>
+</tr>
+<tr>
+<td><code>native</code></td>
+<td><code>t</code></td>
+<td>CPS fn: <code>(args, k) =&gt; Outcome</code> — calls ef closures mid-flight</td>
+<td><code>map</code>, <code>each</code>, <code>flatmap</code></td>
+</tr>
+<tr>
+<td><code>effect</code></td>
+<td><code>sig</code> (declared to the checker like a user effect)</td>
+<td>default host interpretation</td>
+<td><code>Read</code>, <code>Write</code>, <code>Println</code>, <code>Out</code>, <code>Exit</code>, <code>Wait</code>, <code>Random</code></td>
+</tr>
+</tbody></table>
+<p><strong>Operators (<code>+ - * / % == neg …</code>) are <em>not</em> in the table</strong>: the checker
+special-cases them structurally, because no honest type signature exists for
+them — <code>+</code> is overloaded per numeric width <em>and</em> string, and numeric ops are
+width-strict. The full operator/builtin surface is in the
+<a href="../spec/index.html#4-builtins">spec</a>; the <code>{name, params}</code> ABI both backends agree on
+lives in <a href="analysis.html">Analysis</a>.</p>
+<h2 id="builtin-effects-and-their-default-interpretations">Builtin effects and their default interpretations</h2>
+<p>Every <code>effect</code>-kind entry carries an <code>interp: (args, k) =&gt; Outcome</code> — the
+CPS interpretation used when the effect reaches the top unhandled. Two derived
+views of the same table:</p>
+<table>
+<thead>
+<tr>
+<th>View</th>
+<th>Shape</th>
+<th>Consumer</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>builtinInterps</code></td>
+<td>CPS: <code>(args, k) =&gt; Outcome</code></td>
+<td><code>runTop</code> — interpreter side (<a href="eval.html">Interpreter</a>)</td>
+</tr>
+<tr>
+<td><code>builtinEffectHosts</code></td>
+<td>direct-style: <code>(args) =&gt; Value</code> (unwraps the single synchronous <code>k</code> call)</td>
+<td>wasm_run.ts&#39;s <code>hostFor</code> adapter (<a href="wasm/module.html">Module &amp; host</a>)</td>
+</tr>
+</tbody></table>
+<table>
+<thead>
+<tr>
+<th>Effect</th>
+<th>Default behaviour</th>
+<th>Knob</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Read(path)</code></td>
+<td><code>readFileSync(path)</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>Write(path, bytes)</code></td>
+<td><code>writeFileSync(path, bytes)</code> — raw [u8] bytes</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>Println(v)</code></td>
+<td><code>console.log(show(v))</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>Out(s)</code></td>
+<td><code>process.stdout.write(s)</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>Exit(code)</code></td>
+<td><code>process.exit(code)</code> — never resumes</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>Wait(secs)</code></td>
+<td>busy-wait (synchronous evaluator)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>Random()</code></td>
+<td><code>Math.random()</code></td>
+<td>both backends interpret <code>Random</code> through this host</td>
+</tr>
+</tbody></table>
+<p>Injectability: <code>runTop</code>/<code>run</code>/<code>newCtx</code> (interpreter) and <code>runWasm</code> (host)
+accept an <code>EffectInterp</code> override checked <strong>before</strong> the builtin defaults —
+tests inject fake fs/time/randomness there. Both boundaries route every
+interpretation through trace.ts&#39;s <code>runTraced</code>, so a run with a trace
+records each builtin effect&#39;s op, arguments, and delivered result — the
+capability trace parity.test.ts compares between backends.</p>
+<h2 id="freshness">Freshness</h2>
+<p><code>builtins</code> is a fresh array per program: polymorphic thunks and closures are
+never shared between programs. Combined with the checker&#39;s scheme thunks
+(fresh type vars per use), one process can check/eval many programs in
+isolation — which the test suite and the REPL rely on.</p>
+<h2 id="adding-a-builtin-the-checklist">Adding a builtin — the checklist</h2>
+<ol>
+<li>One entry in the builtin table (pick the kind; give <code>t</code> or <code>sig</code>).</li>
+<li>If it is an <code>effect</code>: the analysis surface tables
+(<code>EFFECT_OPS</code>/<code>BUILTINS</code>) must be extended — the sync test fails
+until they are in sync.</li>
+<li><code>bun run ci</code> — the test suite is the executable form of the spec.</li>
+</ol>
+<p>Next: <a href="eval.html">Interpreter (CPS)</a>.</p>
+
+</main>
+</div>
+</body>
+</html>

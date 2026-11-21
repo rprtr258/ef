@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VS Code extension · ef</title>
+<link rel="stylesheet" href="../site.css">
+<script>(() => {
+  const KEY = "ef.playground.theme"; // shared with the playground
+  const mq = matchMedia("(prefers-color-scheme: dark)");
+  const pref = () => {
+    const t = localStorage.getItem(KEY);
+    return t === "light" || t === "dark" ? t : (mq.matches ? "dark" : "light");
+  };
+  document.documentElement.dataset.theme = pref();
+  document.addEventListener("click", (e) => {
+    if (e.target instanceof Element && e.target.closest("#theme-btn")) {
+      const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = t;
+      localStorage.setItem(KEY, t);
+    }
+  });
+})();</script>
+</head>
+<body>
+<header id="topbar">
+  <a id="brand" href="../index.html"><b>ef</b></a>
+  <span class="spacer"></span>
+  <button id="theme-btn" class="tb-btn icon" title="toggle theme"><svg class="i-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg><svg class="i-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></g></svg></button>
+  <a id="src-link" href="https://github.com/rprtr258/ef" title="source repository" aria-label="source repository"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+</header>
+<div id="page">
+<nav id="sidebar">
+  <div class="nav-group">
+    <a href="../index.html">Overview</a>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../dev/index.html">Compiler pipeline</a>
+    <a href="../dev/analysis.html">Analysis</a>
+    <a href="../dev/builtins.html">Builtins</a>
+    <a href="../dev/eval.html">Interpreter (CPS)</a>
+    <a href="../dev/lexer.html">Lexer</a>
+    <a href="../dev/lint.html">Linter internals</a>
+    <a href="../dev/parser.html">Parser</a>
+    <a href="../dev/types.html">Type checker</a>
+    <a href="../dev/wasm/index.html">Wasm backend</a>
+    <div class="nav-children">
+    <a href="../dev/wasm/discover.html">Discover</a>
+    <a href="../dev/wasm/emit.html">Emit</a>
+    <a href="../dev/wasm/indices.html">Index assignment</a>
+    <a href="../dev/wasm/layout.html">Statics layout</a>
+    <a href="../dev/wasm/module.html">Module & host</a>
+    <a href="../dev/wasm/optimize.html">Optimize</a>
+    </div>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../spec/index.html">Language spec</a>
+    <a href="../spec/cli.html">CLI & REPL</a>
+    <a href="../spec/lint.html">Linter</a>
+    <a class="active" href="../spec/vscode.html">VS Code extension</a>
+  </div>
+</nav>
+<main id="content">
+<h1 id="vs-code-extension">VS Code extension</h1>
+<p>Syntax highlighting, checker diagnostics, lint warnings, hover types, and
+go-to-definition for <code>.ef</code> files, from the <code>vscode/</code> workspace. The extension bundles the
+language server — built from the compiler&#39;s <code>lsp.ts</code>, the same server <code>ef lsp</code>
+serves — so there is nothing to install beyond VS Code itself (≥ 1.91,
+matching the bundled client/server pair).</p>
+<p>The checker is fail-fast: diagnostics show <strong>one error at a time</strong>. Fix it and
+the next one, if any, appears on the next edit. When the document checks,
+lint warnings (<a href="lint.html">Linter</a>) squiggle the binder each finding anchors at.</p>
+<h2 id="install">Install</h2>
+<p>The extension is not published to a marketplace. Two ways to run it from the
+repository (build first either way):</p>
+<pre><code class="language-sh">cd vscode &amp;&amp; bun run build     # emits dist/extension.cjs + dist/server.cjs
+</code></pre>
+<ul>
+<li><strong>Try it in a dev host</strong> — from the <code>ef/</code> root:
+<code>code --extensionDevelopmentPath=&quot;$PWD/vscode&quot;</code> opens a VS Code window with
+the extension loaded.</li>
+<li><strong>Install it</strong> — package a <code>.vsix</code> and install it through the Extensions
+view (<em>Install from VSIX…</em>):
+<code>cd vscode &amp;&amp; bunx @vscode/vsce package</code></li>
+</ul>
+<h2 id="what-you-get">What you get</h2>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Behaviour</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Highlighting</td>
+<td>TextMate grammar (keywords, <code>::</code>/<code>:=</code> bindings, <code>#</code> comments, strings, numbers) plus <strong>semantic tokens</strong> from the language server: user-defined type names (<code>Pair :: …</code>), type parameters, builtin prims, effect names (decls, <code>! { … }</code> rows, <code>Op!</code> performs, case labels), and <strong>value identifiers coloured by their inferred type</strong> — <code>collect</code> in function colour, variables in variable colour</td>
+</tr>
+<tr>
+<td>Diagnostics</td>
+<td>the whole document is re-parsed and typechecked on every change; a type error shows at its position with the checker&#39;s message; on a clean check, lint warnings (unused-arg, derived-any) underline the offending binder</td>
+</tr>
+<tr>
+<td>Hover</td>
+<td>the inferred type of the innermost checked subexpression under the cursor — sym references as <code>name : Type</code> at their instantiated type, effect names anywhere (decls, <code>! { … }</code> rows, performs, handler case labels) as the op&#39;s declared signature function-style with argument names (<code>Choose : () -&gt; bool</code>, <code>Get : (v: i64) -&gt; i64</code>), function names with their binder lambda&#39;s param names (builtins use the table&#39;s declared names, e.g. <code>map : (f: (a) -&gt; b, xs: [a]) -&gt; [b]</code>), alias names (decls, type uses) as their definition (<code>Point = [x: i64, y: i64]</code>, <code>Pair(a, b) = [fst: a, snd: b]</code>), binder sites as the bound value&#39;s type, everything else (literals, operators, calls, lambdas, <code>handle</code> blocks) as the bare type, including <code>! { … }</code> effect rows on function types — rendered as markdown in an <code>ef</code> code fence, so it&#39;s syntax-highlighted with the same grammar as the editor (user-defined type names stay uncoloured there: semantic tokens don&#39;t apply inside hover markdown)</td>
+</tr>
+<tr>
+<td>Definition</td>
+<td>the identifier under the cursor resolves per namespace: value names (sym uses, assign targets — and binder sites, which jump to themselves) to the unique binding (let name, destructuring field, lambda or handler-case param, resume binder); effect names (decls, <code>! { … }</code> rows, <code>Op!</code> performs, case labels) to their <code>effect</code> decl; alias names to their alias item</td>
+</tr>
+</tbody></table>
+<h2 id="behaviour-and-limits">Behaviour and limits</h2>
+<ul>
+<li><strong>One error at a time; warnings on clean checks.</strong> <code>checkProgram</code> throws on
+the first error, so each pass reports at most one; lint warnings publish
+only when the document checks. A clean check publishes an empty list.</li>
+<li><strong>Not every error lands on its position.</strong> Unification mismatches anchor at
+the offending expression; operator/width errors and parse errors carry no
+position and anchor at the document start.</li>
+<li><strong>Hover needs a clean check.</strong> <code>checkProgram</code> throws on the first error, so
+a document with a parse or type error has no hover types at all. Keywords
+aren&#39;t expressions and have no type to show.</li>
+<li><strong>Definition is parse-only.</strong> Unlike hover, go-to-definition works on
+documents that don&#39;t check: resolution is syntactic, leaning on the
+checker&#39;s no-shadowing rule (a non-<code>_</code> name has one binder document-wide).
+Builtins, operator names, and unknown identifiers resolve to nothing.</li>
+<li><strong>Unhandled top-level effects are not errors.</strong> A program may leave effects
+for the runner to interpret; diagnostics only cover parse and type errors.</li>
+</ul>
+<h2 id="other-editors">Other editors</h2>
+<p><code>ef lsp</code> runs the same server over stdio — point any LSP-speaking editor at
+<code>bun compiler/cli.ts lsp</code>. See <a href="cli.html#commands">CLI &amp; REPL</a>.</p>
+<h2 id="where-to-go">Where to go</h2>
+<ul>
+<li><a href="index.html">Language spec</a> — what the types and diagnostics mean.</li>
+<li><a href="cli.html">CLI &amp; REPL</a> — <code>ef lsp</code>, plus every other subcommand.</li>
+</ul>
+
+</main>
+</div>
+</body>
+</html>

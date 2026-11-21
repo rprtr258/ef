@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compiler pipeline · ef</title>
+<link rel="stylesheet" href="../site.css">
+<script>(() => {
+  const KEY = "ef.playground.theme"; // shared with the playground
+  const mq = matchMedia("(prefers-color-scheme: dark)");
+  const pref = () => {
+    const t = localStorage.getItem(KEY);
+    return t === "light" || t === "dark" ? t : (mq.matches ? "dark" : "light");
+  };
+  document.documentElement.dataset.theme = pref();
+  document.addEventListener("click", (e) => {
+    if (e.target instanceof Element && e.target.closest("#theme-btn")) {
+      const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = t;
+      localStorage.setItem(KEY, t);
+    }
+  });
+})();</script>
+</head>
+<body>
+<header id="topbar">
+  <a id="brand" href="../index.html"><b>ef</b></a>
+  <span class="spacer"></span>
+  <button id="theme-btn" class="tb-btn icon" title="toggle theme"><svg class="i-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg><svg class="i-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></g></svg></button>
+  <a id="src-link" href="https://github.com/rprtr258/ef" title="source repository" aria-label="source repository"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+</header>
+<div id="page">
+<nav id="sidebar">
+  <div class="nav-group">
+    <a href="../index.html">Overview</a>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title active" href="../dev/index.html">Compiler pipeline</a>
+    <a href="../dev/analysis.html">Analysis</a>
+    <a href="../dev/builtins.html">Builtins</a>
+    <a href="../dev/eval.html">Interpreter (CPS)</a>
+    <a href="../dev/lexer.html">Lexer</a>
+    <a href="../dev/lint.html">Linter internals</a>
+    <a href="../dev/parser.html">Parser</a>
+    <a href="../dev/types.html">Type checker</a>
+    <a href="../dev/wasm/index.html">Wasm backend</a>
+    <div class="nav-children">
+    <a href="../dev/wasm/discover.html">Discover</a>
+    <a href="../dev/wasm/emit.html">Emit</a>
+    <a href="../dev/wasm/indices.html">Index assignment</a>
+    <a href="../dev/wasm/layout.html">Statics layout</a>
+    <a href="../dev/wasm/module.html">Module & host</a>
+    <a href="../dev/wasm/optimize.html">Optimize</a>
+    </div>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../spec/index.html">Language spec</a>
+    <a href="../spec/cli.html">CLI & REPL</a>
+    <a href="../spec/lint.html">Linter</a>
+    <a href="../spec/vscode.html">VS Code extension</a>
+  </div>
+</nav>
+<main id="content">
+<h1 id="compiler-pipeline">Compiler pipeline</h1>
+<p>Everything the compiler does to a program passes through the same <strong>frontend</strong>:
+lex → parse → check → analyze. Then a program takes one of two roads: the
+<strong>interpreter</strong> evaluates it directly (CPS, effects first-class), or the
+<strong>wasm backend</strong> compiles it to a WasmGC module with the same observable
+behaviour.</p>
+<svg class="dgm" viewBox="0 0 780 404" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ef compiler pipeline">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="arrowhead" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>  <!-- frontend row (accent border = resource: data, not a process) -->
+  <rect class="box acc" x="8"   y="34" width="104" height="44" rx="8"/>
+  <text x="60"  y="53" text-anchor="middle">.ef source</text>
+  <text x="60"  y="67" text-anchor="middle" class="faint">text</text>
+  <rect class="box" x="152" y="34" width="100" height="44" rx="8"/>
+  <text x="202" y="53" text-anchor="middle">lex</text>
+  <text x="202" y="67" text-anchor="middle" class="faint">tokens</text>
+  <rect class="box" x="292" y="34" width="100" height="44" rx="8"/>
+  <text x="342" y="53" text-anchor="middle">parse</text>
+  <text x="342" y="67" text-anchor="middle" class="faint">AST · items</text>
+  <rect class="box" x="432" y="34" width="132" height="44" rx="8"/>
+  <text x="498" y="53" text-anchor="middle">check</text>
+  <text x="498" y="67" text-anchor="middle" class="faint">HM · effects</text>
+  <rect class="box" x="604" y="34" width="120" height="44" rx="8"/>
+  <text x="664" y="53" text-anchor="middle">analyze</text>
+  <text x="664" y="67" text-anchor="middle" class="faint">surface · refs</text>
+  <path class="arrow" marker-end="url(#arr)" d="M112 56 H148"/>
+  <path class="arrow" marker-end="url(#arr)" d="M252 56 H288"/>
+  <path class="arrow" marker-end="url(#arr)" d="M392 56 H428"/>
+  <path class="arrow" marker-end="url(#arr)" d="M564 56 H600"/>  <!-- Checked — resource: the checker's output artifact (types info) -->
+  <rect class="box acc" x="432" y="104" width="132" height="40" rx="8"/>
+  <text x="498" y="121" text-anchor="middle">Checked</text>
+  <text x="498" y="135" text-anchor="middle" class="faint">env·types·rows</text>
+  <path class="arrow" marker-end="url(#arr)" d="M498 78 V100"/>  <!-- interpreter lane -->
+  <rect class="panel" x="20" y="160" width="740" height="86" rx="10"/>
+  <text x="748" y="178" text-anchor="end" class="faint">interpreter</text>
+  <rect class="box" x="48" y="192" width="128" height="40" rx="8"/>
+  <text x="112" y="209" text-anchor="middle">newCtx / exec</text>
+  <text x="112" y="223" text-anchor="middle" class="faint">fail-fast·seed</text>
+  <rect class="box" x="224" y="192" width="120" height="40" rx="8"/>
+  <text x="284" y="209" text-anchor="middle">evalE</text>
+  <text x="284" y="223" text-anchor="middle" class="faint">CPS evaluator</text>
+  <rect class="box" x="392" y="192" width="150" height="40" rx="8"/>
+  <text x="467" y="209" text-anchor="middle">runTop</text>
+  <text x="467" y="223" text-anchor="middle" class="faint">residual effects</text>
+  <path class="arrow" marker-end="url(#arr)" d="M176 212 H220"/>
+  <path class="arrow" marker-end="url(#arr)" d="M344 212 H388"/>
+  <text x="640" y="217" class="faint">multi-shot</text>
+  <text x="640" y="231" class="faint">resume</text>  <!-- wasm lane -->
+  <rect class="panel" x="20" y="268" width="740" height="120" rx="10"/>
+  <text x="748" y="286" text-anchor="end" class="faint">wasm backend</text>
+  <rect class="box" x="48"  y="296" width="104" height="36" rx="8"/>
+  <text x="100" y="311" text-anchor="middle">discover</text>
+  <text x="100" y="324" text-anchor="middle" class="faint">scopes·ops</text>
+  <rect class="box" x="178" y="296" width="104" height="36" rx="8"/>
+  <text x="230" y="311" text-anchor="middle">optimize</text>
+  <text x="230" y="324" text-anchor="middle" class="faint">tree-shake</text>
+  <rect class="box" x="308" y="296" width="104" height="36" rx="8"/>
+  <text x="360" y="311" text-anchor="middle">assign</text>
+  <text x="360" y="324" text-anchor="middle" class="faint">funcref idx</text>
+  <rect class="box" x="438" y="296" width="104" height="36" rx="8"/>
+  <text x="490" y="311" text-anchor="middle">layout</text>
+  <text x="490" y="324" text-anchor="middle" class="faint">statics</text>
+  <rect class="box" x="568" y="296" width="104" height="36" rx="8"/>
+  <text x="620" y="311" text-anchor="middle">emit</text>
+  <text x="620" y="324" text-anchor="middle" class="faint">expr→wasm</text>
+  <path class="arrow" marker-end="url(#arr)" d="M152 314 H174"/>
+  <path class="arrow" marker-end="url(#arr)" d="M282 314 H304"/>
+  <path class="arrow" marker-end="url(#arr)" d="M412 314 H434"/>
+  <path class="arrow" marker-end="url(#arr)" d="M542 314 H564"/>
+  <rect class="box" x="545" y="346" width="150" height="36" rx="8"/>
+  <text x="620" y="361" text-anchor="middle">buildModule</text>
+  <text x="620" y="374" text-anchor="middle" class="faint">+ binaryen shrink</text>
+  <rect class="box acc" x="430" y="346" width="80" height="36" rx="8"/>
+  <text x="470" y="368" text-anchor="middle">.wasm</text>
+  <rect class="box" x="240" y="346" width="150" height="36" rx="8"/>
+  <text x="315" y="361" text-anchor="middle">runWasm</text>
+  <text x="315" y="374" text-anchor="middle" class="faint">host runtime</text>
+  <path class="arrow" marker-end="url(#arr)" d="M620 332 V342"/>
+  <path class="arrow" marker-end="url(#arr)" d="M541 364 H514"/>
+  <path class="arrow" marker-end="url(#arr)" d="M426 364 H394"/>  <!-- frontend artifacts bus: both lanes consume Program + Checked + analysis
+       output (exec seeds builtinRefs; both pipelines run checkProgram once
+       before the backend, and the
+       OPT_PASSES tree-shake via builtinRefs/builtinValueUses).
+       Declared last: SVG paints in document order, so the wires must come
+       after the lane panels or the panels cover the lane-entry arrowheads. -->
+  <path class="arrow" marker-end="url(#arr)" d="M664 156 H112 V188"/>
+  <path class="arrow" d="M664 78 V156"/>
+  <path class="arrow" d="M498 144 V156"/>
+  <path class="arrow" marker-end="url(#arr)" d="M190 156 V252 H100 V292"/>
+  <text x="140" y="150" class="faint">Program · Checked · builtinRefs — both backends</text>
+</svg><h2 id="frontend-shared">Frontend (shared)</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Phase</th>
+<th>Page</th>
+<th>Produces</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>Lex</td>
+<td><a href="lexer.html">Lexer</a></td>
+<td><code>Tok[]</code> — flat token stream with 1-indexed positions</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Parse</td>
+<td><a href="parser.html">Parser</a></td>
+<td><code>Program</code> — items + a flat <code>Expr[]</code> node slice</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Check</td>
+<td><a href="types.html">Type checker</a></td>
+<td><code>Checked</code> — resolved types, effect rows, node stamps</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Analyze</td>
+<td><a href="analysis.html">Analysis</a></td>
+<td>builtin surface tables, op discovery, builtin refs</td>
+</tr>
+</tbody></table>
+<p>The frontend is strictly layered: each phase consumes the previous phase&#39;s
+output and nothing else. The analysis layer depends only on parser types, so
+both backends consume it without pulling in the evaluator.</p>
+<h2 id="backend-the-interpreter">Backend: the interpreter</h2>
+<p><a href="eval.html">Interpreter (CPS) →</a></p>
+<p>Before either backend consumes the CPS IR, <code>toCps</code>&#39;s final stage —
+<code>optimizeCps</code> (<code>cps_opt.ts</code>, with cross-function inlining in
+<code>cps_inline.ts</code>) — runs the optimizer: single-use closures and small
+non-recursive bodies are inlined at their call sites, then four local
+rewrites (read-temp substitution, prim-let fusion, exit-continuation beta,
+dead binding drop) iterate to a fixpoint. Every rewrite preserves the
+CPS shape and the run-trace contract, so both backends stay oblivious to
+the optimizer.</p>
+<p><code>newCtx(interp?)</code> seeds state; the caller checks the program
+(<code>checkProgram(prog, ctx.checked)</code>), then <code>exec(prog, ctx, checked)</code> fails
+fast on statically-unhandled non-builtin ops (frontend/pipeline.ts&#39;s <code>rejectUnhandled</code>
+— the same gate the wasm pipeline applies before codegen), seeds the
+referenced builtins into the runtime env, then evaluates under the CPS
+evaluator (<code>evalE</code>/<code>apply</code>). The one-shot <code>run</code> adds the file-entrypoint
+gate (pipeline.ts&#39;s <code>requireUnitEntry</code> — last expression must be unit); the
+REPL&#39;s <code>runLine</code> skips it. Multi-shot <code>resume</code> is a plain JS closure. Effects with no
+matching handler reach <code>runTop</code>, which interprets them through the builtin
+table (or an injected override — tests inject fake fs/time/randomness there).</p>
+<h2 id="backend-webassembly">Backend: WebAssembly</h2>
+<p><a href="wasm/index.html">Wasm backend →</a></p>
+<p><code>prepare</code> runs the frontend (parse → check); <code>compileWithOps</code> consumes the
+prepared artifacts and runs a five-phase pipeline
+(discover → optimize → assignIndices → layoutStatics → emit) over plain
+artifact records, assembles the module (<code>buildModule</code>, including an in-process
+binaryen shrink pass), and hands the bytes to the host runtime, which
+instantiates the module and rebuilds JS values across the WasmGC boundary.
+CPS is compiled explicitly: frames, continuation cells, and
+resume-as-value. Each phase has its own page under <a href="wasm/index.html">Wasm backend</a>
+in the sidebar.</p>
+<h2 id="the-repl-protocol">The REPL protocol</h2>
+<p>The REPL and <code>ef run</code> share one pipeline; the REPL just calls it per line with
+an accumulating context — bindings (both value and type environments) persist
+across lines.</p>
+<svg class="dgm" viewBox="0 0 720 140" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="REPL loop">
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="arrowhead" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="box" x="16"  y="30" width="110" height="44" rx="8"/>
+  <text x="71"  y="49" text-anchor="middle">REPL line</text>
+  <text x="71"  y="63" text-anchor="middle" class="faint">line loop</text>
+  <rect class="box" x="166" y="30" width="110" height="44" rx="8"/>
+  <text x="221" y="49" text-anchor="middle">parse</text>
+  <text x="221" y="63" text-anchor="middle" class="faint">own node slice</text>
+  <rect class="box" x="316" y="30" width="150" height="44" rx="8"/>
+  <text x="391" y="49" text-anchor="middle">checkProgram</text>
+  <text x="391" y="63" text-anchor="middle" class="faint">acc: shared Unifier</text>
+  <rect class="box" x="506" y="30" width="190" height="44" rx="8"/>
+  <text x="601" y="49" text-anchor="middle">exec</text>
+  <text x="601" y="63" text-anchor="middle" class="faint">seed · evalE · print</text>
+  <path class="arrow" marker-end="url(#arr2)" d="M126 52 H162"/>
+  <path class="arrow" marker-end="url(#arr2)" d="M276 52 H312"/>
+  <path class="arrow" marker-end="url(#arr2)" d="M466 52 H502"/>
+  <path class="arrow" marker-end="url(#arr2)" d="M601 74 V112 H71 V78"/>
+  <text x="336" y="127" class="faint">acc grows — bindings persist across lines</text>
+</svg><p>Details per phase: <a href="parser.html">Parser</a> (closures carry their own node slice, so
+REPL lines never alias), <a href="types.html">Type checker</a> (one <code>Unifier</code> carried inside
+<code>Checked</code>), <a href="eval.html">Interpreter</a> (<code>newCtx</code>/<code>exec</code> semantics).</p>
+<h2 id="usage">Usage</h2>
+<p>Commands, REPL behaviour, and the wasm target: <a href="../spec/cli.html">CLI &amp; REPL</a>.
+Lint rules: <a href="../spec/lint.html">Linter</a>.</p>
+
+</main>
+</div>
+</body>
+</html>

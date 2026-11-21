@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CLI & REPL · ef</title>
+<link rel="stylesheet" href="../site.css">
+<script>(() => {
+  const KEY = "ef.playground.theme"; // shared with the playground
+  const mq = matchMedia("(prefers-color-scheme: dark)");
+  const pref = () => {
+    const t = localStorage.getItem(KEY);
+    return t === "light" || t === "dark" ? t : (mq.matches ? "dark" : "light");
+  };
+  document.documentElement.dataset.theme = pref();
+  document.addEventListener("click", (e) => {
+    if (e.target instanceof Element && e.target.closest("#theme-btn")) {
+      const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = t;
+      localStorage.setItem(KEY, t);
+    }
+  });
+})();</script>
+</head>
+<body>
+<header id="topbar">
+  <a id="brand" href="../index.html"><b>ef</b></a>
+  <span class="spacer"></span>
+  <button id="theme-btn" class="tb-btn icon" title="toggle theme"><svg class="i-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg><svg class="i-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></g></svg></button>
+  <a id="src-link" href="https://github.com/rprtr258/ef" title="source repository" aria-label="source repository"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+</header>
+<div id="page">
+<nav id="sidebar">
+  <div class="nav-group">
+    <a href="../index.html">Overview</a>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../dev/index.html">Compiler pipeline</a>
+    <a href="../dev/analysis.html">Analysis</a>
+    <a href="../dev/builtins.html">Builtins</a>
+    <a href="../dev/eval.html">Interpreter (CPS)</a>
+    <a href="../dev/lexer.html">Lexer</a>
+    <a href="../dev/lint.html">Linter internals</a>
+    <a href="../dev/parser.html">Parser</a>
+    <a href="../dev/types.html">Type checker</a>
+    <a href="../dev/wasm/index.html">Wasm backend</a>
+    <div class="nav-children">
+    <a href="../dev/wasm/discover.html">Discover</a>
+    <a href="../dev/wasm/emit.html">Emit</a>
+    <a href="../dev/wasm/indices.html">Index assignment</a>
+    <a href="../dev/wasm/layout.html">Statics layout</a>
+    <a href="../dev/wasm/module.html">Module & host</a>
+    <a href="../dev/wasm/optimize.html">Optimize</a>
+    </div>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../spec/index.html">Language spec</a>
+    <a class="active" href="../spec/cli.html">CLI & REPL</a>
+    <a href="../spec/lint.html">Linter</a>
+    <a href="../spec/vscode.html">VS Code extension</a>
+  </div>
+</nav>
+<main id="content">
+<h1 id="cli-repl">CLI &amp; REPL</h1>
+<p>Thin frontends over the <a href="../dev/index.html">compiler pipeline</a> — none contains
+language logic. Run from the repository root:</p>
+<pre><code class="language-sh">bun compiler/cli.ts run examples/star.ef
+</code></pre>
+<h2 id="commands">Commands</h2>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Behaviour</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ef run &lt;file&gt; [args...]</code></td>
+<td>Typecheck, then evaluate on the interpreter. Extra args reach the program via <code>args()</code>. The file is an entrypoint: its last expression must be <code>unit</code>-typed (§2.1), and the output is exactly the program&#39;s effects&#39; output.</td>
+</tr>
+<tr>
+<td><code>ef wasm &lt;file&gt; [out]</code></td>
+<td>Compile to a binary <code>.wasm</code> module (default out: <code>&lt;file&gt;.ef</code> → <code>&lt;file&gt;.wasm</code>). Self-contained: the module&#39;s effect-op table rides inside it (below). The entrypoint gate applies: the last expression must be <code>unit</code>.</td>
+</tr>
+<tr>
+<td><code>ef runwasm &lt;file&gt;</code></td>
+<td>Compile and run on the embedded wasm host — same observable output as <code>ef run</code> (same entrypoint gate on the compile path). A path ending in <code>.wasm</code> executes a prebuilt module instead: no compile, the module&#39;s embedded <code>ef_ops</code> section supplies the op table.</td>
+</tr>
+<tr>
+<td><code>ef types &lt;file&gt;</code></td>
+<td>Print every top-level symbol with its inferred type, then the program&#39;s result type with its <strong>residual effect row</strong> (below).</td>
+</tr>
+<tr>
+<td><code>ef lint &lt;file&gt;</code></td>
+<td>Run the <a href="lint.html">linter</a>; exit 1 on findings.</td>
+</tr>
+<tr>
+<td><code>ef lsp</code></td>
+<td>Start the <a href="vscode.html">language server</a> over stdio for LSP-speaking editors (VS Code and others).</td>
+</tr>
+<tr>
+<td><code>ef repl</code></td>
+<td>Interactive REPL.</td>
+</tr>
+</tbody></table>
+<h2 id="interpreter">Interpreter</h2>
+<p><code>ef run</code> typechecks, then evaluates. Programs that loop forever (animations)
+run until killed. Effects with no matching handler in the chain are
+interpreted by the builtin table (or an injected override); a statically
+unhandled op with nothing to interpret it is rejected before evaluation
+compilation starts — the same shared gate <code>ef runwasm</code> and <code>ef wasm</code> apply before
+compilation.</p>
+<p><strong>Entrypoints.</strong> Running a file is running an entrypoint: its last top-level
+item must be a bare expression whose type is <code>unit</code> — the playground&#39;s
+run/build actions apply the same rule to decide whether a file is runnable.
+A non-unit last expression exits nonzero with
+<code>entrypoint must return unit — last expression has type &lt;T&gt;</code> before anything
+evaluates. The REPL is not an entrypoint: its lines keep their values and
+obey the echo rule below.</p>
+<h2 id="webassembly-target">WebAssembly target</h2>
+<p><code>ef runwasm</code> compiles the whole program to a binary WebAssembly module (no
+external toolchain) and executes it in the host&#39;s WebAssembly engine. A
+<code>.wasm</code> path skips compilation entirely: the module is self-contained — the
+wasm pipeline tree-shakes builtin ops, so <code>ef wasm</code> embeds the module&#39;s
+effect-op table as an <code>ef_ops</code> custom section inside the binary, and
+<code>ef runwasm &lt;file&gt;.wasm</code> reads it back. Output
+matches <code>ef run</code> for the supported subset: values, control flow, closures,
+arrays/strings, <code>handle</code> with multi-shot <code>resume</code>, and user effect ops.</p>
+<p>An effect with no matching handler in the chain — builtin or user — reaches
+the host and is interpreted by the same builtin host table <code>ef run</code> uses
+(optionally overridden via the runner&#39;s effect-interpretation argument), so
+<code>Exit!</code> behaves identically in both backends: it terminates the process.
+The static gate <code>ef run</code> applies gates the wasm commands too: <code>ef runwasm</code>
+and <code>ef wasm</code> reject a program whose residual ops neither the builtin
+table nor the runner&#39;s interpreter override covers — before any module is
+compiled, with the same message and nonzero exit.</p>
+<p>Not supported: a perform or handle site inside an <code>if</code> branch or <code>while</code>
+body — suspension across those control-flow blocks is rejected at compile
+time (see <a href="../dev/wasm/index.html#continuations-and-effects">the wasm backend</a>).</p>
+<h2 id="type-info">Type info</h2>
+<p><code>ef types &lt;file&gt;</code> prints each top-level symbol with its inferred type. The
+final <code>_ : T ! { ops }</code> line is the whole program&#39;s residual effect row —
+exactly the ops that would reach the runner unhandled; a run rejects on
+precisely this set when nothing interprets it. See
+<a href="../dev/analysis.html#two-kinds-of-which-ops">Analysis</a> for how that differs from
+syntactic op discovery.</p>
+<h2 id="language-server">Language server</h2>
+<p><code>ef lsp</code> runs the language server: syntax highlighting lives in the
+<a href="vscode.html">VS Code extension</a>, while the server supplies its diagnostics
+(the fail-fast checker, one error per change) and hover types. It is the same
+process the extension bundles; running it from the CLI makes it available to
+any LSP-speaking editor.</p>
+<h2 id="repl">REPL</h2>
+<p>One session, one accumulating context; each line is parsed and executed as a
+complete program (ef is newline-insensitive, so multi-statement blocks fit
+on one line):</p>
+<table>
+<thead>
+<tr>
+<th>Behaviour</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Bindings accumulate</td>
+<td>both the runtime env and the type env persist across lines; rebinding a name (or binding a builtin&#39;s name) is an error — ef has no shadowing</td>
+</tr>
+<tr>
+<td>Echo rule</td>
+<td>a bare expression prints <code>value : type</code> (e.g. <code>1 + 2</code> → <code>3 : i64</code>); declarations print nothing</td>
+</tr>
+<tr>
+<td>Rejected lines</td>
+<td>a type error or unhandled-effect rejection leaves the accumulator untouched — the session continues with the last good state</td>
+</tr>
+<tr>
+<td>Late builtins</td>
+<td>a later line may reference a builtin it never mentioned before — it is seeded into the env on that line</td>
+</tr>
+<tr>
+<td><code>:q</code> / <code>:quit</code></td>
+<td>exits</td>
+</tr>
+<tr>
+<td>Error display</td>
+<td>the error&#39;s message is printed, the loop continues</td>
+</tr>
+</tbody></table>
+
+</main>
+</div>
+</body>
+</html>

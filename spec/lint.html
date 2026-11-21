@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linter · ef</title>
+<link rel="stylesheet" href="../site.css">
+<script>(() => {
+  const KEY = "ef.playground.theme"; // shared with the playground
+  const mq = matchMedia("(prefers-color-scheme: dark)");
+  const pref = () => {
+    const t = localStorage.getItem(KEY);
+    return t === "light" || t === "dark" ? t : (mq.matches ? "dark" : "light");
+  };
+  document.documentElement.dataset.theme = pref();
+  document.addEventListener("click", (e) => {
+    if (e.target instanceof Element && e.target.closest("#theme-btn")) {
+      const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = t;
+      localStorage.setItem(KEY, t);
+    }
+  });
+})();</script>
+</head>
+<body>
+<header id="topbar">
+  <a id="brand" href="../index.html"><b>ef</b></a>
+  <span class="spacer"></span>
+  <button id="theme-btn" class="tb-btn icon" title="toggle theme"><svg class="i-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg><svg class="i-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></g></svg></button>
+  <a id="src-link" href="https://github.com/rprtr258/ef" title="source repository" aria-label="source repository"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+</header>
+<div id="page">
+<nav id="sidebar">
+  <div class="nav-group">
+    <a href="../index.html">Overview</a>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../dev/index.html">Compiler pipeline</a>
+    <a href="../dev/analysis.html">Analysis</a>
+    <a href="../dev/builtins.html">Builtins</a>
+    <a href="../dev/eval.html">Interpreter (CPS)</a>
+    <a href="../dev/lexer.html">Lexer</a>
+    <a href="../dev/lint.html">Linter internals</a>
+    <a href="../dev/parser.html">Parser</a>
+    <a href="../dev/types.html">Type checker</a>
+    <a href="../dev/wasm/index.html">Wasm backend</a>
+    <div class="nav-children">
+    <a href="../dev/wasm/discover.html">Discover</a>
+    <a href="../dev/wasm/emit.html">Emit</a>
+    <a href="../dev/wasm/indices.html">Index assignment</a>
+    <a href="../dev/wasm/layout.html">Statics layout</a>
+    <a href="../dev/wasm/module.html">Module & host</a>
+    <a href="../dev/wasm/optimize.html">Optimize</a>
+    </div>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../spec/index.html">Language spec</a>
+    <a href="../spec/cli.html">CLI & REPL</a>
+    <a class="active" href="../spec/lint.html">Linter</a>
+    <a href="../spec/vscode.html">VS Code extension</a>
+  </div>
+</nav>
+<main id="content">
+<h1 id="linter">Linter</h1>
+<p><code>ef lint &lt;file&gt;</code> parses the program, runs the lint passes, and prints each
+finding as <code>rule: message</code>; the command exits 1 when anything was found.</p>
+<pre><code class="language-sh">bun compiler/cli.ts lint examples/amb.ef
+</code></pre>
+<h2 id="rules">Rules</h2>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Finding</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>unused-arg</code></td>
+<td>a function parameter never referenced in its body. Scope-aware: a name shadowed by an inner lambda parameter, a <code>:=</code>/<code>::</code> binding, or a handler-case parameter / <code>resume</code> does not count as a use of the outer argument.</td>
+</tr>
+<tr>
+<td><code>derived-any</code></td>
+<td>a binding (let or destructure field) whose inferred type contains <code>any</code> without an explicit annotation — <code>any</code> propagated from an <code>any</code>-typed parameter, an <code>[any]</code> element, or a call through an <code>any</code>-typed function. An explicit type annotation on the binding, or the <code>_</code> discard, silences it; a lambda-valued <code>::</code> binding is skipped (its signature spells out the full type).</td>
+</tr>
+</tbody></table>
+<p>Named functions (<code>::</code> of a <code>fn</code>) are reported as <code>function `name`</code>; bare
+lambdas as <code>anonymous function</code>. Every finding carries a source position.</p>
+<p>The playground runs the same passes and shows findings in its problems pane.</p>
+<p>How passes work internally and how to add one:
+<a href="../dev/lint.html">Linter internals</a>.</p>
+
+</main>
+</div>
+</body>
+</html>

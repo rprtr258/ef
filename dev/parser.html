@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parser · ef</title>
+<link rel="stylesheet" href="../site.css">
+<script>(() => {
+  const KEY = "ef.playground.theme"; // shared with the playground
+  const mq = matchMedia("(prefers-color-scheme: dark)");
+  const pref = () => {
+    const t = localStorage.getItem(KEY);
+    return t === "light" || t === "dark" ? t : (mq.matches ? "dark" : "light");
+  };
+  document.documentElement.dataset.theme = pref();
+  document.addEventListener("click", (e) => {
+    if (e.target instanceof Element && e.target.closest("#theme-btn")) {
+      const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = t;
+      localStorage.setItem(KEY, t);
+    }
+  });
+})();</script>
+</head>
+<body>
+<header id="topbar">
+  <a id="brand" href="../index.html"><b>ef</b></a>
+  <span class="spacer"></span>
+  <button id="theme-btn" class="tb-btn icon" title="toggle theme"><svg class="i-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg><svg class="i-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></g></svg></button>
+  <a id="src-link" href="https://github.com/rprtr258/ef" title="source repository" aria-label="source repository"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+</header>
+<div id="page">
+<nav id="sidebar">
+  <div class="nav-group">
+    <a href="../index.html">Overview</a>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../dev/index.html">Compiler pipeline</a>
+    <a href="../dev/analysis.html">Analysis</a>
+    <a href="../dev/builtins.html">Builtins</a>
+    <a href="../dev/eval.html">Interpreter (CPS)</a>
+    <a href="../dev/lexer.html">Lexer</a>
+    <a href="../dev/lint.html">Linter internals</a>
+    <a class="active" href="../dev/parser.html">Parser</a>
+    <a href="../dev/types.html">Type checker</a>
+    <a href="../dev/wasm/index.html">Wasm backend</a>
+    <div class="nav-children">
+    <a href="../dev/wasm/discover.html">Discover</a>
+    <a href="../dev/wasm/emit.html">Emit</a>
+    <a href="../dev/wasm/indices.html">Index assignment</a>
+    <a href="../dev/wasm/layout.html">Statics layout</a>
+    <a href="../dev/wasm/module.html">Module & host</a>
+    <a href="../dev/wasm/optimize.html">Optimize</a>
+    </div>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../spec/index.html">Language spec</a>
+    <a href="../spec/cli.html">CLI & REPL</a>
+    <a href="../spec/lint.html">Linter</a>
+    <a href="../spec/vscode.html">VS Code extension</a>
+  </div>
+</nav>
+<main id="content">
+<h1 id="parser">Parser</h1>
+<p><code>parseProgram(src): Program</code> where
+<code>Program = {nodes: Expr[], items: Item[], typeToks: TypeTok[]}</code> — <code>typeToks</code>
+records every type/effect name token consumed while parsing, the LSP
+semantic-tokens source (<a href="../spec/vscode.html">VS Code extension</a>); both backends
+ignore it. Recursive descent for structure,
+<strong>Pratt parsing for infix</strong> (precedence table below).</p>
+<h2 id="the-flat-node-slice">The flat node slice</h2>
+<p>The AST is not a tree of embedded nodes. Every expression is one element of
+<code>Program.nodes</code>; children are referenced by <code>ExprID</code> — a plain index into that
+array. Parsing <code>x :: 41 + 1;</code> produces:</p>
+<svg class="dgm" viewBox="0 0 720 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="flat node slice">
+  <defs>
+    <marker id="arrp" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="arrowhead" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <text x="16" y="24" class="faint">Program.nodes</text>
+  <rect class="box" x="16"  y="34" width="100" height="52" rx="8"/>
+  <text x="66"  y="55" text-anchor="middle">let x</text>
+  <text x="66"  y="71" text-anchor="middle" class="faint">val: 4</text>
+  <rect class="box" x="142" y="34" width="100" height="52" rx="8"/>
+  <text x="192" y="55" text-anchor="middle">num 41</text>
+  <rect class="box" x="268" y="34" width="100" height="52" rx="8"/>
+  <text x="318" y="55" text-anchor="middle">num 1</text>
+  <rect class="box" x="394" y="34" width="100" height="52" rx="8"/>
+  <text x="444" y="55" text-anchor="middle">sym +</text>
+  <rect class="box acc" x="520" y="34" width="100" height="52" rx="8"/>
+  <text x="570" y="55" text-anchor="middle">app +</text>
+  <text x="570" y="71" text-anchor="middle" class="faint">fn:3 args:1,2</text>
+  <text x="16"  y="27" class="faint">0</text>
+  <text x="142" y="27" class="faint">1</text>
+  <text x="268" y="27" class="faint">2</text>
+  <text x="394" y="27" class="faint">3</text>
+  <text x="520" y="27" class="faint">4</text>
+  <path class="arrow" marker-end="url(#arrp)" d="M490 86 V104 H444 V90"/>
+  <path class="arrow" marker-end="url(#arrp)" d="M506 86 V122 H318 V90"/>
+  <path class="arrow" marker-end="url(#arrp)" d="M522 86 V140 H192 V90"/>
+  <text x="16" y="162" class="faint">a node is just an index — children live in the same array</text>
+</svg><p>Why flat instead of embedded:</p>
+<table>
+<thead>
+<tr>
+<th>Consumer</th>
+<th>What the <code>ExprID</code> buys</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Type checker</td>
+<td>stamps types into side tables after the fact (<code>nodeTypes</code>, <code>Checked.stamps</code>: <code>numKind</code>, <code>div</code>, <code>arrKind</code>, <code>fieldIdx</code>, <code>asKind</code>) — impossible in an immutable tree</td>
+</tr>
+<tr>
+<td>Wasm backend</td>
+<td>scopes, code labels and split sites keyed by <code>ExprID</code></td>
+</tr>
+<tr>
+<td>Closures</td>
+<td>a closure carries its own <code>nodes</code> slice, so it stays valid across REPL lines and separate programs</td>
+</tr>
+<tr>
+<td>Walks</td>
+<td><code>exprChildren(id, nodes)</code> gives uniform traversal for every pass (checker, analysis, lint, wasm)</td>
+</tr>
+</tbody></table>
+<h2 id="grammar-strategy">Grammar strategy</h2>
+<table>
+<thead>
+<tr>
+<th>Construct</th>
+<th>Strategy</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Binary operators</td>
+<td>Pratt loop over the <code>PREC</code> table, left-associative</td>
+</tr>
+<tr>
+<td>Unary <code>-</code> / <code>!</code></td>
+<td>desugar to calls: <code>-e</code> → <code>app(sym neg, [e])</code>, <code>!e</code> → <code>app(sym not, [e])</code> — the checker sees ordinary calls of builtins named <code>neg</code>/<code>not</code></td>
+</tr>
+<tr>
+<td><code>&amp;&amp;</code> / <code>||</code></td>
+<td>desugar to <code>if</code> — short-circuit falls out for free</td>
+</tr>
+<tr>
+<td>Calls, field access</td>
+<td>postfix loop: <code>f(a)(b).x.0</code> parses as successive accesses</td>
+</tr>
+<tr>
+<td>Everything else</td>
+<td>recursive descent</td>
+</tr>
+</tbody></table>
+<h2 id="node-kinds">Node kinds</h2>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Source</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>num</code></td>
+<td><code>1</code>, <code>1.5</code></td>
+<td><code>isFloat</code> decides the untyped int/float num type; checker stamps <code>numKind</code> with the resolved width</td>
+</tr>
+<tr>
+<td><code>str</code> · <code>bool</code> · <code>unit</code></td>
+<td>literals</td>
+<td>escapes decoded here (<code>parseStr</code>)</td>
+</tr>
+<tr>
+<td><code>sym</code></td>
+<td>names</td>
+<td>variable references and desugared operator names</td>
+</tr>
+<tr>
+<td><code>lambda</code></td>
+<td><code>fn (p) { … }</code></td>
+<td>optional <code>: R</code> / <code>! { Effs }</code> annotations; the width-ambiguity bookkeeping for unannotated params lives in stamps.ts&#39;s <code>lamWidths</code> map, not on the node</td>
+</tr>
+<tr>
+<td><code>let</code></td>
+<td><code>x := e;</code> <code>x :: e;</code> <code>x: T = e;</code></td>
+<td><code>mut</code> distinguishes <code>:=</code> from <code>::</code></td>
+</tr>
+<tr>
+<td><code>dlet</code></td>
+<td><code>[a, b] := e;</code></td>
+<td>destructuring bind with optional per-field annotations</td>
+</tr>
+<tr>
+<td><code>assign</code></td>
+<td><code>x = e;</code></td>
+<td>mutation of an existing mutable binding</td>
+</tr>
+<tr>
+<td><code>if</code> · <code>while</code> · <code>block</code></td>
+<td>control flow</td>
+<td><code>&amp;&amp;</code>/<code>||</code> desugar into <code>if</code></td>
+</tr>
+<tr>
+<td><code>perform</code></td>
+<td><code>Op!(args)</code></td>
+<td>name + arg nodes</td>
+</tr>
+<tr>
+<td><code>handle</code></td>
+<td><code>handle { … } case …</code></td>
+<td>body + <code>HandlerCase[]</code> (<code>op</code>, <code>params</code>, <code>resume</code>, <code>resumePos</code>, <code>body</code>)</td>
+</tr>
+<tr>
+<td><code>app</code></td>
+<td><code>f(x)</code></td>
+<td>checker stamps <code>div</code>/<code>numKind</code> on operator applications</td>
+</tr>
+<tr>
+<td><code>as</code></td>
+<td><code>@as(e, T)</code></td>
+<td>checker stamps <code>asKind</code> (<code>trunc</code> vs <code>boolnum</code>) into <code>Checked.stamps</code></td>
+</tr>
+<tr>
+<td><code>arr</code></td>
+<td><code>[a, b, c]</code></td>
+<td>array if homogeneous, tuple if heterogeneous — decided by the <em>checker</em> (<code>arrKind</code> in <code>Checked.stamps</code>)</td>
+</tr>
+<tr>
+<td><code>field</code></td>
+<td><code>e.x</code> / <code>e.0</code></td>
+<td>checker resolves the field index into <code>Checked.stamps</code> (<code>fieldIdx</code>)</td>
+</tr>
+</tbody></table>
+<h2 id="items">Items</h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Source</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>{e}</code></td>
+<td>expression statement</td>
+<td>the program&#39;s value is the last one</td>
+</tr>
+<tr>
+<td><code>{effect, sig}</code></td>
+<td><code>Op :: effect(p): ret;</code></td>
+<td>the only way <code>Op!</code> becomes legal (see <a href="types.html">Type checker</a>)</td>
+</tr>
+<tr>
+<td><code>{alias}</code></td>
+<td><code>type Pair(a, b) = [a, b];</code></td>
+<td>parametric type alias</td>
+</tr>
+</tbody></table>
+<h2 id="aliases-and-parser-allocated-type-variables">Aliases and parser-allocated type variables</h2>
+<p>Aliases are registered top-down as <code>type</code> items are parsed; a
+<code>typeParamStack</code> lets an alias body reference its own parameters as type
+variables (<code>type Pair(a, b) = [a, b]</code>).</p>
+<p>Type variables allocated by the <em>parser</em> (alias parameters, and arguments
+omitted from a parametric alias use) live in a <strong>negative id space</strong>, so they
+never collide with a checker <code>Unifier</code>&#39;s ids — the unifier treats unknown ids
+as their own root, so such variables behave as ordinary unbound variables.
+Alias instantiation (<code>instantiateAlias</code>) is pure substitution — no unifier
+involved. Recursive aliases are not supported (a recursive alias would
+stack-loop the substitution).</p>
+<h2 id="errors">Errors</h2>
+<p>Parsing throws <code>Error</code> with messages like <code>Expected &quot;;&quot;, got &quot;}&quot;</code> — token
+positions come from the lexer, so later phases can attach real line/col
+information.</p>
+<p>Next: <a href="types.html">Type checker</a>.</p>
+
+</main>
+</div>
+</body>
+</html>

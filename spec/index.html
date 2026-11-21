@@ -1,0 +1,779 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Language spec · ef</title>
+<link rel="stylesheet" href="../site.css">
+<script>(() => {
+  const KEY = "ef.playground.theme"; // shared with the playground
+  const mq = matchMedia("(prefers-color-scheme: dark)");
+  const pref = () => {
+    const t = localStorage.getItem(KEY);
+    return t === "light" || t === "dark" ? t : (mq.matches ? "dark" : "light");
+  };
+  document.documentElement.dataset.theme = pref();
+  document.addEventListener("click", (e) => {
+    if (e.target instanceof Element && e.target.closest("#theme-btn")) {
+      const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = t;
+      localStorage.setItem(KEY, t);
+    }
+  });
+})();</script>
+</head>
+<body>
+<header id="topbar">
+  <a id="brand" href="../index.html"><b>ef</b></a>
+  <span class="spacer"></span>
+  <button id="theme-btn" class="tb-btn icon" title="toggle theme"><svg class="i-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg><svg class="i-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></g></svg></button>
+  <a id="src-link" href="https://github.com/rprtr258/ef" title="source repository" aria-label="source repository"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+</header>
+<div id="page">
+<nav id="sidebar">
+  <div class="nav-group">
+    <a href="../index.html">Overview</a>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../dev/index.html">Compiler pipeline</a>
+    <a href="../dev/analysis.html">Analysis</a>
+    <a href="../dev/builtins.html">Builtins</a>
+    <a href="../dev/eval.html">Interpreter (CPS)</a>
+    <a href="../dev/lexer.html">Lexer</a>
+    <a href="../dev/lint.html">Linter internals</a>
+    <a href="../dev/parser.html">Parser</a>
+    <a href="../dev/types.html">Type checker</a>
+    <a href="../dev/wasm/index.html">Wasm backend</a>
+    <div class="nav-children">
+    <a href="../dev/wasm/discover.html">Discover</a>
+    <a href="../dev/wasm/emit.html">Emit</a>
+    <a href="../dev/wasm/indices.html">Index assignment</a>
+    <a href="../dev/wasm/layout.html">Statics layout</a>
+    <a href="../dev/wasm/module.html">Module & host</a>
+    <a href="../dev/wasm/optimize.html">Optimize</a>
+    </div>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title active" href="../spec/index.html">Language spec</a>
+    <a href="../spec/cli.html">CLI & REPL</a>
+    <a href="../spec/lint.html">Linter</a>
+    <a href="../spec/vscode.html">VS Code extension</a>
+  </div>
+</nav>
+<main id="content">
+<h1 id="language-spec">Language spec</h1>
+<p>This is the complete specification of the ef language: lexical structure,
+syntax, types, builtins, and semantics. Every part of it is enforced by
+self-checks and tests — the test suite is the executable form of this spec.
+CLI usage lives in <a href="cli.html">CLI &amp; REPL</a>; linting in <a href="lint.html">Linter</a>.</p>
+<p><strong>Contents:</strong> <a href="#1-lexical-structure">1. Lexical structure</a> ·
+<a href="#2-syntax">2. Syntax</a> · <a href="#3-types">3. Types</a> · <a href="#4-builtins">4. Builtins</a> ·
+<a href="#5-semantics">5. Semantics</a> · <a href="#6-examples">6. Examples</a> ·
+<a href="#7-examples-on-disk">7. Examples on disk</a></p>
+<h2 id="1-lexical-structure">1. Lexical structure</h2>
+<ul>
+<li><strong>Whitespace</strong> (space, tab, CR, LF) is insignificant.</li>
+<li><strong>Line comments</strong> with <code>#</code> run to end of line.</li>
+<li><strong>String literals</strong> are <code>&quot;...&quot;</code> with <code>\</code> escapes: <code>\n \t \r \&quot; \\ \xHH</code> (byte),
+<code>\uHHHH</code> (code point). Unknown <code>\c</code> yields <code>c</code>.</li>
+<li><strong>Number literals</strong> are non-negative integer/decimal digit runs (e.g. <code>42</code>,
+<code>3.14</code>). A literal containing a <code>.</code> is an untyped float; otherwise an
+untyped int. Untyped literals take on whatever numeric context demands —
+the typechecker resolves each literal to one concrete width by end of
+check, defaulting to <code>f64</code> / <code>i64</code> (see §3.1). Unary minus is parsed as the unary
+<code>-</code> operator in <code>parseUnary</code>.</li>
+<li><strong>Identifiers</strong> start with a letter or <code>_</code>, continue with letters/digits/<code>_</code>.</li>
+<li><strong>Keywords:</strong> <code>fn if else while handle case true false unit effect</code>.</li>
+<li><strong>Two-char tokens:</strong> <code>:: := == != &lt;= &gt;= &amp;&amp; || =&gt;</code> (<code>::</code>/<code>:=</code> are the declaration operators, lexed before <code>:</code>).</li>
+<li><strong>One-char tokens:</strong> <code>( ) [ ] { } , ; &lt; &gt; + - * / ! = : % @</code>.</li>
+<li><code>-&gt;</code> is lexed as two tokens <code>-</code> <code>&gt;</code> and reassembled by the type parser.</li>
+</ul>
+<h2 id="2-syntax">2. Syntax</h2>
+<h3 id="21-programs">2.1 Programs</h3>
+<p>A program is a sequence of <strong>items</strong>, each an expression statement, an
+effect declaration, or a type alias:</p>
+<pre><code>program  ::= item*
+item     ::= effect-decl | type-alias | stmt
+effect-decl ::= name &quot;::&quot; &quot;effect&quot; params &quot;:&quot; type &quot;;&quot;
+type-alias ::= name &quot;::&quot; type &quot;;&quot;
+             | name &quot;::&quot; &quot;fn&quot; &quot;(&quot; ((name &quot;:&quot; &quot;type&quot; (&quot;,&quot; name &quot;:&quot; &quot;type&quot;)*) &quot;,&quot;?)? &quot;)&quot;
+                 &quot;:&quot; &quot;type&quot; &quot;{&quot; type &quot;}&quot; &quot;;&quot;    -- see §3.1
+type     ::= ...                               -- &quot;type&quot; is the type of types
+stmt     ::= decl | assign | expr (&quot;;&quot; | blocky)
+</code></pre>
+<p>The value of a program is the value of its last expression statement. Type
+aliases and effect declarations are not expressions and produce no value.</p>
+<p><strong>Entrypoints.</strong> A file run as an entrypoint — <code>ef run</code>, <code>ef runwasm</code>, or
+<code>ef wasm</code> — must end in a bare expression whose type is <code>unit</code>; a value
+result has nowhere to go in a file run, so a program that produces one is
+rejected before evaluation (<code>Println!</code> is the way to emit it). The REPL&#39;s
+lines keep their values: echoing them is the REPL&#39;s protocol.</p>
+<h3 id="22-declarations">2.2 Declarations</h3>
+<pre><code>decl      ::= name (&quot;:=&quot; expr | &quot;::&quot; expr | &quot;:&quot; type (&quot;=&quot; expr | &quot;:&quot; expr)) &quot;;&quot;
+            | tuple-pattern (&quot;:=&quot; | &quot;::&quot;) expr &quot;;&quot;
+tuple-pattern ::= &quot;[&quot; ((name (&quot;:&quot; type)? (&quot;,&quot; name (&quot;:&quot; type)?)*) &quot;,&quot;?)? &quot;]&quot;
+params    ::= &quot;(&quot; ((name (&quot;:&quot; type)? (&quot;,&quot; name (&quot;:&quot; type)?)*) &quot;,&quot;?)? &quot;)&quot;
+eff-annot ::= &quot;!&quot; &quot;{&quot; (name (&quot;,&quot; name)* &quot;,&quot;?)? &quot;}&quot;
+block     ::= &quot;{&quot; stmt* &quot;}&quot;
+</code></pre>
+<p>Every comma-separated list (params, args, destructure patterns, tuple types,
+effect rows) requires the comma between elements; only a trailing comma
+immediately before the close delimiter is optional.</p>
+<p><strong>Block values.</strong> A block evaluates to its last expression&#39;s value only when
+that expression has no trailing <code>;</code>; a <code>;</code>-terminated tail (or an empty
+block) makes the block evaluate to <code>unit</code>. A block is itself an expression:
+it can sit in any expression position, so <code>if</code> arms need not be braced —
+<code>x := if (1 == 2) 3 else {y := 4; y};</code> and <code>{u := 10; u} + 5</code> both check
+(the block&#39;s value is its last <code>;</code>-free statement). Lambda bodies, handler
+bodies, and case arms still take a block syntactically, and <code>else if</code> chains
+fall out of <code>if</code> being an expression: the nested <code>if</code> consumes its own
+<code>else</code>, so a dangling <code>else</code> binds to the nearest <code>if</code>.</p>
+<p>There are two binding kinds:</p>
+<ul>
+<li><code>name := e;</code> — a <strong>mutable variable</strong> (inferred type).</li>
+<li><code>name :: e;</code> — a <strong>const</strong> (inferred type). Function declarations are
+consts: <code>f :: fn(...) { ... }</code>.</li>
+<li>An optional <code>: T</code> annotation precedes the initializer operator:
+<code>name: T = e;</code> is a mutable variable of type <code>T</code>, <code>name: T : e;</code> a const
+of type <code>T</code>.</li>
+<li>Destructuring: <code>[a, b] := e;</code> / <code>[a, b] :: e;</code> binds each name to the
+corresponding tuple/array element, with optional per-field <code>: type</code>
+annotations.</li>
+<li>Consts are immutable: <code>name = e;</code> on a <code>::</code> binding is a compile-time type
+error (<code>cannot assign to const &#39;name&#39;</code>). Mutable bindings and lambda
+parameters can be assigned.</li>
+<li>Bindings are recursive: the name is in scope in its own value, so
+<code>f :: fn(...) { ... }</code> can call itself.</li>
+<li><strong>No shadowing</strong>: every name is bound exactly once in its visible scope
+chain. A compile-time type error results from redeclaring a name in the
+same frame (<code>x := 1; x :: 2;</code>), hiding an enclosing binding from an inner
+frame (lambda body, handler case, or parameter list), or binding any
+builtin name (<code>len</code>, <code>map</code>, <code>PI</code>, the operator <code>neg</code>, ...). Lambda
+parameters, destructure fields, and handler binders follow the same rule,
+duplicates within one list included. The wildcard <code>_</code> is exempt (it
+discards and may repeat). Effect declarations are a separate namespace, so
+a binding named like an effect op (<code>Out</code>) is legal and <code>Out!</code> is
+unaffected. The REPL checks each line against everything bound so far.</li>
+<li>Lambdas <code>fn (p: T): R ! { Effs } { body }</code> may carry optional <code>: R</code> and
+<code>! { Effs }</code> annotations; the checker verifies the body&#39;s performed effects
+⊆ the declared set (or derives the set when <code>! { ... }</code> is omitted).</li>
+</ul>
+<h3 id="23-expressions">2.3 Expressions</h3>
+<pre><code>expr     ::= binary
+binary   ::= unary (binop unary)*        -- Pratt, see precedence below
+unary    ::= (&quot;-&quot; | &quot;!&quot;) unary | postfix
+postfix  ::= primary (&quot;(&quot; args &quot;)&quot;)* (&quot;.&quot; name)*   -- call, then field access
+primary  ::= num | str | &quot;true&quot; | &quot;false&quot; | &quot;unit&quot;
+           | name | &quot;(&quot; expr &quot;)&quot; | array | lambda | block
+           | if | handle | as-expr
+as-expr  ::= &quot;@as&quot; &quot;(&quot; expr &quot;,&quot; type &quot;)&quot;    # numeric cast, see §3.1
+array    ::= &quot;[&quot; ((expr (&quot;,&quot; expr)*) &quot;,&quot;?)? &quot;]&quot;
+lambda   ::= &quot;fn&quot; params block
+block    ::= &quot;{&quot; stmt* &quot;}&quot;                 # an expression, see §2.2
+if       ::= &quot;if&quot; &quot;(&quot; expr &quot;)&quot; expr (&quot;else&quot; expr)?
+perform  ::= name &quot;!&quot; &quot;(&quot; args &quot;)&quot;        # `Op!(args)`
+handle   ::= &quot;handle&quot; block case+
+case     ::= &quot;case&quot; name params &quot;=&gt;&quot; name block
+args     ::= &quot;(&quot; ((expr (&quot;,&quot; expr)*) &quot;,&quot;?)? &quot;)&quot;
+</code></pre>
+<ul>
+<li><p><strong>Bracket literals</strong> <code>[a, b, c]</code> are <strong>arrays if all element types unify</strong>
+(homogeneous → <code>[T]</code>), otherwise <strong>tuples</strong> (<code>[T1, ..., Tn]</code>). A tuple
+<strong>type annotation</strong> on the binding (<code>p: [f64, f64] = [1.0, 2.0]</code>)
+forces a tuple even when the elements would unify. The same expectation
+flows from a tuple <strong>return type</strong> into a <code>[...]</code> body literal, and from a
+tuple <strong>parameter type</strong> into an <code>[...]</code> argument literal (including
+nested tuples, e.g. <code>[[f,f,f],...]</code>).</p>
+</li>
+<li><p><strong><code>&amp;&amp;</code> / <code>||</code></strong> desugar to <code>if</code>: <code>a &amp;&amp; b</code> → <code>if a { b } else { false }</code>, <code>a || b</code> → <code>if a { true } else { b }</code>. Short-circuit falls out for free.</p>
+</li>
+<li><p><strong>Field access</strong> <code>e.x</code> / <code>e.0</code>: reads a tuple field by name or position, or
+an array element by position (<code>xs.0</code>). The index is resolved at check time
+and the runtime indexes the underlying array. Chained access like <code>m.0.0</code>
+is parsed as successive accesses (the lexer would otherwise read <code>0.0</code> as
+one float token).</p>
+</li>
+<li><p><strong>Binary operators</strong> and precedence (lowest → highest):</p>
+<table>
+<thead>
+<tr>
+<th>Prec</th>
+<th>Operators</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td><code>||</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>&amp;&amp;</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>== !=</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>&lt; &gt; &lt;= &gt;=</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>+ -</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>* / %</code></td>
+</tr>
+</tbody></table>
+<p>All operators are left-associative.</p>
+</li>
+</ul>
+<h3 id="24-effects-and-handlers">2.4 Effects and handlers</h3>
+<p>A <strong>statement</strong> is an expression used for its side effect. Inside a block, a
+bare <code>name = expr</code> is an <strong>assignment</strong>: it updates the nearest enclosing
+binding of <code>name</code> (which must already exist and be mutable — a <code>:=</code>/<code>: T =</code>
+declaration or a lambda parameter; assigning to a <code>::</code> const is rejected at
+check time) and yields <code>unit</code> — the mutation primitive that makes <code>while</code>
+useful.</p>
+<pre><code>effect-decl ::= name &quot;::&quot; &quot;effect&quot; &quot;(&quot; params &quot;)&quot; &quot;:&quot; type &quot;;&quot;
+handle      ::= &quot;handle&quot; block case+
+case        ::= &quot;case&quot; (&quot;Return&quot; | name) params &quot;=&gt;&quot; name block
+</code></pre>
+<ul>
+<li>An <strong>effect declaration</strong> <code>Op :: effect(args): ret</code> introduces a named operation
+with parameter types and a return type. <code>ret</code> is the type that
+<code>Op!(...)</code> evaluates to — equivalently, the type the continuation
+<code>k</code> expects to be resumed with.</li>
+<li><strong>Builtin effects.</strong> Two effects are pre-declared and interpreted by the
+runtime when they reach the top level unhandled:<ul>
+<li><code>Read(path: string): string</code> — reads a file, resumes with its contents.</li>
+<li><code>Write(path: string, bytes: [u8]): unit</code> — writes raw bytes (one array
+element per byte), resumes with <code>unit</code>; text goes through <code>bytes(s)</code>.
+They are still ordinary algebraic effects: a user <code>handle</code> can intercept
+either (e.g. to mock the filesystem) before the builtin interpretation
+applies.</li>
+</ul>
+</li>
+<li>A <strong>handler</strong> has one body block and one or more <code>case</code> arms.</li>
+<li><code>case Return(params) =&gt; k { ... }</code> handles the body&#39;s normal result value.
+<code>k</code> is not used here (the body is already done); the case computes the
+handler&#39;s overall result from the value.</li>
+<li><code>case Op(params) =&gt; k { ... }</code> handles a performed <code>Op</code>. The <code>params</code> bind
+the effect&#39;s arguments; <code>k</code> is the captured continuation, callable as
+<code>k(value)</code> to resume the body with <code>value</code> (of the effect&#39;s return type). <code>k</code>
+may be called zero, one, or many times.</li>
+<li><strong>Resume typing:</strong> <code>k</code>&#39;s parameter is the effect&#39;s return type; its return
+type is the handler&#39;s result type. When the handled body has no <code>Return</code>
+case and performs no operation outside lambda bodies, an op case whose
+body references <code>k</code> must also deliver the body&#39;s type: every resumption
+then runs the body to completion, so <code>k(v)</code>&#39;s delivery is the body&#39;s
+completion value — the body&#39;s boundary value, or a nested case body&#39;s
+completion when the resumed rest re-performs. A <code>Return</code> case or a
+perform on the body&#39;s spine (e.g. <code>Op!()</code> between statements) drops that
+requirement. Two residual gaps remain by design: a handler case that
+completes without the delivery (e.g. <code>Println!(k(10))</code>) is rejected —
+return the delivery and observe it outside the handle instead; and a
+case body that only combines deliveries arithmetically (<code>k(1) + k(2)</code>)
+delays its numeric constraint past the check, so it typechecks and fails
+at runtime if the deliveries are not numbers.</li>
+<li><strong>Propagation:</strong> an effect performed inside a handler body that has no
+matching case walks outward to the next enclosing handler.</li>
+</ul>
+<h2 id="3-types">3. Types</h2>
+<h3 id="31-type-grammar">3.1 Type grammar</h3>
+<pre><code>type   ::= &quot;[&quot; type &quot;]&quot;                      -- array
+         | &quot;[&quot; tup-field (&quot;,&quot; tup-field)* &quot;,&quot;? &quot;]&quot;  -- tuple
+         | &quot;(&quot; type (&quot;,&quot; type)* &quot;,&quot;? &quot;)&quot; &quot;-&gt;&quot; type (&quot;!&quot; &quot;{&quot; (name (&quot;,&quot; name)* &quot;,&quot;?)? &quot;}&quot;)?
+         | name (&quot;(&quot; type (&quot;,&quot; type)* &quot;,&quot;? &quot;)&quot;)?    -- alias instantiation
+         | &quot;u8&quot; | &quot;i32&quot; | &quot;i64&quot; | &quot;u32&quot; | &quot;u64&quot; | &quot;f32&quot; | &quot;f64&quot;
+         | &quot;string&quot; | &quot;bool&quot; | &quot;unit&quot; | &quot;any&quot;
+tup-field ::= (name &quot;:&quot;)? type               -- named (`x: f64`) or unnamed
+</code></pre>
+<ul>
+<li><code>u8 i32 i64 u32 u64 f32 f64</code> — the seven <strong>numeric widths</strong>. <code>string</code>, <code>bool</code>,
+<code>unit</code> are the other primitives.<ul>
+<li><strong>Strings are UTF-8 byte sequences</strong>: <code>strlen</code> counts bytes (non-ASCII
+characters count more than one), <code>bytes(s)</code> exposes the raw encoding,
+<code>+</code>/<code>==</code> operate on bytes, and <code>char(n)</code> encodes the code point <code>n</code>. The
+runtime stores the bytes directly (no host string representation).</li>
+<li><strong>Arithmetic is strict per width</strong>: both operands of a numeric op must
+have the same width; <code>i32 + i64</code> is a type error. Comparisons and
+equality likewise require equal widths.</li>
+<li><strong>Untyped literals flex, then resolve</strong>: a num literal (<code>1</code>, <code>1.5</code>)
+carries an internal untyped-int / untyped-float type that accepts any
+numeric (resp. float) context. Each use flexes its own copy to that
+context&#39;s width; by the end of checking the typechecker has resolved
+every literal to one concrete width — unconstrained reads default to
+<code>i64</code> / <code>f64</code>. So <code>x: i32 = 1</code> works, <code>sqrt(100)</code> works, but
+<code>x: i32 = 1.5</code> is rejected (a float literal never narrows to an int
+width). The runtime never converts between widths at an operator:
+after checking, every operand is already in the operation&#39;s width.</li>
+<li><strong>@as(expr, T)</strong> is the one explicit conversion between widths (and from
+<code>bool</code>): float → int truncates toward zero, bool → numeric gives <code>0/1</code>,
+every other conversion preserves the value. <code>@as</code> targets must be one of
+the seven widths.</li>
+<li><strong>Runtime semantics (width-exact in both backends)</strong>: <code>f32</code> values round
+to f32 precision after every producing step
+(<code>0.1f32 + 0.2f32 == 0.30000001192092896</code>); integer widths <strong>wrap around</strong>
+like wasm&#39;s arithmetic (<code>u8</code> mod 256, <code>i32</code>/<code>u32</code> mod 2^32, <code>i64</code>/<code>u64</code> mod 2^64 —
+<code>2147483647i32 + 1 == -2147483648</code>, <code>u8</code>/<code>u32</code>/<code>u64</code> hold unsigned ranges);
+<code>i64</code>/<code>u64</code> values are <strong>exact beyond 2^53</strong> — the interpreter represents
+them as BigInt (and BigInt values flowing through the wasm host boundary
+are exact too). Integer <code>/</code> and <code>%</code> <strong>trap</strong> on division by zero, and <code>/</code>
+additionally traps on <code>INT_MIN / -1</code> (signed overflow), matching wasm&#39;s
+<code>div_s</code>/<code>div_u</code> traps; float division by zero is not a trap
+(<code>1.0 / 0.0 == Infinity</code>).</li>
+<li><strong>Widths must be static where values are computed</strong>: arithmetic on
+<code>any</code>-typed operands is a type error (<code>any is not a numeric width</code>) —
+pin the width with <code>@as</code> first. Equality (<code>==</code>/<code>!=</code>) on <code>any</code> stays
+allowed. A generalized lambda (a <code>::</code>/<code>:=</code> binding whose value is a
+lambda) whose body performs numeric ops on an
+<strong>unannotated</strong> parameter is rejected (<code>ambiguous numeric width — annotate the parameter (e.g. n: i64)</code>): the lambda is generalized, so the
+width would flex per call site while the body fixed one. Directly-passed
+lambdas are exempt — their parameter types come from the instantiation
+(<code>map(fn(x) { x * x }, range(0, 4, 1))</code> needs no annotation).</li>
+</ul>
+</li>
+<li><code>[T]</code> — array of <code>T</code> (homogeneous). At runtime a <code>[T]</code> value is a <strong>slice</strong>
+— a fat pointer <code>{backing, offset, length}</code> over a shared backing array
+(§4.2); <code>sub</code> carves zero-copy views out of it.</li>
+<li><code>[T1, ..., Tn]</code> — <strong>tuple</strong>: fixed arity, positional field types. Fields
+may be named (<code>[x: f64, y: f64]</code>) or unnamed (<code>[i64, string]</code>); names
+are for access only and ignored by unification, which compares arity and
+positional types. <code>[T]</code> (one element, no comma) is an array, not a 1-tuple.</li>
+<li>Aliases are declared without a keyword, in two forms (both are top-level
+items, not statements):<ul>
+<li><code>Name :: T;</code> — a <strong>nullary alias</strong>: <code>V2 :: [f32, f32];</code> or <code>s32 :: i32;</code>.</li>
+<li><code>Name :: fn(p1: type, ..., pn: type): type { T };</code> — a <strong>parametric type
+alias</strong>: a type-level function over its parameters. Use it as
+<code>Name(A1, ..., An)</code>; the body <code>T</code> is substituted with the arguments at
+parse time. Alias params are type variables scoped to the body (their
+annotation is <code>type</code>, the type of types — nothing inhabits <code>type</code> at
+term level, so a type-level fn is never a callable value). Recursive
+aliases are not supported.
+Disambiguation from the <code>name :: expr;</code> const binding is type-first: a
+top-level <code>name :: X;</code> is an alias iff <code>X</code> parses as a type up to the
+<code>;</code> (brackets, fn types, bare names that resolve as types, alias
+applications). Anything else stays a const binding — <code>y :: x;</code> over a
+value variable binds the value. A name that is both a value variable and
+an alias: <code>y :: V2;</code> declares an alias; copy the value with <code>y := V2;</code>. A
+term lambda all of whose params and return are <code>: type</code> is claimed as an
+alias, since no such term function could ever be called.</li>
+</ul>
+</li>
+<li><code>(T1, ..., Tn) -&gt; R</code> — function type. The optional <code>! { E1, ..., En }</code> is
+its <strong>effect set</strong>: the effects the function may perform. Empty/omitted =
+pure.</li>
+<li><code>any</code> — absorbing type. Unifies with anything and stays <code>any</code>. Because <code>any</code>
+is an escape hatch, the checker <strong>warns</strong> when a binding&#39;s
+<em>inferred</em> type contains <code>any</code> (e.g. <code>f :: fn(a: any): any { a }</code> infers
+<code>(any) -&gt; any</code>); writing an explicit annotation
+(<code>f: (any) -&gt; any :: fn(a: any): any { a }</code>) silences the warning. Array
+literals like <code>[1, 2, 3]</code> are special-cased to <code>[i64]</code> and do not trigger it.</li>
+</ul>
+<h3 id="32-type-variables-and-unification">3.2 Type variables and unification</h3>
+<ul>
+<li>Type variables use <strong>union-find</strong> equivalence with a side-map of substitutions. <code>res(t)</code> resolves a type; occurs-check prevents recursive types.</li>
+<li><code>unify(a, b)</code> either makes the two types equal or throws a <code>TypeError</code> of the form:<pre><code>at line L, col C: Type mismatch:
+got      : &lt;actual&gt;
+expected : &lt;expected&gt;
+</code></pre>
+The <code>at line L, col C:</code> prefix is the source position of the innermost
+expression being inferred when the mismatch surfaced (omitted when no
+position is available). A non-function call names the callee instead of
+<code>got</code>. Arity mismatches are reported as <code>arity m ≠ n</code>.</li>
+</ul>
+<h3 id="33-inference-rules">3.3 Inference rules</h3>
+<ul>
+<li><code>num</code> : untyped int / untyped float (by whether the literal has a <code>.</code>); each accepts any numeric (resp. float) context and defaults to <code>i64</code>/<code>f64</code>. <code>str : string</code>, <code>bool : bool</code>, <code>unit : unit</code>.</li>
+<li><code>name : Γ(name)</code> (or a fresh instantiation if <code>Γ(name)</code> is a polymorphic scheme).</li>
+<li><code>[a, b, c]</code> : <code>[T]</code> where all element types unify with a single fresh <code>T</code>
+(homogeneous → array). If they do <strong>not</strong> unify, the literal is a tuple
+<code>[Ta, Tb, Tc]</code> of the element types. Under a tuple type annotation it is
+checked against the declared field types directly.</li>
+<li><code>fn (p1:T1,...): R ! {E} { body } : (T1,...) -&gt; R ! {E}</code>. Untyped params get
+fresh vars; the body is inferred under their bindings; if a return type
+annotation is present it unifies with the inferred body type. <strong>Effect
+annotations are optional and derived when missing</strong>: if <code>! { ... }</code> is
+omitted, the function&#39;s effect set is inferred from the body&#39;s performed
+effects. When present, the annotation must be a superset of the body&#39;s
+effects (the body&#39;s performed effects must be ⊆ the annotation), and the
+declaration is the function&#39;s exact effect row: an unannotated parameter&#39;s
+effect variable is pinned to the declared set (a callee performing anything
+outside the declaration fails at the call site), and an empty declaration
+rejects a body whose unannotated parameter performs — annotate the
+parameter&#39;s type with its effect row instead. Anonymous lambdas may also
+carry <code>: T</code> and <code>! { ... }</code> annotations: <code>fn(p): unit ! { Out } { ... }</code>.</li>
+<li><code>x := e</code> / <code>x :: e</code> — <code>e</code>&#39;s type (with an optional <code>: T</code> annotation:
+<code>T</code> unifies with <code>infer(e)</code>). When <code>T</code> is a tuple and <code>e</code> is a bracket
+literal, the literal is typed as that tuple.</li>
+<li><code>[a, b] := e</code> — <code>e : [Ta, Tb]</code> (tuple) or <code>[T]</code> (array, each field <code>: T</code>);
+binds <code>a, b</code> to the element types.</li>
+<li><code>e.x</code> / <code>e.0</code> — <code>e</code> must be a tuple (<code>[x: T, ...]</code> or <code>[T, ...]</code>) or an array.
+For a named tuple field, <code>.name</code> resolves to its position; <code>.N</code> indexes by
+position. For an array, <code>.N</code> indexes element <code>N</code>.</li>
+<li><code>if c a else b : T</code> where <code>c : bool</code> and <code>a, b : T</code> (branches must
+agree; each branch is an expression — a block, a literal, a call, ...).
+<code>if</code> with no <code>else</code> has an implicit <code>unit</code> else branch.</li>
+<li><code>f(a1, ..., an)</code> — <code>f : (T1,...,Tn) -&gt; R ! {E}</code>, each <code>ai : Ti</code>, the call has type <code>R</code> and adds <code>E</code> to the caller&#39;s effects. Mismatched arity or argument types are errors.</li>
+<li><strong>Effect rows are unified, not just propagated.</strong> A function&#39;s <code>! { ... }</code> is a row: a concrete set of effect names, or an unbound <em>effect variable</em>. Two function types unify their effect rows by union-find: variable+variable unions, variable+set binds. Concrete set+set checks by subset, not equality — the value&#39;s row must be covered by the context&#39;s row (a parameter&#39;s, an annotation&#39;s), so <code>fn (i32) -&gt; i32 ! { E }</code> checks against <code>fn (i32) -&gt; i32 ! { E, F }</code>: the declared row is an upper bound on what the callee may perform, and the reverse (a callee performing outside the declared row) is an error. The empty set <code>∅</code> needs no special case: as the value&#39;s row it is subsumed by any context row (a function typed <code>... ! ∅</code> may be used wherever any effect set is expected), while an effectful value against a <code>∅</code>-typed context is a mismatch. Unannotated higher-order parameters stay flexible through unbound row variables, without let-generalization.</li>
+<li><strong>Higher-order builtins are effect-polymorphic.</strong> <code>map : ((a) -&gt; b ! e, [a]) -&gt; [b] ! e</code>, <code>each : ((a, i64) -&gt; b ! e, [a]) -&gt; unit ! e</code>, <code>flatmap : ((a, i64) -&gt; [b] ! e, [a]) -&gt; [b] ! e</code> — each with a fresh effect variable <code>e</code> per instantiation, shared between the callback&#39;s effect row and the call&#39;s performed effects. So <code>map(pureF, xs)</code> performs <code>∅</code> while <code>map(fn(x){ Out!(x); x }, xs)</code> performs exactly <code>{ Out }</code> — neither over- nor under-approximated.</li>
+<li><code>Op!(a1, ..., an)</code> — requires a declared <code>Op :: effect(p1,...): ret</code>; each <code>ai : pi</code>; the expression has type <code>ret</code> and adds <code>Op</code> to the effects.</li>
+<li><code>handle { body } case Return(v) =&gt; k { rb } case Op(pi) =&gt; k { ob } ...</code><ul>
+<li>The body is inferred with its own effect set <code>B</code>.</li>
+<li><code>Return(v)</code>: <code>v : bodyType</code>; the result type <code>R</code> unifies with <code>infer(rb)</code> (no <code>k</code> used).</li>
+<li><code>Op(pi) =&gt; k</code>: <code>pi</code> are the effect&#39;s declared param types, <code>k : (ret) -&gt; R</code> where <code>ret</code> is <code>Op</code>&#39;s declared return type and <code>R</code> is the handle result type; <code>infer(ob)</code> unifies with <code>R</code>.</li>
+<li><strong>No-Return rule:</strong> when <code>B</code> is non-empty, <code>R</code> is <em>not</em> unified with <code>bodyType</code> (handlers transform results). When <code>B</code> is empty, <code>R ~ bodyType</code>.</li>
+<li>Handled ops are removed from the body&#39;s effect set; any remaining (unhandled) ops propagate to the caller.</li>
+<li>Handler case bodies run <em>outside</em> their handler (a perform in a case body delegates outward), so effects a case body performs propagate to the caller too.</li>
+</ul>
+</li>
+<li><strong>Top-level effect policy:</strong> effects left over at the top level are either interpreted by a builtin handler (for <code>Read</code>/<code>Write</code>/<code>Println</code>/<code>Out</code>) or reported as unhandled. Reporting is fail-fast through one shared gate both backends apply at their entry, right after checking: the interpreter before it seeds builtins, the wasm backend before it emits any code. The gate rejects a program whose statically-performed residual ops (performed with no matching handler in their subtree, per the checker&#39;s effect tracking — including through calls) are neither builtin effects nor covered by the runner&#39;s interpreter override — same <code>Unhandled effect: &lt;op&gt;</code> message and nonzero exit for <code>ef run</code>, <code>ef runwasm</code>, and <code>ef wasm</code>. A program that would fail mid-run after side effects instead fails before anything runs. <code>ef types &lt;file&gt;</code> surfaces exactly these top-level-reaching ops: its final <code>_ : T ! { ... }</code> line shows the whole program&#39;s result type with the residual effect row (unhandled builtin effects included, internally-handled ops excluded).</li>
+</ul>
+<h3 id="34-polymorphism">3.4 Polymorphism</h3>
+<ul>
+<li>User <code>::</code>/<code>:=</code> bindings of a <strong>lambda value</strong> are <strong>generalized</strong> (HM
+let-generalization, value-restricted): type/effect variables not free in the
+surrounding environment are abstracted, and each use instantiates fresh
+copies. So <code>apply :: fn (f, x) { f(x) }</code> gets <code>apply : ((a) -&gt; b ! e, a) -&gt; b ! e</code>
+and one definition works at many types in the same program.</li>
+<li><strong>Value restriction:</strong> only lambda RHS are generalized. Literals carry no
+type variables (generalization is a no-op), and bracket literals are typed
+directly (arrays via homogenization, tuples positionally — non-values), so
+they stay monomorphic — this keeps mutable arrays (<code>set</code>) and mutable
+variables (<code>assign</code>) sound (no <code>xs := []</code> typed <code>[a]</code> that any element type
+could flow into).</li>
+<li>Bindings with an explicit <code>: type</code> annotation are monomorphic (the
+annotation fixes the type).</li>
+<li>Builtins <code>map</code>, <code>sub</code>, <code>concat</code>, <code>flat</code>, <code>len</code> are polymorphic via
+<strong>scheme thunks</strong> in the type environment: each lookup produces a fresh copy
+with fresh type variables.</li>
+</ul>
+<h2 id="4-builtins">4. Builtins</h2>
+<h3 id="41-operators-binary">4.1 Operators (binary)</h3>
+<table>
+<thead>
+<tr>
+<th>Operator</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>- * / %</code></td>
+<td><code>(T, T) -&gt; T</code> for each width <code>T</code></td>
+<td>strict same-width; <code>@as</code> converts.</td>
+</tr>
+<tr>
+<td><code>+</code></td>
+<td><code>(T, T) -&gt; T</code> / <code>(string, string) -&gt; string</code></td>
+<td>overloaded: numeric (strict same-width, untyped literals flex), or string concatenation. Mixed <code>&quot;a&quot; + 1</code> is a type error.</td>
+</tr>
+<tr>
+<td><code>&lt; &gt; &lt;= &gt;=</code></td>
+<td><code>(T, T) -&gt; bool</code> per numeric width <code>T</code></td>
+<td>strict same-width operands.</td>
+</tr>
+<tr>
+<td><code>== !=</code></td>
+<td><code>(T, T) -&gt; bool</code></td>
+<td>Both operands must share a type <code>T</code> (untyped literals flex, concrete widths are strict — <code>i32 == i64</code> is an error); cross-type comparisons like <code>&quot;a&quot; == 1</code> are rejected. Not first-class — cannot be passed as a function value.</td>
+</tr>
+</tbody></table>
+<p>Unary <code>-</code> (neg) : numeric, width-preserving (<code>i32</code> in → <code>i32</code> out). Unary <code>!</code> (not) : <code>(bool) -&gt; bool</code>.</p>
+<p><code>/</code> is <strong>type-preserving and truncates toward zero</strong> for integer widths (<code>7 / 2 == 3</code>, <code>-7 / 2 == -3</code>); float division is exact (<code>7.0 / 2.0 == 3.5</code>).
+The type checker stamps each <code>/</code> node as integer or float division at check time, and every numeric node with its result width — the runtime computes per width (BigInt for <code>i64</code>/<code>u64</code>, wrap/round per width otherwise) and traps on integer division by zero and <code>INT_MIN / -1</code> (§3.1 runtime semantics).</p>
+<h3 id="42-functions">4.2 Functions</h3>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type (schematic)</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>sub</code></td>
+<td><code>([A], i64, i64) -&gt; [A]</code></td>
+<td>Zero-copy view of <code>[from, to)</code>: shares the operand&#39;s backing. Errors (<code>sub: range [from, to) out of bounds [0, len)</code>) unless <code>0 ≤ from ≤ to ≤ len</code>.</td>
+</tr>
+<tr>
+<td><code>concat</code></td>
+<td><code>([A], [A]) -&gt; [A]</code></td>
+<td>Append; allocates a fresh backing, never aliases its operands — the only way a slice grows.</td>
+</tr>
+<tr>
+<td><code>flat</code></td>
+<td><code>([[A]]) -&gt; [A]</code></td>
+<td>Flatten one level.</td>
+</tr>
+<tr>
+<td><code>len</code></td>
+<td><code>([A]) -&gt; i64</code></td>
+<td>Array length.</td>
+</tr>
+<tr>
+<td><code>strlen</code></td>
+<td><code>(string) -&gt; i64</code></td>
+<td>Length in bytes — strings are UTF-8 byte sequences.</td>
+</tr>
+<tr>
+<td><code>map</code></td>
+<td><code>((A) -&gt; B, [A]) -&gt; [B]</code></td>
+<td>Apply; fresh <code>A</code>/<code>B</code> per use.</td>
+</tr>
+<tr>
+<td><code>get</code></td>
+<td><code>([A], i64) -&gt; A</code></td>
+<td>Array index through the view&#39;s window; indices are <code>i64</code> (untyped int literals flex). Out of bounds → <code>get: index i out of bounds [0, len)</code> (reported against the view&#39;s length).</td>
+</tr>
+<tr>
+<td><code>set</code></td>
+<td><code>([A], i64, A) -&gt; unit</code></td>
+<td>Index assignment: writes through the view into the shared backing — every view over the same window (and the original) sees it. Strictly in-window: it never grows (<code>set: index i out of bounds [0, len)</code> otherwise); growth is <code>concat</code>&#39;s job only.</td>
+</tr>
+</tbody></table>
+<p><strong>Slices.</strong> A <code>[T]</code> value is a fat pointer <code>{backing array, offset, length}</code>
+— not a plain array. Literals, <code>range</code>, <code>concat</code>, and <code>map</code>-like
+builtins allocate a fresh backing (offset 0); <code>sub</code> returns a <strong>view</strong>
+sharing the operand&#39;s backing with a shifted offset and shorter length
+(zero-copy). Reads and writes go through the view&#39;s window; <code>==</code>/<code>!=</code> on
+slices is reference identity. Aliasing example:</p>
+<pre><code class="language-ef">s :: [1, 2, 3, 4];
+v :: sub(s, 1, 3);   # [2, 3] — shares s&#39;s backing
+set(s, 1, 99);       # writes through to the shared backing
+v                    # [99, 3] — the view sees the write
+</code></pre>
+<p>| <code>each</code> | <code>((A, i64) -&gt; B, [A]) -&gt; unit</code> | Iterate with index; result discarded. |
+| <code>flatmap</code> | <code>((A, i64) -&gt; [B], [A]) -&gt; [B]</code> | Map-then-concat. |</p>
+<h3 id="43-math-io">4.3 Math, I/O</h3>
+<p>Console output is via the <code>Println</code>/<code>Out</code> effects (§4.4), not functions;
+process control is via the <code>Exit</code>/<code>Wait</code> effects (§4.4), not functions.</p>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type (schematic)</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>PI</code></td>
+<td><code>f64</code></td>
+<td><code>Math.PI</code>.</td>
+</tr>
+<tr>
+<td><code>cos</code></td>
+<td><code>(f64) -&gt; f64</code></td>
+<td>Cosine (radians).</td>
+</tr>
+<tr>
+<td><code>sin</code></td>
+<td><code>(f64) -&gt; f64</code></td>
+<td>Sine (radians).</td>
+</tr>
+<tr>
+<td><code>abs</code></td>
+<td><code>(f64) -&gt; f64</code></td>
+<td>Absolute value.</td>
+</tr>
+<tr>
+<td><code>round</code></td>
+<td><code>(f64) -&gt; i64</code></td>
+<td>Round to nearest int.</td>
+</tr>
+<tr>
+<td><code>sqrt</code></td>
+<td><code>(f64) -&gt; f64</code></td>
+<td>Square root.</td>
+</tr>
+<tr>
+<td><code>range</code></td>
+<td><code>(i64, i64, i64) -&gt; [i64]</code></td>
+<td><code>range(start, end, step)</code>: half-open; <code>step</code> may be negative.</td>
+</tr>
+<tr>
+<td><code>char</code></td>
+<td><code>(i64) -&gt; string</code></td>
+<td>Code point → single-char string.</td>
+</tr>
+<tr>
+<td><code>number</code></td>
+<td><code>(string) -&gt; f64</code></td>
+<td>Parse a string to a number.</td>
+</tr>
+<tr>
+<td><code>bytes</code></td>
+<td><code>(string) -&gt; [u8]</code></td>
+<td>A string&#39;s UTF-8 bytes — strings are stored UTF-8-encoded, so this is the raw representation.</td>
+</tr>
+<tr>
+<td><code>args</code></td>
+<td><code>() -&gt; [string]</code></td>
+<td>Program args — everything after the source path on the <code>ef run</code>/<code>ef runwasm</code> command line; <code>[]</code> in the REPL.</td>
+</tr>
+</tbody></table>
+<p><code>each</code>/<code>flatmap</code>/<code>map</code> take the function <strong>first</strong>, matching <code>map</code>.</p>
+<h3 id="44-builtin-effects">4.4 Builtin effects</h3>
+<p>These are pre-declared like user effects and invoked with the <code>!</code> postfix. With no user handler, the runtime interprets them at the top level (real I/O); a user <code>handle</code> can intercept any of them.</p>
+<table>
+<thead>
+<tr>
+<th>Effect</th>
+<th>Signature</th>
+<th>Default behaviour</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Read</code></td>
+<td><code>(path: string): string</code></td>
+<td><code>readFileSync</code> the path.</td>
+</tr>
+<tr>
+<td><code>Write</code></td>
+<td><code>(path: string, bytes: [u8]): unit</code></td>
+<td><code>writeFileSync</code> raw bytes — one array element per byte (text goes through <code>bytes(s)</code>).</td>
+</tr>
+<tr>
+<td><code>Println</code></td>
+<td><code>(v: any): unit</code></td>
+<td><code>console.log(show(v))</code> — print a value + newline.</td>
+</tr>
+<tr>
+<td><code>Out</code></td>
+<td><code>(s: string): unit</code></td>
+<td><code>process.stdout.write(s)</code> — raw string, no newline.</td>
+</tr>
+<tr>
+<td><code>Exit</code></td>
+<td><code>(code: i64): unit</code></td>
+<td><code>process.exit(code)</code> — terminates without resuming.</td>
+</tr>
+<tr>
+<td><code>Wait</code></td>
+<td><code>(secs: i64): unit</code></td>
+<td>Busy-wait <code>secs</code> seconds then resume with unit (synchronous evaluator).</td>
+</tr>
+<tr>
+<td><code>Random</code></td>
+<td><code>(): f64</code></td>
+<td>Resume with a random number in [0, 1) (<code>Math.random()</code>).</td>
+</tr>
+</tbody></table>
+<pre><code class="language-ef"># Println is an ordinary effect: a handler can capture it instead of printing.
+handle {
+  Println!(42);
+  Println!(&quot;hi&quot;);
+  0
+} case Return(v) =&gt; k { [v] }
+  case Println(x) =&gt; k { concat([x], k(unit)) }
+# [42, &quot;hi&quot;, 0]
+</code></pre>
+<h2 id="5-semantics">5. Semantics</h2>
+<ul>
+<li><strong>Evaluation is in continuation-passing style.</strong> <code>evalE(e, env, k)</code> either calls <code>k(v)</code> with a value or produces an <code>Outcome</code> describing a trapped effect.</li>
+<li><strong>Effects.</strong> <code>Op!(args)</code> searches outward for a handler whose cases include <code>Op</code>. On a match, the handler runs with the effect&#39;s arguments bound and <code>k</code> set to a closure capturing the suspended computation; calling <code>k(v)</code> resumes the body with <code>v</code>. On no match, evaluation fails.</li>
+<li><strong>Multi-shot resume.</strong> <code>k</code> is an ordinary JS function, so it can be invoked many times — each call re-runs the continuation from the point. This enables nondeterminism, backtracking, etc.</li>
+<li><strong>Multi-shot resume over loop builtins.</strong> The loop builtins <code>map</code>/<code>each</code>/<code>flatmap</code> call the callback per element through a land continuation that resumes the loop with the element&#39;s result. A multi-shot <code>k</code> re-enters that loop continuation: remaining elements run again, and the result window is shared across resumes — the last write wins per element. Each element&#39;s land carries its own state (its own index), so a re-entered continuation lands at its own element in both backends (a compile-time delivery check still rejects the perform-spined delivery shapes — see resume typing in §2).</li>
+<li><strong>Deep handlers.</strong> The <code>Return</code> case sees the body&#39;s final value; effect cases see the site and can resume or not. Effects performed inside a handler case propagate outward to the next handler.</li>
+</ul>
+<h2 id="6-examples">6. Examples</h2>
+<h3 id="nondeterminism-multi-shot-resume">Nondeterminism (multi-shot resume)</h3>
+<pre><code class="language-ef">Choose :: effect(opts: [i64]): i64;
+handle {
+  x :: Choose!([1, 2, 3]);
+  y :: Choose!([10, 20]);
+  [x, y]
+} case Return(v) =&gt; k { [v] }
+  case Choose(opts) =&gt; k { flat(map(k, opts)) }
+# [[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]
+</code></pre>
+<h3 id="tuples-aliases-and-field-access">Tuples, aliases, and field access</h3>
+<pre><code class="language-ef">Point :: fn(a: type): type {[x: a, y: a]};
+p: Point(f64) = [1.0, 2.0];
+[x, y] := p;
+[x, p.x + p.y]
+# [1, 3]
+</code></pre>
+<p><code>Point :: fn(a: type): type {[x: a, y: a]};</code> declares a parametric alias;
+<code>Point(f64)</code> substitutes <code>a = f64</code>. The literal <code>[1.0, 2.0]</code> is typed
+against the annotated tuple <code>[x: f64, y: f64]</code>, so <code>p.x</code> and <code>p.y</code> are
+<code>f64</code>. Nullary aliases skip the parameters: <code>V2 :: [f32, f32];</code> or
+<code>s32 :: i32;</code>.</p>
+<h3 id="exceptions-non-resuming-handler">Exceptions (non-resuming handler)</h3>
+<pre><code class="language-ef">Div :: effect(a: i64, b: i64): i64;
+handle {
+  r :: Div!(10, 0);
+  [r]
+} case Div(a, b) =&gt; k {
+  if (b == 0) { [&quot;div by zero&quot;] } else { k(a / b) }
+}
+# [&quot;div by zero&quot;]
+</code></pre>
+<h3 id="threading-a-log-across-resumes">Threading a log across resumes</h3>
+<pre><code class="language-ef">Log :: effect(msg: i64): unit;
+Result :: effect(v: i64): unit;
+handle {
+  Log!(1);
+  Log!(2);
+  Result!(42)
+} case Log(msg) =&gt; k { concat([msg], k(unit)) }
+  case Result(v) =&gt; k { [v] }
+# [1, 2, 42]
+</code></pre>
+<h3 id="effect-propagation-through-nested-handlers">Effect propagation through nested handlers</h3>
+<pre><code class="language-ef">Emit :: effect(m: string): unit;
+Other :: effect(m: string): unit;
+handle {
+  handle { Emit!(&quot;hi&quot;) } case Other(m) =&gt; k { [&quot;should-not-match&quot;] }
+} case Emit(m) =&gt; k { [m] }
+# [&quot;hi&quot;]
+</code></pre>
+<h3 id="recursion-with-a-typed-signature">Recursion with a typed signature</h3>
+<pre><code class="language-ef">fact :: fn(n: i64): i64 {
+  if (n == 0) { 1 } else { n * fact(n - 1) }
+};
+fact(5)
+# 120
+</code></pre>
+<h3 id="short-circuit-and-an-effectful-signature">Short-circuit and an effectful signature</h3>
+<pre><code class="language-ef">Emit :: effect(m: i64): i64;
+ask :: fn(n: i64): i64 ! { Emit } { Emit!(n) };
+ask
+# inferred type: &quot;(i64) -&gt; i64 ! { Emit }&quot;
+</code></pre>
+<h3 id="builtin-effects-default-handler-does-real-io">Builtin effects (default handler does real I/O)</h3>
+<pre><code class="language-ef"># Write then read; with no user handler, the runtime performs real I/O.
+# Write! takes raw bytes — `bytes(s)` UTF-8-encodes text into a [u8].
+Write!(&quot;hello.txt&quot;, bytes(&quot;hello ef&quot;));
+Read!(&quot;hello.txt&quot;)
+# → &quot;hello ef&quot;
+</code></pre>
+<p>Binary content: any <code>[u8]</code> array writes as raw bytes, one element per
+byte — <code>examples/raytracer.ef</code> saves its render as a PNG this way.</p>
+<pre><code class="language-ef"># A user handler can intercept Read to mock the filesystem.
+handle {
+  Read!(&quot;anything&quot;)
+} case Return(v) =&gt; k { [v] }
+  case Read(path) =&gt; k { [&quot;mocked&quot;] }
+# → [&quot;mocked&quot;]
+</code></pre>
+<h2 id="7-examples-on-disk">7. Examples on disk</h2>
+<ul>
+<li><code>examples/newton.ef</code> — Newton&#39;s method square root (<code>while</code> + assignment).</li>
+<li><code>examples/tco.ef</code> — recursion probe. The CPS evaluator is fully tail-call-structured, so Bun/JSC&#39;s TCO keeps the stack O(1) for both tail and non-tail calls; non-tail recursion costs heap allocation (linear time), not stack overflow. The wasm target also runs it: calls in tail position compile to <code>return_call_indirect</code> (O(1) wasm stack); each call still allocates a frame block, but the host GC reclaims them.</li>
+<li><code>examples/star.ef</code> — rotating 3D star polygon.
+Run: <code>ef run examples/star.ef &lt;vertices&gt; &lt;step&gt;</code> where <code>0 &lt; step &lt; vertices/2</code>.</li>
+<li><code>examples/widths.ef</code> — the numeric-widths end-to-end probe: f32 precision at
+every producing step, per-width <code>@as</code> conversions, truncating <code>/</code>, i32/u32
+and i64/u64 wraparound (exact beyond 2^53 via BigInt), signed vs unsigned
+ordering, and the division guards. Every line prints identically under
+<code>ef run</code> and <code>ef runwasm</code> — the parity harness in the test suite pins that.
+pins it line for line.</li>
+</ul>
+
+</main>
+</div>
+</body>
+</html>

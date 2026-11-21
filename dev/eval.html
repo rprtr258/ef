@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interpreter (CPS) · ef</title>
+<link rel="stylesheet" href="../site.css">
+<script>(() => {
+  const KEY = "ef.playground.theme"; // shared with the playground
+  const mq = matchMedia("(prefers-color-scheme: dark)");
+  const pref = () => {
+    const t = localStorage.getItem(KEY);
+    return t === "light" || t === "dark" ? t : (mq.matches ? "dark" : "light");
+  };
+  document.documentElement.dataset.theme = pref();
+  document.addEventListener("click", (e) => {
+    if (e.target instanceof Element && e.target.closest("#theme-btn")) {
+      const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = t;
+      localStorage.setItem(KEY, t);
+    }
+  });
+})();</script>
+</head>
+<body>
+<header id="topbar">
+  <a id="brand" href="../index.html"><b>ef</b></a>
+  <span class="spacer"></span>
+  <button id="theme-btn" class="tb-btn icon" title="toggle theme"><svg class="i-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg><svg class="i-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></g></svg></button>
+  <a id="src-link" href="https://github.com/rprtr258/ef" title="source repository" aria-label="source repository"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+</header>
+<div id="page">
+<nav id="sidebar">
+  <div class="nav-group">
+    <a href="../index.html">Overview</a>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../dev/index.html">Compiler pipeline</a>
+    <a href="../dev/analysis.html">Analysis</a>
+    <a href="../dev/builtins.html">Builtins</a>
+    <a class="active" href="../dev/eval.html">Interpreter (CPS)</a>
+    <a href="../dev/lexer.html">Lexer</a>
+    <a href="../dev/lint.html">Linter internals</a>
+    <a href="../dev/parser.html">Parser</a>
+    <a href="../dev/types.html">Type checker</a>
+    <a href="../dev/wasm/index.html">Wasm backend</a>
+    <div class="nav-children">
+    <a href="../dev/wasm/discover.html">Discover</a>
+    <a href="../dev/wasm/emit.html">Emit</a>
+    <a href="../dev/wasm/indices.html">Index assignment</a>
+    <a href="../dev/wasm/layout.html">Statics layout</a>
+    <a href="../dev/wasm/module.html">Module & host</a>
+    <a href="../dev/wasm/optimize.html">Optimize</a>
+    </div>
+  </div>
+  <div class="nav-group">
+    <a class="nav-title" href="../spec/index.html">Language spec</a>
+    <a href="../spec/cli.html">CLI & REPL</a>
+    <a href="../spec/lint.html">Linter</a>
+    <a href="../spec/vscode.html">VS Code extension</a>
+  </div>
+</nav>
+<main id="content">
+<h1 id="interpreter-cps">Interpreter (CPS)</h1>
+<p>The CPS evaluator plus the execution pipeline shared by <code>ef run</code>
+and the REPL.</p>
+<h2 id="why-cps">Why CPS</h2>
+<p>The continuation is a <strong>plain JS function</strong>, so <code>resume</code> is genuinely
+multi-shot: the handler may call <code>k</code> zero, one, or many times, and each call
+re-runs the rest of the computation. Generators can&#39;t do this — they are
+single-use; CPS makes nondeterminism (<code>Choose</code>-style search, backtracking) a
+plain loop over <code>k</code>.</p>
+<p>Because everything is tail-call structured, JSC&#39;s TCO keeps the JS stack O(1)
+for tail calls; non-tail recursion allocates heap frames instead of stack
+frames (slow, but no stack overflow).</p>
+<p>The conversion is <strong>selective</strong>: a function whose resolved effect row is empty
+and whose body has no suspending call in its tail chain converts
+direct-style — its boundary delivers with <code>dret</code> instead of jumping <code>$ret</code>,
+and calls to classified-pure callees are <code>dcall</code>s that bind results in-frame.
+A mixed function — empty row with internal handlers — keeps the direct
+boundary: its handler islands run over the ambient chain like any CPS region,
+and the tail handler&#39;s continuation resolves to the caller&#39;s continuation at
+runtime.</p>
+<h2 id="core-shapes">Core shapes</h2>
+<table>
+<thead>
+<tr>
+<th>Shape</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Value</code></td>
+<td><code>null · number · bigint · string · boolean · Value[] · Closure · Native</code></td>
+</tr>
+<tr>
+<td><code>Closure</code></td>
+<td><code>{params, fun, ir, env, typ?}</code> — <code>fun</code> indexes the closure&#39;s <strong>own CPS IR</strong> function table, so closures stay valid across REPL lines and programs</td>
+</tr>
+<tr>
+<td><code>Native</code></td>
+<td><code>{fn: (args, k) =&gt; Outcome}</code> — CPS builtins</td>
+</tr>
+<tr>
+<td><code>Cont</code></td>
+<td><code>(Value) =&gt; Outcome</code></td>
+</tr>
+<tr>
+<td><code>Outcome</code></td>
+<td><code>{tag: &quot;done&quot;, value}</code> or <code>{tag: &quot;eff&quot;, op, args, k}</code> — a trapped effect</td>
+</tr>
+</tbody></table>
+<p><code>evalTerm(t, ir, env, k)</code> dispatches over the CPS IR term;
+<code>apply(f, args, k)</code> dispatches native vs closure (a <code>dcall</code> whose callee is a
+direct closure applies it inline at the site instead).</p>
+<h2 id="width-normalization">Width normalization</h2>
+<p>The checker stamps every numeric node with its width (<code>numKind</code>); the CPS IR
+carries those stamps as <code>norm</code> marks on the bind sites (prim results, <code>bind</code>s,
+continuation parameters, dcall results). <code>normWidth</code> normalizes the produced
+value exactly like the wasm backend&#39;s per-width ops:</p>
+<table>
+<thead>
+<tr>
+<th>Stamp</th>
+<th>Normalization</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>u8</code></td>
+<td><code>v \&amp; 255</code> (BigInt input: <code>Number(BigInt.asUintN(8, v)) \&amp; 255</code>)</td>
+</tr>
+<tr>
+<td><code>i32</code></td>
+<td><code>v | 0</code> (BigInt input: <code>Number(BigInt.asIntN(32, v))</code>)</td>
+</tr>
+<tr>
+<td><code>u32</code></td>
+<td><code>v &gt;&gt;&gt; 0</code> / <code>asUintN</code></td>
+</tr>
+<tr>
+<td><code>f32</code></td>
+<td><code>Math.fround(v)</code></td>
+</tr>
+<tr>
+<td><code>f64</code></td>
+<td>plain number</td>
+</tr>
+<tr>
+<td><code>i64</code> / <code>u64</code></td>
+<td><code>BigInt.asIntN/asUintN(64, …)</code> — exact beyond 2^53</td>
+</tr>
+</tbody></table>
+<p>Unstamped nodes (polymorphic uses) pass values through; operators then
+dispatch on the runtime representation. <code>widthOp</code> itself never converts
+between widths: the checker resolves literal widths per site, so a stamped
+operator&#39;s operands arrive already in its representation (divergent reads
+— one untyped binding read at several widths — carry <code>adaptFrom</code> and are
+adapted at the read, not the op).</p>
+<h2 id="effects-and-handlers">Effects and handlers</h2>
+<p><code>handle(body, cases, env, k)</code> evaluates the body with a terminal continuation;
+every <code>Outcome</code> it produces flows into <code>run(out, kOuter)</code>:</p>
+<ul>
+<li><strong><code>done</code></strong> → the <code>Return</code> case binds the value (and a <code>resume</code> that just
+re-returns it) and evaluates the case body under <code>kOuter</code>; with no <code>Return</code>
+case, the value passes to <code>kOuter</code> unchanged.</li>
+<li><strong><code>eff</code> with a matching case</strong> → the case body runs with the effect&#39;s
+params bound and <code>resume</code> bound to
+<code>run(out.k(args[0]), k2)</code> — <em>the captured continuation is the resume</em>.
+Because <code>out.k</code> is a plain closure, calling it repeatedly is multi-shot
+resume.</li>
+<li><strong><code>eff</code> with no matching case</strong> → the outcome is re-thrown <strong>outward with a
+wrapped continuation</strong>: <code>k: (v) =&gt; run(out.k(v), kOuter)</code>. When an outer
+handler eventually resumes, the wrap re-enters this frame&#39;s chain — deep
+handlers, with lookup resolved outward at bubble time.</li>
+</ul>
+<svg class="dgm" viewBox="0 0 720 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="effect handling walk">
+  <defs>
+    <marker id="arre" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="arrowhead" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="box acc" x="170" y="20" width="380" height="46" rx="8"/>
+  <text x="360" y="40" text-anchor="middle" class="acc">run — handler frame</text>
+  <text x="360" y="56" text-anchor="middle" class="faint">handle { body } case Choose(lo, hi) => k { … }</text>
+  <rect class="box" x="170" y="96" width="380" height="38" rx="8"/>
+  <text x="360" y="120" text-anchor="middle" class="faint">k — continuation frames (plain JS closures)</text>
+  <rect class="box" x="170" y="152" width="380" height="38" rx="8"/>
+  <text x="360" y="176" text-anchor="middle" class="faint">k — …</text>
+  <rect class="box" x="170" y="208" width="380" height="38" rx="8"/>
+  <text x="360" y="232" text-anchor="middle">Choose!(1, n) — perform</text>
+  <path class="arrow acc" marker-end="url(#arre)" d="M558 227 H640 V43 H554"/>
+  <text x="566" y="150" class="acc">eff {op, args, k}</text>
+  <text x="566" y="164" class="acc">bubbles up as the Outcome</text>
+  <path class="arrow acc" marker-end="url(#arre)" d="M182 43 H100 V227 H166"/>
+  <text x="30" y="130" class="acc">resume(v)</text>
+  <text x="30" y="144" class="acc">= run(k(v), kOuter)</text>
+  <text x="30" y="158" class="acc">— call k many times</text>
+</svg><p>Case bodies run <strong>outside</strong> their handler (under <code>kOuter</code>), so an effect
+performed inside a case body propagates to the next enclosing handler.</p>
+<h2 id="runtop-and-interpretation"><code>runTop</code> and interpretation</h2>
+<p><code>runTop(out, interp?, trace?)</code> loops over a trapped outcome: an <code>interp</code> override is
+checked first (tests inject fake fs/time/randomness there), then
+<code>builtinInterps</code> (the builtin table&#39;s default interpretations — real I/O),
+else <code>throw new Error(&quot;Unhandled effect: …&quot;)</code>. Every host call — override or
+default — goes through trace.ts&#39;s <code>runTraced</code>, which appends one event
+(<code>{op, args, result}</code>) to the run trace when <code>trace</code> is given (trace.ts, the
+run-trace leaf module): the capability log the parity harness compares
+between backends.</p>
+<h2 id="the-exec-pipeline">The <code>exec</code> pipeline</h2>
+<p><code>newCtx(interp?)</code> → fresh pipeline state; <code>exec(prog, ctx, checked)</code> — the
+program is checked by the caller <em>before</em> the interpreter runs (<code>run</code>
+checks once after parsing; a REPL line checks against
+<code>ctx.checked</code>):</p>
+<ol>
+<li><strong>Fail fast</strong> on statically unhandled ops (<code>rejectUnhandled</code> in
+frontend/pipeline.ts — the one gate both backends call right after prepare; the
+wasm pipeline applies it before any codegen): any op in
+<code>checked.unhandled</code> that is neither a builtin effect nor covered by
+<code>ctx.interp</code> throws <em>before evaluation begins</em> — a program that would die
+mid-run after side effects dies before its first side effect.
+<code>ctx.checked</code> is assigned only after the check passes, so a rejected REPL
+line leaves the accumulator untouched (like a type error does).</li>
+<li><code>seedBuiltins(ctx.env, builtinRefs(prog))</code> — bind exactly the builtins this
+program references (the checker&#39;s no-shadowing rule keeps user bindings
+off builtin names, so seeding never overwrites anything).</li>
+<li>Evaluate each item: <code>runTop(evalE(item, …))</code>. Returns
+<code>{value, lastType, lastIsExpr}</code> — <code>lastIsExpr</code> implements the REPL echo
+rule (declarations print nothing).</li>
+</ol>
+<p><code>run(src, interp?, args?, trace?)</code> = one-shot parse → entrypoint gate →
+<code>exec</code>: run is the
+file-entrypoint seam, so <code>requireUnitEntry</code> (frontend/pipeline.ts, next to
+<code>rejectUnhandled</code>) throws before evaluation unless the program ends in a
+bare unit-typed expression — the CLI prints no result for the same reason.
+The REPL calls <code>newCtx</code> once and <code>exec</code> per line (through <code>runLine</code>, which
+skips the gate — echoing per-line values is the REPL&#39;s protocol), so
+bindings accumulate.</p>
+<p>The evaluator and the builtin table reference each other only at runtime
+(<code>apply</code> is called from builtin closures; unhandled effects read the table&#39;s
+default interpretations) — safe from any entry point because the defaults
+are derived together with the table itself.</p>
+<p>Next: <a href="wasm/index.html">Wasm backend</a>.</p>
+
+</main>
+</div>
+</body>
+</html>
