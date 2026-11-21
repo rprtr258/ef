@@ -72,8 +72,13 @@ immediately before the close delimiter is optional.
 
 **Block values.** A block evaluates to its last expression's value only when
 that expression has no trailing `;`; a `;`-terminated tail (or an empty
-block) makes the block evaluate to `unit`. Blocks appear as lambda bodies,
-`if` arms, and handler bodies/case arms.
+block) makes the block evaluate to `unit`. A block is itself an expression:
+it can sit in any expression position, so `if` arms need not be braced —
+`x := if (1 == 2) 3 else {y := 4; y};` and `{u := 10; u} + 5` both check
+(the block's value is its last `;`-free statement). Lambda bodies, handler
+bodies, and case arms still take a block syntactically, and `else if` chains
+fall out of `if` being an expression: the nested `if` consumes its own
+`else`, so a dangling `else` binds to the nearest `if`.
 
 There are two binding kinds:
 
@@ -113,11 +118,13 @@ binary   ::= unary (binop unary)*        -- Pratt, see precedence below
 unary    ::= ("-" | "!") unary | postfix
 postfix  ::= primary ("(" args ")")* ("." name)*   -- call, then field access
 primary  ::= num | str | "true" | "false" | "unit"
-           | name | "(" expr ")" | array | lambda | if | handle | as-expr
+           | name | "(" expr ")" | array | lambda | block
+           | if | handle | as-expr
 as-expr  ::= "@as" "(" expr "," type ")"    # numeric cast, see §3.1
 array    ::= "[" ((expr ("," expr)*) ","?)? "]"
 lambda   ::= "fn" params block
-if       ::= "if" "(" expr ")" block ("else" (if | block))?
+block    ::= "{" stmt* "}"                 # an expression, see §2.2
+if       ::= "if" "(" expr ")" expr ("else" expr)?
 perform  ::= name "!" "(" args ")"        # `Op!(args)`
 handle   ::= "handle" block case+
 case     ::= "case" name params "=>" name block
@@ -337,8 +344,9 @@ tup-field ::= (name ":")? type               -- named (`x: f64`) or unnamed
 - `e.x` / `e.0` — `e` must be a tuple (`[x: T, ...]` or `[T, ...]`) or an array.
   For a named tuple field, `.name` resolves to its position; `.N` indexes by
   position. For an array, `.N` indexes element `N`.
-- `if c { a } else { b } : T` where `c : bool` and `a, b : T` (branches must
-  agree). `if` with no `else` has an implicit `unit` else branch.
+- `if c a else b : T` where `c : bool` and `a, b : T` (branches must
+  agree; each branch is an expression — a block, a literal, a call, ...).
+  `if` with no `else` has an implicit `unit` else branch.
 - `f(a1, ..., an)` — `f : (T1,...,Tn) -> R ! {E}`, each `ai : Ti`, the call has type `R` and adds `E` to the caller's effects. Mismatched arity or argument types are errors.
 - **Effect rows are unified, not just propagated.** A function's `! { ... }` is a row: a concrete set of effect names, or an unbound *effect variable*. Two function types unify their effect rows by union-find: variable+variable unions, variable+set binds. Concrete set+set checks by subset, not equality — the value's row must be covered by the context's row (a parameter's, an annotation's), so `fn (i32) -> i32 ! { E }` checks against `fn (i32) -> i32 ! { E, F }`: the declared row is an upper bound on what the callee may perform, and the reverse (a callee performing outside the declared row) is an error. The empty set `∅` needs no special case: as the value's row it is subsumed by any context row (a function typed `... ! ∅` may be used wherever any effect set is expected), while an effectful value against a `∅`-typed context is a mismatch. Unannotated higher-order parameters stay flexible through unbound row variables, without let-generalization.
 - **Higher-order builtins are effect-polymorphic.** `map : ((a) -> b ! e, [a]) -> [b] ! e`, `each : ((a, i64) -> b ! e, [a]) -> unit ! e`, `flatmap : ((a, i64) -> [b] ! e, [a]) -> [b] ! e` — each with a fresh effect variable `e` per instantiation, shared between the callback's effect row and the call's performed effects. So `map(pureF, xs)` performs `∅` while `map(fn(x){ Out!(x); x }, xs)` performs exactly `{ Out }` — neither over- nor under-approximated.

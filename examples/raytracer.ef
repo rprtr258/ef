@@ -41,16 +41,16 @@ checkSize :: 2.0;              # checkerboard cell size
 # when the ray misses.
 sphereT :: fn(d: V3, c: V3, r: f64): f64 {
   a :: vDot(d, d);
-  b :: -2.0 * vDot(d, c);
+  b :: -2 * vDot(d, c);
   q :: vDot(c, c) - r * r;
-  disc :: (b * b) - ((4.0 * a) * q);
-  if (disc < 0.0) { -1.0 } else { (-b - sqrt(disc)) / (2.0 * a) }
+  disc :: (b * b) - ((4 * a) * q);
+  if (disc < 0) -1 else (-b - sqrt(disc)) / (2 * a)
 };
 
 # ---- Diffuse lighting (unnormalized, distance-attenuated) ----
 diffuse :: fn(n: V3, l: V3): f64 {
   ndl :: vDot(n, l);
-  if (ndl > 0.0) { ndl / vDot(l, l) } else { 0.0 }
+  if (ndl > 0) ndl / vDot(l, l) else 0
 };
 
 # Shading of a sphere hit: normal = (hit - center)/radius, light
@@ -65,38 +65,36 @@ sphereShade :: fn(s: Sphere, d: V3, t: f64): V3 {
 
 # ---- Checkerboard cell parity (symmetric about the origin) ----
 cellParity :: fn(coord: f64, cell: f64): f64 {
-  if (coord < 0.0) { cellParity(-coord, cell) }
-  else if (coord < cell) { 0.0 }
-  else if (coord < 2.0 * cell) { 1.0 }
-  else { cellParity(coord - 2.0 * cell, cell) }
+  if (coord < 0.0) cellParity(-coord, cell)
+  else if (coord < cell) 0
+  else if (coord < 2.0 * cell) 1
+  else cellParity(coord - 2.0 * cell, cell)
 };
 
 checkerVal :: fn(x: f64, y: f64, cell: f64): f64 {
-  if (cellParity(x, cell) < 0.5) {
-    if (cellParity(y, cell) < 0.5) { 0.7 } else { 0.2 }
-  } else {
-    if (cellParity(y, cell) < 0.5) { 0.2 } else { 0.7 }
-  }
+  if (cellParity(x, cell) < 0.5)
+    if (cellParity(y, cell) < 0.5) 0.7 else 0.2 
+  else
+    if (cellParity(y, cell) < 0.5) 0.2 else 0.7 
 };
 
 # ---- Color of one ray through direction camDir + [dx, dy, 0] ----
 sample :: fn(dx: f64, dy: f64): V3 {
   d: V3 : [camDir.0 + dx, camDir.1 + dy, camDir.2];
   t1 :: sphereT(d, s1.center, s1.radius);
-  if (t1 > 0.0) {
+  if (t1 > 0.0)
     sphereShade(s1, d, t1)
-  } else {
+  else {
     t2 :: sphereT(d, s2.center, s2.radius);
-    if (t2 > 0.0) {
+    if (t2 > 0.0)
       sphereShade(s2, d, t2)
-    } else {
-      if (d.2 < 0.0) {
+    else {
+      vAll(if (d.2 < 0.0)
         # the ray reaches the ground plane z = planeZ at
         # (planeZ*d.0/d.2, planeZ*d.1/d.2)
-        vAll(checkerVal((planeZ * d.0) / d.2, (planeZ * d.1) / d.2, checkSize))
-      } else {
-        vAll(0.0)
-      }
+        checkerVal((planeZ * d.0) / d.2, (planeZ * d.1) / d.2, checkSize)
+      else
+        0.0)
     }
   }
 };
@@ -116,7 +114,7 @@ pixel :: fn(px: i64, py: i64): V3 {
 # produces; the clamps guard degenerate shading values.
 chan :: fn(v: f64): i64 {
   x :: @as(v * 255.0 + 0.5, i64);
-  if (x < 0) { 0 } else if (x > 255) { 255 } else { x }
+  if (x < 0) 0 else if (x > 255) 255 else x 
 };
 
 # ---- XOR via lookup tables (ef has no bitwise operators) ----
@@ -134,7 +132,7 @@ while (xa < 256) {
   xj := 0;
   while (xj < 256) {
     hi :: get(xor8tab, (xa / 2) * 256 + (xj / 2));
-    bit :: if (xa % 2 == xj % 2) { 0 } else { 1 };
+    bit :: if (xa % 2 == xj % 2) 0 else 1;
     set(xor8tab, xa * 256 + xj, hi * 2 + bit);
     xj = xj + 1;
   }
@@ -157,7 +155,7 @@ while (ci < 256) {
   c := get(crcT, ci);
   cj := 0;
   while (cj < 8) {
-    c = if (c % 2 == 1) { xor32(c / 2, 3988292384) } else { c / 2 };   # 0xEDB88320
+    c = if (c % 2 == 1) xor32(c / 2, 3988292384) else c / 2; # 0xEDB88320
     cj = cj + 1;
   }
   set(crcT, ci, c);
@@ -168,7 +166,7 @@ crc32 :: fn(data: [u8], from: i64, to: i64): i64 {
   c := 4294967295;              # 0xFFFFFFFF
   i := from;
   while (i < to) {
-    idx :: get(xor8tab, (c % 256) * 256 + @as(get(data, i), i64));   # (c xor byte) & 0xFF
+    idx :: get(xor8tab, (c % 256) * 256 + @as(get(data, i), i64)); # (c xor byte) & 0xFF
     c = xor32(c / 256, get(crcT, idx));
     i = i + 1;
   }
@@ -268,8 +266,8 @@ pos := offIDAT + 10;
 src := 0;
 remaining := rawSize;
 while (remaining > 0) {
-  n :: if (remaining > 65535) { 65535 } else { remaining };
-  set(out, pos, if (n == remaining) { 1 } else { 0 });   # BFINAL on the last block
+  n :: if (remaining > 65535) 65535 else remaining;
+  set(out, pos, if (n == remaining) 1 else 0);   # BFINAL on the last block
   set(out, pos + 1, @as(n % 256, u8));
   set(out, pos + 2, @as((n / 256) % 256, u8));
   set(out, pos + 3, @as((65535 - n) % 256, u8));   # NLEN: one's complement of LEN
@@ -295,6 +293,6 @@ writeChunk(out, offIEND, 0, 73, 69, 78, 68);         # IEND
 
 # ---- Save ----
 argv :: args();
-outPath :: if (len(argv) > 0) { get(argv, 0) } else { "raytracer.png" };
+outPath :: if (len(argv) > 0) get(argv, 0) else "raytracer.png";
 Write!(outPath, out);
 Println!(outPath);

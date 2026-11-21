@@ -55,76 +55,84 @@ test("run accepts a custom effect interpreter (fakes Read, no fs touched)", () =
 });
 
 test("Nondeterminism — multi-shot resume, declared effect + return type", () => {
-expect(show(run(`
-Choose :: effect(opts: [i64]): i64;
-handle {
-  x :: Choose!([1, 2, 3]);
-  y :: Choose!([10, 20]);
-  [x, y]
-} case Return(v) => k { [v] }
-  case Choose(opts) => k { flat(map(k, opts)) }
-`))).toBe("[[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]");
+  expect(show(run(`
+  Choose :: effect(opts: [i64]): i64;
+  handle {
+    x :: Choose!([1, 2, 3]);
+    y :: Choose!([10, 20]);
+    [x, y]
+  } case Return(v) => k { [v] }
+    case Choose(opts) => k { flat(map(k, opts)) }
+  `))).toBe("[[1, 10], [1, 20], [2, 10], [2, 20], [3, 10], [3, 20]]");
 });
 
 test("Exception — non-resuming handler aborts", () => {
-expect(show(run(`
-Div :: effect(a: i64, b: i64): i64;
-handle {
-  r :: Div!(10, 0);
-  [r]
-} case Div(a, b) => k {
-  if (b == 0) { ["div by zero"] } else { k(a / b) }
-}
-`))).toBe("[\"div by zero\"]");
+  expect(show(run(`
+  Div :: effect(a: i64, b: i64): i64;
+  handle {
+    r :: Div!(10, 0);
+    [r]
+  } case Div(a, b) => k {
+    if (b == 0) { ["div by zero"] } else { k(a / b) }
+  }
+  `))).toBe("[\"div by zero\"]");
 });
 
 test("Deep handler threading a log across resumes", () => {
-expect(show(run(`
-Log :: effect(msg: string): unit;
-Result :: effect(v: string): unit;
-handle {
-  Log!("a");
-  Log!("b");
-  Result!("42")
-} case Log(msg) => k { concat([msg], k(unit)) }
-  case Result(v) => k { [v] }
-`))).toBe("[\"a\", \"b\", \"42\"]");
+  expect(show(run(`
+  Log :: effect(msg: string): unit;
+  Result :: effect(v: string): unit;
+  handle {
+    Log!("a");
+    Log!("b");
+    Result!("42")
+  } case Log(msg) => k { concat([msg], k(unit)) }
+    case Result(v) => k { [v] }
+  `))).toBe("[\"a\", \"b\", \"42\"]");
 });
 
 test("Effect propagation through an inner handler to an outer one", () => {
-expect(show(run(`
-Emit :: effect(m: string): unit;
-Other :: effect(m: string): unit;
-handle {
-  handle { Emit!("hi") } case Other(m) => k { ["should-not-match"] }
-} case Emit(m) => k { [m] }
-`))).toBe("[\"hi\"]");
+  expect(show(run(`
+  Emit :: effect(m: string): unit;
+  Other :: effect(m: string): unit;
+  handle {
+    handle { Emit!("hi") } case Other(m) => k { ["should-not-match"] }
+  } case Emit(m) => k { [m] }
+  `))).toBe("[\"hi\"]");
 });
 
 test("Typed recursive function with annotation", () => {
-expect(show(run(`
-fact :: fn(n: i64): i64 {
-  if (n == 0) { 1 } else { n * fact(n - 1) }
-};
-fact(5)
-`))).toBe("120");
+  expect(show(run(`
+  fact :: fn(n: i64): i64 {
+    if (n == 0) { 1 } else { n * fact(n - 1) }
+  };
+  fact(5)
+  `))).toBe("120");
 });
 
 test("Short-circuit && / || and infix arithmetic", () => {
-expect(show(run(`
-guard :: fn(x: i64): string {
-  if (x > 0 && x < 10) { "in" } else { "out" }
-};
-[guard(5), guard(50)]
-`))).toBe("[\"in\", \"out\"]");
+  expect(show(run(`
+  guard :: fn(x: i64): string {
+    if (x > 0 && x < 10) { "in" } else { "out" }
+  };
+  [guard(5), guard(50)]
+  `))).toBe("[\"in\", \"out\"]");
+});
+
+test("If branches are expressions; blocks are expressions too", () => {
+  expect(show(run(`
+  x := if (1 == 2) 3 else {y := 4; y};
+  n :: if (true) 1 else 2;
+  [{n}, x, {u := 10; u} + 5]
+  `))).toBe("[1, 4, 15]");
 });
 
 test("Type annotations on let", () => {
-expect(show(run(`
-x: i64 : 5;
-y: i64 : x + 3;
-y
-`))).toBe("8");
+  expect(show(run(`
+  x: i64 : 5;
+  y: i64 : x + 3;
+  y
+  `))).toBe("8");
 });
 
 describe("Equality, Exit/Wait effects, inferred-any warning", () => {
@@ -360,6 +368,14 @@ describe("Negative tests (static type checker rejects)", () => {
 
   test("If branches with mismatched types", () => {
     assertTypeError(`if (1 < 2) { 1 } else { "x" }`, "i64");
+  });
+
+  test("Expression if branches unify like block branches", () => {
+    expect(typeOf(`if (true) 1 else 2`)).toBe("i64");
+    assertTypeError(`if (true) 1 else "x"`, "i64");
+    // An else-less `if` with a value branch has nothing to unify the
+    // branch against (the implicit else is unit).
+    assertTypeError(`if (true) 1;`, "unit");
   });
 
   test("A `;` after a block's last expression makes the block unit", () => {
