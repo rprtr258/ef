@@ -1,7 +1,8 @@
 // ef language server: LSP over stdio wrapping the ef parser + checker.
 //
-// Diagnostics are fail-fast: `prepare` throws on the first error, so each
-// publish carries at most one diagnostic. Errors carry a 1-based source pos
+// Diagnostics: one fail-fast error per publish (prepareStaged's first
+// failure), plus lint warnings (frontend/lint) when the document checks.
+// Errors carry a 1-based source pos
 // as data — parse errors via ParseError's token extent (underlined), checker
 // errors via TypeError_.pos (zero-width marker). Only whole-program failures
 // with no single blame site (e.g. a recursive type alias) anchor at 0:0. Hover
@@ -35,7 +36,8 @@ import {showT, TypeError_} from "./frontend/type_display.ts";
 import {type Unifier, uniDeepRes, envLookup, envLookupResolved} from "./frontend/unify.ts";
 import {tFun, TANY, rowOf} from "./prims.ts";
 import type {Checked, EffectSig} from "./frontend/types.ts";
-import {prepare} from "./frontend/pipeline.ts";
+import {prepare, prepareStaged} from "./frontend/pipeline.ts";
+import {lintProgram} from "./frontend/lint/index.ts";
 import {builtinParamNames} from "./builtins.ts";
 import {forEachBinder} from "./frontend/walk.ts";
 import {ParseError, type Loc} from "./frontend/lexer.ts";
@@ -84,12 +86,31 @@ function semanticTokens(src: string): SemanticTokens {
 }
 
 function checkDoc(src: string): Diagnostic[] {
-  try {
-    prepare(src);
-    return [];
-  } catch (err) {
-    return [diagnosticOf(err)];
-  }
+  const staged = prepareStaged(src);
+  if (!staged.ok)
+    return [diagnosticOf(staged.error)];
+  return lintDiags(staged.prog, staged.checked);
+}
+
+// Lint findings as Warning diagnostics (frontend/lint, over the prepared
+// program). A finding's position is a binder position (lambda param, let
+// name, dlet field — the forEachBinder sites), so the squiggle underlines
+// the name token; a position-less finding anchors zero-width. Message
+// wording mirrors the CLI's lint report (cli.ts's lint command).
+function lintDiags(prog: Program, checked: Checked): Diagnostic[] {
+  const bs = binders(prog);
+  return lintProgram(prog, checked).map((i) => {
+    const pos = i.pos;
+    const b = pos === undefined
+      ? undefined
+      : bs.find((x) => x.pos.line === pos.line && x.pos.col === pos.col);
+    const start = {line: (pos?.line ?? 1) - 1, character: (pos?.col ?? 1) - 1};
+    const end = b === undefined ? start : {line: start.line, character: start.character + b.len};
+    const message = i.rule === "unused-arg"
+      ? `${i.who} has unused argument ${i.argname}`
+      : `${i.who} is inferred as ${i.ty} (contains \`any\`); add an explicit annotation to silence`;
+    return {severity: DiagnosticSeverity.Warning, range: {start, end}, message, source: "ef"};
+  });
 }
 
 // Lexicographic Loc comparison (1-based line/col).

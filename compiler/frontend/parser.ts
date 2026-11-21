@@ -645,6 +645,13 @@ const e = parseExpr(st);
 eat(st, ")");
 return e;
 }
+if (t === "{") {
+// A `{...}` block is an expression like any other: its value is its
+// last `;`-free statement (parseBlock's `semi`), so it can sit in any
+// expression position — if branches, `:=` RHS, call args, array
+// elements.
+return parseBlock(st);
+}
 if (t === "[") {
 next(st);
 const els: ExprID[] = [];
@@ -668,13 +675,16 @@ next(st);
 eat(st, "(");
 const c = parseExpr(st);
 eat(st, ")");
-const a = parseBlock(st);
+// Branches are expressions: a literal, a block (via parsePrimary), or
+// a nested `if` — the dangling `else` binds to the nearest `if`
+// because the nested parse consumes its own else chain first. No `;`
+// is consumed here: the enclosing statement parser owns it, so an
+// `if` in `:=`/`::` RHS position leaves the terminator intact.
+const a = parseExpr(st);
 let b: ExprID = add(st, {t: "unit"}, p);
 if (isKw(st, "else")) {
 next(st);
-b = isKw(st, "if") ? parsePrimary(st) : parseBlock(st);
-} else if (is(st, ";")) {
-st.i++;
+b = parseExpr(st);
 }
 return add(st, {t: "if", c, a, b}, p);
 }

@@ -5,7 +5,9 @@ the passes, report. Passes receive the parse result and — when the program
 checked cleanly — its `Checked` (per-node inferred types); a program that
 fails to check still gets its AST-level passes. Each finding carries the
 source position from the [lexer](lexer.md), so every consumer (CLI,
-playground problems pane) prints real line/col information.
+playground problems pane, LSP warnings) prints real line/col information.
+`lintProgram(prog, checked)` is the pass list over an already-prepared
+program — the LSP's per-change diagnostics publish it without re-parsing.
 
 ```ts
 const LINT_PASSES = {

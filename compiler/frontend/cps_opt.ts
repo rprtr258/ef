@@ -265,7 +265,9 @@ function fuseLetBinds(root: CTerm): [term: CTerm, changed: boolean] {
         && t.rest.t === "bind" && t.rest.val.t === "var" && t.rest.val.name === t.name
         && t.rest.val.stamp === undefined) {
       changed.v = true;
-      const fused: CTerm = {t: "let", name: t.rest.name, rhs: t.rhs, rest: t.rest.rest};
+      // The fused bind's `top` must survive the rewrite: a source-named
+      // `let` here is always an item-chain bind inside a scope rest.
+      const fused: CTerm = {t: "let", name: t.rest.name, rhs: t.rhs, rest: t.rest.rest, top: t.rest.top};
       rewriteChildren(fused, rw);
       return fused;
     }

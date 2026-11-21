@@ -28,6 +28,16 @@ function showEnv(ctx: Ctx): void {
   if (!any && builtins.length === 0) console.log("(no bindings yet)");
 }
 
+// Line normalization: a bare line takes the item-terminating `;`. Lines
+// already ending in `;` are kept; a line still inside an open `{`
+// (multi-line block entry) gets no `;` so its error points at EOF rather
+// than at an injected `;`. A trailing `}` is not exempt: balanced closes
+// (`y := { 40 + 2 }`, `while (…) { … }`) are complete items and need the
+// item-terminating `;`.
+export function lineSrc(s: string): string {
+  return /[;{]$/.test(s) ? s : s + ";";
+}
+
 export function repl(): void {
   const ctx = newCtx();
   const rl = readline.createInterface({input: process.stdin, output: process.stdout, prompt: "ef> "});
@@ -70,7 +80,7 @@ export function repl(): void {
       rl.prompt();
       return;
     }
-    const src = /[;{}]$/.test(s) ? s : s + ";";
+    const src = lineSrc(s);
     try { evalLine(src); }
     catch (e) { console.log(showErr(e, src)); }
     rl.prompt();

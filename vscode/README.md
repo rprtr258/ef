@@ -7,7 +7,9 @@ language with algebraic effects and effect handlers.
 - **Highlighting** — a TextMate grammar for `.ef`: keywords, `::`/`:=`
   bindings, numeric widths, `#` comments, strings, numbers, effect ops (`Op!`).
 - **Diagnostics** — the document is parsed and typechecked on every change;
-  the checker is fail-fast, so at most one error shows at a time.
+  the checker is fail-fast, so at most one error shows at a time. On a clean
+  check, lint warnings (unused-arg, derived-any) underline the offending
+  binder.
 - **Hover types** — inferred types of top-level bindings and builtins.
 - **Go-to-definition** — value names jump to their unique binding, effect
   names to their `effect` declaration, alias names to their alias item.

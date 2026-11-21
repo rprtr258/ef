@@ -93,10 +93,16 @@ type Converter = {
   // cps_ir.ts's letk.freeze).
   temps: Set<string>,
   stamps: readonly (NodeStamps | undefined)[],
+  // Program items' ExprIDs: lets/dlets in this set are item-chain binds and
+  // carry `top` (cps_ir.ts's bind marker); block-statement binds don't —
+  // mirroring the checker, which binds items into the ambient frame and
+  // block statements into a block frame.
+  items: Set<ExprID>,
 };
 
 function newConverter(prog: Program, stamps: readonly (NodeStamps | undefined)[] = []): Converter {
-  return {funcs: [], n: 0, prog, temps: new Set<string>(), stamps};
+  return {funcs: [], n: 0, prog, temps: new Set<string>(), stamps,
+    items: new Set(prog.items.flatMap(it => "e" in it ? [it.e] : []))};
 }
 
 function fresh(c: Converter, prefix: string): string {
@@ -209,12 +215,17 @@ function convert(c: Converter, id: ExprID, k: K): CTerm {
         };
     }
     case "let":
+    // Item binds carry `top` (block-statement binds don't): the
+    // interpreter lands them in the accumulator frame even when a join or
+    // scope continuation hosts the bind (cps_ir.ts's bind marker).
     return convert(c, e.val, {t: "fn", f: (v) => ({
         t: "bind", name: e.name, val: v, rest: kap(k, UNIT),
+        top: c.items.has(id) ? true : undefined,
         })});
     case "dlet":
     return convert(c, e.val, {t: "fn", f: (v) => ({
         t: "dlet", val: v, fields: e.fields.map(fd => fd.name), rest: kap(k, UNIT),
+        top: c.items.has(id) ? true : undefined,
         })});
     case "assign":
     return convert(c, e.val, {t: "fn", f: (v) => ({
